@@ -4,6 +4,7 @@ pub mod bench;
 pub mod diagram;
 pub mod highlight;
 pub mod icon;
+pub mod ipc;
 pub mod md_highlight;
 pub mod mindmap;
 pub mod parser;
