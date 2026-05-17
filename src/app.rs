@@ -585,7 +585,7 @@ impl App {
             self.rebuild_matches();
             return;
         }
-        let mut parsed = parser::parse(&self.source);
+        let (mut parsed, _block_offsets) = parser::parse(&self.source);
         for (_id, b) in parsed.iter_mut() {
             if let Block::CodeBlock {
                 lang: Some(l),
@@ -1483,7 +1483,7 @@ impl App {
                 if let Some(ast) = self.synthesize_data_ast() {
                     self.ast = ast;
                 } else {
-                    let mut parsed = parser::parse(&self.source);
+                    let (mut parsed, _block_offsets) = parser::parse(&self.source);
                     for (_id, b) in parsed.iter_mut() {
                         if let Block::CodeBlock {
                             lang: Some(l),

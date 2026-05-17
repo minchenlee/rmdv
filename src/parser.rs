@@ -2,24 +2,40 @@ use crate::ast::{Block, BlockId, DiagramKind, Inline, ListItem};
 use pulldown_cmark::{Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 use std::hash::{DefaultHasher, Hash, Hasher};
 
-pub fn parse(src: &str) -> Vec<(BlockId, Block)> {
+pub fn parse(src: &str) -> (Vec<(BlockId, Block)>, Vec<u32>) {
     let src = strip_frontmatter(src);
     let mut opts = Options::empty();
     opts.insert(Options::ENABLE_TABLES);
     opts.insert(Options::ENABLE_STRIKETHROUGH);
     opts.insert(Options::ENABLE_TASKLISTS);
     opts.insert(Options::ENABLE_SMART_PUNCTUATION);
-    let parser = Parser::new_ext(src, opts);
+    let parser = Parser::new_ext(src, opts).into_offset_iter();
     let mut state = ParseState::default();
-    for ev in parser {
+    let mut pending_offset: Option<u32> = None;
+    for (ev, range) in parser {
+        if matches!(ev, Event::Start(_)) && state.stack.is_empty() {
+            pending_offset = Some(range.start as u32);
+        }
+        let before_len = state.blocks.len();
+        let take_offset = pending_offset;
         state.handle(ev);
+        if state.blocks.len() > before_len {
+            let off = take_offset
+                .or(Some(range.start as u32))
+                .unwrap_or(0);
+            for _ in before_len..state.blocks.len() {
+                state.offsets.push(off);
+            }
+            pending_offset = None;
+        }
     }
-    state
+    let blocks: Vec<(BlockId, Block)> = state
         .blocks
         .into_iter()
         .enumerate()
         .map(|(pos, b)| (block_id(pos, &b), b))
-        .collect()
+        .collect();
+    (blocks, state.offsets)
 }
 
 fn block_id(pos: usize, b: &Block) -> BlockId {
@@ -76,6 +92,7 @@ fn fmt_inline<H: Hasher>(i: &Inline, h: &mut H) {
 #[derive(Default)]
 struct ParseState {
     blocks: Vec<Block>,
+    offsets: Vec<u32>,
     stack: Vec<Frame>,
 }
 

@@ -133,3 +133,16 @@ fn block_for_line_duplicate_line_values_picks_first_match() {
     let idx = block_for_line(5, &lines).unwrap();
     assert!(idx == 1 || idx == 2, "got {idx}");
 }
+
+#[test]
+fn parser_emits_byte_offsets_aligned_with_blocks() {
+    let src = "# H1\n\npara one\n\n## H2\n\npara two\n";
+    let (blocks, offsets) = mdv::parser::parse(src);
+    assert_eq!(blocks.len(), offsets.len());
+    let table = mdv::ipc::lines::build_byte_to_line(src);
+    let lines: Vec<u32> = offsets.iter().map(|&b| table.line_for_byte(b as usize)).collect();
+    assert_eq!(lines[0], 1, "H1 on line 1, got {}", lines[0]);
+    assert_eq!(lines[1], 3, "first paragraph on line 3, got {}", lines[1]);
+    assert_eq!(lines[2], 5, "H2 on line 5, got {}", lines[2]);
+    assert_eq!(lines[3], 7, "second paragraph on line 7, got {}", lines[3]);
+}

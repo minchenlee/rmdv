@@ -21,8 +21,8 @@ fn parse_1mb(c: &mut Criterion) {
     let src = generate_doc(10_000);
     c.bench_function("parse_10k_lines", |b| {
         b.iter(|| {
-            let blocks = mdv::parser::parse(black_box(&src));
-            black_box(blocks);
+            let (blocks, offsets) = mdv::parser::parse(black_box(&src));
+            black_box((blocks, offsets));
         });
     });
 }

@@ -3,7 +3,8 @@ use mdv::parser::parse;
 
 fn load() -> Vec<(mdv::ast::BlockId, Block)> {
     let src = std::fs::read_to_string("tests/fixtures/diagrams.md").unwrap();
-    parse(&src)
+    let (blocks, _offsets) = parse(&src);
+    blocks
 }
 
 fn diagrams_of(blocks: &[(mdv::ast::BlockId, Block)], want: DiagramKind) -> Vec<(&String, u64)> {
