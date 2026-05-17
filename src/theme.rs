@@ -1,7 +1,11 @@
 use iced::Color;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ThemeMode { Light, Dark, System }
+pub enum ThemeMode {
+    Light,
+    Dark,
+    System,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ThemePreset {
@@ -60,7 +64,10 @@ impl ThemePreset {
     }
 
     pub fn next(self) -> ThemePreset {
-        let idx = ThemePreset::ALL.iter().position(|t| *t == self).unwrap_or(0);
+        let idx = ThemePreset::ALL
+            .iter()
+            .position(|t| *t == self)
+            .unwrap_or(0);
         ThemePreset::ALL[(idx + 1) % ThemePreset::ALL.len()]
     }
 }
@@ -173,15 +180,15 @@ impl SyntaxPalette {
 
     // Solarized Dark — ethanschoonover/solarized
     pub const SOLARIZED_DARK: SyntaxPalette = SyntaxPalette {
-        keyword: rgb(133, 153, 0),    // green
-        type_: rgb(181, 137, 0),       // yellow
-        function: rgb(38, 139, 210),   // blue
-        string: rgb(42, 161, 152),     // cyan
-        number: rgb(211, 54, 130),     // magenta
-        comment: rgb(88, 110, 117),    // base01
-        operator: rgb(203, 75, 22),    // orange
+        keyword: rgb(133, 153, 0),   // green
+        type_: rgb(181, 137, 0),     // yellow
+        function: rgb(38, 139, 210), // blue
+        string: rgb(42, 161, 152),   // cyan
+        number: rgb(211, 54, 130),   // magenta
+        comment: rgb(88, 110, 117),  // base01
+        operator: rgb(203, 75, 22),  // orange
         constant: rgb(211, 54, 130),
-        variable: rgb(108, 113, 196),  // violet
+        variable: rgb(108, 113, 196), // violet
         punctuation: rgb(147, 161, 161),
     };
 
@@ -201,57 +208,57 @@ impl SyntaxPalette {
 
     // Gruvbox Dark (medium) — morhetz/gruvbox
     pub const GRUVBOX_DARK: SyntaxPalette = SyntaxPalette {
-        keyword: rgb(251, 73, 52),     // red
-        type_: rgb(250, 189, 47),      // yellow
-        function: rgb(184, 187, 38),   // green
+        keyword: rgb(251, 73, 52),   // red
+        type_: rgb(250, 189, 47),    // yellow
+        function: rgb(184, 187, 38), // green
         string: rgb(184, 187, 38),
-        number: rgb(211, 134, 155),    // purple
-        comment: rgb(146, 131, 116),   // gray
-        operator: rgb(254, 128, 25),   // orange
+        number: rgb(211, 134, 155),  // purple
+        comment: rgb(146, 131, 116), // gray
+        operator: rgb(254, 128, 25), // orange
         constant: rgb(211, 134, 155),
-        variable: rgb(131, 165, 152),  // aqua
+        variable: rgb(131, 165, 152), // aqua
         punctuation: rgb(235, 219, 178),
     };
 
     // Nord — nordtheme/nord (nord7..nord15)
     pub const NORD: SyntaxPalette = SyntaxPalette {
-        keyword: rgb(129, 161, 193),   // nord9
-        type_: rgb(143, 188, 187),     // nord7
-        function: rgb(136, 192, 208),  // nord8
-        string: rgb(163, 190, 140),    // nord14
-        number: rgb(180, 142, 173),    // nord15
-        comment: rgb(97, 110, 136),    // nord3 brightened
+        keyword: rgb(129, 161, 193),  // nord9
+        type_: rgb(143, 188, 187),    // nord7
+        function: rgb(136, 192, 208), // nord8
+        string: rgb(163, 190, 140),   // nord14
+        number: rgb(180, 142, 173),   // nord15
+        comment: rgb(97, 110, 136),   // nord3 brightened
         operator: rgb(129, 161, 193),
         constant: rgb(180, 142, 173),
-        variable: rgb(216, 222, 233),  // nord4
+        variable: rgb(216, 222, 233), // nord4
         punctuation: rgb(216, 222, 233),
     };
 
     // Dracula — dracula/dracula-theme
     pub const DRACULA: SyntaxPalette = SyntaxPalette {
-        keyword: rgb(255, 121, 198),   // pink
-        type_: rgb(139, 233, 253),     // cyan
-        function: rgb(80, 250, 123),   // green
-        string: rgb(241, 250, 140),    // yellow
-        number: rgb(189, 147, 249),    // purple
-        comment: rgb(98, 114, 164),    // comment
+        keyword: rgb(255, 121, 198), // pink
+        type_: rgb(139, 233, 253),   // cyan
+        function: rgb(80, 250, 123), // green
+        string: rgb(241, 250, 140),  // yellow
+        number: rgb(189, 147, 249),  // purple
+        comment: rgb(98, 114, 164),  // comment
         operator: rgb(255, 121, 198),
         constant: rgb(189, 147, 249),
-        variable: rgb(248, 248, 242),  // fg
+        variable: rgb(248, 248, 242), // fg
         punctuation: rgb(248, 248, 242),
     };
 
     // Tokyo Night (Storm) — folke/tokyonight.nvim
     pub const TOKYO_NIGHT: SyntaxPalette = SyntaxPalette {
-        keyword: rgb(187, 154, 247),   // purple
-        type_: rgb(42, 195, 222),      // cyan1
-        function: rgb(122, 162, 247),  // blue
-        string: rgb(158, 206, 106),    // green
-        number: rgb(255, 158, 100),    // orange
-        comment: rgb(86, 95, 137),     // comment
-        operator: rgb(137, 221, 255),  // cyan
+        keyword: rgb(187, 154, 247),  // purple
+        type_: rgb(42, 195, 222),     // cyan1
+        function: rgb(122, 162, 247), // blue
+        string: rgb(158, 206, 106),   // green
+        number: rgb(255, 158, 100),   // orange
+        comment: rgb(86, 95, 137),    // comment
+        operator: rgb(137, 221, 255), // cyan
         constant: rgb(255, 158, 100),
-        variable: rgb(192, 202, 245),  // fg
+        variable: rgb(192, 202, 245), // fg
         punctuation: rgb(169, 177, 214),
     };
 }
@@ -409,14 +416,14 @@ impl Palette {
 
     // Gruvbox Dark (medium) — Source: github.com/morhetz/gruvbox
     pub const GRUVBOX_DARK: Palette = Palette {
-        bg: rgb(40, 40, 40),           // bg0
-        surface: rgb(50, 48, 47),      // bg1
-        surface_alt: rgb(60, 56, 54),  // bg2
-        sidebar: rgb(32, 32, 32),      // bg0_h
-        fg: rgb(235, 219, 178),        // fg1
-        muted: rgb(168, 153, 132),     // fg4
-        subtle: rgb(124, 111, 100),    // gray
-        accent: rgb(254, 128, 25),     // orange bright
+        bg: rgb(40, 40, 40),          // bg0
+        surface: rgb(50, 48, 47),     // bg1
+        surface_alt: rgb(60, 56, 54), // bg2
+        sidebar: rgb(32, 32, 32),     // bg0_h
+        fg: rgb(235, 219, 178),       // fg1
+        muted: rgb(168, 153, 132),    // fg4
+        subtle: rgb(124, 111, 100),   // gray
+        accent: rgb(254, 128, 25),    // orange bright
         accent_fg: rgb(29, 32, 33),
         code_bg: rgb(50, 48, 47),
         code_border: rgba(255, 255, 255, 0.06),
@@ -434,20 +441,20 @@ impl Palette {
 
     // Nord — Source: github.com/nordtheme/nord
     pub const NORD: Palette = Palette {
-        bg: rgb(46, 52, 64),           // nord0
-        surface: rgb(59, 66, 82),      // nord1
-        surface_alt: rgb(67, 76, 94),  // nord2
+        bg: rgb(46, 52, 64),          // nord0
+        surface: rgb(59, 66, 82),     // nord1
+        surface_alt: rgb(67, 76, 94), // nord2
         sidebar: rgb(40, 46, 57),
-        fg: rgb(216, 222, 233),        // nord4
+        fg: rgb(216, 222, 233), // nord4
         muted: rgb(136, 146, 168),
-        subtle: rgb(97, 110, 136),     // nord3 brightened
-        accent: rgb(136, 192, 208),    // nord8
+        subtle: rgb(97, 110, 136),  // nord3 brightened
+        accent: rgb(136, 192, 208), // nord8
         accent_fg: rgb(46, 52, 64),
         code_bg: rgb(59, 66, 82),
         code_border: rgba(255, 255, 255, 0.06),
         rule: rgba(255, 255, 255, 0.07),
         selection: rgba(136, 192, 208, 0.28),
-        match_bg: rgba(235, 203, 139, 0.45),  // nord13
+        match_bg: rgba(235, 203, 139, 0.45),         // nord13
         match_current_bg: rgba(208, 135, 112, 0.85), // nord12
         scroller: rgba(255, 255, 255, 0.0),
         scroller_hover: rgba(255, 255, 255, 0.22),
@@ -459,14 +466,14 @@ impl Palette {
 
     // Dracula — Source: github.com/dracula/dracula-theme
     pub const DRACULA: Palette = Palette {
-        bg: rgb(40, 42, 54),           // background
-        surface: rgb(68, 71, 90),      // current line
+        bg: rgb(40, 42, 54),      // background
+        surface: rgb(68, 71, 90), // current line
         surface_alt: rgb(80, 84, 105),
         sidebar: rgb(33, 34, 44),
-        fg: rgb(248, 248, 242),        // foreground
+        fg: rgb(248, 248, 242), // foreground
         muted: rgb(149, 154, 184),
-        subtle: rgb(98, 114, 164),     // comment
-        accent: rgb(189, 147, 249),    // purple
+        subtle: rgb(98, 114, 164),  // comment
+        accent: rgb(189, 147, 249), // purple
         accent_fg: rgb(40, 42, 54),
         code_bg: rgb(33, 34, 44),
         code_border: rgba(255, 255, 255, 0.06),
@@ -484,20 +491,20 @@ impl Palette {
 
     // Tokyo Night (Storm) — Source: github.com/folke/tokyonight.nvim
     pub const TOKYO_NIGHT: Palette = Palette {
-        bg: rgb(36, 40, 59),           // bg
-        surface: rgb(41, 46, 66),      // bg_highlight
+        bg: rgb(36, 40, 59),      // bg
+        surface: rgb(41, 46, 66), // bg_highlight
         surface_alt: rgb(52, 59, 88),
-        sidebar: rgb(31, 35, 53),      // bg_dark
-        fg: rgb(192, 202, 245),        // fg
-        muted: rgb(154, 165, 206),     // fg_dark
-        subtle: rgb(86, 95, 137),      // comment
-        accent: rgb(122, 162, 247),    // blue
+        sidebar: rgb(31, 35, 53),   // bg_dark
+        fg: rgb(192, 202, 245),     // fg
+        muted: rgb(154, 165, 206),  // fg_dark
+        subtle: rgb(86, 95, 137),   // comment
+        accent: rgb(122, 162, 247), // blue
         accent_fg: rgb(36, 40, 59),
         code_bg: rgb(31, 35, 53),
         code_border: rgba(255, 255, 255, 0.06),
         rule: rgba(255, 255, 255, 0.07),
         selection: rgba(122, 162, 247, 0.28),
-        match_bg: rgba(224, 175, 104, 0.45), // yellow
+        match_bg: rgba(224, 175, 104, 0.45),         // yellow
         match_current_bg: rgba(255, 158, 100, 0.85), // orange
         scroller: rgba(255, 255, 255, 0.0),
         scroller_hover: rgba(255, 255, 255, 0.22),
@@ -524,9 +531,15 @@ pub struct Typography {
 
 impl Typography {
     pub const DEFAULT: Typography = Typography {
-        body_size: 15.5, line_height: 1.65, measure_ch: 74,
-        h1_size: 30.0, h2_size: 24.0, h3_size: 20.0,
-        h4_size: 17.0, h5_size: 15.5, h6_size: 14.5,
+        body_size: 15.5,
+        line_height: 1.65,
+        measure_ch: 74,
+        h1_size: 30.0,
+        h2_size: 24.0,
+        h3_size: 20.0,
+        h4_size: 17.0,
+        h5_size: 15.5,
+        h6_size: 14.5,
         code_size: 13.5,
     };
 }
@@ -601,5 +614,8 @@ pub fn preset_slug(p: ThemePreset) -> &'static str {
 }
 
 pub fn preset_by_slug(slug: &str) -> Option<ThemePreset> {
-    ThemePreset::ALL.iter().copied().find(|p| preset_slug(*p) == slug)
+    ThemePreset::ALL
+        .iter()
+        .copied()
+        .find(|p| preset_slug(*p) == slug)
 }

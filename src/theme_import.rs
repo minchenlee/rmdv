@@ -59,9 +59,7 @@ pub fn import_base16_str(raw: &str, fallback_name: &str) -> Result<Imported, Str
     let probe = |k: &str| -> Option<Color> {
         let v = parsed.rest.get(k).or_else(|| {
             parsed.rest.get("palette").and_then(|p| match p {
-                serde_yaml::Value::Mapping(m) => {
-                    m.get(serde_yaml::Value::String(k.to_string()))
-                }
+                serde_yaml::Value::Mapping(m) => m.get(serde_yaml::Value::String(k.to_string())),
                 _ => None,
             })
         })?;
@@ -124,7 +122,10 @@ pub fn import_base16_str(raw: &str, fallback_name: &str) -> Result<Imported, Str
         },
     };
 
-    let name = parsed.name.clone().unwrap_or_else(|| fallback_name.to_string());
+    let name = parsed
+        .name
+        .clone()
+        .unwrap_or_else(|| fallback_name.to_string());
     let slug = crate::theme_load::slugify(&name);
     let mut toml = String::new();
     toml.push_str(&format!("# Imported from Base16 scheme: {}\n", name));
@@ -187,39 +188,86 @@ pub fn import_vscode(path: &Path) -> Result<Imported, String> {
     let theme: VsCodeTheme = serde_json::from_str(&stripped).map_err(|e| e.to_string())?;
 
     let dark = matches!(theme.kind.as_deref(), Some("dark")) || theme.kind.is_none();
-    let base_preset = if dark { ThemePreset::OneDark } else { ThemePreset::OneLight };
+    let base_preset = if dark {
+        ThemePreset::OneDark
+    } else {
+        ThemePreset::OneLight
+    };
     let mut pal = palette_for(base_preset);
 
     // UI colors
     let c = |k: &str| -> Option<Color> {
         theme.colors.get(k).and_then(|s| {
             let s = s.trim();
-            let s = if s.starts_with('#') { s.to_string() } else { format!("#{s}") };
+            let s = if s.starts_with('#') {
+                s.to_string()
+            } else {
+                format!("#{s}")
+            };
             parse_color(&s).ok()
         })
     };
-    if let Some(v) = c("editor.background") { pal.bg = v; pal.sidebar = v; pal.code_bg = v; }
-    if let Some(v) = c("editor.foreground") { pal.fg = v; }
-    if let Some(v) = c("editorWidget.background").or_else(|| c("sideBar.background")) { pal.surface = v; }
-    if let Some(v) = c("list.activeSelectionBackground") { pal.surface_alt = v; }
-    if let Some(v) = c("sideBar.background") { pal.sidebar = v; }
-    if let Some(v) = c("descriptionForeground").or_else(|| c("editorLineNumber.foreground")) { pal.muted = v; }
-    if let Some(v) = c("editorLineNumber.foreground") { pal.subtle = v; }
-    if let Some(v) = c("focusBorder").or_else(|| c("button.background")) { pal.accent = v; }
-    if let Some(v) = c("editor.lineHighlightBackground") { pal.surface_alt = v; }
-    if let Some(v) = c("editor.selectionBackground") { pal.selection = v; }
-    if let Some(v) = c("editor.findMatchHighlightBackground") { pal.match_bg = v; }
-    if let Some(v) = c("editor.findMatchBackground") { pal.match_current_bg = v; }
-    if let Some(v) = c("editorIndentGuide.background1").or_else(|| c("editorIndentGuide.background")) { pal.indent_guide = v; }
-    if let Some(v) = c("editorRuler.foreground") { pal.rule = v; }
+    if let Some(v) = c("editor.background") {
+        pal.bg = v;
+        pal.sidebar = v;
+        pal.code_bg = v;
+    }
+    if let Some(v) = c("editor.foreground") {
+        pal.fg = v;
+    }
+    if let Some(v) = c("editorWidget.background").or_else(|| c("sideBar.background")) {
+        pal.surface = v;
+    }
+    if let Some(v) = c("list.activeSelectionBackground") {
+        pal.surface_alt = v;
+    }
+    if let Some(v) = c("sideBar.background") {
+        pal.sidebar = v;
+    }
+    if let Some(v) = c("descriptionForeground").or_else(|| c("editorLineNumber.foreground")) {
+        pal.muted = v;
+    }
+    if let Some(v) = c("editorLineNumber.foreground") {
+        pal.subtle = v;
+    }
+    if let Some(v) = c("focusBorder").or_else(|| c("button.background")) {
+        pal.accent = v;
+    }
+    if let Some(v) = c("editor.lineHighlightBackground") {
+        pal.surface_alt = v;
+    }
+    if let Some(v) = c("editor.selectionBackground") {
+        pal.selection = v;
+    }
+    if let Some(v) = c("editor.findMatchHighlightBackground") {
+        pal.match_bg = v;
+    }
+    if let Some(v) = c("editor.findMatchBackground") {
+        pal.match_current_bg = v;
+    }
+    if let Some(v) =
+        c("editorIndentGuide.background1").or_else(|| c("editorIndentGuide.background"))
+    {
+        pal.indent_guide = v;
+    }
+    if let Some(v) = c("editorRuler.foreground") {
+        pal.rule = v;
+    }
 
     // Token scopes -> syntax
     let scope_lookup = |needles: &[&str]| -> Option<Color> {
         for tc in &theme.token_colors {
             for sc in tc.scope.iter() {
-                if needles.iter().any(|n| sc == *n || sc.starts_with(&format!("{n}."))) {
+                if needles
+                    .iter()
+                    .any(|n| sc == *n || sc.starts_with(&format!("{n}.")))
+                {
                     if let Some(fg) = &tc.settings.foreground {
-                        let s = if fg.starts_with('#') { fg.to_string() } else { format!("#{fg}") };
+                        let s = if fg.starts_with('#') {
+                            fg.to_string()
+                        } else {
+                            format!("#{fg}")
+                        };
                         if let Ok(c) = parse_color(&s) {
                             return Some(c);
                         }
@@ -229,16 +277,36 @@ pub fn import_vscode(path: &Path) -> Result<Imported, String> {
         }
         None
     };
-    if let Some(v) = scope_lookup(&["keyword", "storage", "keyword.control"]) { pal.syntax.keyword = v; }
-    if let Some(v) = scope_lookup(&["entity.name.type", "support.type", "storage.type"]) { pal.syntax.type_ = v; }
-    if let Some(v) = scope_lookup(&["entity.name.function", "support.function", "meta.function"]) { pal.syntax.function = v; }
-    if let Some(v) = scope_lookup(&["string"]) { pal.syntax.string = v; }
-    if let Some(v) = scope_lookup(&["constant.numeric"]) { pal.syntax.number = v; }
-    if let Some(v) = scope_lookup(&["comment"]) { pal.syntax.comment = v; }
-    if let Some(v) = scope_lookup(&["keyword.operator", "punctuation.operator"]) { pal.syntax.operator = v; }
-    if let Some(v) = scope_lookup(&["constant", "constant.language"]) { pal.syntax.constant = v; }
-    if let Some(v) = scope_lookup(&["variable", "variable.other"]) { pal.syntax.variable = v; }
-    if let Some(v) = scope_lookup(&["punctuation"]) { pal.syntax.punctuation = v; }
+    if let Some(v) = scope_lookup(&["keyword", "storage", "keyword.control"]) {
+        pal.syntax.keyword = v;
+    }
+    if let Some(v) = scope_lookup(&["entity.name.type", "support.type", "storage.type"]) {
+        pal.syntax.type_ = v;
+    }
+    if let Some(v) = scope_lookup(&["entity.name.function", "support.function", "meta.function"]) {
+        pal.syntax.function = v;
+    }
+    if let Some(v) = scope_lookup(&["string"]) {
+        pal.syntax.string = v;
+    }
+    if let Some(v) = scope_lookup(&["constant.numeric"]) {
+        pal.syntax.number = v;
+    }
+    if let Some(v) = scope_lookup(&["comment"]) {
+        pal.syntax.comment = v;
+    }
+    if let Some(v) = scope_lookup(&["keyword.operator", "punctuation.operator"]) {
+        pal.syntax.operator = v;
+    }
+    if let Some(v) = scope_lookup(&["constant", "constant.language"]) {
+        pal.syntax.constant = v;
+    }
+    if let Some(v) = scope_lookup(&["variable", "variable.other"]) {
+        pal.syntax.variable = v;
+    }
+    if let Some(v) = scope_lookup(&["punctuation"]) {
+        pal.syntax.punctuation = v;
+    }
 
     let name = theme.name.clone().unwrap_or_else(|| {
         path.file_stem()
@@ -318,7 +386,15 @@ mod tests {
     #[test]
     fn base16_minimal_yaml() {
         let yaml = (0..16)
-            .map(|i| format!("base{:02X}: \"{:02x}{:02x}{:02x}\"", i, i * 16, i * 16, i * 16))
+            .map(|i| {
+                format!(
+                    "base{:02X}: \"{:02x}{:02x}{:02x}\"",
+                    i,
+                    i * 16,
+                    i * 16,
+                    i * 16
+                )
+            })
             .collect::<Vec<_>>()
             .join("\n");
         let yaml = format!("scheme: Test\n{yaml}\n");

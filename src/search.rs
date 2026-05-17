@@ -30,7 +30,10 @@ pub fn find_in_blocks(blocks: &[(BlockId, Block)], query: &str) -> Vec<MatchPos>
         let text = block_text(b);
         let n = find_all(&text, query).len();
         for k in 0..n {
-            out.push(MatchPos { block: bi, in_block: k });
+            out.push(MatchPos {
+                block: bi,
+                in_block: k,
+            });
         }
     }
     out

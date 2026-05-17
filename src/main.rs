@@ -51,20 +51,16 @@ fn main() -> iced::Result {
         eprintln!("startup: pre_run={:?}", t0.elapsed());
     }
 
-    iced::application(
-        move || App::new(initial.clone()),
-        App::update,
-        App::view,
-    )
-    .title(App::title)
-    .theme(App::theme)
-    .subscription(App::subscription)
-    .window(window)
-    .font(include_bytes!("assets/fonts/Inter-Variable.ttf").as_slice())
-    .font(include_bytes!("assets/fonts/JetBrainsMono-Regular.otf").as_slice())
-    .font(include_bytes!("assets/fonts/lucide.ttf").as_slice())
-    .default_font(iced::Font::with_name("Inter"))
-    .run()
+    iced::application(move || App::new(initial.clone()), App::update, App::view)
+        .title(App::title)
+        .theme(App::theme)
+        .subscription(App::subscription)
+        .window(window)
+        .font(include_bytes!("assets/fonts/Inter-Variable.ttf").as_slice())
+        .font(include_bytes!("assets/fonts/JetBrainsMono-Regular.otf").as_slice())
+        .font(include_bytes!("assets/fonts/lucide.ttf").as_slice())
+        .default_font(iced::Font::with_name("Inter"))
+        .run()
 }
 
 fn print_help() {

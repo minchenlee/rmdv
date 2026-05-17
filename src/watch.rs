@@ -3,7 +3,9 @@ use std::time::{Duration, SystemTime};
 
 pub fn watch_subscription(path: Option<PathBuf>) -> iced::Subscription<PathBuf> {
     use iced::futures::stream;
-    let Some(p) = path else { return iced::Subscription::none() };
+    let Some(p) = path else {
+        return iced::Subscription::none();
+    };
     iced::Subscription::run_with(p, |p| {
         stream::unfold(WatchState::new(Some(p.clone())), |mut s| async move {
             s.next_change().await.map(|p| (p, s))

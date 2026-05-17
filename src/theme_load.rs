@@ -108,9 +108,8 @@ pub fn themes_dir() -> Option<PathBuf> {
 }
 
 pub fn ensure_themes_dir() -> std::io::Result<PathBuf> {
-    let dir = themes_dir().ok_or_else(|| {
-        std::io::Error::new(std::io::ErrorKind::NotFound, "no config dir")
-    })?;
+    let dir = themes_dir()
+        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "no config dir"))?;
     std::fs::create_dir_all(&dir)?;
     Ok(dir)
 }
@@ -118,8 +117,12 @@ pub fn ensure_themes_dir() -> std::io::Result<PathBuf> {
 /// Scan the themes directory and return every successfully parsed theme.
 /// Parse errors are reported via `errors` so callers can surface them in UI.
 pub fn discover(errors: &mut Vec<String>) -> Vec<CustomTheme> {
-    let Some(dir) = themes_dir() else { return Vec::new() };
-    let Ok(rd) = std::fs::read_dir(&dir) else { return Vec::new() };
+    let Some(dir) = themes_dir() else {
+        return Vec::new();
+    };
+    let Ok(rd) = std::fs::read_dir(&dir) else {
+        return Vec::new();
+    };
     let mut out = Vec::new();
     for entry in rd.flatten() {
         let p = entry.path();
@@ -152,8 +155,8 @@ pub fn load_file(path: &Path) -> Result<CustomTheme, String> {
 
     let (base_palette, base_dark) = match file.extends.as_deref() {
         Some(slug) => {
-            let preset = preset_by_slug(slug)
-                .ok_or_else(|| format!("unknown `extends` preset: {slug}"))?;
+            let preset =
+                preset_by_slug(slug).ok_or_else(|| format!("unknown `extends` preset: {slug}"))?;
             (palette_for(preset), preset.is_dark())
         }
         None => (
@@ -210,8 +213,8 @@ fn toml_to_custom(text: &str, stem: &str) -> Result<CustomTheme, String> {
     let slug = slugify(stem);
     let (base_palette, base_dark) = match file.extends.as_deref() {
         Some(slug) => {
-            let preset = preset_by_slug(slug)
-                .ok_or_else(|| format!("unknown `extends` preset: {slug}"))?;
+            let preset =
+                preset_by_slug(slug).ok_or_else(|| format!("unknown `extends` preset: {slug}"))?;
             (palette_for(preset), preset.is_dark())
         }
         None => (palette_for(ThemePreset::OneDark), true),
@@ -284,23 +287,45 @@ fn apply_overrides(
 }
 
 fn apply_typography(mut t: Typography, src: &TypographySection) -> Typography {
-    if let Some(v) = src.body_size { t.body_size = v; }
-    if let Some(v) = src.line_height { t.line_height = v; }
-    if let Some(v) = src.measure_ch { t.measure_ch = v; }
-    if let Some(v) = src.h1_size { t.h1_size = v; }
-    if let Some(v) = src.h2_size { t.h2_size = v; }
-    if let Some(v) = src.h3_size { t.h3_size = v; }
-    if let Some(v) = src.h4_size { t.h4_size = v; }
-    if let Some(v) = src.h5_size { t.h5_size = v; }
-    if let Some(v) = src.h6_size { t.h6_size = v; }
-    if let Some(v) = src.code_size { t.code_size = v; }
+    if let Some(v) = src.body_size {
+        t.body_size = v;
+    }
+    if let Some(v) = src.line_height {
+        t.line_height = v;
+    }
+    if let Some(v) = src.measure_ch {
+        t.measure_ch = v;
+    }
+    if let Some(v) = src.h1_size {
+        t.h1_size = v;
+    }
+    if let Some(v) = src.h2_size {
+        t.h2_size = v;
+    }
+    if let Some(v) = src.h3_size {
+        t.h3_size = v;
+    }
+    if let Some(v) = src.h4_size {
+        t.h4_size = v;
+    }
+    if let Some(v) = src.h5_size {
+        t.h5_size = v;
+    }
+    if let Some(v) = src.h6_size {
+        t.h6_size = v;
+    }
+    if let Some(v) = src.code_size {
+        t.code_size = v;
+    }
     t
 }
 
 /// Accepts `#rgb`, `#rrggbb`, `#rrggbbaa`.
 pub fn parse_color(s: &str) -> Result<Color, String> {
     let s = s.trim();
-    let hex = s.strip_prefix('#').ok_or_else(|| format!("color must start with #: {s}"))?;
+    let hex = s
+        .strip_prefix('#')
+        .ok_or_else(|| format!("color must start with #: {s}"))?;
     let (r, g, b, a) = match hex.len() {
         3 => {
             let r = u8::from_str_radix(&hex[0..1].repeat(2), 16);

@@ -14,7 +14,9 @@ fn store_path() -> Option<PathBuf> {
 }
 
 pub fn load() -> Recent {
-    let Some(p) = store_path() else { return Recent::default(); };
+    let Some(p) = store_path() else {
+        return Recent::default();
+    };
     std::fs::read_to_string(&p)
         .ok()
         .and_then(|s| serde_json::from_str(&s).ok())
@@ -22,7 +24,9 @@ pub fn load() -> Recent {
 }
 
 pub fn add(path: &Path) {
-    let Some(p) = store_path() else { return; };
+    let Some(p) = store_path() else {
+        return;
+    };
     if let Some(parent) = p.parent() {
         let _ = std::fs::create_dir_all(parent);
     }

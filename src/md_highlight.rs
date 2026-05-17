@@ -23,7 +23,10 @@ pub struct Highlight {
 
 impl Highlight {
     pub fn to_format(self) -> Format<iced::Font> {
-        Format { color: Some(self.color), font: None }
+        Format {
+            color: Some(self.color),
+            font: None,
+        }
     }
 }
 
@@ -40,7 +43,11 @@ impl iced::advanced::text::Highlighter for MdHighlighter {
     type Iterator<'a> = std::vec::IntoIter<(Range<usize>, Highlight)>;
 
     fn new(settings: &Self::Settings) -> Self {
-        Self { palette: settings.palette, in_fence: false, line: 0 }
+        Self {
+            palette: settings.palette,
+            in_fence: false,
+            line: 0,
+        }
     }
 
     fn update(&mut self, new_settings: &Self::Settings) {
@@ -121,7 +128,12 @@ fn tokenize_line(line: &str, pal: &Palette, in_fence: &mut bool) -> Vec<(Range<u
     out
 }
 
-fn scan_inline(line: &str, range: Range<usize>, pal: &Palette, out: &mut Vec<(Range<usize>, Highlight)>) {
+fn scan_inline(
+    line: &str,
+    range: Range<usize>,
+    pal: &Palette,
+    out: &mut Vec<(Range<usize>, Highlight)>,
+) {
     let bytes = line.as_bytes();
     let mut i = range.start;
     while i < range.end {
@@ -203,9 +215,15 @@ fn find_double(bytes: &[u8], start: usize, end: usize, target: u8) -> Option<usi
 fn heading_level(line: &str) -> Option<usize> {
     let mut n = 0usize;
     for ch in line.chars() {
-        if ch == '#' { n += 1 } else { break }
+        if ch == '#' {
+            n += 1
+        } else {
+            break;
+        }
     }
-    if n == 0 || n > 6 { return None }
+    if n == 0 || n > 6 {
+        return None;
+    }
     let rest = &line[n..];
     if rest.is_empty() || rest.starts_with(' ') {
         Some(n)
@@ -225,7 +243,9 @@ fn list_marker_end(line: &str) -> Option<usize> {
     while i < bytes.len() && (bytes[i] == b' ' || bytes[i] == b'\t') {
         i += 1;
     }
-    if i >= bytes.len() { return None }
+    if i >= bytes.len() {
+        return None;
+    }
     let b = bytes[i];
     if matches!(b, b'-' | b'*' | b'+') && i + 1 < bytes.len() && bytes[i + 1] == b' ' {
         return Some(i + 2);
@@ -235,7 +255,11 @@ fn list_marker_end(line: &str) -> Option<usize> {
     while j < bytes.len() && bytes[j].is_ascii_digit() {
         j += 1;
     }
-    if j > i && j + 1 < bytes.len() && (bytes[j] == b'.' || bytes[j] == b')') && bytes[j + 1] == b' ' {
+    if j > i
+        && j + 1 < bytes.len()
+        && (bytes[j] == b'.' || bytes[j] == b')')
+        && bytes[j + 1] == b' '
+    {
         return Some(j + 2);
     }
     None

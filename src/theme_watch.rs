@@ -29,7 +29,11 @@ impl WatchState {
         let snapshot = scan(&dir);
         let mut interval = tokio::time::interval(Duration::from_millis(500));
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-        Self { dir, snapshot, interval }
+        Self {
+            dir,
+            snapshot,
+            interval,
+        }
     }
 
     async fn next_change(&mut self) -> Option<()> {
@@ -46,7 +50,9 @@ impl WatchState {
 
 fn scan(dir: &std::path::Path) -> HashMap<PathBuf, SystemTime> {
     let mut map = HashMap::new();
-    let Ok(rd) = std::fs::read_dir(dir) else { return map };
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return map;
+    };
     for entry in rd.flatten() {
         let p = entry.path();
         if p.extension().and_then(|s| s.to_str()) != Some("toml") {
