@@ -1,4 +1,6 @@
 use mdv::app::App;
+use mdv::cli::{parse_from, ParsedCli, Stateless};
+use mdv::ipc;
 use std::path::PathBuf;
 use std::time::Instant;
 
@@ -6,33 +8,74 @@ fn main() -> iced::Result {
     let t0 = Instant::now();
     mdv::bench::set_process_start(t0);
 
-    // Subcommand dispatch happens before any Iced setup so `mdv theme list`
-    // runs as a normal CLI without spawning a window.
-    let args: Vec<String> = std::env::args().skip(1).collect();
-    if let Some(first) = args.first() {
-        if first == "theme" {
-            std::process::exit(run_theme_cmd(&args[1..]));
+    let parsed = match parse_from(std::env::args_os()) {
+        Ok(p) => p,
+        Err(e) => {
+            e.exit();
         }
-        if first == "--help" || first == "-h" {
-            print_help();
-            std::process::exit(0);
+    };
+
+    match parsed {
+        ParsedCli::Theme(args) => std::process::exit(run_theme_cmd(&args)),
+        ParsedCli::Stateless(Stateless::ListSections { file, pretty }) => {
+            std::process::exit(run_list_sections(&file, pretty));
         }
-        if first == "--version" || first == "-V" {
-            println!("mdv {}", env!("CARGO_PKG_VERSION"));
-            std::process::exit(0);
+        ParsedCli::Empty => {
+            let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
+            let already = rt.block_on(async {
+                ipc::client::try_send(&ipc::Request {
+                    id: 1,
+                    cmd: ipc::Cmd::Focus,
+                })
+                .await
+                .ok()
+                .flatten()
+                .is_some()
+            });
+            if already {
+                std::process::exit(0);
+            }
+            return launch_instance(None);
+        }
+        ParsedCli::Request(req) => {
+            let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
+            let result = rt.block_on(ipc::client::try_send(&req));
+            match result {
+                Ok(Some(resp)) => {
+                    print_response(&resp, false);
+                    std::process::exit(if resp.ok { 0 } else { 1 });
+                }
+                Ok(None) => {
+                    return launch_instance(Some(req));
+                }
+                Err(e) => {
+                    eprintln!("{{\"error\":\"{}\"}}", e.to_string().replace('"', "'"));
+                    std::process::exit(2);
+                }
+            }
         }
     }
+}
 
-    let bench = std::env::args().any(|a| a == "--benchmark-startup");
-    if bench {
-        // Set before any Iced threads spawn — set_var is unsound in multi-threaded contexts.
-        std::env::set_var("MDV_BENCH_STARTUP", "1");
-    }
-
-    let initial: Option<PathBuf> = std::env::args()
-        .skip(1)
-        .find(|a| !a.starts_with("--"))
-        .map(PathBuf::from);
+fn launch_instance(initial: Option<ipc::Request>) -> iced::Result {
+    let initial_path: Option<PathBuf> = match &initial {
+        Some(req) => match &req.cmd {
+            ipc::Cmd::Open { file, .. } => Some(PathBuf::from(file)),
+            ipc::Cmd::OpenFolder { dir } => Some(PathBuf::from(dir)),
+            _ => None,
+        },
+        None => None,
+    };
+    let pending_nav = match &initial {
+        Some(req) => match &req.cmd {
+            ipc::Cmd::Open { line, section, .. } => Some(mdv::app::PendingNav {
+                line: *line,
+                section: section.clone(),
+            }),
+            _ => None,
+        },
+        None => None,
+    };
 
     #[cfg(target_os = "macos")]
     let platform_specific = iced::window::settings::PlatformSpecific {
@@ -47,36 +90,62 @@ fn main() -> iced::Result {
         ..Default::default()
     };
 
-    if bench {
-        eprintln!("startup: pre_run={:?}", t0.elapsed());
-    }
-
-    iced::application(move || App::new(initial.clone()), App::update, App::view)
-        .title(App::title)
-        .theme(App::theme)
-        .subscription(App::subscription)
-        .window(window)
-        .font(include_bytes!("assets/fonts/Inter-Variable.ttf").as_slice())
-        .font(include_bytes!("assets/fonts/JetBrainsMono-Regular.otf").as_slice())
-        .font(include_bytes!("assets/fonts/lucide.ttf").as_slice())
-        .default_font(iced::Font::with_name("Inter"))
-        .run()
+    iced::application(
+        move || {
+            let (mut app, task) = App::new(initial_path.clone());
+            app.pending_nav = pending_nav.clone();
+            (app, task)
+        },
+        App::update,
+        App::view,
+    )
+    .title(App::title)
+    .theme(App::theme)
+    .subscription(App::subscription)
+    .window(window)
+    .font(include_bytes!("assets/fonts/Inter-Variable.ttf").as_slice())
+    .font(include_bytes!("assets/fonts/JetBrainsMono-Regular.otf").as_slice())
+    .font(include_bytes!("assets/fonts/lucide.ttf").as_slice())
+    .default_font(iced::Font::with_name("Inter"))
+    .run()
 }
 
-fn print_help() {
-    println!("mdv {}", env!("CARGO_PKG_VERSION"));
-    println!("Markdown viewer — open a file or folder.");
-    println!();
-    println!("USAGE:");
-    println!("    mdv [FILE|DIR]");
-    println!("    mdv theme <SUBCOMMAND>");
-    println!();
-    println!("THEME SUBCOMMANDS:");
-    println!("    list                  List built-in and custom themes");
-    println!("    dir                   Print the custom themes directory");
-    println!("    import <PATH>         Import a theme (auto-detects format)");
-    println!("    import --base16 <P>   Import a Base16 YAML scheme");
-    println!("    import --vscode <P>   Import a VS Code JSON theme");
+fn run_list_sections(file: &std::path::Path, pretty: bool) -> i32 {
+    let src = match std::fs::read_to_string(file) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("{{\"error\":\"read {}: {}\"}}", file.display(), e);
+            return 1;
+        }
+    };
+    let sections = ipc::sections::list_sections(&src);
+    let out = if pretty {
+        serde_json::to_string_pretty(&sections)
+    } else {
+        serde_json::to_string(&sections)
+    };
+    match out {
+        Ok(s) => {
+            println!("{s}");
+            0
+        }
+        Err(e) => {
+            eprintln!("{{\"error\":\"json: {e}\"}}");
+            1
+        }
+    }
+}
+
+fn print_response(resp: &ipc::Response, pretty: bool) {
+    let out = if pretty {
+        serde_json::to_string_pretty(resp)
+    } else {
+        serde_json::to_string(resp)
+    };
+    match out {
+        Ok(s) => println!("{s}"),
+        Err(e) => eprintln!("{{\"error\":\"json: {e}\"}}"),
+    }
 }
 
 fn run_theme_cmd(args: &[String]) -> i32 {
