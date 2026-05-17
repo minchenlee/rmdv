@@ -1,3 +1,4 @@
+pub mod client;
 pub mod lines;
 pub mod sections;
 pub mod socket;
