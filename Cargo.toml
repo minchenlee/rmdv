@@ -41,6 +41,9 @@ tree-sitter-toml-ng = "0.7"
 mermaid-rs-renderer = { git = "https://github.com/zed-industries/mermaid-rs-renderer", rev = "782b89a7da3f0e91e51f98d00a93acba679be6fb" }
 layout-rs = "0.1"
 lru = "0.12"
+clap = { version = "4", features = ["derive"] }
+interprocess = { version = "2", features = ["tokio"] }
+futures = "0.3"
 
 [lib]
 name = "mdv"
