@@ -202,6 +202,20 @@ pub enum Message {
         result: Result<crate::diagram::RenderOutput, String>,
     },
     Noop,
+    /// IPC request from the listener subscription. The sender is wrapped in
+    /// `Arc<Mutex<Option<…>>>` so the variant is `Clone` (Iced 0.14 requires
+    /// `Message: Clone`). The handler takes the sender out of the mutex once
+    /// to reply.
+    Ipc(
+        crate::ipc::Request,
+        std::sync::Arc<std::sync::Mutex<Option<futures::channel::oneshot::Sender<crate::ipc::Response>>>>,
+    ),
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct PendingNav {
+    pub line: Option<u32>,
+    pub section: Option<String>,
 }
 
 pub struct App {
@@ -279,6 +293,13 @@ pub struct App {
     /// Line numbers (0-based) for each block in `ast`, parallel to `ast`.
     /// Built from `parser::parse`'s byte-offset return via `build_byte_to_line`.
     pub block_lines: Vec<u32>,
+    /// Set by IPC `Open { line, section }` so the subsequent `FileLoaded`
+    /// can finish navigation once the AST/block_lines exist.
+    pub pending_nav: Option<PendingNav>,
+    /// Snap-to relative offset queued for the next `update` tick. Used by
+    /// `apply_goto` which can't perform scroll math during the IPC handler
+    /// without re-entering `update`.
+    pub queued_snap: Option<f32>,
 }
 
 #[derive(Debug, Clone)]
@@ -350,6 +371,8 @@ impl Default for App {
             diagram_theme_id: 0,
             zoom_diagram: None,
             block_lines: Vec::new(),
+            pending_nav: None,
+            queued_snap: None,
         }
     }
 }
@@ -877,7 +900,25 @@ impl App {
         }
     }
 
+    fn reply(
+        tx: &std::sync::Arc<std::sync::Mutex<Option<futures::channel::oneshot::Sender<crate::ipc::Response>>>>,
+        resp: crate::ipc::Response,
+    ) {
+        if let Some(sender) = tx.lock().ok().and_then(|mut g| g.take()) {
+            let _ = sender.send(resp);
+        }
+    }
+
     pub fn update(&mut self, msg: Message) -> Task<Message> {
+        if let Some(rel) = self.queued_snap.take() {
+            // Drain any pending IPC-driven scroll BEFORE dispatching the new
+            // message so the snap lands before further state mutation.
+            // The new message is requeued via a follow-up task.
+            return Task::batch([
+                Task::done(Message::RestoreBodySnap(rel)),
+                Task::done(msg),
+            ]);
+        }
         match msg {
             Message::Open(p) => Task::perform(load_file(p), Message::FileLoaded),
             Message::OpenWorkspace(p) => {
@@ -1529,12 +1570,23 @@ impl App {
                 }
                 self.refresh_diagram_theme_id();
                 let prime = self.prime_diagram_cache();
-                if fetches.is_empty() {
-                    prime
+                let nav_task: Task<Message> = if let Some(nav) = self.pending_nav.take() {
+                    Task::done(Message::Ipc(
+                        crate::ipc::Request {
+                            id: 0,
+                            cmd: crate::ipc::Cmd::Goto {
+                                line: nav.line,
+                                section: nav.section,
+                            },
+                        },
+                        std::sync::Arc::new(std::sync::Mutex::new(None)),
+                    ))
                 } else {
-                    fetches.push(prime);
-                    Task::batch(fetches)
-                }
+                    Task::none()
+                };
+                fetches.push(prime);
+                fetches.push(nav_task);
+                Task::batch(fetches)
             }
             Message::FileChanged(p) => {
                 if self.dirty {
@@ -1906,6 +1958,78 @@ impl App {
                 iced::widget::scrollable::AbsoluteOffset { x: 0.0, y },
             ),
             Message::Noop => Task::none(),
+            Message::Ipc(req, tx) => {
+                use crate::ipc::{Cmd, Mode, Response};
+                let id = req.id;
+                let mut follow_up: Task<Message> = Task::none();
+                let resp = match req.cmd {
+                    Cmd::Current => {
+                        let mode = match self.view_mode {
+                            ViewMode::Rendered => "view",
+                            ViewMode::Raw => "edit",
+                            ViewMode::Mindmap => "mindmap",
+                        };
+                        let body = serde_json::json!({
+                            "file": self.file.as_ref().map(|p| p.to_string_lossy().into_owned()),
+                            "line": current_line_estimate(self),
+                            "mode": mode,
+                            "folder": self.workspace.as_ref().map(|p| p.to_string_lossy().into_owned()),
+                        });
+                        Response::ok_with(id, body)
+                    }
+                    Cmd::Focus => {
+                        follow_up = iced::window::latest()
+                            .and_then(|wid| iced::window::gain_focus(wid));
+                        Response::ok(id)
+                    }
+                    Cmd::Close => {
+                        follow_up = iced::window::latest()
+                            .and_then(|wid| iced::window::close(wid));
+                        Response::ok(id)
+                    }
+                    Cmd::Mode { mode } => {
+                        self.view_mode = match mode {
+                            Mode::View => ViewMode::Rendered,
+                            Mode::Edit => ViewMode::Raw,
+                            Mode::Mindmap => ViewMode::Mindmap,
+                        };
+                        Response::ok(id)
+                    }
+                    Cmd::OpenFolder { dir } => {
+                        follow_up = Task::done(Message::OpenWorkspace(std::path::PathBuf::from(dir)));
+                        Response::ok(id)
+                    }
+                    Cmd::Reveal { file } => {
+                        follow_up = Task::perform(
+                            load_file(std::path::PathBuf::from(file)),
+                            Message::FileLoaded,
+                        );
+                        Response::ok(id)
+                    }
+                    Cmd::Open { file, line, section } => {
+                        if self.dirty {
+                            Response::err(
+                                id,
+                                format!(
+                                    "unsaved edits in {}; save or discard before opening another",
+                                    self.file
+                                        .as_ref()
+                                        .map(|p| p.display().to_string())
+                                        .unwrap_or_default()
+                                ),
+                            )
+                        } else {
+                            let path = std::path::PathBuf::from(file);
+                            follow_up = Task::perform(load_file(path), Message::FileLoaded);
+                            self.pending_nav = Some(PendingNav { line, section });
+                            Response::ok(id)
+                        }
+                    }
+                    Cmd::Goto { line, section } => apply_goto(self, id, line, section),
+                };
+                Self::reply(&tx, resp);
+                return follow_up;
+            }
         }
     }
 
@@ -2109,7 +2233,8 @@ impl App {
         } else {
             iced::Subscription::none()
         };
-        iced::Subscription::batch([dnd, watcher, theme_watcher, keys, scroller, drag, mind_drag])
+        let ipc = iced::Subscription::run(ipc_subscription_stream);
+        iced::Subscription::batch([dnd, watcher, theme_watcher, keys, scroller, drag, mind_drag, ipc])
     }
 
     pub fn view(&self) -> Element<'_, Message> {
@@ -3672,4 +3797,96 @@ pub fn resolve_image_path(url: &str, current_file: Option<&std::path::Path>) -> 
     }
     let base = current_file.and_then(|f| f.parent())?;
     Some(base.join(url))
+}
+
+fn apply_goto(
+    app: &mut App,
+    id: u64,
+    line: Option<u32>,
+    section: Option<String>,
+) -> crate::ipc::Response {
+    use crate::ipc::Response;
+    if app.ast.is_empty() {
+        return Response::err(id, "no file open");
+    }
+    let target_line = if let Some(sec) = section {
+        let sections = crate::ipc::sections::list_sections(&app.source);
+        match crate::ipc::sections::resolve_section_path(&sec, &sections) {
+            Some(s) => s.line,
+            None => return Response::err(id, format!("section \"{sec}\" not found")),
+        }
+    } else if let Some(l) = line {
+        let max_line = app.block_lines.last().copied().unwrap_or(1);
+        if l > max_line.saturating_add(1000) {
+            return Response::err(
+                id,
+                format!("line {l} out of range (file ends near line {max_line})"),
+            );
+        }
+        l
+    } else {
+        return Response::err(id, "goto requires --line or --section");
+    };
+
+    let Some(idx) = crate::ipc::lines::block_for_line(target_line, &app.block_lines) else {
+        return Response::err(id, "no blocks");
+    };
+    let Some((block_top, block_h)) =
+        crate::virt::estimated_block_position(&app.ast, &app.height_cache, idx)
+    else {
+        return Response::err(id, "could not locate block");
+    };
+    let estimated_h = crate::virt::estimated_content_height(&app.ast, &app.height_cache);
+    let (content_h, view_h) = app
+        .body_viewport
+        .as_ref()
+        .map(|v| (v.content_bounds().height.max(estimated_h), v.bounds().height))
+        .unwrap_or((estimated_h, 0.0));
+    let max_scroll = (content_h - view_h).max(1.0);
+    let target = block_top + block_h * 0.5 - view_h * 0.38;
+    let rel = (target / max_scroll).clamp(0.0, 1.0);
+    app.queued_snap = Some(rel);
+    crate::ipc::Response::ok(id)
+}
+
+fn current_line_estimate(app: &App) -> Option<u32> {
+    let v = app.body_viewport.as_ref()?;
+    let content_h = v.content_bounds().height;
+    let view_h = v.bounds().height;
+    if content_h <= view_h {
+        return app.block_lines.first().copied();
+    }
+    let rel = v.absolute_offset().y / (content_h - view_h);
+    let est_total = crate::virt::estimated_content_height(&app.ast, &app.height_cache).max(1.0);
+    let target_px = rel * est_total;
+    let mut best: Option<u32> = None;
+    for (i, _) in app.ast.iter().enumerate() {
+        if let Some((top, _)) = crate::virt::estimated_block_position(&app.ast, &app.height_cache, i) {
+            if top <= target_px {
+                best = app.block_lines.get(i).copied();
+            } else {
+                break;
+            }
+        }
+    }
+    best
+}
+
+fn ipc_subscription_stream() -> impl iced::futures::Stream<Item = Message> {
+    iced::stream::channel(64, |mut out: futures::channel::mpsc::Sender<Message>| async move {
+        let listener = match crate::ipc::server::acquire() {
+            Ok(l) => l,
+            Err(_) => return,
+        };
+        let (tx, mut rx) = futures::channel::mpsc::channel::<crate::ipc::server::Pending>(64);
+        tokio::spawn(crate::ipc::server::run(listener, tx));
+        use futures::StreamExt;
+        use futures::SinkExt;
+        while let Some((req, reply)) = rx.next().await {
+            let wrapped = std::sync::Arc::new(std::sync::Mutex::new(Some(reply)));
+            if out.send(Message::Ipc(req, wrapped)).await.is_err() {
+                break;
+            }
+        }
+    })
 }
