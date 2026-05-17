@@ -68,6 +68,28 @@ Requires Rust 1.80+.
 | `Space` / `Shift+Space` | Page down / up |
 | `Esc` | Close overlay / search |
 
+## CLI / agent control
+
+mdv is single-instance. The first invocation opens a window and an IPC
+listener; subsequent invocations talk to it.
+
+```bash
+# open a file at a specific line
+mdv path/to/foo.md --line 42
+
+# navigate the running instance
+mdv goto --section "Install/Setup"
+mdv mode mindmap
+mdv current                          # prints JSON state
+
+# stateless (no running instance needed)
+mdv list-sections path/to/foo.md     # JSON array of headings
+mdv --pretty list-sections foo.md
+```
+
+Designed for coding agents (Claude Code, Codex) to pull mdv to the relevant
+section of a file without manual navigation.
+
 ## Performance
 
 - Cold start: window paints before system fonts finish loading
