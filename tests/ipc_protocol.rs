@@ -147,6 +147,73 @@ fn parser_emits_byte_offsets_aligned_with_blocks() {
     assert_eq!(lines[3], 7, "second paragraph on line 7, got {}", lines[3]);
 }
 
+use mdv::cli::{parse_from, ParsedCli};
+
+#[test]
+fn cli_bare_file_becomes_open_request() {
+    let p = parse_from(["mdv", "/abs/foo.md"]).unwrap();
+    match p {
+        ParsedCli::Request(r) => match r.cmd {
+            Cmd::Open { file, line: None, section: None } => assert_eq!(file, "/abs/foo.md"),
+            other => panic!("unexpected cmd: {other:?}"),
+        },
+        other => panic!("unexpected: {other:?}"),
+    }
+}
+
+#[test]
+fn cli_bare_file_with_line_and_section() {
+    let p = parse_from(["mdv", "/abs/foo.md", "--line", "42", "--section", "Install/Setup"])
+        .unwrap();
+    let ParsedCli::Request(r) = p else { panic!() };
+    match r.cmd {
+        Cmd::Open { file, line: Some(42), section: Some(s) } => {
+            assert_eq!(file, "/abs/foo.md");
+            assert_eq!(s, "Install/Setup");
+        }
+        other => panic!("unexpected cmd: {other:?}"),
+    }
+}
+
+#[test]
+fn cli_goto_subcommand() {
+    let p = parse_from(["mdv", "goto", "--line", "10"]).unwrap();
+    let ParsedCli::Request(r) = p else { panic!() };
+    assert!(matches!(r.cmd, Cmd::Goto { line: Some(10), section: None }));
+}
+
+#[test]
+fn cli_mode_subcommand() {
+    let p = parse_from(["mdv", "mode", "edit"]).unwrap();
+    let ParsedCli::Request(r) = p else { panic!() };
+    assert!(matches!(r.cmd, Cmd::Mode { mode: Mode::Edit }));
+}
+
+#[test]
+fn cli_current_subcommand() {
+    let p = parse_from(["mdv", "current"]).unwrap();
+    let ParsedCli::Request(r) = p else { panic!() };
+    assert!(matches!(r.cmd, Cmd::Current));
+}
+
+#[test]
+fn cli_list_sections_is_stateless() {
+    use mdv::cli::Stateless;
+    let p = parse_from(["mdv", "list-sections", "tests/fixtures/sections.md"]).unwrap();
+    match p {
+        ParsedCli::Stateless(Stateless::ListSections { file, pretty: false }) => {
+            assert_eq!(file, std::path::PathBuf::from("tests/fixtures/sections.md"));
+        }
+        other => panic!("expected stateless ListSections, got {other:?}"),
+    }
+}
+
+#[test]
+fn cli_no_args_is_empty() {
+    let p = parse_from(["mdv"]).unwrap();
+    assert!(matches!(p, ParsedCli::Empty));
+}
+
 use mdv::ipc::sections::{list_sections, resolve_section_path, Section};
 
 #[test]

@@ -19,3 +19,4 @@ pub mod theme_watch;
 pub mod tree;
 pub mod virt;
 pub mod watch;
+pub mod cli;
