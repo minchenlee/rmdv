@@ -146,3 +146,49 @@ fn parser_emits_byte_offsets_aligned_with_blocks() {
     assert_eq!(lines[2], 5, "H2 on line 5, got {}", lines[2]);
     assert_eq!(lines[3], 7, "second paragraph on line 7, got {}", lines[3]);
 }
+
+use mdv::ipc::sections::{list_sections, resolve_section_path, Section};
+
+#[test]
+fn list_sections_builds_paths_and_lines() {
+    let src = std::fs::read_to_string("tests/fixtures/sections.md").unwrap();
+    let sections = list_sections(&src);
+    let by_path: Vec<(&str, u32, u8)> =
+        sections.iter().map(|s| (s.path.as_str(), s.line, s.level)).collect();
+    assert!(by_path.contains(&("Foo", 1, 1)), "got {by_path:?}");
+    assert!(by_path.contains(&("Foo/Install", 5, 2)), "got {by_path:?}");
+    assert!(by_path.contains(&("Foo/Install/Setup", 9, 3)), "got {by_path:?}");
+    assert!(by_path.contains(&("Foo/Usage", 13, 2)), "got {by_path:?}");
+    assert!(by_path.contains(&("Foo/Usage/Setup", 17, 3)), "got {by_path:?}");
+}
+
+#[test]
+fn resolve_section_bare_title_first_match() {
+    let src = std::fs::read_to_string("tests/fixtures/sections.md").unwrap();
+    let sections = list_sections(&src);
+    let s = resolve_section_path("Setup", &sections).unwrap();
+    assert_eq!(s.path, "Foo/Install/Setup", "first match should win");
+}
+
+#[test]
+fn resolve_section_full_path_disambiguates() {
+    let src = std::fs::read_to_string("tests/fixtures/sections.md").unwrap();
+    let sections = list_sections(&src);
+    let s = resolve_section_path("Usage/Setup", &sections).unwrap();
+    assert_eq!(s.path, "Foo/Usage/Setup");
+}
+
+#[test]
+fn resolve_section_suffix_path() {
+    let src = std::fs::read_to_string("tests/fixtures/sections.md").unwrap();
+    let sections = list_sections(&src);
+    let s = resolve_section_path("Install/Setup", &sections).unwrap();
+    assert_eq!(s.path, "Foo/Install/Setup");
+}
+
+#[test]
+fn resolve_section_missing_returns_none() {
+    let src = std::fs::read_to_string("tests/fixtures/sections.md").unwrap();
+    let sections = list_sections(&src);
+    assert!(resolve_section_path("Nope", &sections).is_none());
+}
