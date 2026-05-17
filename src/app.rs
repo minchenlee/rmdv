@@ -276,6 +276,9 @@ pub struct App {
     /// `image::viewer` for scroll-to-zoom + drag-to-pan + escape-to-close
     /// parity with normal images. Handle clones are cheap (Arc inside).
     pub zoom_diagram: Option<iced::widget::image::Handle>,
+    /// Line numbers (0-based) for each block in `ast`, parallel to `ast`.
+    /// Built from `parser::parse`'s byte-offset return via `build_byte_to_line`.
+    pub block_lines: Vec<u32>,
 }
 
 #[derive(Debug, Clone)]
@@ -346,6 +349,7 @@ impl Default for App {
             diagram_cache: crate::diagram::DiagramCache::new(64),
             diagram_theme_id: 0,
             zoom_diagram: None,
+            block_lines: Vec::new(),
         }
     }
 }
@@ -585,7 +589,7 @@ impl App {
             self.rebuild_matches();
             return;
         }
-        let (mut parsed, _block_offsets) = parser::parse(&self.source);
+        let (mut parsed, block_offsets) = parser::parse(&self.source);
         for (_id, b) in parsed.iter_mut() {
             if let Block::CodeBlock {
                 lang: Some(l),
@@ -598,6 +602,11 @@ impl App {
                 }
             }
         }
+        let table = crate::ipc::lines::build_byte_to_line(&self.source);
+        self.block_lines = block_offsets
+            .iter()
+            .map(|&b| table.line_for_byte(b as usize))
+            .collect();
         self.ast = parsed;
         self.rebuild_matches();
     }
@@ -1483,7 +1492,7 @@ impl App {
                 if let Some(ast) = self.synthesize_data_ast() {
                     self.ast = ast;
                 } else {
-                    let (mut parsed, _block_offsets) = parser::parse(&self.source);
+                    let (mut parsed, block_offsets) = parser::parse(&self.source);
                     for (_id, b) in parsed.iter_mut() {
                         if let Block::CodeBlock {
                             lang: Some(l),
@@ -1496,6 +1505,11 @@ impl App {
                             }
                         }
                     }
+                    let table = crate::ipc::lines::build_byte_to_line(&self.source);
+                    self.block_lines = block_offsets
+                        .iter()
+                        .map(|&b| table.line_for_byte(b as usize))
+                        .collect();
                     self.ast = parsed;
                 }
                 self.error = None;
