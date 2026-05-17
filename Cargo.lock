@@ -2879,6 +2879,7 @@ dependencies = [
  "insta",
  "interprocess",
  "layout-rs",
+ "libc",
  "lru 0.12.5",
  "mermaid-rs-renderer",
  "notify",

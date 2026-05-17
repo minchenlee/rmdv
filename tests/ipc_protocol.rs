@@ -259,3 +259,13 @@ fn resolve_section_missing_returns_none() {
     let sections = list_sections(&src);
     assert!(resolve_section_path("Nope", &sections).is_none());
 }
+
+#[test]
+fn socket_path_is_user_scoped() {
+    let p = mdv::ipc::socket::default_path();
+    let s = p.to_string_lossy();
+    #[cfg(unix)]
+    assert!(s.contains(&format!("mdv-{}", unsafe { libc::getuid() })), "got {s}");
+    #[cfg(windows)]
+    assert!(s.to_lowercase().contains("mdv"), "got {s}");
+}

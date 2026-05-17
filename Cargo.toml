@@ -44,6 +44,7 @@ lru = "0.12"
 clap = { version = "4", features = ["derive"] }
 interprocess = { version = "2", features = ["tokio"] }
 futures = "0.3"
+libc = "0.2"
 
 [lib]
 name = "mdv"
