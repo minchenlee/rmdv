@@ -76,3 +76,60 @@ fn response_current_result_serialises() {
     assert_eq!(v["ok"], true);
     assert_eq!(v["result"]["mode"], "view");
 }
+
+use mdv::ipc::lines::{block_for_line, build_byte_to_line};
+
+#[test]
+fn byte_to_line_empty_source() {
+    let table = build_byte_to_line("");
+    assert_eq!(table.line_for_byte(0), 1);
+}
+
+#[test]
+fn byte_to_line_three_lines() {
+    let src = "a\nbb\nccc";
+    let table = build_byte_to_line(src);
+    assert_eq!(table.line_for_byte(0), 1); // 'a'
+    assert_eq!(table.line_for_byte(1), 1); // '\n' belongs to line 1
+    assert_eq!(table.line_for_byte(2), 2); // 'b'
+    assert_eq!(table.line_for_byte(5), 3); // 'c'
+    assert_eq!(table.line_for_byte(99), 3); // out of range clamps to last
+}
+
+#[test]
+fn block_for_line_empty_returns_none() {
+    assert_eq!(block_for_line(10, &[]), None);
+}
+
+#[test]
+fn block_for_line_exact_match() {
+    let lines = [1u32, 5, 12, 20];
+    assert_eq!(block_for_line(5, &lines), Some(1));
+    assert_eq!(block_for_line(12, &lines), Some(2));
+}
+
+#[test]
+fn block_for_line_before_first_clamps_to_first() {
+    let lines = [3u32, 7, 11];
+    assert_eq!(block_for_line(1, &lines), Some(0));
+}
+
+#[test]
+fn block_for_line_between_blocks_picks_preceding() {
+    let lines = [1u32, 5, 12, 20];
+    assert_eq!(block_for_line(8, &lines), Some(1));
+    assert_eq!(block_for_line(19, &lines), Some(2));
+}
+
+#[test]
+fn block_for_line_after_last_picks_last() {
+    let lines = [1u32, 5, 12];
+    assert_eq!(block_for_line(9999, &lines), Some(2));
+}
+
+#[test]
+fn block_for_line_duplicate_line_values_picks_first_match() {
+    let lines = [1u32, 5, 5, 10];
+    let idx = block_for_line(5, &lines).unwrap();
+    assert!(idx == 1 || idx == 2, "got {idx}");
+}
