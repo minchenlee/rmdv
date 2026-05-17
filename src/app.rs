@@ -202,6 +202,8 @@ pub enum Message {
         result: Result<crate::diagram::RenderOutput, String>,
     },
     Noop,
+    /// Toggle the `auto_focus_on_nav` preference and persist it.
+    ToggleAutoFocusOnNav,
     /// IPC request from the listener subscription. The sender is wrapped in
     /// `Arc<Mutex<Option<…>>>` so the variant is `Clone` (Iced 0.14 requires
     /// `Message: Clone`). The handler takes the sender out of the mutex once
@@ -300,6 +302,8 @@ pub struct App {
     /// `apply_goto` which can't perform scroll math during the IPC handler
     /// without re-entering `update`.
     pub queued_snap: Option<f32>,
+    /// User preferences (persisted to `~/.config/mdv/prefs.json`).
+    pub prefs: crate::prefs::Prefs,
 }
 
 #[derive(Debug, Clone)]
@@ -373,6 +377,7 @@ impl Default for App {
             block_lines: Vec::new(),
             pending_nav: None,
             queued_snap: None,
+            prefs: crate::prefs::load(),
         }
     }
 }
@@ -835,6 +840,10 @@ impl App {
             ("Reload Custom Themes", Message::ReloadThemes),
             ("Scroll to Top  ⌘↑", Message::ScrollToTop),
             ("Scroll to Bottom  ⌘↓", Message::ScrollToBottom),
+            (
+                "Toggle Auto-Focus on Agent Nav",
+                Message::ToggleAutoFocusOnNav,
+            ),
         ]
     }
 
@@ -1577,6 +1586,7 @@ impl App {
                             cmd: crate::ipc::Cmd::Goto {
                                 line: nav.line,
                                 section: nav.section,
+                                focus: crate::ipc::FocusBehavior::Default,
                             },
                         },
                         std::sync::Arc::new(std::sync::Mutex::new(None)),
@@ -1958,10 +1968,20 @@ impl App {
                 iced::widget::scrollable::AbsoluteOffset { x: 0.0, y },
             ),
             Message::Noop => Task::none(),
+            Message::ToggleAutoFocusOnNav => {
+                self.prefs.auto_focus_on_nav = !self.prefs.auto_focus_on_nav;
+                crate::prefs::save(&self.prefs);
+                let state = if self.prefs.auto_focus_on_nav { "on" } else { "off" };
+                return self.show_toast(format!("Auto-focus on agent nav: {state}"));
+            }
             Message::Ipc(req, tx) => {
-                use crate::ipc::{Cmd, Mode, Response};
+                use crate::ipc::{Cmd, FocusBehavior, Mode, Response};
                 let id = req.id;
                 let mut follow_up: Task<Message> = Task::none();
+                // Tracks whether the handler should chain a focus-raise after
+                // the response. `Some(true)` = force raise, `Some(false)` =
+                // explicit suppress, `None` = not a nav command.
+                let mut nav_focus: Option<FocusBehavior> = None;
                 let resp = match req.cmd {
                     Cmd::Current => {
                         let mode = match self.view_mode {
@@ -1987,26 +2007,28 @@ impl App {
                             .and_then(|wid| iced::window::close(wid));
                         Response::ok(id)
                     }
-                    Cmd::Mode { mode } => {
+                    Cmd::Mode { mode, focus } => {
                         self.view_mode = match mode {
                             Mode::View => ViewMode::Rendered,
                             Mode::Edit => ViewMode::Raw,
                             Mode::Mindmap => ViewMode::Mindmap,
                         };
+                        nav_focus = Some(focus);
                         Response::ok(id)
                     }
                     Cmd::OpenFolder { dir } => {
                         follow_up = Task::done(Message::OpenWorkspace(std::path::PathBuf::from(dir)));
                         Response::ok(id)
                     }
-                    Cmd::Reveal { file } => {
+                    Cmd::Reveal { file, focus } => {
                         follow_up = Task::perform(
                             load_file(std::path::PathBuf::from(file)),
                             Message::FileLoaded,
                         );
+                        nav_focus = Some(focus);
                         Response::ok(id)
                     }
-                    Cmd::Open { file, line, section } => {
+                    Cmd::Open { file, line, section, focus } => {
                         if self.dirty {
                             Response::err(
                                 id,
@@ -2022,12 +2044,27 @@ impl App {
                             let path = std::path::PathBuf::from(file);
                             follow_up = Task::perform(load_file(path), Message::FileLoaded);
                             self.pending_nav = Some(PendingNav { line, section });
+                            nav_focus = Some(focus);
                             Response::ok(id)
                         }
                     }
-                    Cmd::Goto { line, section } => apply_goto(self, id, line, section),
+                    Cmd::Goto { line, section, focus } => {
+                        nav_focus = Some(focus);
+                        apply_goto(self, id, line, section)
+                    }
                 };
                 Self::reply(&tx, resp);
+                let should_focus = match nav_focus {
+                    Some(FocusBehavior::Force) => true,
+                    Some(FocusBehavior::Suppress) => false,
+                    Some(FocusBehavior::Default) => self.prefs.auto_focus_on_nav,
+                    None => false,
+                };
+                if should_focus {
+                    let raise = iced::window::latest()
+                        .and_then(|wid| iced::window::gain_focus(wid));
+                    follow_up = Task::batch([follow_up, raise]);
+                }
                 return follow_up;
             }
         }

@@ -1,4 +1,4 @@
-use mdv::ipc::{Cmd, Mode, Request, Response};
+use mdv::ipc::{Cmd, FocusBehavior, Mode, Request, Response};
 use serde_json::json;
 
 #[test]
@@ -9,6 +9,7 @@ fn request_open_round_trip() {
             file: "/abs/foo.md".into(),
             line: Some(42),
             section: Some("Install/Setup".into()),
+            focus: FocusBehavior::Default,
         },
     };
     let s = serde_json::to_string(&req).unwrap();
@@ -23,7 +24,10 @@ fn request_open_round_trip() {
 
 #[test]
 fn request_goto_line_round_trip() {
-    let req = Request { id: 5, cmd: Cmd::Goto { line: Some(10), section: None } };
+    let req = Request {
+        id: 5,
+        cmd: Cmd::Goto { line: Some(10), section: None, focus: FocusBehavior::Default },
+    };
     let s = serde_json::to_string(&req).unwrap();
     let back: Request = serde_json::from_str(&s).unwrap();
     assert_eq!(back, req);
@@ -32,7 +36,10 @@ fn request_goto_line_round_trip() {
 #[test]
 fn request_mode_round_trip() {
     for m in [Mode::View, Mode::Edit, Mode::Mindmap] {
-        let req = Request { id: 9, cmd: Cmd::Mode { mode: m } };
+        let req = Request {
+            id: 9,
+            cmd: Cmd::Mode { mode: m, focus: FocusBehavior::Default },
+        };
         let s = serde_json::to_string(&req).unwrap();
         let back: Request = serde_json::from_str(&s).unwrap();
         assert_eq!(back, req);
@@ -154,7 +161,7 @@ fn cli_bare_file_becomes_open_request() {
     let p = parse_from(["mdv", "/abs/foo.md"]).unwrap();
     match p {
         ParsedCli::Request(r) => match r.cmd {
-            Cmd::Open { file, line: None, section: None } => assert_eq!(file, "/abs/foo.md"),
+            Cmd::Open { file, line: None, section: None, .. } => assert_eq!(file, "/abs/foo.md"),
             other => panic!("unexpected cmd: {other:?}"),
         },
         other => panic!("unexpected: {other:?}"),
@@ -167,7 +174,7 @@ fn cli_bare_file_with_line_and_section() {
         .unwrap();
     let ParsedCli::Request(r) = p else { panic!() };
     match r.cmd {
-        Cmd::Open { file, line: Some(42), section: Some(s) } => {
+        Cmd::Open { file, line: Some(42), section: Some(s), .. } => {
             assert_eq!(file, "/abs/foo.md");
             assert_eq!(s, "Install/Setup");
         }
@@ -179,14 +186,34 @@ fn cli_bare_file_with_line_and_section() {
 fn cli_goto_subcommand() {
     let p = parse_from(["mdv", "goto", "--line", "10"]).unwrap();
     let ParsedCli::Request(r) = p else { panic!() };
-    assert!(matches!(r.cmd, Cmd::Goto { line: Some(10), section: None }));
+    assert!(matches!(r.cmd, Cmd::Goto { line: Some(10), section: None, .. }));
 }
 
 #[test]
 fn cli_mode_subcommand() {
     let p = parse_from(["mdv", "mode", "edit"]).unwrap();
     let ParsedCli::Request(r) = p else { panic!() };
-    assert!(matches!(r.cmd, Cmd::Mode { mode: Mode::Edit }));
+    assert!(matches!(r.cmd, Cmd::Mode { mode: Mode::Edit, .. }));
+}
+
+#[test]
+fn cli_goto_with_focus_flag_emits_force() {
+    let p = parse_from(["mdv", "goto", "--line", "10", "--focus"]).unwrap();
+    let ParsedCli::Request(r) = p else { panic!() };
+    match r.cmd {
+        Cmd::Goto { focus, .. } => assert_eq!(focus, FocusBehavior::Force),
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
+fn cli_open_with_no_focus_flag_emits_suppress() {
+    let p = parse_from(["mdv", "open", "/abs/foo.md", "--no-focus"]).unwrap();
+    let ParsedCli::Request(r) = p else { panic!() };
+    match r.cmd {
+        Cmd::Open { focus, .. } => assert_eq!(focus, FocusBehavior::Suppress),
+        other => panic!("{other:?}"),
+    }
 }
 
 #[test]

@@ -9,6 +9,7 @@ pub mod md_highlight;
 pub mod mindmap;
 pub mod parser;
 pub mod picker;
+pub mod prefs;
 pub mod recent;
 pub mod render;
 pub mod search;

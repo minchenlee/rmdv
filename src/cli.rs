@@ -1,4 +1,4 @@
-use crate::ipc::{Cmd, Mode, Request};
+use crate::ipc::{Cmd, FocusBehavior, Mode, Request};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use std::path::PathBuf;
 
@@ -19,6 +19,12 @@ pub struct Cli {
     /// Pretty-print JSON output (default: compact, one line).
     #[arg(long, global = true)]
     pub pretty: bool,
+    /// Raise the window on this nav call (overrides `auto_focus_on_nav`).
+    #[arg(long, conflicts_with = "no_focus")]
+    pub focus: bool,
+    /// Do not raise the window on this nav call (overrides `auto_focus_on_nav`).
+    #[arg(long)]
+    pub no_focus: bool,
     #[command(subcommand)]
     pub command: Option<Command>,
 }
@@ -49,9 +55,9 @@ pub enum Command {
     /// Scroll the current file to a line or section.
     Goto(GotoArgs),
     /// Switch view mode.
-    Mode { mode: CliMode },
+    Mode(ModeArgs),
     /// Reveal a file in the sidebar tree.
-    Reveal { file: PathBuf },
+    Reveal(RevealArgs),
     /// Raise the mdv window.
     Focus,
     /// Close the mdv window (quit).
@@ -75,6 +81,10 @@ pub struct OpenArgs {
     pub line: Option<u32>,
     #[arg(long)]
     pub section: Option<String>,
+    #[arg(long, conflicts_with = "no_focus")]
+    pub focus: bool,
+    #[arg(long)]
+    pub no_focus: bool,
 }
 
 #[derive(Debug, Args)]
@@ -83,6 +93,29 @@ pub struct GotoArgs {
     pub line: Option<u32>,
     #[arg(long)]
     pub section: Option<String>,
+    #[arg(long, conflicts_with = "no_focus")]
+    pub focus: bool,
+    #[arg(long)]
+    pub no_focus: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct ModeArgs {
+    #[arg(value_enum)]
+    pub mode: CliMode,
+    #[arg(long, conflicts_with = "no_focus")]
+    pub focus: bool,
+    #[arg(long)]
+    pub no_focus: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct RevealArgs {
+    pub file: PathBuf,
+    #[arg(long, conflicts_with = "no_focus")]
+    pub focus: bool,
+    #[arg(long)]
+    pub no_focus: bool,
 }
 
 #[derive(Debug)]
@@ -100,6 +133,16 @@ pub enum ParsedCli {
 #[derive(Debug)]
 pub enum Stateless {
     ListSections { file: PathBuf, pretty: bool },
+}
+
+/// Map paired `--focus` / `--no-focus` flags to a [`FocusBehavior`].
+/// Clap's `conflicts_with` rules out the both-true case.
+pub fn focus_behavior(focus: bool, no_focus: bool) -> FocusBehavior {
+    match (focus, no_focus) {
+        (true, false) => FocusBehavior::Force,
+        (false, true) => FocusBehavior::Suppress,
+        _ => FocusBehavior::Default,
+    }
 }
 
 /// Parse argv into a `ParsedCli`. The `id` of any emitted Request is `1`
@@ -120,11 +163,22 @@ fn to_parsed(cli: Cli) -> ParsedCli {
                 file: path_to_string(o.file),
                 line: o.line,
                 section: o.section,
+                focus: focus_behavior(o.focus, o.no_focus),
             }),
             Command::OpenFolder { dir } => req(Cmd::OpenFolder { dir: path_to_string(dir) }),
-            Command::Goto(g) => req(Cmd::Goto { line: g.line, section: g.section }),
-            Command::Mode { mode } => req(Cmd::Mode { mode: mode.into() }),
-            Command::Reveal { file } => req(Cmd::Reveal { file: path_to_string(file) }),
+            Command::Goto(g) => req(Cmd::Goto {
+                line: g.line,
+                section: g.section,
+                focus: focus_behavior(g.focus, g.no_focus),
+            }),
+            Command::Mode(m) => req(Cmd::Mode {
+                mode: m.mode.into(),
+                focus: focus_behavior(m.focus, m.no_focus),
+            }),
+            Command::Reveal(r) => req(Cmd::Reveal {
+                file: path_to_string(r.file),
+                focus: focus_behavior(r.focus, r.no_focus),
+            }),
             Command::Focus => req(Cmd::Focus),
             Command::Close => req(Cmd::Close),
             Command::Current => req(Cmd::Current),
@@ -145,6 +199,7 @@ fn to_parsed(cli: Cli) -> ParsedCli {
                     file: path_to_string(path),
                     line: cli.line,
                     section: cli.section,
+                    focus: focus_behavior(cli.focus, cli.no_focus),
                 }
             };
             req(cmd)

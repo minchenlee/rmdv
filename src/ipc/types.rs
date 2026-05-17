@@ -8,6 +8,30 @@ pub enum Mode {
     Mindmap,
 }
 
+/// Per-call window focus behavior for navigation commands.
+///
+/// `Default` means: follow the user's `auto_focus_on_nav` preference.
+/// `Force` always raises; `Suppress` never raises.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum FocusBehavior {
+    Default,
+    Force,
+    Suppress,
+}
+
+impl Default for FocusBehavior {
+    fn default() -> Self {
+        FocusBehavior::Default
+    }
+}
+
+impl FocusBehavior {
+    pub fn is_default(&self) -> bool {
+        matches!(self, FocusBehavior::Default)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "cmd", content = "args", rename_all = "kebab-case")]
 pub enum Cmd {
@@ -17,6 +41,8 @@ pub enum Cmd {
         line: Option<u32>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         section: Option<String>,
+        #[serde(default, skip_serializing_if = "FocusBehavior::is_default")]
+        focus: FocusBehavior,
     },
     OpenFolder {
         dir: String,
@@ -26,12 +52,18 @@ pub enum Cmd {
         line: Option<u32>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         section: Option<String>,
+        #[serde(default, skip_serializing_if = "FocusBehavior::is_default")]
+        focus: FocusBehavior,
     },
     Mode {
         mode: Mode,
+        #[serde(default, skip_serializing_if = "FocusBehavior::is_default")]
+        focus: FocusBehavior,
     },
     Reveal {
         file: String,
+        #[serde(default, skip_serializing_if = "FocusBehavior::is_default")]
+        focus: FocusBehavior,
     },
     Focus,
     Close,
