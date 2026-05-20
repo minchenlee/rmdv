@@ -2094,7 +2094,7 @@ git commit -m "fix(cli): help/version/theme parity"
 **Files:**
 - None.
 
-- [ ] **Step 1: Launch instance**
+- [x] **Step 1: Launch instance**
 
 Run in shell A:
 ```bash
@@ -2102,7 +2102,7 @@ cargo run --release -- README.md
 ```
 Expected: mdv window opens with README.
 
-- [ ] **Step 2: Open another file from shell B**
+- [x] **Step 2: Open another file from shell B**
 
 Run in shell B:
 ```bash
@@ -2110,7 +2110,7 @@ target/release/mdv open tests/fixtures/sections.md --line 9
 ```
 Expected: shell B prints `{"id":1,"ok":true}` and exits 0. Window in shell A scrolls to "Setup" (line 9 in the fixture).
 
-- [ ] **Step 3: Query current state**
+- [x] **Step 3: Query current state**
 
 Run in shell B:
 ```bash
@@ -2118,14 +2118,14 @@ target/release/mdv current
 ```
 Expected: JSON like `{"id":1,"ok":true,"result":{"file":".../sections.md","line":<n>,"mode":"view","folder":null}}`.
 
-- [ ] **Step 4: Switch mode**
+- [x] **Step 4: Switch mode**
 
 ```bash
 target/release/mdv mode mindmap
 ```
 Expected: window switches to mindmap view; `{"id":1,"ok":true}`.
 
-- [ ] **Step 5: Section navigation**
+- [x] **Step 5: Section navigation**
 
 ```bash
 target/release/mdv mode view
@@ -2133,7 +2133,7 @@ target/release/mdv goto --section "Usage/Setup"
 ```
 Expected: window scrolls to the second "Setup" (line 17).
 
-- [ ] **Step 6: Stale socket recovery**
+- [x] **Step 6: Stale socket recovery**
 
 In shell A: kill the mdv process (Ctrl+C / Cmd+Q).
 Run:
@@ -2143,7 +2143,7 @@ cargo run --release -- README.md
 ```
 Expected: stale file (if any) gets unlinked and a fresh instance starts cleanly.
 
-- [ ] **Step 7: list-sections standalone (no instance)**
+- [x] **Step 7: list-sections standalone (no instance)**
 
 Quit mdv. Run:
 ```bash
@@ -2153,7 +2153,7 @@ Expected: JSON array of headings, exit 0. No window opens.
 
 If anything misbehaves, return to the relevant task and fix.
 
-- [ ] **Step 8: Commit (if smoke uncovered fixes)**
+- [x] **Step 8: Commit (if smoke uncovered fixes)**
 
 Otherwise no commit.
 
