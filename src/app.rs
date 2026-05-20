@@ -141,6 +141,7 @@ pub enum Message {
     TreeMove(isize),
     TreeActivate,
     TreeToggleAtCursor,
+    CopyTreePath,
     ScrollBy(f32),
     ScrollToTop,
     ScrollToBottom,
@@ -1534,6 +1535,19 @@ impl App {
             }
             Message::FileLoaded(Ok((path, src))) => {
                 crate::recent::add(&path);
+                if self.workspace.is_none() {
+                    if let Some(parent) = path.parent().map(PathBuf::from) {
+                        self.workspace_files =
+                            picker::walk_markdown(&parent, 8, 5000, self.show_hidden);
+                        self.workspace_tree = Some(tree::build(&parent, self.show_hidden));
+                        self.expanded.clear();
+                        if let Some(t) = &self.workspace_tree {
+                            self.expanded.insert(t.path.clone());
+                        }
+                        self.workspace = Some(parent);
+                        self.tree_cursor = 0;
+                    }
+                }
                 self.source = src;
                 self.file = Some(path);
                 self.is_data_doc = data_lang_for(self.file.as_deref()).is_some();
@@ -1809,6 +1823,18 @@ impl App {
                     }
                 }
                 Task::none()
+            }
+            Message::CopyTreePath => {
+                let Some(root) = &self.workspace_tree else {
+                    return Task::none();
+                };
+                let rows = tree::flatten(root, &self.expanded);
+                let Some(r) = rows.get(self.tree_cursor) else {
+                    return Task::none();
+                };
+                let path = r.node.path.display().to_string();
+                let toast = self.show_toast("Path copied".into());
+                Task::batch([iced::clipboard::write::<Message>(path), toast])
             }
             Message::ScrollBy(dy) => iced::widget::operation::scroll_by(
                 Self::scroll_id(),
@@ -2128,6 +2154,11 @@ impl App {
                     use iced::keyboard::key::{Code, Physical};
                     if let Physical::Code(Code::KeyB) = physical {
                         return Message::ToggleMindmapPanel;
+                    }
+                    if let Physical::Code(Code::KeyC) = physical {
+                        if tree_active {
+                            return Message::CopyTreePath;
+                        }
                     }
                 }
                 if fold_chord {
@@ -2877,36 +2908,47 @@ fn sidebar_view<'a>(app: &'a App, pal: Palette) -> Element<'a, Message> {
         .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or("workspace");
+    let title_row = irow![
+        text(ws_name.to_string().to_uppercase())
+            .size(11)
+            .color(pal.muted),
+        Space::new().width(Length::Fill),
+        iced::widget::tooltip(
+            ghost_lu(ic::COMMAND, pal).on_press(Message::OpenCommandPalette),
+            container(
+                text("⌘⇧P")
+                    .size(11)
+                    .color(pal.fg)
+                    .shaping(iced::widget::text::Shaping::Advanced)
+            )
+            .padding(Padding::from([4, 8]))
+            .style(move |_| container::Style {
+                background: Some(pal.surface_alt.into()),
+                border: Border {
+                    color: pal.rule,
+                    width: 1.0,
+                    radius: 5.0.into(),
+                },
+                ..Default::default()
+            }),
+            iced::widget::tooltip::Position::Bottom,
+        ),
+    ]
+    .spacing(6)
+    .align_y(iced::Alignment::Center);
+
     let header = container(
-        irow![
-            text(ws_name.to_string().to_uppercase())
-                .size(11)
-                .color(pal.muted),
-            Space::new().width(Length::Fill),
-            iced::widget::tooltip(
-                ghost_lu(ic::COMMAND, pal).on_press(Message::OpenCommandPalette),
-                container(
-                    text("⌘⇧P")
-                        .size(11)
-                        .color(pal.fg)
-                        .shaping(iced::widget::text::Shaping::Advanced)
-                )
-                .padding(Padding::from([4, 8]))
-                .style(move |_| container::Style {
-                    background: Some(pal.surface_alt.into()),
-                    border: Border {
-                        color: pal.rule,
-                        width: 1.0,
-                        radius: 5.0.into(),
-                    },
-                    ..Default::default()
-                }),
-                iced::widget::tooltip::Position::Bottom,
-            ),
-        ]
-        .padding(sidebar_header_padding())
-        .spacing(6)
-        .align_y(iced::Alignment::Center),
+        column![
+            Space::new().height(Length::Fixed(sidebar_titlebar_reserve())),
+            container(title_row)
+                .padding(Padding {
+                    top: 0.0,
+                    right: 14.0,
+                    bottom: 8.0,
+                    left: 14.0,
+                })
+                .width(Length::Fill),
+        ],
     )
     .width(Length::Fill);
 
@@ -3682,22 +3724,14 @@ fn slim_scroll_direction_horizontal() -> scrollable::Direction {
 /// window is not fullscreen. Iced 0.14 exposes no way to query the current
 /// window mode, so we always reserve room for the buttons here — when truly
 /// fullscreen the extra ~22px of leading space is unused but harmless.
-fn sidebar_header_padding() -> Padding {
+fn sidebar_titlebar_reserve() -> f32 {
     #[cfg(target_os = "macos")]
     {
-        // Traffic-light buttons sit ~6px from top, ~12px tall → reserve top
-        // ~22px to vertically center the label with them. Left ~72px clears
-        // the third button + a small gutter.
-        Padding {
-            top: 22.0,
-            right: 14.0,
-            bottom: 8.0,
-            left: 72.0,
-        }
+        22.0
     }
     #[cfg(not(target_os = "macos"))]
     {
-        Padding::from([10, 14])
+        0.0
     }
 }
 
