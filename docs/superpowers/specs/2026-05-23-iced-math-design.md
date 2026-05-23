@@ -28,36 +28,39 @@ mdv needs LaTeX math rendering in markdown (`$..$`, `$$..$$`). No existing Rust 
 ## 3. Public API
 
 ```rust
-pub fn inline<'a, Message>(src: &str) -> Element<'a, Message>;
-pub fn block<'a, Message>(src: &str)  -> Element<'a, Message>;
-
-/// One-time font load. Returns Task to chain in app startup.
-pub fn init() -> iced::Task<Result<(), iced::font::Error>>;
+pub fn inline<Message>(src: &str) -> Element<'static, Message>;
+pub fn block<Message>(src: &str)  -> Element<'static, Message>;
 ```
 
 `inline()` — text-style layout for in-line math.
 `block()` — display-style layout (larger ops, limits above/below big operators), centered with vertical padding.
+
+**No `init()` required.** Font bytes are embedded via `include_bytes!` and parsed once into a `static OnceLock<ttf_parser::Face<'static>>`. No Iced font registration needed because glyphs are rendered as SVG paths (see §6), not via Iced's text shaper.
+
+Returned `Element<'static, _>` — widget owns its SVG bytes and fallback strings, no borrow from `src`.
 
 Errors (parse failure, unknown command) render as raw source in red monospace inline. Never panic.
 
 ## 4. Architecture
 
 ```
-LaTeX src ──▶ pulldown-latex ──▶ MathML events ──▶ IR builder ──▶ Boxer ──▶ Box tree ──▶ Iced Widget draw
-                                                                  (uses MATH table)        (Renderer fill_text + fill_quad)
+LaTeX src ──▶ pulldown-latex ──▶ parser events ──▶ IR builder ──▶ Boxer ──▶ Box tree ──▶ SVG emitter ──▶ iced::widget::svg
+                                                                  (uses MATH table)                       (consumes SVG bytes)
 ```
+
+Key decision: **glyphs are rendered as SVG `<path>` elements**, with glyph outlines extracted from the bundled font via `ttf-parser::OutlineBuilder`. This addresses MATH-table variants and `GlyphAssembly` extensible glyphs that have no Unicode codepoint and cannot be drawn via Iced's text shaper. Iced consumes the final SVG via the first-class `svg` widget — no custom `Widget` impl required, no baseline/anchor issues with `fill_text`.
 
 **Module layout**
 
 ```
 src/
-├── lib.rs        public API (inline, block, init)
-├── parse.rs      pulldown-latex driver, MathML events → IR
+├── lib.rs        public API (inline, block)
+├── parse.rs      pulldown-latex events → IR
 ├── ir.rs         IR node enum (Atom, Frac, Subsup, Radical, Accent, Row, Fenced, Mtable, Op, Space)
-├── font.rs       Latin Modern Math bytes + OpenType MATH table reader (ttf-parser)
+├── font.rs       Latin Modern Math bytes + ttf-parser Face + OpenType MATH table reader
 ├── boxer.rs      IR → positioned Box tree (TeX spacing rules + MATH constants)
-├── render.rs     Box tree → Renderer primitives
-├── widget.rs     iced::advanced::Widget implementation
+├── svg.rs        Box tree → SVG bytes (glyph outlines as <path>, rules as <rect>)
+├── widget.rs     thin wrapper around iced::widget::svg with theme-color styling
 └── error.rs      Red-source fallback Element
 ```
 
@@ -90,12 +93,14 @@ struct Box {
     kind: BoxKind,
 }
 enum BoxKind {
-    Glyph { ch: char, font_size: f32 },
+    Glyph { glyph_id: u16, font_size: f32 },   // glyph ID, NOT char — required for MATH variants/assembly
     HBox(Vec<(Point, Box)>),
     VBox(Vec<(Point, Box)>),
     Rule { thickness: f32 },
 }
 ```
+
+Glyph identification is by `ttf_parser::GlyphId` (u16). The boxer resolves char → glyph_id via the font's cmap, then optionally swaps to a bigger variant or composes from assembly pieces using MATH-table lookups — all by glyph ID. SVG emitter outlines each glyph by ID via `face.outline_glyph(GlyphId(id), &mut builder)`.
 
 ## 5. Layout Engine (Boxer)
 
@@ -125,31 +130,57 @@ Implements TeX math layout per Knuth TeXbook Ch. 17–18 plus OpenType MATH tabl
 
 ## 6. Render Layer
 
-Custom `iced::advanced::Widget` (not Canvas Program — no interaction in v0.1).
+**No custom Widget impl.** `svg.rs` emits an SVG document; `widget.rs` wraps `iced::widget::svg::Svg` with theme-color styling.
+
+**SVG emission (svg.rs):**
 
 ```rust
-impl<Message, Theme, Renderer> Widget<Message, Theme, Renderer> for MathWidget
-where Renderer: iced::advanced::text::Renderer,
-{
-    fn size(&self) -> Size<Length> { Size { width: Shrink, height: Shrink } }
-    fn layout(&self, _, _, _) -> Node {
-        Node::new(Size::new(self.root.width, self.root.height + self.root.depth))
-    }
-    fn draw(&self, _, renderer, theme, _, layout, _, _) {
-        let color = theme.palette().text;
-        draw_box(renderer, &self.root, layout.bounds().position(), color);
+pub fn emit(root: &Box, color: &str) -> Vec<u8> {
+    let mut out = String::new();
+    let w = root.width;
+    let h = root.height + root.depth;
+    write!(out, r#"<svg xmlns="http://www.w3.org/2000/svg" width="{w}" height="{h}" viewBox="0 0 {w} {h}">"#).unwrap();
+    write!(out, r#"<g fill="currentColor">"#).unwrap();
+    walk(&mut out, root, Point::new(0.0, root.height));   // baseline at y=root.height
+    write!(out, "</g></svg>").unwrap();
+    out.into_bytes()
+}
+
+fn walk(out: &mut String, b: &Box, origin: Point) {
+    match &b.kind {
+        BoxKind::Glyph { glyph_id, font_size } => {
+            let path_d = font::outline_path(*glyph_id, *font_size);   // ttf-parser outline → SVG path "M.. L.. Z"
+            write!(out, r#"<path transform="translate({} {})" d="{}"/>"#, origin.x, origin.y, path_d).unwrap();
+        }
+        BoxKind::Rule { thickness } => {
+            write!(out, r#"<rect x="{}" y="{}" width="{}" height="{}"/>"#, origin.x, origin.y, b.width, thickness).unwrap();
+        }
+        BoxKind::HBox(children) | BoxKind::VBox(children) => {
+            for (offset, child) in children {
+                walk(out, child, origin + *offset);
+            }
+        }
     }
 }
 ```
 
-`draw_box` walks Box tree:
-- `Glyph` → `Renderer::fill_text` at `origin + (0, b.height)` (baseline offset).
-- `Rule` → `Renderer::fill_quad`.
-- `HBox` / `VBox` → recurse with offset accumulation.
+`fill="currentColor"` lets Iced re-color the whole SVG at render time via `svg::Style` (Iced 0.14's `Catalog`/style fn).
 
-**Font registration** — `iced_math::init()` loads bundled Latin Modern Math via `iced::font::load`. One-shot, stored in `static OnceLock<Font>`. Caller chains this in app startup `Task`.
+**Widget wrapper (widget.rs):**
 
-**Block layout** — `block()` wraps widget in `container` with `center_x` + vertical padding.
+```rust
+pub(crate) fn from_svg<Message>(bytes: Vec<u8>) -> Element<'static, Message> {
+    iced::widget::svg(svg::Handle::from_memory(bytes))
+        .style(|theme: &Theme, _status| svg::Style { color: Some(theme.palette().text) })
+        .width(Length::Shrink)
+        .height(Length::Shrink)
+        .into()
+}
+```
+
+Theme color comes from `svg::Style { color: Some(palette.text) }` — Iced applies it to `currentColor` references in the SVG. No custom Widget trait. No `palette()` constraint problem: the `style` closure receives a concrete `Theme` (default `iced::Theme`) and the caller can override with `.style(...)` when constructing.
+
+**Block layout** — `block()` wraps the SVG element in `container` with `center_x` + vertical padding.
 
 ## 7. Font Strategy
 
@@ -173,19 +204,25 @@ Matches KaTeX convention. Self-evident, easy to debug.
 
 ```toml
 [dependencies]
-iced = { version = "0.14", default-features = false, features = ["advanced"] }
+iced       = { version = "0.14", default-features = false, features = ["svg"] }
 pulldown-latex = "0.7"
 ttf-parser = "0.25"
+
+[dev-dependencies]
+insta  = { version = "1", features = ["yaml"] }
+resvg  = "0.46"     # rasterize SVG for visual regression diffs (dev-only)
+tiny-skia = "0.11"  # backing pixmap for resvg
 ```
 
-No async runtime. No JS. No image crate (no rasterization).
+No async runtime. No JS. **No runtime rasterization** — SVG goes straight to Iced. `resvg` + `tiny-skia` are dev-only for golden-image visual regression tests.
 
 ## 10. Testing
 
 1. **Unit** — parse.rs (LaTeX → expected IR), boxer.rs (IR → Box dimensions within ε of KaTeX references), font.rs (MATH constants), spacing table sanity.
-2. **Golden image** (`insta`) — `tests/corpus/*.tex` rendered via tiny-skia to PNG, compared against committed `tests/snapshots/*.png`. ~50 equations at v0.1, ~200 at v1.0.
-3. **Visual demo** (`examples/viewer.rs`) — standalone Iced app, side panel corpus list. Pre-release manual eyeball pass.
-4. **Reference comparison** (opt-in, offline) — `scripts/render-katex.sh` produces KaTeX SVGs for corpus, `--features reference-compare` overlays. Not in CI.
+2. **SVG snapshot** (`insta::assert_snapshot!`) — `tests/corpus/*.tex` → emitted SVG string compared against committed `tests/snapshots/*.snap`. Primary regression net. Fast, deterministic, text-diffable in PR review. ~50 equations at v0.1, ~200 at v1.0.
+3. **Pixel regression** (`insta` + `resvg`) — same corpus, rasterize emitted SVG via `resvg` to PNG, compare against committed PNG. Catches font/outline drift the SVG diff would miss. Slower; runs in CI on the corpus subset most prone to visual drift.
+4. **Visual demo** (`examples/viewer.rs`) — standalone Iced app, side panel corpus list. Pre-release manual eyeball pass.
+5. **Reference comparison** (opt-in, offline) — `scripts/render-katex.sh` produces KaTeX SVGs for corpus, `--features reference-compare` overlays. Not in CI.
 
 **CI matrix**: macOS + Linux + Windows × stable + MSRV (Rust 1.75).
 
@@ -201,7 +238,7 @@ iced_math/
 ├── assets/
 │   ├── LatinModernMath.otf
 │   └── OFL.txt
-├── src/                  (lib.rs, parse.rs, ir.rs, font.rs, boxer.rs, render.rs, widget.rs, error.rs)
+├── src/                  (lib.rs, parse.rs, ir.rs, font.rs, boxer.rs, svg.rs, widget.rs, error.rs)
 ├── examples/viewer.rs
 ├── tests/                (parse.rs, boxer.rs, golden.rs, corpus/*.tex, snapshots/*.png)
 ├── benches/layout.rs     (criterion)
@@ -232,12 +269,22 @@ mdv integrates at v0.2.0+ (matrices needed). mdv-side integration spec to follow
 ## 14. Open Questions Resolved
 
 - ✅ Coverage: Tier 2 (KaTeX-equivalent).
-- ✅ Render primitive: native Iced Canvas via `advanced::Widget` (not image, not Iced widget tree, not SVG).
-- ✅ Font: bundle Latin Modern Math (fallback STIX Two Math if license blocks).
-- ✅ API: two free functions `inline` / `block`.
+- ✅ Render primitive: emit SVG (glyph outlines as `<path>`, rules as `<rect>`) consumed by `iced::widget::svg`. Crisp at any zoom; supports MATH-table variants and `GlyphAssembly` glyphs that lack Unicode codepoints; no custom `Widget` impl, no `fill_text` baseline ambiguity.
+- ✅ Font: bundle Latin Modern Math (fallback STIX Two Math if GUST license blocks redistribution). Parsed by `ttf-parser`. No `iced::font::load` needed because glyphs are rendered as SVG paths, not via Iced's text shaper.
+- ✅ API: two widget functions `inline` / `block`, returning `Element<'static, _>` (widget owns its SVG bytes). No `init()` function.
 - ✅ Errors: raw source in red monospace.
-- ✅ Architecture: MathML → IR → Boxer → Canvas.
+- ✅ Architecture: pulldown-latex events → IR → Boxer → SVG → `iced::widget::svg`.
 - ✅ Repo: separate from mdv.
+
+### Codex review issues addressed (2026-05-23 revision)
+
+- **Glyph addressing (high)**: pivoted from `Renderer::fill_text` (Unicode-only, shaped text) to SVG `<path>` outlining via `ttf-parser`. MATH variants and `GlyphAssembly` pieces addressed by glyph ID.
+- **Widget::layout `&mut self` and `palette()` (high)**: dropped custom `Widget` impl. Use stock `iced::widget::svg` with a `style` closure that pulls `palette().text` from the concrete `Theme` parameter the closure receives.
+- **`fill_text` baseline (high)**: no longer used. Baseline anchoring happens inside the SVG via `<g transform>` placement under our control.
+- **Three-function vs two-function API (medium)**: dropped `init()`. Two public functions only.
+- **"MathML events" wording (medium)**: corrected to "pulldown-latex events → IR". The pulldown-latex MathML renderer is unused; we consume the parser event stream directly.
+- **Lifetime story (medium)**: API returns `Element<'static, _>` — widget owns SVG bytes and any error-fallback `String`, no borrow from `src`.
+- **tiny-skia ambiguity (medium)**: declared explicitly as dev-only (`[dev-dependencies]`) for pixel-regression tests. Runtime path is SVG-only; no rasterization in shipped binary.
 
 ## 15. Out of Scope (Future)
 
