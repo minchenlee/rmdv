@@ -28,9 +28,20 @@ mdv needs LaTeX math rendering in markdown (`$..$`, `$$..$$`). No existing Rust 
 ## 3. Public API
 
 ```rust
-pub fn inline<Message>(src: &str) -> Element<'static, Message>;
-pub fn block<Message>(src: &str)  -> Element<'static, Message>;
+pub fn inline<Message, Theme, Renderer>(src: &str) -> Element<'static, Message, Theme, Renderer>
+where
+    Theme: iced::widget::svg::Catalog + 'static,
+    Renderer: iced::advanced::svg::Renderer + 'static,
+    Message: 'static;
+
+pub fn block<Message, Theme, Renderer>(src: &str) -> Element<'static, Message, Theme, Renderer>
+where
+    Theme: iced::widget::svg::Catalog + 'static,
+    Renderer: iced::advanced::svg::Renderer + 'static,
+    Message: 'static;
 ```
+
+Generic over `Theme` and `Renderer` so the crate works with any Iced 0.14 app (custom themes/renderers) provided the theme implements `svg::Catalog`. `iced::Theme` already does.
 
 `inline()` — text-style layout for in-line math.
 `block()` — display-style layout (larger ops, limits above/below big operators), centered with vertical padding.
@@ -135,24 +146,33 @@ Implements TeX math layout per Knuth TeXbook Ch. 17–18 plus OpenType MATH tabl
 **SVG emission (svg.rs):**
 
 ```rust
-pub fn emit(root: &Box, color: &str) -> Vec<u8> {
+pub fn emit(root: &Box) -> Vec<u8> {
     let mut out = String::new();
     let w = root.width;
     let h = root.height + root.depth;
     write!(out, r#"<svg xmlns="http://www.w3.org/2000/svg" width="{w}" height="{h}" viewBox="0 0 {w} {h}">"#).unwrap();
-    write!(out, r#"<g fill="currentColor">"#).unwrap();
-    walk(&mut out, root, Point::new(0.0, root.height));   // baseline at y=root.height
-    write!(out, "</g></svg>").unwrap();
+    walk(&mut out, root, Point::new(0.0, root.height));   // baseline at y = root.height
+    write!(out, "</svg>").unwrap();
     out.into_bytes()
 }
 
 fn walk(out: &mut String, b: &Box, origin: Point) {
     match &b.kind {
         BoxKind::Glyph { glyph_id, font_size } => {
-            let path_d = font::outline_path(*glyph_id, *font_size);   // ttf-parser outline → SVG path "M.. L.. Z"
-            write!(out, r#"<path transform="translate({} {})" d="{}"/>"#, origin.x, origin.y, path_d).unwrap();
+            // ttf-parser outlines are emitted in font design units, y-up.
+            // SVG is y-down. Compose a transform that:
+            //   1. translates origin (origin.x, origin.y) — origin.y is the glyph's baseline in SVG coords
+            //   2. scales by (font_size / units_per_em) in x
+            //   3. scales by (-font_size / units_per_em) in y to flip y-up → y-down
+            // Final SVG transform string (a c b d e f via matrix(...)):
+            //   matrix(s 0 0 -s ox oy)   where s = font_size / units_per_em
+            let s = font_size / face::UNITS_PER_EM;
+            let path_d = font::outline_in_design_units(*glyph_id);   // raw font-unit path, y-up
+            write!(out, r#"<path transform="matrix({s} 0 0 {neg_s} {ox} {oy})" d="{d}"/>"#,
+                s = s, neg_s = -s, ox = origin.x, oy = origin.y, d = path_d).unwrap();
         }
         BoxKind::Rule { thickness } => {
+            // Rules are produced in SVG (y-down) coordinates directly by the boxer.
             write!(out, r#"<rect x="{}" y="{}" width="{}" height="{}"/>"#, origin.x, origin.y, b.width, thickness).unwrap();
         }
         BoxKind::HBox(children) | BoxKind::VBox(children) => {
@@ -164,21 +184,40 @@ fn walk(out: &mut String, b: &Box, origin: Point) {
 }
 ```
 
-`fill="currentColor"` lets Iced re-color the whole SVG at render time via `svg::Style` (Iced 0.14's `Catalog`/style fn).
+**Coordinate system contract:**
+- Font design units are y-up with origin at glyph baseline.
+- Boxer works in SVG-space units (y-down) with sizes in pixels (post-font-size scaling). Box `height`/`depth`/`width` are pixel measurements.
+- The only place font→SVG conversion happens is the glyph emit site above. Scale = `font_size / face.units_per_em()`. Negative y-scale performs the y-flip. The translation `(origin.x, origin.y)` lands the glyph baseline at the boxer-determined SVG coordinate.
+- `font::outline_in_design_units` returns the SVG path data string built by a `ttf_parser::OutlineBuilder` impl that writes raw `move_to`/`line_to`/`quad_to`/`curve_to`/`close` commands without any unit conversion.
+
+**Theme color:** Iced 0.14's `svg::Style { color: Some(c) }` applies a whole-SVG color filter — every painted region is recolored to `c`, intrinsic colors in the SVG are ignored. Math is single-color, so this is correct. We do not rely on CSS `currentColor` semantics; the SVG itself emits `<path>`/`<rect>` with no `fill` attribute (default black) and Iced's filter recolors all of them.
 
 **Widget wrapper (widget.rs):**
 
 ```rust
-pub(crate) fn from_svg<Message>(bytes: Vec<u8>) -> Element<'static, Message> {
-    iced::widget::svg(svg::Handle::from_memory(bytes))
-        .style(|theme: &Theme, _status| svg::Style { color: Some(theme.palette().text) })
+pub(crate) fn from_svg<Message, Theme, Renderer>(bytes: Vec<u8>) -> Element<'static, Message, Theme, Renderer>
+where
+    Theme: iced::widget::svg::Catalog + 'static,
+    Renderer: iced::advanced::svg::Renderer + 'static,
+    Message: 'static,
+{
+    iced::widget::svg(iced::widget::svg::Handle::from_memory(bytes))
         .width(Length::Shrink)
         .height(Length::Shrink)
         .into()
 }
 ```
 
-Theme color comes from `svg::Style { color: Some(palette.text) }` — Iced applies it to `currentColor` references in the SVG. No custom Widget trait. No `palette()` constraint problem: the `style` closure receives a concrete `Theme` (default `iced::Theme`) and the caller can override with `.style(...)` when constructing.
+Generic over `Theme: svg::Catalog` and `Renderer: svg::Renderer`. Works with `iced::Theme` and any user theme that implements `svg::Catalog`. Color comes from the theme's default `svg::Catalog` style (Iced 0.14 uses palette text color by default). Consumers needing an explicit override can construct the underlying `iced::widget::svg` directly via the lower-level API — exposed in v0.5 via an `inline_with_style` / `block_with_style` extension if demand surfaces.
+
+**Public API generics** (matches widget.rs above):
+
+```rust
+pub fn inline<Message, Theme, Renderer>(src: &str) -> Element<'static, Message, Theme, Renderer>
+where Theme: svg::Catalog + 'static, Renderer: svg::Renderer + 'static, Message: 'static;
+pub fn block<Message, Theme, Renderer>(src: &str)  -> Element<'static, Message, Theme, Renderer>
+where Theme: svg::Catalog + 'static, Renderer: svg::Renderer + 'static, Message: 'static;
+```
 
 **Block layout** — `block()` wraps the SVG element in `container` with `center_x` + vertical padding.
 
@@ -240,7 +279,7 @@ iced_math/
 │   └── OFL.txt
 ├── src/                  (lib.rs, parse.rs, ir.rs, font.rs, boxer.rs, svg.rs, widget.rs, error.rs)
 ├── examples/viewer.rs
-├── tests/                (parse.rs, boxer.rs, golden.rs, corpus/*.tex, snapshots/*.png)
+├── tests/                (parse.rs, boxer.rs, golden.rs, corpus/*.tex, snapshots/*.snap, snapshots/*.png)
 ├── benches/layout.rs     (criterion)
 └── .github/workflows/    (ci.yml, release.yml)
 ```
@@ -262,9 +301,18 @@ mdv integrates at v0.2.0+ (matrices needed). mdv-side integration spec to follow
 
 ## 13. Performance Targets
 
-- `E=mc^2` inline parse+layout ≤ 200µs (M1).
-- Display matrix (3×3) parse+layout ≤ 2ms (M1).
-- Criterion bench gate in CI; regression > 20% fails PR.
+Measured on M1, release build. Three pipeline stages benched separately + end-to-end:
+
+| Stage | `E=mc^2` (inline) | 3×3 matrix (display) |
+|---|---|---|
+| parse + layout | ≤ 200µs | ≤ 2ms |
+| parse + layout + SVG emit | ≤ 400µs | ≤ 4ms |
+| end-to-end (above + first iced::widget::svg render through resvg-backed renderer) | ≤ 5ms | ≤ 25ms |
+| steady-state re-render (handle cached by renderer) | ≤ 200µs | ≤ 500µs |
+
+Criterion bench gate in CI; regression > 20% on any tracked metric fails PR. `iced::widget::svg::Handle::from_memory` is content-hashed by Iced — identical SVG bytes produce a cache hit on subsequent renders, which is why steady-state is much cheaper than first render.
+
+Before mdv integrates (v0.2.0), end-to-end + steady-state numbers are validated against a representative mdv corpus (~30 equations from real markdown documents) to confirm scroll/zoom remains smooth.
 
 ## 14. Open Questions Resolved
 
@@ -276,7 +324,15 @@ mdv integrates at v0.2.0+ (matrices needed). mdv-side integration spec to follow
 - ✅ Architecture: pulldown-latex events → IR → Boxer → SVG → `iced::widget::svg`.
 - ✅ Repo: separate from mdv.
 
-### Codex review issues addressed (2026-05-23 revision)
+### Codex review issues addressed (2026-05-23 revision 2)
+
+- **Font-outline coordinate conversion (high)**: §6 SVG emission now specifies the exact transform `matrix(s 0 0 -s ox oy)` where `s = font_size / units_per_em`. Documents the y-up font space vs y-down SVG space and locates the single conversion site (glyph emit). Boxer works in SVG-space throughout.
+- **`svg::Style { color }` semantics (medium)**: §6 corrected — Iced's color field is a whole-SVG recolor filter, not CSS `currentColor`. Math is single-color so the filter is correct; spec no longer claims `currentColor` behavior.
+- **Theme/Renderer generics (medium)**: §3 + §6 widget wrapper now generic over `Theme: svg::Catalog` and `Renderer: svg::Renderer`. Crate works with any Iced 0.14 app, not just `iced::Theme`/default renderer.
+- **Perf targets coverage (medium)**: §13 expanded to four metrics (parse+layout, +emit, end-to-end first render, steady-state cached). mdv-corpus validation gate before v0.2 release.
+- **Repo layout missing .snap (low)**: §11 lists both `.snap` and `.png` snapshot artifacts.
+
+### Codex review issues addressed (2026-05-23 revision 1)
 
 - **Glyph addressing (high)**: pivoted from `Renderer::fill_text` (Unicode-only, shaped text) to SVG `<path>` outlining via `ttf-parser`. MATH variants and `GlyphAssembly` pieces addressed by glyph ID.
 - **Widget::layout `&mut self` and `palette()` (high)**: dropped custom `Widget` impl. Use stock `iced::widget::svg` with a `style` closure that pulls `palette().text` from the concrete `Theme` parameter the closure receives.
