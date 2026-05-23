@@ -37,8 +37,10 @@ where
          + 'static,
     <Theme as iced::widget::svg::Catalog>::Class<'static>:
         From<iced::widget::svg::StyleFn<'static, Theme>>,
+    <Theme as iced::widget::text::Catalog>::Class<'static>:
+        From<iced::widget::text::StyleFn<'static, Theme>>,
     Renderer: iced::advanced::svg::Renderer
-            + iced::advanced::text::Renderer
+            + iced::advanced::text::Renderer<Font = iced::Font>
             + 'static,
     Message: 'static;
 
@@ -51,18 +53,21 @@ where
          + 'static,
     <Theme as iced::widget::svg::Catalog>::Class<'static>:
         From<iced::widget::svg::StyleFn<'static, Theme>>,
+    <Theme as iced::widget::text::Catalog>::Class<'static>:
+        From<iced::widget::text::StyleFn<'static, Theme>>,
     Renderer: iced::advanced::svg::Renderer
-            + iced::advanced::text::Renderer
+            + iced::advanced::text::Renderer<Font = iced::Font>
             + 'static,
     Message: 'static;
 ```
 
 **Why these bounds:**
 - `svg::Catalog` + `svg::Renderer` — render the math SVG itself.
-- `svg::Catalog::Class<'static>: From<svg::StyleFn<...>>` — required so we can install a `.style(|theme, _| ...)` closure that maps the theme's palette text color into `svg::Style { color: Some(c) }`. Iced 0.14's default `svg::Style` has `color: None` (no filter applied), so an explicit style closure is mandatory for theme-aware math.
-- `text::Catalog` + `text::Renderer` — error fallback uses `text(src)`.
+- `svg::Catalog::Class<'static>: From<svg::StyleFn<...>>` — required so we can install a `.style(|theme, _| ...)` closure that maps the theme's text color into `svg::Style { color: Some(c) }`. Iced 0.14's default `svg::Style` has `color: None` (no filter applied), so an explicit style closure is mandatory for theme-aware math.
+- `text::Catalog` + `text::Renderer<Font = iced::Font>` — error fallback uses `text(src)` and `.font(Font::MONOSPACE)`. Pinning the associated `Font = iced::Font` is required so `Font::MONOSPACE` (an `iced::Font`) can be passed to `.font()` for a generic renderer.
+- `text::Catalog::Class<'static>: From<text::StyleFn<...>>` — required so the error fallback can install a `.color(...)` style closure (red).
 - `container::Catalog` — `block()` wraps in `container` for centering and padding.
-- `theme::Base` — needed by the `style` closure to read `palette().text`.
+- `theme::Base` — needed by the style closures to read the theme's text color (Iced 0.14 exposes this via `theme::Base::base()` → `theme::Style { text_color, .. }`; exact accessor pinned at implementation time).
 
 The exact bound set will be verified against a compile-check test (`tests/api.rs`) that instantiates the API with `iced::Theme` plus a minimal custom `Theme` mock. If Iced 0.14's actual trait names differ slightly (e.g., `Base` vs. `palette` accessor location), the spec lists the *intent*; the implementation pins the exact bounds at first-build.
 
@@ -231,7 +236,7 @@ where
 {
     iced::widget::svg(iced::widget::svg::Handle::from_memory(bytes))
         .style(|theme: &Theme, _status| iced::widget::svg::Style {
-            color: Some(theme.base().text),       // exact accessor pinned at impl time
+            color: Some(theme.base().text_color),   // iced 0.14: theme::Base::base() → theme::Style { text_color, .. }
         })
         .width(Length::Shrink)
         .height(Length::Shrink)
@@ -267,7 +272,7 @@ Matches KaTeX convention. Self-evident, easy to debug.
 
 ```toml
 [dependencies]
-iced       = { version = "0.14", default-features = false, features = ["svg"] }
+iced       = { version = "0.14", default-features = false, features = ["svg", "advanced"] }
 pulldown-latex = "0.7"
 ttf-parser = "0.25"
 
@@ -347,6 +352,12 @@ Before mdv integrates (v0.2.0), end-to-end + steady-state numbers are validated 
 - ✅ Errors: raw source in red monospace.
 - ✅ Architecture: pulldown-latex events → IR → Boxer → SVG → `iced::widget::svg`.
 - ✅ Repo: separate from mdv.
+
+### Codex review issues addressed (2026-05-23 revision 4)
+
+- **Iced `advanced` feature missing (high)**: §9 deps now include `advanced` feature flag alongside `svg`. Public API uses `iced::advanced::svg::Renderer` and `iced::advanced::text::Renderer`, both gated behind this flag.
+- **Error fallback bounds incomplete (medium)**: §3 added `text::Catalog::Class<'static>: From<text::StyleFn<...>>` (needed by `.color()` on `text(src)`) and pinned `Renderer::Font = iced::Font` (needed to pass `Font::MONOSPACE`).
+- **Wrong theme field name (low)**: §6 snippet now reads `theme.base().text_color`, matching Iced 0.14's `theme::Style { text_color, .. }`. Surrounding prose still notes the accessor is verified at implementation time.
 
 ### Codex review issues addressed (2026-05-23 revision 3)
 
