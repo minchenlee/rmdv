@@ -30,18 +30,43 @@ mdv needs LaTeX math rendering in markdown (`$..$`, `$$..$$`). No existing Rust 
 ```rust
 pub fn inline<Message, Theme, Renderer>(src: &str) -> Element<'static, Message, Theme, Renderer>
 where
-    Theme: iced::widget::svg::Catalog + 'static,
-    Renderer: iced::advanced::svg::Renderer + 'static,
+    Theme: iced::widget::svg::Catalog
+         + iced::widget::text::Catalog
+         + iced::widget::container::Catalog
+         + iced::theme::Base
+         + 'static,
+    <Theme as iced::widget::svg::Catalog>::Class<'static>:
+        From<iced::widget::svg::StyleFn<'static, Theme>>,
+    Renderer: iced::advanced::svg::Renderer
+            + iced::advanced::text::Renderer
+            + 'static,
     Message: 'static;
 
 pub fn block<Message, Theme, Renderer>(src: &str) -> Element<'static, Message, Theme, Renderer>
 where
-    Theme: iced::widget::svg::Catalog + 'static,
-    Renderer: iced::advanced::svg::Renderer + 'static,
+    Theme: iced::widget::svg::Catalog
+         + iced::widget::text::Catalog
+         + iced::widget::container::Catalog
+         + iced::theme::Base
+         + 'static,
+    <Theme as iced::widget::svg::Catalog>::Class<'static>:
+        From<iced::widget::svg::StyleFn<'static, Theme>>,
+    Renderer: iced::advanced::svg::Renderer
+            + iced::advanced::text::Renderer
+            + 'static,
     Message: 'static;
 ```
 
-Generic over `Theme` and `Renderer` so the crate works with any Iced 0.14 app (custom themes/renderers) provided the theme implements `svg::Catalog`. `iced::Theme` already does.
+**Why these bounds:**
+- `svg::Catalog` + `svg::Renderer` — render the math SVG itself.
+- `svg::Catalog::Class<'static>: From<svg::StyleFn<...>>` — required so we can install a `.style(|theme, _| ...)` closure that maps the theme's palette text color into `svg::Style { color: Some(c) }`. Iced 0.14's default `svg::Style` has `color: None` (no filter applied), so an explicit style closure is mandatory for theme-aware math.
+- `text::Catalog` + `text::Renderer` — error fallback uses `text(src)`.
+- `container::Catalog` — `block()` wraps in `container` for centering and padding.
+- `theme::Base` — needed by the `style` closure to read `palette().text`.
+
+The exact bound set will be verified against a compile-check test (`tests/api.rs`) that instantiates the API with `iced::Theme` plus a minimal custom `Theme` mock. If Iced 0.14's actual trait names differ slightly (e.g., `Base` vs. `palette` accessor location), the spec lists the *intent*; the implementation pins the exact bounds at first-build.
+
+The crate works with any Iced 0.14 app that satisfies these bounds. `iced::Theme` satisfies them out of the box.
 
 `inline()` — text-style layout for in-line math.
 `block()` — display-style layout (larger ops, limits above/below big operators), centered with vertical padding.
@@ -166,7 +191,7 @@ fn walk(out: &mut String, b: &Box, origin: Point) {
             //   3. scales by (-font_size / units_per_em) in y to flip y-up → y-down
             // Final SVG transform string (a c b d e f via matrix(...)):
             //   matrix(s 0 0 -s ox oy)   where s = font_size / units_per_em
-            let s = font_size / face::UNITS_PER_EM;
+            let s = font_size / font::units_per_em();   // per-face value cached at lib init, NOT a const
             let path_d = font::outline_in_design_units(*glyph_id);   // raw font-unit path, y-up
             write!(out, r#"<path transform="matrix({s} 0 0 {neg_s} {ox} {oy})" d="{d}"/>"#,
                 s = s, neg_s = -s, ox = origin.x, oy = origin.y, d = path_d).unwrap();
@@ -195,29 +220,28 @@ fn walk(out: &mut String, b: &Box, origin: Point) {
 **Widget wrapper (widget.rs):**
 
 ```rust
-pub(crate) fn from_svg<Message, Theme, Renderer>(bytes: Vec<u8>) -> Element<'static, Message, Theme, Renderer>
+pub(crate) fn from_svg<Message, Theme, Renderer>(bytes: Vec<u8>)
+    -> Element<'static, Message, Theme, Renderer>
 where
-    Theme: iced::widget::svg::Catalog + 'static,
+    Theme: iced::widget::svg::Catalog + iced::theme::Base + 'static,
+    <Theme as iced::widget::svg::Catalog>::Class<'static>:
+        From<iced::widget::svg::StyleFn<'static, Theme>>,
     Renderer: iced::advanced::svg::Renderer + 'static,
     Message: 'static,
 {
     iced::widget::svg(iced::widget::svg::Handle::from_memory(bytes))
+        .style(|theme: &Theme, _status| iced::widget::svg::Style {
+            color: Some(theme.base().text),       // exact accessor pinned at impl time
+        })
         .width(Length::Shrink)
         .height(Length::Shrink)
         .into()
 }
 ```
 
-Generic over `Theme: svg::Catalog` and `Renderer: svg::Renderer`. Works with `iced::Theme` and any user theme that implements `svg::Catalog`. Color comes from the theme's default `svg::Catalog` style (Iced 0.14 uses palette text color by default). Consumers needing an explicit override can construct the underlying `iced::widget::svg` directly via the lower-level API — exposed in v0.5 via an `inline_with_style` / `block_with_style` extension if demand surfaces.
+**Why an explicit style closure is required:** Iced 0.14's default `svg::Style` is `Style::default()` with `color: None`, which means no recolor filter is applied and the SVG renders its intrinsic fill (default black). To make the math follow the theme's text color, the widget MUST install a `.style(...)` closure. The bound `Class<'static>: From<StyleFn<'static, Theme>>` is what allows `.style(...)` to compile with a generic `Theme`.
 
-**Public API generics** (matches widget.rs above):
-
-```rust
-pub fn inline<Message, Theme, Renderer>(src: &str) -> Element<'static, Message, Theme, Renderer>
-where Theme: svg::Catalog + 'static, Renderer: svg::Renderer + 'static, Message: 'static;
-pub fn block<Message, Theme, Renderer>(src: &str)  -> Element<'static, Message, Theme, Renderer>
-where Theme: svg::Catalog + 'static, Renderer: svg::Renderer + 'static, Message: 'static;
-```
+The exact palette accessor (`theme.base().text`, `theme.palette().text`, or similar) is pinned at first implementation against Iced 0.14's actual API surface; the spec records the intent (read theme text color from a Base-like trait).
 
 **Block layout** — `block()` wraps the SVG element in `container` with `center_x` + vertical padding.
 
@@ -323,6 +347,12 @@ Before mdv integrates (v0.2.0), end-to-end + steady-state numbers are validated 
 - ✅ Errors: raw source in red monospace.
 - ✅ Architecture: pulldown-latex events → IR → Boxer → SVG → `iced::widget::svg`.
 - ✅ Repo: separate from mdv.
+
+### Codex review issues addressed (2026-05-23 revision 3)
+
+- **Public API bounds incomplete (medium)**: §3 expanded bounds to include `text::Catalog` + `container::Catalog` (used by error fallback and `block()`), `text::Renderer`, `theme::Base`, and the `Class<'static>: From<StyleFn<...>>` projection required for the `.style()` closure. Compile-check test in `tests/api.rs` will verify against `iced::Theme` + a minimal mock theme.
+- **Default svg style does not recolor (medium)**: §6 widget wrapper now installs an explicit `.style(|theme, _| svg::Style { color: Some(theme_text) })` closure. Spec previously claimed "default catalog uses palette text" — corrected: Iced 0.14 default is `color: None` (no filter). Without the closure, math would render as intrinsic black on any theme.
+- **`UNITS_PER_EM` constant slip (low)**: §6 code snippet now reads `font::units_per_em()` as a per-face function call, matching the prose. Not a compile-time constant.
 
 ### Codex review issues addressed (2026-05-23 revision 2)
 
