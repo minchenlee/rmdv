@@ -612,6 +612,25 @@ impl App {
         Some(vec![(crate::ast::BlockId(0), block)])
     }
 
+    /// Select root's first child if nothing is selected, opening the preview
+    /// panel. Called on mindmap toggle-on and on file load while in mindmap
+    /// mode, so a freshly opened document focuses its first heading.
+    fn mindmap_focus_first_child(&mut self) {
+        if self.view_mode != ViewMode::Mindmap || self.mindmap_selected.is_some() {
+            return;
+        }
+        let (nodes, _) =
+            crate::mindmap::build_layout(&self.ast, self.file.as_deref(), &self.mindmap_collapsed);
+        if let Some(id) = nodes
+            .first()
+            .and_then(|root| root.children.first().copied())
+            .and_then(|idx| nodes[idx].id)
+        {
+            self.mindmap_selected = Some(id);
+            self.mindmap_panel_open = true;
+        }
+    }
+
     fn reparse_source(&mut self) {
         if let Some(ast) = self.synthesize_data_ast() {
             self.ast = ast;
@@ -806,13 +825,18 @@ impl App {
                 }
             }
         };
+        // Center content vertically when it fits; scroll from the top when it
+        // overflows. The scrollable measures the inner column's natural height:
+        // a Fill-height wrapper would clamp to the viewport and kill scrolling,
+        // so instead we anchor the column and let the outer container center it.
         let scrolled = scrollable(container(content).padding(Padding::from([24, 24])))
-            .height(Length::Fill)
+            .height(Length::Shrink)
             .direction(slim_scroll_direction())
             .style(move |_, status| sleek_scrollable_style(status, pal_c, recently_scrolled));
         container(scrolled)
             .width(Length::Fixed(panel_width))
             .height(Length::Fill)
+            .center_y(Length::Fill)
             .style(move |_| container::Style {
                 background: Some(pal_c.surface.into()),
                 border: Border {
@@ -1143,6 +1167,9 @@ impl App {
                     }
                     ViewMode::Rendered => self.view_mode = ViewMode::Mindmap,
                 }
+                // On first open (no selection yet), focus root's first child so
+                // arrow nav and the preview panel start at the top heading.
+                self.mindmap_focus_first_child();
                 restore
             }
             Message::MindmapToggleNode(id) => {
@@ -1578,6 +1605,9 @@ impl App {
                 }
                 self.error = None;
                 self.rebuild_matches();
+                // Opening a file while in mindmap mode: focus root's first child
+                // (file load cleared the selection above).
+                self.mindmap_focus_first_child();
                 self.reveal_current_file();
                 let mut fetches: Vec<Task<Message>> = Vec::new();
                 for (_id, b) in &self.ast {
@@ -2229,19 +2259,21 @@ impl App {
                     return Message::Noop;
                 }
                 let m: Option<Message> = match key {
-                    Key::Named(Named::ArrowDown) if mindmap && !overlay_open => {
+                    // Sidebar wins arrow keys when open: keyboard file nav
+                    // takes priority over mindmap node nav (handled below).
+                    Key::Named(Named::ArrowDown) if mindmap && !overlay_open && !tree_active => {
                         Some(Message::MindmapNavigate(MindmapDir::Down))
                     }
-                    Key::Named(Named::ArrowUp) if mindmap && !overlay_open => {
+                    Key::Named(Named::ArrowUp) if mindmap && !overlay_open && !tree_active => {
                         Some(Message::MindmapNavigate(MindmapDir::Up))
                     }
-                    Key::Named(Named::ArrowLeft) if mindmap && !overlay_open => {
+                    Key::Named(Named::ArrowLeft) if mindmap && !overlay_open && !tree_active => {
                         Some(Message::MindmapNavigate(MindmapDir::Left))
                     }
-                    Key::Named(Named::ArrowRight) if mindmap && !overlay_open => {
+                    Key::Named(Named::ArrowRight) if mindmap && !overlay_open && !tree_active => {
                         Some(Message::MindmapNavigate(MindmapDir::Right))
                     }
-                    Key::Named(Named::Space) if mindmap && !overlay_open => {
+                    Key::Named(Named::Space) if mindmap && !overlay_open && !tree_active => {
                         Some(Message::MindmapToggleSelected)
                     }
                     Key::Named(Named::ArrowDown) if tree_active => Some(Message::TreeMove(1)),
