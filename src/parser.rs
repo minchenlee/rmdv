@@ -9,6 +9,7 @@ pub fn parse(src: &str) -> (Vec<(BlockId, Block)>, Vec<u32>) {
     opts.insert(Options::ENABLE_STRIKETHROUGH);
     opts.insert(Options::ENABLE_TASKLISTS);
     opts.insert(Options::ENABLE_SMART_PUNCTUATION);
+    opts.insert(Options::ENABLE_MATH);
     let parser = Parser::new_ext(src, opts).into_offset_iter();
     let mut state = ParseState::default();
     let mut pending_offset: Option<u32> = None;
@@ -124,6 +125,20 @@ impl ParseState {
             Event::Text(s) => self.push_inline(Inline::Text(s.into_string())),
             Event::Code(s) => self.push_inline(Inline::Code(s.into_string())),
             Event::SoftBreak | Event::HardBreak => self.push_inline(Inline::Text("\n".into())),
+            // Block-only math scope: display math becomes a Math diagram block;
+            // inline math renders as literal `$…$` source text for now.
+            Event::DisplayMath(s) => {
+                let source = s.into_string();
+                let mut h = DefaultHasher::new();
+                2u8.hash(&mut h);
+                source.hash(&mut h);
+                self.push_block(Block::Diagram {
+                    kind: DiagramKind::Math,
+                    source,
+                    hash: h.finish(),
+                });
+            }
+            Event::InlineMath(s) => self.push_inline(Inline::Text(format!("${}$", s))),
             Event::Rule => self.push_block(Block::Rule),
             Event::TaskListMarker(checked) => {
                 if let Some(Frame::Item { task, .. }) = self.stack.last_mut() {
@@ -199,6 +214,9 @@ impl ParseState {
                 let id = slugify(&inline_to_string(&inlines));
                 self.push_block(Block::Heading { level, id, inlines });
             }
+            // Drop paragraphs left empty after their only content (e.g. a
+            // `$$…$$` display-math span) was hoisted out into its own block.
+            Frame::Paragraph(inlines) if inlines.is_empty() => {}
             Frame::Paragraph(inlines) => self.push_block(Block::Paragraph(inlines)),
             Frame::Emph(children) => self.push_inline(Inline::Emph(children)),
             Frame::Strong(children) => self.push_inline(Inline::Strong(children)),

@@ -46,6 +46,11 @@ pub const MAX_SVG_BYTES: usize = 4 * 1024 * 1024;
 /// Default LRU cache capacity.
 pub const DEFAULT_CACHE_CAP: usize = 64;
 
+/// Retina supersample factor for inline rasterization. The pixmap is rendered
+/// at this multiple of the SVG's intrinsic size for crispness; consumers that
+/// want intrinsic logical size (math display) divide pixel dims by this.
+pub const RASTER_SCALE: f32 = 2.0;
+
 /// Output of a successful diagram render. Carries the raw SVG bytes plus a
 /// pre-rasterized RGBA pixmap so the UI thread never re-parses SVG at draw
 /// time.
@@ -72,6 +77,11 @@ pub enum DiagramState {
     Ready {
         inline: image::Handle,
         source_bytes: Arc<Vec<u8>>,
+        /// Device-pixel width of the rasterized image. Math display divides by
+        /// [`RASTER_SCALE`] to recover the intended logical width (the inline
+        /// raster is 2× for retina crispness; iced would otherwise draw it at
+        /// 2× logical size). Diagrams ignore this — they fill the column.
+        device_w: u32,
     },
     /// Render failed — held so we don't retry on every redraw.
     Err(String),
@@ -293,7 +303,7 @@ fn rasterize_for_inline(svg_bytes: &[u8]) -> Result<(Vec<u8>, u32, u32), String>
     if w <= 0.0 || h <= 0.0 {
         return Err("svg has zero size".into());
     }
-    let target = (w * 2.0).min(MAX_WIDTH);
+    let target = (w * RASTER_SCALE).min(MAX_WIDTH);
     let scale = (target / w).max(0.01);
     let pw = (w * scale).round().max(1.0) as u32;
     let ph = (h * scale).round().max(1.0) as u32;
@@ -327,6 +337,7 @@ pub fn render_blocking(
         match kind {
             DiagramKind::Mermaid => render_mermaid(&source, &palette, &font_family),
             DiagramKind::Dot => render_dot(&source, &palette, &font_family),
+            DiagramKind::Math => render_math(&source, &palette),
         }
     });
 
@@ -407,6 +418,30 @@ fn render_dot(source: &str, palette: &Palette, font_family: &str) -> Result<Stri
     Ok(svg.finalize())
 }
 
+/// Render `$$…$$` display math to SVG via `iced_math`. Glyphs are filled with
+/// the theme foreground so block math matches body-text color; the SVG is then
+/// rasterized through the same resvg path as other diagrams (iced_math emits
+/// pure `<path>`/`<rect>` — no fonts needed at raster time).
+/// Display-math glyph size in px. Tuned against the 15.5px body text so the
+/// fraction body reads at roughly body weight rather than dominating the
+/// column (see the 15.5/16/17/18 comparison — 16 matched best).
+const MATH_DISPLAY_PX: f32 = 18.0;
+
+fn render_math(source: &str, palette: &Palette) -> Result<String, String> {
+    let fill = iced_math::Color::rgb(
+        (palette.fg.r.clamp(0.0, 1.0) * 255.0).round() as u8,
+        (palette.fg.g.clamp(0.0, 1.0) * 255.0).round() as u8,
+        (palette.fg.b.clamp(0.0, 1.0) * 255.0).round() as u8,
+    );
+    let bytes = iced_math::MathRenderer::new()
+        .font_size(MATH_DISPLAY_PX)
+        .display_style(true)
+        .color(fill)
+        .to_svg(source)
+        .map_err(|e| e.to_string())?;
+    String::from_utf8(bytes).map_err(|e| e.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -420,6 +455,34 @@ mod tests {
     fn init_skipped_when_user_provides_it() {
         assert!(has_user_init("%%{init: { 'theme': 'dark' }}%%\ngraph LR\nA-->B"));
         assert!(!has_user_init("graph LR\nA-->B"));
+    }
+
+    #[test]
+    fn math_renders_all_constructs_to_rasterizable_svg() {
+        // Each goes through the full render_blocking + rasterize path the app
+        // uses, proving fractions/matrices/\mathbb/\binom/sums all produce a
+        // non-empty pixmap rather than an error or zero-size SVG.
+        for src in [
+            r"\frac{-b \pm \sqrt{b^2 - 4ac}}{2a}",
+            r"\begin{pmatrix} a & b \\ c & d \end{pmatrix}",
+            r"\mathbb{E}[X] \in \mathbb{R}^n \quad \binom{n}{k}",
+            r"\sum_{i=1}^{n} i = \frac{n(n+1)}{2}",
+        ] {
+            let svg = render_blocking(DiagramKind::Math, src, &palette(), "")
+                .unwrap_or_else(|e| panic!("render failed for {src:?}: {e}"));
+            assert!(svg.contains("<path"), "no glyph paths for {src:?}");
+            let (rgba, w, h) = rasterize_for_inline(svg.as_bytes())
+                .unwrap_or_else(|e| panic!("raster failed for {src:?}: {e}"));
+            assert!(w > 0 && h > 0 && !rgba.is_empty(), "empty raster for {src:?}");
+        }
+    }
+
+    #[test]
+    fn math_glyph_fill_follows_palette_fg() {
+        let svg = render_blocking(DiagramKind::Math, "x", &Palette::ONE_LIGHT, "").unwrap();
+        let fg = Palette::ONE_LIGHT.fg;
+        let hex = color_to_hex(fg);
+        assert!(svg.contains(&hex), "expected fill {hex} in svg, got: {svg}");
     }
 
     #[test]

@@ -1956,6 +1956,7 @@ impl App {
                         crate::diagram::DiagramState::Ready {
                             inline,
                             source_bytes: std::sync::Arc::new(svg),
+                            device_w: w,
                         }
                     }
                     Err(msg) => crate::diagram::DiagramState::Err(msg),

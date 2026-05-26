@@ -17,7 +17,7 @@ pub enum Block {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize)]
-pub enum DiagramKind { Mermaid, Dot }
+pub enum DiagramKind { Mermaid, Dot, Math }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub enum Inline {

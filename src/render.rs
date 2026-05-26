@@ -541,8 +541,12 @@ fn render_block<'a>(
                 })
                 .into()
         }
-        Block::Diagram { source, hash, .. } => {
-            render_diagram(*hash, source, pal, typ, img)
+        Block::Diagram { source, hash, kind } => {
+            if matches!(kind, crate::ast::DiagramKind::Math) {
+                render_math_block(*hash, source, pal, typ, img)
+            } else {
+                render_diagram(*hash, source, pal, typ, img)
+            }
         }
         Block::List { ordered, items } => render_list(*ordered, items, pal, typ, &mut ctx, img),
         Block::Table { headers, rows } => render_table(headers, rows, pal, typ, &mut ctx),
@@ -782,6 +786,91 @@ fn render_image<'a>(
                 }
             }
             _ => placeholder(format!("[image missing: {alt} ({url})]")),
+        }
+    }
+}
+
+/// Render a `Block::Diagram { kind: Math }`. Unlike mermaid/dot diagrams,
+/// display math reads as document content, not a figure — so no card, no
+/// border, no copy/zoom chrome. Just the centered formula on its own line.
+///
+/// - `Ready` → centered image of the rendered SVG; click copies the LaTeX.
+/// - `Pending` / cache miss → faded centered source.
+/// - `Err(msg)` → centered source + a small error chip (tooltip carries detail).
+fn render_math_block<'a>(
+    hash: u64,
+    source: &'a str,
+    pal: &Palette,
+    typ: &Typography,
+    img: &ImgCtx<'a>,
+) -> Element<'a, Message> {
+    let key = (hash, img.diagram_theme_id);
+    match img.diagram_cache.peek(&key) {
+        Some(DiagramState::Ready { inline, device_w, .. }) => {
+            // The inline raster is RASTER_SCALE× the intrinsic size; draw it at
+            // intrinsic logical width so the formula matches its design size
+            // instead of rendering 2× too large.
+            let logical_w = *device_w as f32 / crate::diagram::RASTER_SCALE;
+            let el = image_widget(inline.clone())
+                .width(Length::Fixed(logical_w))
+                .height(Length::Shrink)
+                .content_fit(iced::ContentFit::Contain);
+            // Click the formula → copy its LaTeX source (reuses CopyCode's
+            // clipboard write + "Copied" toast). Pointer cursor hints it.
+            let clickable = mouse_area(el)
+                .interaction(iced::mouse::Interaction::Pointer)
+                .on_press(Message::CopyCode(source.to_string()));
+            container(clickable)
+                .center_x(Length::Fill)
+                .padding(Padding::from([4, 0]))
+                .into()
+        }
+        Some(DiagramState::Err(msg)) => {
+            let body = container(
+                text(source)
+                    .font(iced::Font::MONOSPACE)
+                    .size(typ.code_size)
+                    .color(pal.fg),
+            )
+            .center_x(Length::Fill);
+            let chip = container(chip(pal, "⚠ math error", pal.fg))
+                .padding(Padding::from([4, 0]))
+                .align_x(iced::alignment::Horizontal::Center)
+                .width(Length::Fill);
+            let stacked: Element<'_, Message> =
+                Column::new().spacing(4).push(body).push(chip).into();
+            tooltip(
+                stacked,
+                container(text(msg.clone()).color(pal.fg).size(12))
+                    .padding(Padding::from([4, 8]))
+                    .style({
+                        let pal_t = *pal;
+                        move |_| container::Style {
+                            background: Some(pal_t.surface_alt.into()),
+                            border: iced::Border {
+                                color: pal_t.rule,
+                                width: 1.0,
+                                radius: 5.0.into(),
+                            },
+                            ..Default::default()
+                        }
+                    }),
+                iced::widget::tooltip::Position::Top,
+            )
+            .into()
+        }
+        _ => {
+            let mut color = pal.fg;
+            color.a *= 0.45;
+            container(
+                text(source)
+                    .font(iced::Font::MONOSPACE)
+                    .size(typ.code_size)
+                    .color(color),
+            )
+            .center_x(Length::Fill)
+            .padding(Padding::from([4, 0]))
+            .into()
         }
     }
 }
