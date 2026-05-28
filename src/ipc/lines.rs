@@ -26,7 +26,9 @@ pub fn build_byte_to_line(src: &str) -> ByteToLine {
             starts.push((i + 1) as u32);
         }
     }
-    ByteToLine { line_starts: starts }
+    ByteToLine {
+        line_starts: starts,
+    }
 }
 
 /// Largest index `i` such that `block_lines[i] <= line`. Returns `Some(0)` if

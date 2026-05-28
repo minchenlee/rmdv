@@ -542,6 +542,22 @@ impl Typography {
         h6_size: 14.5,
         code_size: 13.5,
     };
+
+    /// All font sizes multiplied by `factor`. line_height and measure_ch
+    /// (ratios, not point sizes) are left untouched.
+    pub fn scaled(self, factor: f32) -> Typography {
+        Typography {
+            body_size: self.body_size * factor,
+            h1_size: self.h1_size * factor,
+            h2_size: self.h2_size * factor,
+            h3_size: self.h3_size * factor,
+            h4_size: self.h4_size * factor,
+            h5_size: self.h5_size * factor,
+            h6_size: self.h6_size * factor,
+            code_size: self.code_size * factor,
+            ..self
+        }
+    }
 }
 
 pub fn palette_for(preset: ThemePreset) -> Palette {

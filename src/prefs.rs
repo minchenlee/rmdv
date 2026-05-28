@@ -3,10 +3,25 @@ use std::path::PathBuf;
 
 const FILE_NAME: &str = "prefs.json";
 
-#[derive(Default, Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Prefs {
     #[serde(default)]
     pub auto_focus_on_nav: bool,
+    #[serde(default = "default_true")]
+    pub show_footer: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+impl Default for Prefs {
+    fn default() -> Self {
+        Prefs {
+            auto_focus_on_nav: false,
+            show_footer: true,
+        }
+    }
 }
 
 fn store_path() -> Option<PathBuf> {

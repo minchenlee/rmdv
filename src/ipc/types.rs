@@ -89,12 +89,27 @@ pub struct Response {
 
 impl Response {
     pub fn ok(id: u64) -> Self {
-        Self { id, ok: true, result: None, error: None }
+        Self {
+            id,
+            ok: true,
+            result: None,
+            error: None,
+        }
     }
     pub fn ok_with(id: u64, result: serde_json::Value) -> Self {
-        Self { id, ok: true, result: Some(result), error: None }
+        Self {
+            id,
+            ok: true,
+            result: Some(result),
+            error: None,
+        }
     }
     pub fn err(id: u64, msg: impl Into<String>) -> Self {
-        Self { id, ok: false, result: None, error: Some(msg.into()) }
+        Self {
+            id,
+            ok: false,
+            result: None,
+            error: Some(msg.into()),
+        }
     }
 }

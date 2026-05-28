@@ -22,9 +22,18 @@ pub fn list_sections(src: &str) -> Vec<Section> {
             }
             let title = inline_text(inlines);
             stack.push((*level, title.clone()));
-            let path = stack.iter().map(|(_, t)| t.as_str()).collect::<Vec<_>>().join("/");
+            let path = stack
+                .iter()
+                .map(|(_, t)| t.as_str())
+                .collect::<Vec<_>>()
+                .join("/");
             let line = table.line_for_byte(offsets[i] as usize);
-            out.push(Section { level: *level, title, path, line });
+            out.push(Section {
+                level: *level,
+                title,
+                path,
+                line,
+            });
         }
     }
     out
@@ -41,8 +50,7 @@ pub fn resolve_section_path<'a>(needle: &str, sections: &'a [Section]) -> Option
     }
     sections.iter().find(|s| {
         let hay: Vec<&str> = s.path.split('/').collect();
-        hay.len() >= needle_segs.len()
-            && hay[hay.len() - needle_segs.len()..] == needle_segs[..]
+        hay.len() >= needle_segs.len() && hay[hay.len() - needle_segs.len()..] == needle_segs[..]
     })
 }
 
@@ -58,10 +66,14 @@ fn push_inline(i: &Inline, out: &mut String) {
     match i {
         Inline::Text(s) | Inline::Code(s) => out.push_str(s),
         Inline::Emph(c) | Inline::Strong(c) | Inline::Strike(c) => {
-            for x in c { push_inline(x, out); }
+            for x in c {
+                push_inline(x, out);
+            }
         }
         Inline::Link { children, .. } => {
-            for x in children { push_inline(x, out); }
+            for x in children {
+                push_inline(x, out);
+            }
         }
     }
 }

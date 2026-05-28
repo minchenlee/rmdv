@@ -453,7 +453,9 @@ mod tests {
 
     #[test]
     fn init_skipped_when_user_provides_it() {
-        assert!(has_user_init("%%{init: { 'theme': 'dark' }}%%\ngraph LR\nA-->B"));
+        assert!(has_user_init(
+            "%%{init: { 'theme': 'dark' }}%%\ngraph LR\nA-->B"
+        ));
         assert!(!has_user_init("graph LR\nA-->B"));
     }
 
@@ -473,7 +475,10 @@ mod tests {
             assert!(svg.contains("<path"), "no glyph paths for {src:?}");
             let (rgba, w, h) = rasterize_for_inline(svg.as_bytes())
                 .unwrap_or_else(|e| panic!("raster failed for {src:?}: {e}"));
-            assert!(w > 0 && h > 0 && !rgba.is_empty(), "empty raster for {src:?}");
+            assert!(
+                w > 0 && h > 0 && !rgba.is_empty(),
+                "empty raster for {src:?}"
+            );
         }
     }
 
@@ -515,8 +520,7 @@ mod tests {
     #[test]
     fn oversized_source_rejected() {
         let big = "x".repeat(MAX_SOURCE_BYTES + 1);
-        let err =
-            render_blocking(DiagramKind::Mermaid, &big, &palette(), "system-ui").unwrap_err();
+        let err = render_blocking(DiagramKind::Mermaid, &big, &palette(), "system-ui").unwrap_err();
         assert!(err.contains("too large"), "got: {err}");
     }
 }

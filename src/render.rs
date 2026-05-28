@@ -2,7 +2,10 @@ use crate::app::{ImageState, Message};
 use crate::ast::{Block, BlockId, Inline, ListItem};
 use crate::diagram::{DiagramCache, DiagramState};
 use crate::theme::{Palette, Typography};
-use iced::widget::{container, image as image_widget, mouse_area, rich_text, row, span, stack, svg as svg_widget, text, tooltip, Column, Space};
+use iced::widget::{
+    container, image as image_widget, mouse_area, rich_text, row, span, stack, svg as svg_widget,
+    text, tooltip, Column, Space,
+};
 use iced::{Element, Length, Padding};
 use std::collections::HashMap;
 use std::path::Path;
@@ -33,7 +36,12 @@ pub fn render<'a>(
     // Full render lets Iced's scrollable handle scrolling internally without
     // re-emitting the body tree per delta.
     let _ = (viewport, cache);
-    let img_ctx = ImgCtx { cache: image_cache, current_file, diagram_cache, diagram_theme_id };
+    let img_ctx = ImgCtx {
+        cache: image_cache,
+        current_file,
+        diagram_cache,
+        diagram_theme_id,
+    };
     let mut col = Column::new().spacing(14);
     let mut fold_until: Option<u8> = None;
     for (idx, (id, b)) in blocks.iter().enumerate() {
@@ -52,7 +60,9 @@ pub fn render<'a>(
             };
             let is_folded = folded.contains(id);
             let show_chev = is_folded || hovered_heading == Some(*id);
-            col = col.push(render_heading_with_chevron(*id, b, pal, typ, &hl.query, local, is_folded, show_chev));
+            col = col.push(render_heading_with_chevron(
+                *id, b, pal, typ, &hl.query, local, is_folded, show_chev,
+            ));
             if is_folded {
                 fold_until = Some(lvl);
             }
@@ -86,13 +96,25 @@ fn render_heading_with_chevron<'a>(
 ) -> Element<'a, Message> {
     let cache = EMPTY_IMG_CACHE.get_or_init(HashMap::new);
     let dcache = EMPTY_DIAGRAM_CACHE.get_or_init(|| DiagramCache::new(1));
-    let img = ImgCtx { cache, current_file: None, diagram_cache: dcache, diagram_theme_id: 0 };
+    let img = ImgCtx {
+        cache,
+        current_file: None,
+        diagram_cache: dcache,
+        diagram_theme_id: 0,
+    };
     let head = render_block(b, pal, typ, query, current_in_block, &img);
-    let glyph = if folded { crate::icon::ic::CHEVRON_RIGHT } else { crate::icon::ic::CHEVRON_DOWN };
-    let color = if visible { pal.muted } else { iced::Color::TRANSPARENT };
+    let glyph = if folded {
+        crate::icon::ic::CHEVRON_RIGHT
+    } else {
+        crate::icon::ic::CHEVRON_DOWN
+    };
+    let color = if visible {
+        pal.muted
+    } else {
+        iced::Color::TRANSPARENT
+    };
     let chev = mouse_area(
-        container(crate::icon::glyph(glyph, 14.0, color))
-            .padding(Padding::from([0, 4])),
+        container(crate::icon::glyph(glyph, 14.0, color)).padding(Padding::from([0, 4])),
     )
     .interaction(iced::mouse::Interaction::Pointer)
     .on_press(Message::ToggleFold(id));
@@ -111,7 +133,8 @@ fn render_heading_with_chevron<'a>(
         .into()
 }
 
-static EMPTY_IMG_CACHE: std::sync::OnceLock<HashMap<String, ImageState>> = std::sync::OnceLock::new();
+static EMPTY_IMG_CACHE: std::sync::OnceLock<HashMap<String, ImageState>> =
+    std::sync::OnceLock::new();
 static EMPTY_DIAGRAM_CACHE: std::sync::OnceLock<DiagramCache> = std::sync::OnceLock::new();
 
 pub fn data_view<'a>(
@@ -140,7 +163,11 @@ pub fn data_view<'a>(
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum DataLang { Json, Yaml, Toml }
+enum DataLang {
+    Json,
+    Yaml,
+    Toml,
+}
 
 fn detect_data_lang(code: &str) -> DataLang {
     let t = code.trim_start();
@@ -150,7 +177,8 @@ fn detect_data_lang(code: &str) -> DataLang {
     if code.lines().any(|l| {
         let lt = l.trim_start();
         lt.starts_with('[') && lt.contains(']')
-    }) && !code.contains(':') {
+    }) && !code.contains(':')
+    {
         return DataLang::Toml;
     }
     if code.contains(" = ") || code.lines().any(|l| l.trim_start().starts_with('[')) {
@@ -161,10 +189,16 @@ fn detect_data_lang(code: &str) -> DataLang {
 
 fn depth_palette(pal: &Palette) -> [iced::Color; 6] {
     let s = pal.syntax;
-    [s.function, s.keyword, s.type_, s.constant, s.variable, s.operator]
+    [
+        s.function, s.keyword, s.type_, s.constant, s.variable, s.operator,
+    ]
 }
 
-fn colorize_data(lang: DataLang, code: &str, pal: &Palette) -> Vec<(std::ops::Range<usize>, iced::Color)> {
+fn colorize_data(
+    lang: DataLang,
+    code: &str,
+    pal: &Palette,
+) -> Vec<(std::ops::Range<usize>, iced::Color)> {
     match lang {
         DataLang::Json => colorize_json(code, pal),
         DataLang::Yaml => colorize_yaml(code, pal),
@@ -179,7 +213,8 @@ fn color_for_value(text: &str, pal: &Palette) -> iced::Color {
         s.constant
     } else if t.parse::<f64>().is_ok() {
         s.number
-    } else if (t.starts_with('"') && t.ends_with('"')) || (t.starts_with('\'') && t.ends_with('\'')) {
+    } else if (t.starts_with('"') && t.ends_with('"')) || (t.starts_with('\'') && t.ends_with('\''))
+    {
         s.string
     } else if t.is_empty() {
         pal.fg
@@ -253,7 +288,19 @@ fn colorize_json(code: &str, pal: &Palette) -> Vec<(std::ops::Range<usize>, iced
             _ => {
                 let start = i;
                 while i < bytes.len()
-                    && !matches!(bytes[i], b'{' | b'}' | b'[' | b']' | b',' | b':' | b' ' | b'\t' | b'\n' | b'\r' | b'"')
+                    && !matches!(
+                        bytes[i],
+                        b'{' | b'}'
+                            | b'['
+                            | b']'
+                            | b','
+                            | b':'
+                            | b' '
+                            | b'\t'
+                            | b'\n'
+                            | b'\r'
+                            | b'"'
+                    )
                 {
                     i += 1;
                 }
@@ -300,7 +347,10 @@ fn colorize_yaml(code: &str, pal: &Palette) -> Vec<(std::ops::Range<usize>, iced
         if body_trim.starts_with('#') {
             out.push((after_ws_byte..after_ws_byte + body_trim.len(), s.comment));
             if trailing_nl > 0 {
-                out.push((after_ws_byte + body_trim.len()..line_start + line_len, pal.fg));
+                out.push((
+                    after_ws_byte + body_trim.len()..line_start + line_len,
+                    pal.fg,
+                ));
             }
             continue;
         }
@@ -352,7 +402,10 @@ fn push_yaml_kv_or_value(
             return;
         }
     }
-    out.push((body_start..body_start + body.len(), color_for_value(body, pal)));
+    out.push((
+        body_start..body_start + body.len(),
+        color_for_value(body, pal),
+    ));
 }
 
 fn colorize_toml(code: &str, pal: &Palette) -> Vec<(std::ops::Range<usize>, iced::Color)> {
@@ -442,7 +495,12 @@ fn render_block<'a>(
     current_in_block: Option<usize>,
     img: &ImgCtx<'a>,
 ) -> Element<'a, Message> {
-    let mut ctx = HlCtx { query, counter: 0, current_in_block, pal: *pal };
+    let mut ctx = HlCtx {
+        query,
+        counter: 0,
+        current_in_block,
+        pal: *pal,
+    };
     match b {
         Block::Heading { level, inlines, .. } => {
             let size = match level {
@@ -478,7 +536,14 @@ fn render_block<'a>(
                 cursor = s.range.end;
             }
             if cursor < code.len() {
-                push_code_with_hl(&code[cursor..], pal_c.fg, pal, typ.code_size, &mut out, &mut ctx);
+                push_code_with_hl(
+                    &code[cursor..],
+                    pal_c.fg,
+                    pal,
+                    typ.code_size,
+                    &mut out,
+                    &mut ctx,
+                );
             }
             let body = container(rich_text(out))
                 .padding(Padding::from(14))
@@ -494,11 +559,10 @@ fn render_block<'a>(
                 .width(Length::Fill);
             let code_str = code.to_string();
             let icon_glyph = crate::icon::glyph(crate::icon::ic::COPY, 13.0, pal_c.muted);
-            let copy_btn = container(
-                mouse_area(
-                    container(icon_glyph)
-                        .padding(Padding::from([4, 6]))
-                        .style(move |_| container::Style {
+            let copy_btn =
+                container(
+                    mouse_area(container(icon_glyph).padding(Padding::from([4, 6])).style(
+                        move |_| container::Style {
                             background: Some(pal_c.code_bg.into()),
                             border: iced::Border {
                                 color: pal_c.code_border,
@@ -506,25 +570,28 @@ fn render_block<'a>(
                                 radius: 6.0.into(),
                             },
                             ..Default::default()
-                        }),
+                        },
+                    ))
+                    .interaction(iced::mouse::Interaction::Pointer)
+                    .on_press(Message::CopyCode(code_str)),
                 )
-                .interaction(iced::mouse::Interaction::Pointer)
-                .on_press(Message::CopyCode(code_str)),
-            )
-            .padding(Padding::from([6, 8]))
-            .align_x(iced::alignment::Horizontal::Right)
-            .width(Length::Fill);
+                .padding(Padding::from([6, 8]))
+                .align_x(iced::alignment::Horizontal::Right)
+                .width(Length::Fill);
             stack![body, copy_btn].into()
         }
         Block::Blockquote(blocks) => {
-            let inner = blocks
-                .iter()
-                .fold(Column::new().spacing(8), |c, b| {
-                    c.push(render_block(b, pal, typ, query, current_in_block, img))
-                });
+            let inner = blocks.iter().fold(Column::new().spacing(8), |c, b| {
+                c.push(render_block(b, pal, typ, query, current_in_block, img))
+            });
             let pal_q = *pal;
             container(inner)
-                .padding(Padding { top: 2.0, right: 14.0, bottom: 2.0, left: 17.0 })
+                .padding(Padding {
+                    top: 2.0,
+                    right: 14.0,
+                    bottom: 2.0,
+                    left: 17.0,
+                })
                 .width(Length::Fill)
                 .style(move |_| container::Style {
                     border: iced::Border {
@@ -652,17 +719,42 @@ fn push_text_with_hl<'a>(
     while let Some(rel) = lower_text[cursor..].find(&lower_q) {
         let abs = cursor + rel;
         if abs > cursor {
-            out.push(make_span(&text_str[cursor..abs], pal, size, st, monospace, None));
+            out.push(make_span(
+                &text_str[cursor..abs],
+                pal,
+                size,
+                st,
+                monospace,
+                None,
+            ));
         }
         let end = abs + lower_q.len();
         let is_current = ctx.current_in_block == Some(ctx.counter);
-        let bg = if is_current { ctx.pal.match_current_bg } else { ctx.pal.match_bg };
-        out.push(make_span(&text_str[abs..end], pal, size, st, monospace, Some(bg)));
+        let bg = if is_current {
+            ctx.pal.match_current_bg
+        } else {
+            ctx.pal.match_bg
+        };
+        out.push(make_span(
+            &text_str[abs..end],
+            pal,
+            size,
+            st,
+            monospace,
+            Some(bg),
+        ));
         ctx.counter += 1;
         cursor = end;
     }
     if cursor < text_str.len() {
-        out.push(make_span(&text_str[cursor..], pal, size, st, monospace, None));
+        out.push(make_span(
+            &text_str[cursor..],
+            pal,
+            size,
+            st,
+            monospace,
+            None,
+        ));
     }
 }
 
@@ -675,7 +767,12 @@ fn push_code_with_hl<'a>(
     ctx: &mut HlCtx<'_>,
 ) {
     if ctx.query.is_empty() {
-        out.push(span(text_str).font(iced::Font::MONOSPACE).size(size).color(color));
+        out.push(
+            span(text_str)
+                .font(iced::Font::MONOSPACE)
+                .size(size)
+                .color(color),
+        );
         return;
     }
     let lower_text = text_str.to_lowercase();
@@ -684,11 +781,20 @@ fn push_code_with_hl<'a>(
     while let Some(rel) = lower_text[cursor..].find(&lower_q) {
         let abs = cursor + rel;
         if abs > cursor {
-            out.push(span(&text_str[cursor..abs]).font(iced::Font::MONOSPACE).size(size).color(color));
+            out.push(
+                span(&text_str[cursor..abs])
+                    .font(iced::Font::MONOSPACE)
+                    .size(size)
+                    .color(color),
+            );
         }
         let end = abs + lower_q.len();
         let is_current = ctx.current_in_block == Some(ctx.counter);
-        let bg = if is_current { ctx.pal.match_current_bg } else { ctx.pal.match_bg };
+        let bg = if is_current {
+            ctx.pal.match_current_bg
+        } else {
+            ctx.pal.match_bg
+        };
         out.push(
             span(&text_str[abs..end])
                 .font(iced::Font::MONOSPACE)
@@ -700,7 +806,12 @@ fn push_code_with_hl<'a>(
         cursor = end;
     }
     if cursor < text_str.len() {
-        out.push(span(&text_str[cursor..]).font(iced::Font::MONOSPACE).size(size).color(color));
+        out.push(
+            span(&text_str[cursor..])
+                .font(iced::Font::MONOSPACE)
+                .size(size)
+                .color(color),
+        );
     }
     let _ = pal;
 }
@@ -754,9 +865,7 @@ fn render_image<'a>(
     img: &ImgCtx<'a>,
 ) -> Element<'a, Message> {
     use crate::app::{is_remote_url, resolve_image_path};
-    let placeholder = |msg: String| -> Element<'a, Message> {
-        text(msg).color(pal.muted).into()
-    };
+    let placeholder = |msg: String| -> Element<'a, Message> { text(msg).color(pal.muted).into() };
     if is_remote_url(url) {
         match img.cache.get(url) {
             Some(ImageState::Loaded(h)) => mouse_area(image_widget(h.clone()))
@@ -771,7 +880,9 @@ fn render_image<'a>(
     } else {
         match resolve_image_path(url, img.current_file) {
             Some(p) if p.exists() => {
-                let is_svg = p.extension().and_then(|e| e.to_str())
+                let is_svg = p
+                    .extension()
+                    .and_then(|e| e.to_str())
                     .map(|e| e.eq_ignore_ascii_case("svg"))
                     .unwrap_or(false);
                 let url_for_zoom = p.to_string_lossy().to_string();
@@ -806,7 +917,9 @@ fn render_math_block<'a>(
 ) -> Element<'a, Message> {
     let key = (hash, img.diagram_theme_id);
     match img.diagram_cache.peek(&key) {
-        Some(DiagramState::Ready { inline, device_w, .. }) => {
+        Some(DiagramState::Ready {
+            inline, device_w, ..
+        }) => {
             // The inline raster is RASTER_SCALE× the intrinsic size; draw it at
             // intrinsic logical width so the formula matches its design size
             // instead of rendering 2× too large.
@@ -922,19 +1035,17 @@ fn render_diagram<'a>(
 
             // Copy-source button only — whole-diagram click already opens
             // the zoom modal. Matches the CodeBlock copy-button styling.
-            let copy_icon = container(
-                crate::icon::glyph(crate::icon::ic::COPY, 13.0, pal_c.muted),
-            )
-            .padding(Padding::from([4, 6]))
-            .style(move |_| container::Style {
-                background: Some(pal_c.code_bg.into()),
-                border: iced::Border {
-                    color: pal_c.code_border,
-                    width: 1.0,
-                    radius: 6.0.into(),
-                },
-                ..Default::default()
-            });
+            let copy_icon = container(crate::icon::glyph(crate::icon::ic::COPY, 13.0, pal_c.muted))
+                .padding(Padding::from([4, 6]))
+                .style(move |_| container::Style {
+                    background: Some(pal_c.code_bg.into()),
+                    border: iced::Border {
+                        color: pal_c.code_border,
+                        width: 1.0,
+                        radius: 6.0.into(),
+                    },
+                    ..Default::default()
+                });
             let copy_btn = mouse_area(copy_icon)
                 .interaction(iced::mouse::Interaction::Pointer)
                 .on_press(Message::CopyDiagramSource(hash));

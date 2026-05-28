@@ -7,7 +7,11 @@ fn list_sections_subprocess_emits_json_array() {
         .args(["list-sections", "tests/fixtures/sections.md"])
         .output()
         .expect("spawn mdv");
-    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let stdout = String::from_utf8(out.stdout).unwrap();
     let v: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
     let arr = v.as_array().expect("array");

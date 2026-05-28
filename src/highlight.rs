@@ -59,6 +59,20 @@ pub fn highlight(lang: &str, code: &str) -> Vec<HlSpan> {
     out
 }
 
+/// C++ highlights = C base query + C++-specific query (the upstream `.scm`
+/// files are split this way). Combined once and leaked to `'static`.
+fn cpp_highlight_query() -> &'static str {
+    static Q: OnceLock<String> = OnceLock::new();
+    Q.get_or_init(|| {
+        format!(
+            "{}\n{}",
+            tree_sitter_c::HIGHLIGHT_QUERY,
+            tree_sitter_cpp::HIGHLIGHT_QUERY
+        )
+    })
+    .as_str()
+}
+
 fn lang_for(name: &str) -> Option<(Language, &'static str)> {
     let n = name.trim().to_ascii_lowercase();
     match n.as_str() {
@@ -85,6 +99,20 @@ fn lang_for(name: &str) -> Option<(Language, &'static str)> {
         "c" | "h" => Some((
             tree_sitter_c::LANGUAGE.into(),
             tree_sitter_c::HIGHLIGHT_QUERY,
+        )),
+        "cpp" | "c++" | "cc" | "cxx" | "hpp" | "hxx" | "hh" => Some((
+            tree_sitter_cpp::LANGUAGE.into(),
+            // The C++ grammar's highlight query only covers C++-specific nodes;
+            // it inherits the C query for the shared subset. Concatenate both.
+            cpp_highlight_query(),
+        )),
+        "java" => Some((
+            tree_sitter_java::LANGUAGE.into(),
+            tree_sitter_java::HIGHLIGHTS_QUERY,
+        )),
+        "sql" => Some((
+            tree_sitter_sequel::LANGUAGE.into(),
+            tree_sitter_sequel::HIGHLIGHTS_QUERY,
         )),
         "sh" | "bash" | "shell" | "zsh" => Some((
             tree_sitter_bash::LANGUAGE.into(),
@@ -163,5 +191,29 @@ fn capture_to_style(name: &str) -> HlStyle {
         "variable" => HlStyle::Variable,
         "punctuation" => HlStyle::Punctuation,
         _ => HlStyle::Plain,
+    }
+}
+
+#[cfg(test)]
+mod ts_smoke {
+    #[test]
+    fn new_grammars_emit_spans() {
+        for (lang, code) in [
+            (
+                "cpp",
+                "#include <vector>\nint main() { std::vector<int> v; return 0; }",
+            ),
+            (
+                "java",
+                "public class A { public static void main(String[] a) { int x = 1; } }",
+            ),
+            (
+                "sql",
+                "SELECT id, name FROM users WHERE age > 18 ORDER BY name;",
+            ),
+        ] {
+            let spans = super::highlight(lang, code);
+            assert!(!spans.is_empty(), "{lang} produced no highlight spans");
+        }
     }
 }

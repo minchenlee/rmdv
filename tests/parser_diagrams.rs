@@ -230,3 +230,65 @@ fn display_math_stays_inside_list_items_and_blockquotes() {
         "unexpected blocks: {blocks:#?}"
     );
 }
+
+#[test]
+fn cup_handle_block_math_detected() {
+    let src = "intro\n\n$$P_{buy}=P_{handle\\_max}\\times(1+\\delta),\\qquad \\delta\\approx0.1\\%-0.5\\%$$\n\nafter\n";
+    let (blocks, _) = mdv::parser::parse(src);
+    let math = blocks
+        .iter()
+        .filter(|(_, b)| {
+            matches!(
+                b,
+                mdv::ast::Block::Diagram {
+                    kind: mdv::ast::DiagramKind::Math,
+                    ..
+                }
+            )
+        })
+        .count();
+    assert_eq!(
+        math,
+        1,
+        "expected 1 math block, blocks={:?}",
+        blocks
+            .iter()
+            .map(|(_, b)| std::mem::discriminant(b))
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn math_nested_in_list_items_is_parsed() {
+    use mdv::ast::{Block, DiagramKind};
+    // $$…$$ butted against list-item text (no blank line) lands inside the
+    // ListItem's blocks, not at top level — regression guard for priming.
+    let src = "1. **Entry**\n$$P_{buy}=x$$\ntext\n\n2. **Stop**\n$$SL=y$$\n";
+    let (blocks, _) = mdv::parser::parse(src);
+    let mut math = 0;
+    fn count(b: &Block, n: &mut usize) {
+        match b {
+            Block::Diagram {
+                kind: DiagramKind::Math,
+                ..
+            } => *n += 1,
+            Block::List { items, .. } => {
+                for it in items {
+                    for ib in &it.blocks {
+                        count(ib, n);
+                    }
+                }
+            }
+            Block::Blockquote(bs) => {
+                for ib in bs {
+                    count(ib, n);
+                }
+            }
+            _ => {}
+        }
+    }
+    for (_, b) in &blocks {
+        count(b, &mut math);
+    }
+    assert_eq!(math, 2, "expected 2 nested math blocks");
+}

@@ -64,3 +64,25 @@ fn inject_skipped_when_user_has_init() {
         .expect("user-init mermaid should render");
     assert!(svg.contains("<svg"));
 }
+
+#[test]
+fn cup_handle_math_renders_via_pipeline() {
+    use mdv::ast::DiagramKind;
+    use mdv::diagram::render_blocking;
+    use mdv::theme::Palette;
+    let srcs = [
+        r"P_{buy}=P_{handle\_max}\times(1+\delta),\qquad \delta\approx0.1\%-0.5\%",
+        r"SL=\min\left\{P_{handle\_min}-1\times ATR_{20},\, P_{handle\_min}(1-\epsilon)\right\},\quad \epsilon\approx3\%",
+        r"f^*=\frac{p\cdot R - (1-p)}{R},\quad R=\frac{TP}{SL}-1",
+    ];
+    let pal = Palette::ONE_DARK;
+    for s in srcs {
+        match render_blocking(DiagramKind::Math, s, &pal, "JetBrains Mono") {
+            Ok(svg) => assert!(
+                svg.contains("<path") || svg.contains("<rect"),
+                "no glyphs for {s}"
+            ),
+            Err(e) => panic!("render_blocking Math ERR for {s:?}: {e}"),
+        }
+    }
+}

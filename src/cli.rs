@@ -165,7 +165,9 @@ fn to_parsed(cli: Cli) -> ParsedCli {
                 section: o.section,
                 focus: focus_behavior(o.focus, o.no_focus),
             }),
-            Command::OpenFolder { dir } => req(Cmd::OpenFolder { dir: path_to_string(dir) }),
+            Command::OpenFolder { dir } => req(Cmd::OpenFolder {
+                dir: path_to_string(dir),
+            }),
             Command::Goto(g) => req(Cmd::Goto {
                 line: g.line,
                 section: g.section,
@@ -193,7 +195,9 @@ fn to_parsed(cli: Cli) -> ParsedCli {
         None => ParsedCli::Empty,
         Some(path) => {
             let cmd = if path.is_dir() {
-                Cmd::OpenFolder { dir: path_to_string(path) }
+                Cmd::OpenFolder {
+                    dir: path_to_string(path),
+                }
             } else {
                 Cmd::Open {
                     file: path_to_string(path),

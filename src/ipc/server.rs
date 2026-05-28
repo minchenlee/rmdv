@@ -69,8 +69,8 @@ async fn handle_one(stream: Stream, tx: &mut mpsc::Sender<Pending>) -> Result<()
     if buf.is_empty() {
         return Err(anyhow!("empty request"));
     }
-    let req: Request = serde_json::from_str(buf.trim_end())
-        .map_err(|e| anyhow!("bad json: {e}"))?;
+    let req: Request =
+        serde_json::from_str(buf.trim_end()).map_err(|e| anyhow!("bad json: {e}"))?;
     let id = req.id;
     let (reply_tx, reply_rx) = oneshot::channel();
     tx.send((req, reply_tx)).await?;

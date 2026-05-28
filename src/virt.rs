@@ -18,20 +18,12 @@ pub fn estimate_height(b: &Block) -> f32 {
             HEADING_PX[((*level as usize).saturating_sub(1)).min(5)]
         }
         Block::Paragraph(inlines) => paragraph_lines(inlines) * LINE_PX,
-        Block::CodeBlock { code, .. } => {
-            (code.lines().count().max(1) as f32) * CODE_LINE_PX + 16.0
-        }
+        Block::CodeBlock { code, .. } => (code.lines().count().max(1) as f32) * CODE_LINE_PX + 16.0,
         Block::Image { .. } => 240.0,
         Block::Diagram { .. } => 200.0,
-        Block::Blockquote(blocks) => {
-            blocks.iter().map(estimate_height).sum::<f32>() + BLOCK_GAP_PX
-        }
-        Block::List { items, .. } => {
-            items.iter().map(estimate_item).sum::<f32>()
-        }
-        Block::Table { headers: _, rows } => {
-            (rows.len() as f32 + 1.0) * TABLE_ROW_PX
-        }
+        Block::Blockquote(blocks) => blocks.iter().map(estimate_height).sum::<f32>() + BLOCK_GAP_PX,
+        Block::List { items, .. } => items.iter().map(estimate_item).sum::<f32>(),
+        Block::Table { headers: _, rows } => (rows.len() as f32 + 1.0) * TABLE_ROW_PX,
         Block::Rule => 12.0,
     }
 }
@@ -49,9 +41,7 @@ fn paragraph_lines(inlines: &[Inline]) -> f32 {
 fn inline_chars(i: &Inline) -> f32 {
     match i {
         Inline::Text(s) | Inline::Code(s) => s.chars().count() as f32,
-        Inline::Emph(c) | Inline::Strong(c) | Inline::Strike(c) => {
-            c.iter().map(inline_chars).sum()
-        }
+        Inline::Emph(c) | Inline::Strong(c) | Inline::Strike(c) => c.iter().map(inline_chars).sum(),
         Inline::Link { children, .. } => children.iter().map(inline_chars).sum(),
     }
 }
@@ -72,6 +62,10 @@ impl HeightCache {
 
     pub fn retain(&mut self, ids: &std::collections::HashSet<BlockId>) {
         self.measured.retain(|k, _| ids.contains(k));
+    }
+
+    pub fn clear(&mut self) {
+        self.measured.clear();
     }
 }
 
@@ -141,8 +135,14 @@ mod tests {
     #[test]
     fn fits_in_viewport_returns_full_range() {
         let blocks = vec![
-            (BlockId(1), Block::Paragraph(vec![Inline::Text("hi".into())])),
-            (BlockId(2), Block::Paragraph(vec![Inline::Text("ok".into())])),
+            (
+                BlockId(1),
+                Block::Paragraph(vec![Inline::Text("hi".into())]),
+            ),
+            (
+                BlockId(2),
+                Block::Paragraph(vec![Inline::Text("ok".into())]),
+            ),
         ];
         let cache = HeightCache::default();
         let (s, e) = visible_range(&blocks, &cache, 0.0, 800.0, 0);
@@ -179,7 +179,12 @@ mod tests {
 
     fn make_paragraphs(n: u64) -> Vec<(BlockId, Block)> {
         (0..n)
-            .map(|i| (BlockId(i), Block::Paragraph(vec![Inline::Text("hi".into())])))
+            .map(|i| {
+                (
+                    BlockId(i),
+                    Block::Paragraph(vec![Inline::Text("hi".into())]),
+                )
+            })
             .collect()
     }
 

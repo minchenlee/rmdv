@@ -1,6 +1,7 @@
 pub mod app;
 pub mod ast;
 pub mod bench;
+pub mod cli;
 pub mod diagram;
 pub mod highlight;
 pub mod icon;
@@ -20,4 +21,3 @@ pub mod theme_watch;
 pub mod tree;
 pub mod virt;
 pub mod watch;
-pub mod cli;

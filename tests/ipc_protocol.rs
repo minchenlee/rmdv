@@ -26,7 +26,11 @@ fn request_open_round_trip() {
 fn request_goto_line_round_trip() {
     let req = Request {
         id: 5,
-        cmd: Cmd::Goto { line: Some(10), section: None, focus: FocusBehavior::Default },
+        cmd: Cmd::Goto {
+            line: Some(10),
+            section: None,
+            focus: FocusBehavior::Default,
+        },
     };
     let s = serde_json::to_string(&req).unwrap();
     let back: Request = serde_json::from_str(&s).unwrap();
@@ -38,7 +42,10 @@ fn request_mode_round_trip() {
     for m in [Mode::View, Mode::Edit, Mode::Mindmap] {
         let req = Request {
             id: 9,
-            cmd: Cmd::Mode { mode: m, focus: FocusBehavior::Default },
+            cmd: Cmd::Mode {
+                mode: m,
+                focus: FocusBehavior::Default,
+            },
         };
         let s = serde_json::to_string(&req).unwrap();
         let back: Request = serde_json::from_str(&s).unwrap();
@@ -48,7 +55,12 @@ fn request_mode_round_trip() {
 
 #[test]
 fn response_ok_no_result_serialises_without_result_field() {
-    let r = Response { id: 1, ok: true, result: None, error: None };
+    let r = Response {
+        id: 1,
+        ok: true,
+        result: None,
+        error: None,
+    };
     let v: serde_json::Value = serde_json::to_value(&r).unwrap();
     assert_eq!(v, json!({"id":1,"ok":true}));
 }
@@ -147,7 +159,10 @@ fn parser_emits_byte_offsets_aligned_with_blocks() {
     let (blocks, offsets) = mdv::parser::parse(src);
     assert_eq!(blocks.len(), offsets.len());
     let table = mdv::ipc::lines::build_byte_to_line(src);
-    let lines: Vec<u32> = offsets.iter().map(|&b| table.line_for_byte(b as usize)).collect();
+    let lines: Vec<u32> = offsets
+        .iter()
+        .map(|&b| table.line_for_byte(b as usize))
+        .collect();
     assert_eq!(lines[0], 1, "H1 on line 1, got {}", lines[0]);
     assert_eq!(lines[1], 3, "first paragraph on line 3, got {}", lines[1]);
     assert_eq!(lines[2], 5, "H2 on line 5, got {}", lines[2]);
@@ -161,7 +176,12 @@ fn cli_bare_file_becomes_open_request() {
     let p = parse_from(["mdv", "/abs/foo.md"]).unwrap();
     match p {
         ParsedCli::Request(r) => match r.cmd {
-            Cmd::Open { file, line: None, section: None, .. } => assert_eq!(file, "/abs/foo.md"),
+            Cmd::Open {
+                file,
+                line: None,
+                section: None,
+                ..
+            } => assert_eq!(file, "/abs/foo.md"),
             other => panic!("unexpected cmd: {other:?}"),
         },
         other => panic!("unexpected: {other:?}"),
@@ -170,11 +190,23 @@ fn cli_bare_file_becomes_open_request() {
 
 #[test]
 fn cli_bare_file_with_line_and_section() {
-    let p = parse_from(["mdv", "/abs/foo.md", "--line", "42", "--section", "Install/Setup"])
-        .unwrap();
+    let p = parse_from([
+        "mdv",
+        "/abs/foo.md",
+        "--line",
+        "42",
+        "--section",
+        "Install/Setup",
+    ])
+    .unwrap();
     let ParsedCli::Request(r) = p else { panic!() };
     match r.cmd {
-        Cmd::Open { file, line: Some(42), section: Some(s), .. } => {
+        Cmd::Open {
+            file,
+            line: Some(42),
+            section: Some(s),
+            ..
+        } => {
             assert_eq!(file, "/abs/foo.md");
             assert_eq!(s, "Install/Setup");
         }
@@ -186,14 +218,27 @@ fn cli_bare_file_with_line_and_section() {
 fn cli_goto_subcommand() {
     let p = parse_from(["mdv", "goto", "--line", "10"]).unwrap();
     let ParsedCli::Request(r) = p else { panic!() };
-    assert!(matches!(r.cmd, Cmd::Goto { line: Some(10), section: None, .. }));
+    assert!(matches!(
+        r.cmd,
+        Cmd::Goto {
+            line: Some(10),
+            section: None,
+            ..
+        }
+    ));
 }
 
 #[test]
 fn cli_mode_subcommand() {
     let p = parse_from(["mdv", "mode", "edit"]).unwrap();
     let ParsedCli::Request(r) = p else { panic!() };
-    assert!(matches!(r.cmd, Cmd::Mode { mode: Mode::Edit, .. }));
+    assert!(matches!(
+        r.cmd,
+        Cmd::Mode {
+            mode: Mode::Edit,
+            ..
+        }
+    ));
 }
 
 #[test]
@@ -228,7 +273,10 @@ fn cli_list_sections_is_stateless() {
     use mdv::cli::Stateless;
     let p = parse_from(["mdv", "list-sections", "tests/fixtures/sections.md"]).unwrap();
     match p {
-        ParsedCli::Stateless(Stateless::ListSections { file, pretty: false }) => {
+        ParsedCli::Stateless(Stateless::ListSections {
+            file,
+            pretty: false,
+        }) => {
             assert_eq!(file, std::path::PathBuf::from("tests/fixtures/sections.md"));
         }
         other => panic!("expected stateless ListSections, got {other:?}"),
@@ -247,13 +295,21 @@ use mdv::ipc::sections::{list_sections, resolve_section_path, Section};
 fn list_sections_builds_paths_and_lines() {
     let src = std::fs::read_to_string("tests/fixtures/sections.md").unwrap();
     let sections = list_sections(&src);
-    let by_path: Vec<(&str, u32, u8)> =
-        sections.iter().map(|s| (s.path.as_str(), s.line, s.level)).collect();
+    let by_path: Vec<(&str, u32, u8)> = sections
+        .iter()
+        .map(|s| (s.path.as_str(), s.line, s.level))
+        .collect();
     assert!(by_path.contains(&("Foo", 1, 1)), "got {by_path:?}");
     assert!(by_path.contains(&("Foo/Install", 5, 2)), "got {by_path:?}");
-    assert!(by_path.contains(&("Foo/Install/Setup", 9, 3)), "got {by_path:?}");
+    assert!(
+        by_path.contains(&("Foo/Install/Setup", 9, 3)),
+        "got {by_path:?}"
+    );
     assert!(by_path.contains(&("Foo/Usage", 13, 2)), "got {by_path:?}");
-    assert!(by_path.contains(&("Foo/Usage/Setup", 17, 3)), "got {by_path:?}");
+    assert!(
+        by_path.contains(&("Foo/Usage/Setup", 17, 3)),
+        "got {by_path:?}"
+    );
 }
 
 #[test]
@@ -292,7 +348,10 @@ fn socket_path_is_user_scoped() {
     let p = mdv::ipc::socket::default_path();
     let s = p.to_string_lossy();
     #[cfg(unix)]
-    assert!(s.contains(&format!("mdv-{}", unsafe { libc::getuid() })), "got {s}");
+    assert!(
+        s.contains(&format!("mdv-{}", unsafe { libc::getuid() })),
+        "got {s}"
+    );
     #[cfg(windows)]
     assert!(s.to_lowercase().contains("mdv"), "got {s}");
 }

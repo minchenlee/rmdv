@@ -5,19 +5,44 @@ pub struct BlockId(pub u64);
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub enum Block {
-    Heading { level: u8, id: String, inlines: Vec<Inline> },
+    Heading {
+        level: u8,
+        id: String,
+        inlines: Vec<Inline>,
+    },
     Paragraph(Vec<Inline>),
-    CodeBlock { lang: Option<String>, code: String, spans: Vec<HlSpan> },
+    CodeBlock {
+        lang: Option<String>,
+        code: String,
+        spans: Vec<HlSpan>,
+    },
     Blockquote(Vec<Block>),
-    List { ordered: bool, items: Vec<ListItem> },
-    Table { headers: Vec<Vec<Inline>>, rows: Vec<Vec<Vec<Inline>>> },
-    Image { url: String, alt: String },
-    Diagram { kind: DiagramKind, source: String, hash: u64 },
+    List {
+        ordered: bool,
+        items: Vec<ListItem>,
+    },
+    Table {
+        headers: Vec<Vec<Inline>>,
+        rows: Vec<Vec<Vec<Inline>>>,
+    },
+    Image {
+        url: String,
+        alt: String,
+    },
+    Diagram {
+        kind: DiagramKind,
+        source: String,
+        hash: u64,
+    },
     Rule,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize)]
-pub enum DiagramKind { Mermaid, Dot, Math }
+pub enum DiagramKind {
+    Mermaid,
+    Dot,
+    Math,
+}
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub enum Inline {

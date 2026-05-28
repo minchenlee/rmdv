@@ -7,7 +7,8 @@ use crate::search::{self, MatchPos};
 use crate::theme::{self, Palette, ThemeMode, ThemePreset, Typography};
 use crate::tree::{self, Node};
 use iced::widget::{
-    button, column, container, mouse_area, row as irow, scrollable, stack, text, text_input, Column, Space,
+    button, column, container, mouse_area, row as irow, scrollable, stack, text, text_input,
+    Column, Space,
 };
 use iced::{Background, Border, Color, Element, Length, Padding, Task, Theme};
 use std::collections::{HashMap, HashSet};
@@ -167,6 +168,10 @@ pub enum Message {
     SvgRasterized(String, Result<(Vec<u8>, u32, u32), String>),
     OpenImageZoom(String),
     ToggleViewMode,
+    FontSizeUp,
+    FontSizeDown,
+    FontSizeReset,
+    ToggleFooter,
     ToggleMindmap,
     MindmapToggleNode(crate::ast::BlockId),
     MindmapSelectLeaf(crate::ast::BlockId),
@@ -211,7 +216,9 @@ pub enum Message {
     /// to reply.
     Ipc(
         crate::ipc::Request,
-        std::sync::Arc<std::sync::Mutex<Option<futures::channel::oneshot::Sender<crate::ipc::Response>>>>,
+        std::sync::Arc<
+            std::sync::Mutex<Option<futures::channel::oneshot::Sender<crate::ipc::Response>>>,
+        >,
     ),
 }
 
@@ -229,6 +236,11 @@ pub struct App {
     pub theme_preset: ThemePreset,
     pub palette: Palette,
     pub typography: Typography,
+    /// Theme-provided typography before the user's font-zoom factor is applied.
+    /// `typography` = `typography_base.scaled(font_scale)`.
+    pub typography_base: Typography,
+    pub font_scale: f32,
+    pub show_footer: bool,
     pub error: Option<String>,
     pub query: String,
     pub matches: Vec<MatchPos>,
@@ -317,6 +329,7 @@ impl Default for App {
     fn default() -> Self {
         let mode = ThemeMode::System;
         let preset = theme::resolve_mode(mode);
+        let prefs = crate::prefs::load();
         Self {
             file: None,
             source: String::new(),
@@ -325,6 +338,9 @@ impl Default for App {
             theme_preset: preset,
             palette: theme::palette_for(preset),
             typography: Typography::DEFAULT,
+            typography_base: Typography::DEFAULT,
+            font_scale: 1.0,
+            show_footer: prefs.show_footer,
             error: None,
             query: String::new(),
             matches: Vec::new(),
@@ -378,12 +394,27 @@ impl Default for App {
             block_lines: Vec::new(),
             pending_nav: None,
             queued_snap: None,
-            prefs: crate::prefs::load(),
+            prefs,
         }
     }
 }
 
 impl App {
+    /// Record a new theme-provided typography base and re-apply the current
+    /// font-zoom factor on top of it.
+    fn set_typography_base(&mut self, base: Typography) {
+        self.typography_base = base;
+        self.typography = base.scaled(self.font_scale);
+    }
+
+    /// Adjust the font-zoom factor (clamped) and rebuild `typography` from the
+    /// current theme base. Returns the resulting body size for the toast.
+    fn adjust_font_scale(&mut self, factor: f32) -> f32 {
+        self.font_scale = (self.font_scale * factor).clamp(0.6, 2.2);
+        self.typography = self.typography_base.scaled(self.font_scale);
+        self.typography.body_size
+    }
+
     fn show_toast(&mut self, text: String) -> Task<Message> {
         self.toast_seq = self.toast_seq.wrapping_add(1);
         let id = self.toast_seq;
@@ -673,16 +704,43 @@ impl App {
         let mut seen: std::collections::HashSet<u64> = std::collections::HashSet::new();
         let mut tasks: Vec<Task<Message>> = Vec::new();
         let mut pending_inserts: Vec<(u64, crate::ast::DiagramKind, String)> = Vec::new();
-        for (_id, b) in &self.ast {
-            if let Block::Diagram { hash, kind, source } = b {
-                if !seen.insert(*hash) {
-                    continue;
+        // Diagram/math blocks can be nested inside list items, blockquotes and
+        // table cells, so walk the tree rather than just the top level.
+        fn collect_diagrams<'a>(
+            b: &'a Block,
+            out: &mut Vec<(u64, crate::ast::DiagramKind, String)>,
+        ) {
+            match b {
+                Block::Diagram { hash, kind, source } => {
+                    out.push((*hash, kind.clone(), source.clone()))
                 }
-                if self.diagram_cache.peek(&(*hash, theme_id)).is_some() {
-                    continue;
+                Block::Blockquote(blocks) => {
+                    for inner in blocks {
+                        collect_diagrams(inner, out);
+                    }
                 }
-                pending_inserts.push((*hash, kind.clone(), source.clone()));
+                Block::List { items, .. } => {
+                    for item in items {
+                        for inner in &item.blocks {
+                            collect_diagrams(inner, out);
+                        }
+                    }
+                }
+                _ => {}
             }
+        }
+        let mut found: Vec<(u64, crate::ast::DiagramKind, String)> = Vec::new();
+        for (_id, b) in &self.ast {
+            collect_diagrams(b, &mut found);
+        }
+        for (hash, kind, source) in found {
+            if !seen.insert(hash) {
+                continue;
+            }
+            if self.diagram_cache.peek(&(hash, theme_id)).is_some() {
+                continue;
+            }
+            pending_inserts.push((hash, kind, source));
         }
         for (hash, kind, source) in pending_inserts {
             self.diagram_cache
@@ -790,40 +848,38 @@ impl App {
             )
             .padding(24)
             .into(),
-            Some(target) => {
-                match self.mindmap_panel_range(target) {
-                    Some((s, end, truncated)) => {
-                        let mut col = Column::new().spacing(12).push(crate::render::render(
-                            &self.ast[s..end],
-                            pal,
-                            &self.typography,
-                            hl,
-                            self.body_viewport.as_ref(),
-                            &self.height_cache,
-                            &self.image_cache,
-                            self.file.as_deref(),
-                            &self.folded,
-                            self.hovered_heading,
-                            &self.diagram_cache,
-                            self.diagram_theme_id,
-                        ));
-                        if truncated {
-                            col = col.push(
-                                container(
-                                    text("Panel preview truncated for performance")
-                                        .color(pal.muted)
-                                        .size(12),
-                                )
-                                .padding(Padding::from([8, 0])),
-                            );
-                        }
-                        col.into()
+            Some(target) => match self.mindmap_panel_range(target) {
+                Some((s, end, truncated)) => {
+                    let mut col = Column::new().spacing(12).push(crate::render::render(
+                        &self.ast[s..end],
+                        pal,
+                        &self.typography,
+                        hl,
+                        self.body_viewport.as_ref(),
+                        &self.height_cache,
+                        &self.image_cache,
+                        self.file.as_deref(),
+                        &self.folded,
+                        self.hovered_heading,
+                        &self.diagram_cache,
+                        self.diagram_theme_id,
+                    ));
+                    if truncated {
+                        col = col.push(
+                            container(
+                                text("Panel preview truncated for performance")
+                                    .color(pal.muted)
+                                    .size(12),
+                            )
+                            .padding(Padding::from([8, 0])),
+                        );
                     }
-                    None => container(text("Heading not found").color(pal.muted).size(13))
-                        .padding(24)
-                        .into(),
+                    col.into()
                 }
-            }
+                None => container(text("Heading not found").color(pal.muted).size(13))
+                    .padding(24)
+                    .into(),
+            },
         };
         // Center content vertically when it fits; scroll from the top when it
         // overflows. The scrollable measures the inner column's natural height:
@@ -857,9 +913,16 @@ impl App {
             ("Toggle Hidden Files  ⌘⇧.", Message::ToggleHidden),
             ("Find in Document  ⌘F", Message::ToggleSearch),
             ("Toggle Raw/Rendered  ⌘E", Message::ToggleViewMode),
+            ("Increase Font Size  ⌘+", Message::FontSizeUp),
+            ("Decrease Font Size  ⌘-", Message::FontSizeDown),
+            ("Reset Font Size  ⌘0", Message::FontSizeReset),
+            ("Toggle Status Footer", Message::ToggleFooter),
             ("Toggle Mindmap  ⌘M", Message::ToggleMindmap),
             ("Toggle Mindmap Panel  ⌘⌥B", Message::ToggleMindmapPanel),
-            ("Toggle Mindmap Auto-Center", Message::ToggleMindmapAutocenter),
+            (
+                "Toggle Mindmap Auto-Center",
+                Message::ToggleMindmapAutocenter,
+            ),
             ("Cycle Theme  ⌘T", Message::ToggleTheme),
             ("Pick Theme…", Message::OpenThemePicker),
             ("Reload Custom Themes", Message::ReloadThemes),
@@ -935,7 +998,9 @@ impl App {
     }
 
     fn reply(
-        tx: &std::sync::Arc<std::sync::Mutex<Option<futures::channel::oneshot::Sender<crate::ipc::Response>>>>,
+        tx: &std::sync::Arc<
+            std::sync::Mutex<Option<futures::channel::oneshot::Sender<crate::ipc::Response>>>,
+        >,
         resp: crate::ipc::Response,
     ) {
         if let Some(sender) = tx.lock().ok().and_then(|mut g| g.take()) {
@@ -948,10 +1013,7 @@ impl App {
             // Drain any pending IPC-driven scroll BEFORE dispatching the new
             // message so the snap lands before further state mutation.
             // The new message is requeued via a follow-up task.
-            return Task::batch([
-                Task::done(Message::RestoreBodySnap(rel)),
-                Task::done(msg),
-            ]);
+            return Task::batch([Task::done(Message::RestoreBodySnap(rel)), Task::done(msg)]);
         }
         match msg {
             Message::Open(p) => Task::perform(load_file(p), Message::FileLoaded),
@@ -1102,6 +1164,35 @@ impl App {
                     self.hovered_heading = None;
                 }
                 Task::none()
+            }
+            Message::FontSizeUp => {
+                let size = self.adjust_font_scale(1.1);
+                self.height_cache.clear();
+                self.show_toast(format!("Font {:.0} px", size))
+            }
+            Message::FontSizeDown => {
+                let size = self.adjust_font_scale(1.0 / 1.1);
+                self.height_cache.clear();
+                self.show_toast(format!("Font {:.0} px", size))
+            }
+            Message::FontSizeReset => {
+                self.font_scale = 1.0;
+                self.typography = self.typography_base;
+                self.height_cache.clear();
+                self.show_toast("Font reset".to_string())
+            }
+            Message::ToggleFooter => {
+                self.show_footer = !self.show_footer;
+                self.prefs.show_footer = self.show_footer;
+                crate::prefs::save(&self.prefs);
+                self.show_toast(
+                    if self.show_footer {
+                        "Footer shown"
+                    } else {
+                        "Footer hidden"
+                    }
+                    .to_string(),
+                )
             }
             Message::ToggleViewMode => {
                 if self.file.is_none() {
@@ -1664,7 +1755,7 @@ impl App {
                 }
                 self.palette = pal;
                 if let Some(t) = typo {
-                    self.typography = t;
+                    self.set_typography_base(t);
                 }
                 let changed = self.refresh_diagram_theme_id();
                 let toast = self.show_toast(label);
@@ -1688,10 +1779,10 @@ impl App {
             }
             Message::SetCustomTheme(slug) => {
                 if let Some(t) = self.custom_themes.iter().find(|t| t.slug == slug) {
-                    self.palette = t.palette;
-                    self.typography = t.typography;
+                    let (palette, typography, label) = (t.palette, t.typography, t.name.clone());
+                    self.palette = palette;
+                    self.set_typography_base(typography);
                     self.theme_id = theme::ThemeId::Custom(slug.clone());
-                    let label = t.name.clone();
                     let changed = self.refresh_diagram_theme_id();
                     let toast = self.show_toast(label);
                     if changed {
@@ -1711,8 +1802,9 @@ impl App {
                 self.custom_themes = combined;
                 if let theme::ThemeId::Custom(slug) = self.theme_id.clone() {
                     if let Some(t) = self.custom_themes.iter().find(|t| t.slug == slug) {
-                        self.palette = t.palette;
-                        self.typography = t.typography;
+                        let (palette, typography) = (t.palette, t.typography);
+                        self.palette = palette;
+                        self.set_typography_base(typography);
                     }
                 }
                 let n = self.custom_themes.len();
@@ -1720,10 +1812,8 @@ impl App {
                     self.error = Some(format!("theme load: {}", errs.join("; ")));
                 }
                 let changed = self.refresh_diagram_theme_id();
-                let toast = self.show_toast(format!(
-                    "{n} custom theme{}",
-                    if n == 1 { "" } else { "s" }
-                ));
+                let toast =
+                    self.show_toast(format!("{n} custom theme{}", if n == 1 { "" } else { "s" }));
                 if changed {
                     Task::batch([toast, self.prime_diagram_cache()])
                 } else {
@@ -1740,8 +1830,9 @@ impl App {
                 let after = self.custom_themes.len();
                 let active_changed = if let theme::ThemeId::Custom(slug) = self.theme_id.clone() {
                     if let Some(t) = self.custom_themes.iter().find(|t| t.slug == slug) {
-                        self.palette = t.palette;
-                        self.typography = t.typography;
+                        let (palette, typography) = (t.palette, t.typography);
+                        self.palette = palette;
+                        self.set_typography_base(typography);
                         true
                     } else {
                         false
@@ -1785,8 +1876,7 @@ impl App {
                 // Rebuild tree + workspace_files with the new filter. Keep
                 // expanded paths; any node that disappears just won't show.
                 if let Some(ws) = self.workspace.clone() {
-                    self.workspace_files =
-                        picker::walk_markdown(&ws, 8, 5000, self.show_hidden);
+                    self.workspace_files = picker::walk_markdown(&ws, 8, 5000, self.show_hidden);
                     self.workspace_tree = Some(tree::build(&ws, self.show_hidden));
                 }
                 // If a picker is open, rebuild its view too.
@@ -1953,9 +2043,9 @@ impl App {
             }
             Message::CopyDiagramSource(hash) => {
                 let src = self.ast.iter().find_map(|(_, b)| match b {
-                    Block::Diagram { hash: h, source, .. } if *h == hash => {
-                        Some(source.clone())
-                    }
+                    Block::Diagram {
+                        hash: h, source, ..
+                    } if *h == hash => Some(source.clone()),
                     _ => None,
                 });
                 match src {
@@ -1966,16 +2056,17 @@ impl App {
                     None => Task::none(),
                 }
             }
-            Message::DiagramRendered { hash, theme_id, result } => {
+            Message::DiagramRendered {
+                hash,
+                theme_id,
+                result,
+            } => {
                 // Drop stale results — theme changed mid-render, or AST
                 // re-parsed away the source block.
                 if theme_id != self.diagram_theme_id {
                     return Task::none();
                 }
-                let still_present = self.ast.iter().any(|(_, b)| matches!(
-                    b,
-                    Block::Diagram { hash: h, .. } if *h == hash
-                ));
+                let still_present = diagram_hash_present(&self.ast, hash);
                 if !still_present {
                     return Task::none();
                 }
@@ -2028,7 +2119,11 @@ impl App {
             Message::ToggleAutoFocusOnNav => {
                 self.prefs.auto_focus_on_nav = !self.prefs.auto_focus_on_nav;
                 crate::prefs::save(&self.prefs);
-                let state = if self.prefs.auto_focus_on_nav { "on" } else { "off" };
+                let state = if self.prefs.auto_focus_on_nav {
+                    "on"
+                } else {
+                    "off"
+                };
                 return self.show_toast(format!("Auto-focus on agent nav: {state}"));
             }
             Message::Ipc(req, tx) => {
@@ -2055,13 +2150,12 @@ impl App {
                         Response::ok_with(id, body)
                     }
                     Cmd::Focus => {
-                        follow_up = iced::window::latest()
-                            .and_then(|wid| iced::window::gain_focus(wid));
+                        follow_up =
+                            iced::window::latest().and_then(|wid| iced::window::gain_focus(wid));
                         Response::ok(id)
                     }
                     Cmd::Close => {
-                        follow_up = iced::window::latest()
-                            .and_then(|wid| iced::window::close(wid));
+                        follow_up = iced::window::latest().and_then(|wid| iced::window::close(wid));
                         Response::ok(id)
                     }
                     Cmd::Mode { mode, focus } => {
@@ -2074,7 +2168,8 @@ impl App {
                         Response::ok(id)
                     }
                     Cmd::OpenFolder { dir } => {
-                        follow_up = Task::done(Message::OpenWorkspace(std::path::PathBuf::from(dir)));
+                        follow_up =
+                            Task::done(Message::OpenWorkspace(std::path::PathBuf::from(dir)));
                         Response::ok(id)
                     }
                     Cmd::Reveal { file, focus } => {
@@ -2085,7 +2180,12 @@ impl App {
                         nav_focus = Some(focus);
                         Response::ok(id)
                     }
-                    Cmd::Open { file, line, section, focus } => {
+                    Cmd::Open {
+                        file,
+                        line,
+                        section,
+                        focus,
+                    } => {
                         if self.dirty {
                             Response::err(
                                 id,
@@ -2105,7 +2205,11 @@ impl App {
                             Response::ok(id)
                         }
                     }
-                    Cmd::Goto { line, section, focus } => {
+                    Cmd::Goto {
+                        line,
+                        section,
+                        focus,
+                    } => {
                         nav_focus = Some(focus);
                         apply_goto(self, id, line, section)
                     }
@@ -2118,8 +2222,8 @@ impl App {
                     None => false,
                 };
                 if should_focus {
-                    let raise = iced::window::latest()
-                        .and_then(|wid| iced::window::gain_focus(wid));
+                    let raise =
+                        iced::window::latest().and_then(|wid| iced::window::gain_focus(wid));
                     follow_up = Task::batch([follow_up, raise]);
                 }
                 return follow_up;
@@ -2217,6 +2321,9 @@ impl App {
                         "f" if cmd => return Message::ToggleSearch,
                         "t" if cmd => return Message::ToggleTheme,
                         "e" if cmd => return Message::ToggleViewMode,
+                        "=" | "+" if cmd => return Message::FontSizeUp,
+                        "-" if cmd => return Message::FontSizeDown,
+                        "0" if cmd => return Message::FontSizeReset,
                         "m" if cmd => return Message::ToggleMindmap,
                         "c" if cmd && !editing && !overlay_open => return Message::HintSelection,
                         "s" if cmd => return Message::SaveFile,
@@ -2335,7 +2442,16 @@ impl App {
             iced::Subscription::none()
         };
         let ipc = iced::Subscription::run(ipc_subscription_stream);
-        iced::Subscription::batch([dnd, watcher, theme_watcher, keys, scroller, drag, mind_drag, ipc])
+        iced::Subscription::batch([
+            dnd,
+            watcher,
+            theme_watcher,
+            keys,
+            scroller,
+            drag,
+            mind_drag,
+            ipc,
+        ])
     }
 
     pub fn view(&self) -> Element<'_, Message> {
@@ -2440,8 +2556,7 @@ impl App {
                         // standard editor bindings — those have explicit
                         // handlers upstream that we want to preserve.
                         .key_binding(|kp| {
-                            let cmd_or_ctrl =
-                                kp.modifiers.command() || kp.modifiers.control();
+                            let cmd_or_ctrl = kp.modifiers.command() || kp.modifiers.control();
                             if cmd_or_ctrl {
                                 let keep = matches!(
                                     kp.key.to_latin(kp.physical_key),
@@ -2632,14 +2747,57 @@ impl App {
                 pal,
             ),
         };
+        // Status footer floats over the reader (content scrolls behind it),
+        // pinned bottom-right. Shown for any open document except mindmap.
+        let footer_layer: Element<'_, Message> =
+            if self.show_footer && self.file.is_some() && self.view_mode != ViewMode::Mindmap {
+                status_footer(&self.source, pal)
+            } else {
+                Space::new().into()
+            };
         let base: Element<'_, Message> =
-            iced::widget::stack![Element::from(main), overlay_layer].into();
+            iced::widget::stack![Element::from(main), footer_layer, overlay_layer].into();
         let toast_layer: Element<'_, Message> = match &self.toast {
             Some(t) => toast_overlay(&t.text, pal),
             None => Space::new().into(),
         };
         iced::widget::stack![base, toast_layer].into()
     }
+}
+
+/// Bottom status bar: word count + estimated reading time (~200 wpm).
+fn status_footer<'a>(source: &str, pal: Palette) -> Element<'a, Message> {
+    use iced::widget::{container, text as text_w};
+    let words = source.split_whitespace().count();
+    let minutes = ((words as f32) / 200.0).ceil().max(1.0) as usize;
+    let label = format!(
+        "{} word{} · {} min read",
+        words,
+        if words == 1 { "" } else { "s" },
+        minutes
+    );
+    // Translucent pill so document content remains visible scrolling behind it.
+    let mut pill_bg = pal.bg;
+    pill_bg.a = 0.82;
+    let pill = container(text_w(label).size(12.0).color(pal.muted))
+        .padding([4, 12])
+        .style(move |_| container::Style {
+            background: Some(pill_bg.into()),
+            border: iced::Border {
+                color: pal.rule,
+                width: 1.0,
+                radius: 8.0.into(),
+            },
+            ..Default::default()
+        });
+    // Float bottom-right over the reader; content scrolls underneath.
+    container(pill)
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .padding([10, 14])
+        .align_x(iced::alignment::Horizontal::Right)
+        .align_y(iced::alignment::Vertical::Bottom)
+        .into()
 }
 
 fn toast_overlay<'a>(text: &str, pal: Palette) -> Element<'a, Message> {
@@ -2724,19 +2882,23 @@ fn image_zoom_overlay<'a>(
     // Top-right close button. Sits on its own mouse_area so a click on the
     // X always fires CloseOverlay (independent of the scrim mouse_area
     // beneath it in the stack).
-    let close_btn_inner = container(
-        crate::icon::glyph(crate::icon::ic::X, 16.0, pal.fg),
-    )
-    .padding(Padding::from([6, 8]))
-    .style(move |_| container::Style {
-        background: Some(Color { a: 0.75, ..pal.code_bg }.into()),
-        border: iced::Border {
-            color: pal.code_border,
-            width: 1.0,
-            radius: 8.0.into(),
-        },
-        ..Default::default()
-    });
+    let close_btn_inner = container(crate::icon::glyph(crate::icon::ic::X, 16.0, pal.fg))
+        .padding(Padding::from([6, 8]))
+        .style(move |_| container::Style {
+            background: Some(
+                Color {
+                    a: 0.75,
+                    ..pal.code_bg
+                }
+                .into(),
+            ),
+            border: iced::Border {
+                color: pal.code_border,
+                width: 1.0,
+                radius: 8.0.into(),
+            },
+            ..Default::default()
+        });
     let close_btn = mouse_area(close_btn_inner)
         .interaction(iced::mouse::Interaction::Pointer)
         .on_press(Message::CloseOverlay);
@@ -2970,19 +3132,17 @@ fn sidebar_view<'a>(app: &'a App, pal: Palette) -> Element<'a, Message> {
     .spacing(6)
     .align_y(iced::Alignment::Center);
 
-    let header = container(
-        column![
-            Space::new().height(Length::Fixed(sidebar_titlebar_reserve())),
-            container(title_row)
-                .padding(Padding {
-                    top: 0.0,
-                    right: 14.0,
-                    bottom: 8.0,
-                    left: 14.0,
-                })
-                .width(Length::Fill),
-        ],
-    )
+    let header = container(column![
+        Space::new().height(Length::Fixed(sidebar_titlebar_reserve())),
+        container(title_row)
+            .padding(Padding {
+                top: 0.0,
+                right: 14.0,
+                bottom: 8.0,
+                left: 14.0,
+            })
+            .width(Length::Fill),
+    ])
     .width(Length::Fill);
 
     // Measure longest row so we can pin the Column to a Fixed width. With
@@ -3944,7 +4104,12 @@ fn apply_goto(
     let (content_h, view_h) = app
         .body_viewport
         .as_ref()
-        .map(|v| (v.content_bounds().height.max(estimated_h), v.bounds().height))
+        .map(|v| {
+            (
+                v.content_bounds().height.max(estimated_h),
+                v.bounds().height,
+            )
+        })
         .unwrap_or((estimated_h, 0.0));
     let max_scroll = (content_h - view_h).max(1.0);
     let target = block_top + block_h * 0.5 - view_h * 0.38;
@@ -3965,7 +4130,9 @@ fn current_line_estimate(app: &App) -> Option<u32> {
     let target_px = rel * est_total;
     let mut best: Option<u32> = None;
     for (i, _) in app.ast.iter().enumerate() {
-        if let Some((top, _)) = crate::virt::estimated_block_position(&app.ast, &app.height_cache, i) {
+        if let Some((top, _)) =
+            crate::virt::estimated_block_position(&app.ast, &app.height_cache, i)
+        {
             if top <= target_px {
                 best = app.block_lines.get(i).copied();
             } else {
@@ -3976,21 +4143,71 @@ fn current_line_estimate(app: &App) -> Option<u32> {
     best
 }
 
+fn diagram_hash_present(blocks: &[(crate::ast::BlockId, Block)], hash: u64) -> bool {
+    blocks
+        .iter()
+        .any(|(_, block)| block_contains_diagram_hash(block, hash))
+}
+
+fn block_contains_diagram_hash(block: &Block, hash: u64) -> bool {
+    match block {
+        Block::Diagram { hash: h, .. } => *h == hash,
+        Block::Blockquote(blocks) => blocks
+            .iter()
+            .any(|block| block_contains_diagram_hash(block, hash)),
+        Block::List { items, .. } => items.iter().any(|item| {
+            item.blocks
+                .iter()
+                .any(|block| block_contains_diagram_hash(block, hash))
+        }),
+        _ => false,
+    }
+}
+
 fn ipc_subscription_stream() -> impl iced::futures::Stream<Item = Message> {
-    iced::stream::channel(64, |mut out: futures::channel::mpsc::Sender<Message>| async move {
-        let listener = match crate::ipc::server::acquire() {
-            Ok(l) => l,
-            Err(_) => return,
-        };
-        let (tx, mut rx) = futures::channel::mpsc::channel::<crate::ipc::server::Pending>(64);
-        tokio::spawn(crate::ipc::server::run(listener, tx));
-        use futures::StreamExt;
-        use futures::SinkExt;
-        while let Some((req, reply)) = rx.next().await {
-            let wrapped = std::sync::Arc::new(std::sync::Mutex::new(Some(reply)));
-            if out.send(Message::Ipc(req, wrapped)).await.is_err() {
-                break;
+    iced::stream::channel(
+        64,
+        |mut out: futures::channel::mpsc::Sender<Message>| async move {
+            let listener = match crate::ipc::server::acquire() {
+                Ok(l) => l,
+                Err(_) => return,
+            };
+            let (tx, mut rx) = futures::channel::mpsc::channel::<crate::ipc::server::Pending>(64);
+            tokio::spawn(crate::ipc::server::run(listener, tx));
+            use futures::SinkExt;
+            use futures::StreamExt;
+            while let Some((req, reply)) = rx.next().await {
+                let wrapped = std::sync::Arc::new(std::sync::Mutex::new(Some(reply)));
+                if out.send(Message::Ipc(req, wrapped)).await.is_err() {
+                    break;
+                }
             }
-        }
-    })
+        },
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ast::{Block, DiagramKind, ListItem};
+
+    #[test]
+    fn diagram_hash_present_finds_nested_list_math() {
+        let blocks = vec![(
+            crate::ast::BlockId(1),
+            Block::List {
+                ordered: true,
+                items: vec![ListItem {
+                    task: None,
+                    blocks: vec![Block::Diagram {
+                        kind: DiagramKind::Math,
+                        source: "x".into(),
+                        hash: 42,
+                    }],
+                }],
+            },
+        )];
+
+        assert!(diagram_hash_present(&blocks, 42));
+    }
 }
