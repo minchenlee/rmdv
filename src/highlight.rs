@@ -145,7 +145,10 @@ fn lang_for(name: &str) -> Option<(Language, &'static str)> {
 use std::collections::VecDeque;
 use std::hash::{DefaultHasher, Hash, Hasher};
 
-const CACHE_MAX: usize = 200;
+// Bounded reparse cache. Spans live permanently in the AST (the render source
+// of truth); this only speeds re-highlighting identical code on theme toggle /
+// file reload, so a modest cap is plenty.
+const CACHE_MAX: usize = 64;
 
 #[derive(Default)]
 pub struct HlCache {
