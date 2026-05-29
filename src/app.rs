@@ -280,8 +280,11 @@ pub struct App {
     pub view_mode: ViewMode,
     pub editor: Option<iced::widget::text_editor::Content>,
     pub dirty: bool,
-    pub edit_history: Vec<String>,
-    pub edit_redo: Vec<String>,
+    /// Undo stack of deltas (old->new edits), newest last. Storing diffs rather
+    /// than full-document snapshots keeps undo memory proportional to edit size.
+    pub edit_history: Vec<crate::undo::Edit>,
+    /// Redo stack of deltas, mirror of `edit_history`.
+    pub edit_redo: Vec<crate::undo::Edit>,
     pub is_data_doc: bool,
     pub folded: HashSet<crate::ast::BlockId>,
     pub hovered_heading: Option<crate::ast::BlockId>,
@@ -1401,29 +1404,31 @@ impl App {
             Message::EditorAction(action) => {
                 if let Some(ed) = self.editor.as_mut() {
                     let edits = action.is_edit();
+                    let prev = if edits { Some(ed.text()) } else { None };
+                    ed.perform(action);
                     if edits {
-                        let prev = ed.text();
-                        let push = self.edit_history.last().map(|s| s != &prev).unwrap_or(true);
-                        if push {
-                            self.edit_history.push(prev);
+                        let prev = prev.unwrap_or_default();
+                        let new = ed.text();
+                        // Record the delta only when the text actually changed;
+                        // an empty diff would be a no-op undo step.
+                        if let Some(delta) = crate::undo::diff(&prev, &new) {
+                            self.edit_history.push(delta);
                             if self.edit_history.len() > 200 {
                                 self.edit_history.remove(0);
                             }
                             self.edit_redo.clear();
+                            self.dirty = true;
                         }
-                    }
-                    ed.perform(action);
-                    if edits {
-                        self.dirty = true;
                     }
                 }
                 Task::none()
             }
             Message::EditorUndo => {
                 if let Some(ed) = self.editor.as_mut() {
-                    if let Some(prev) = self.edit_history.pop() {
+                    if let Some(delta) = self.edit_history.pop() {
                         let current = ed.text();
-                        self.edit_redo.push(current);
+                        let prev = crate::undo::undo(&current, &delta);
+                        self.edit_redo.push(delta);
                         *ed = iced::widget::text_editor::Content::with_text(&prev);
                         self.dirty = prev != self.source;
                     }
@@ -1432,9 +1437,10 @@ impl App {
             }
             Message::EditorRedo => {
                 if let Some(ed) = self.editor.as_mut() {
-                    if let Some(next) = self.edit_redo.pop() {
+                    if let Some(delta) = self.edit_redo.pop() {
                         let current = ed.text();
-                        self.edit_history.push(current);
+                        let next = crate::undo::redo(&current, &delta);
+                        self.edit_history.push(delta);
                         *ed = iced::widget::text_editor::Content::with_text(&next);
                         self.dirty = next != self.source;
                     }
