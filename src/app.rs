@@ -34,12 +34,72 @@ pub enum ImageState {
     Loading,
     Loaded(iced::widget::image::Handle),
     LoadedSvg {
+        /// The svg handle owns the raw bytes internally (`Data::Bytes`), so we
+        /// don't keep a second copy — they're read back via `svg.data()` when a
+        /// raster is needed for the zoom modal.
         svg: iced::widget::svg::Handle,
-        bytes: std::sync::Arc<Vec<u8>>,
         /// Rasterized variant for zoom modal (filled lazily on first zoom open).
         raster: Option<iced::widget::image::Handle>,
     },
     Failed,
+}
+
+/// Maximum decoded images/SVGs kept resident. Beyond this, the least-recently
+/// used entry is evicted on insert. Generous enough that a normal document's
+/// visible images all stay cached; a re-fetch only happens after viewing this
+/// many distinct images and scrolling back to a very old one.
+const IMAGE_CACHE_MAX: usize = 64;
+
+/// LRU-bounded cache of decoded images keyed by URL/path. Replaces an unbounded
+/// `HashMap` that leaked memory across a long session. `get`/`get_mut`/`insert`/
+/// `contains_key` mark recency; `insert` evicts the oldest entry past the cap.
+#[derive(Default)]
+pub struct ImageCache {
+    map: HashMap<String, ImageState>,
+    order: std::collections::VecDeque<String>,
+}
+
+impl ImageCache {
+    fn touch(&mut self, key: &str) {
+        if let Some(pos) = self.order.iter().position(|k| k == key) {
+            self.order.remove(pos);
+        }
+        self.order.push_back(key.to_string());
+    }
+
+    pub fn get(&self, key: &str) -> Option<&ImageState> {
+        self.map.get(key)
+    }
+
+    pub fn get_mut(&mut self, key: &str) -> Option<&mut ImageState> {
+        if self.map.contains_key(key) {
+            self.touch(key);
+        }
+        self.map.get_mut(key)
+    }
+
+    pub fn contains_key(&self, key: &str) -> bool {
+        self.map.contains_key(key)
+    }
+
+    pub fn insert(&mut self, key: String, state: ImageState) {
+        self.touch(&key);
+        self.map.insert(key, state);
+        while self.map.len() > IMAGE_CACHE_MAX {
+            if let Some(old) = self.order.pop_front() {
+                self.map.remove(&old);
+            } else {
+                break;
+            }
+        }
+    }
+
+    /// Drop all cached images, freeing decoded payloads. Called on navigation to
+    /// a different file; remote images self-heal via re-fetch on the new render.
+    pub fn clear(&mut self) {
+        self.map.clear();
+        self.order.clear();
+    }
 }
 
 const SIDEBAR_WIDTH: f32 = 280.0;
@@ -275,7 +335,7 @@ pub struct App {
     pub toast_seq: u64,
     pub custom_themes: Vec<crate::theme_load::CustomTheme>,
     pub theme_id: crate::theme::ThemeId,
-    pub image_cache: HashMap<String, ImageState>,
+    pub image_cache: ImageCache,
     pub zoom_url: Option<String>,
     pub view_mode: ViewMode,
     pub editor: Option<iced::widget::text_editor::Content>,
@@ -374,7 +434,7 @@ impl Default for App {
             toast_seq: 0,
             custom_themes: Vec::new(),
             theme_id: crate::theme::ThemeId::Preset(preset),
-            image_cache: HashMap::new(),
+            image_cache: ImageCache::default(),
             zoom_url: None,
             view_mode: ViewMode::Rendered,
             editor: None,
@@ -1068,13 +1128,9 @@ impl App {
             }
             Message::ImageFetched(url, Ok(bytes)) => {
                 let state = if is_svg_bytes(&bytes) || url.to_ascii_lowercase().ends_with(".svg") {
-                    let arc = std::sync::Arc::new(bytes);
-                    let svg = iced::widget::svg::Handle::from_memory(arc.as_ref().clone());
-                    ImageState::LoadedSvg {
-                        svg,
-                        bytes: arc,
-                        raster: None,
-                    }
+                    // Handle takes ownership of the bytes; no separate copy kept.
+                    let svg = iced::widget::svg::Handle::from_memory(bytes);
+                    ImageState::LoadedSvg { svg, raster: None }
                 } else {
                     let handle = iced::widget::image::Handle::from_bytes(bytes);
                     ImageState::Loaded(handle)
@@ -1479,12 +1535,10 @@ impl App {
             Message::OpenImageZoom(url) => {
                 let raster_task = match self.image_cache.get(&url) {
                     Some(ImageState::LoadedSvg {
-                        bytes,
-                        raster: None,
-                        ..
+                        svg, raster: None, ..
                     }) => {
                         let key = url.clone();
-                        let bytes = bytes.clone();
+                        let bytes = svg_handle_bytes(svg);
                         Some(Task::perform(
                             async move { rasterize_svg(&bytes) },
                             move |res| Message::SvgRasterized(key.clone(), res),
@@ -1671,6 +1725,14 @@ impl App {
                         self.workspace = Some(parent);
                         self.tree_cursor = 0;
                     }
+                }
+                // Navigating to a different file: free the previous doc's
+                // rendered diagrams and decoded images so caches track the
+                // current document rather than every file browsed this session.
+                // Same-path reloads (watcher, theme re-render) keep their caches.
+                if self.file.as_deref() != Some(path.as_path()) {
+                    self.diagram_cache.clear();
+                    self.image_cache.clear();
                 }
                 self.source = src;
                 self.file = Some(path);
@@ -2832,7 +2894,7 @@ fn toast_overlay<'a>(text: &str, pal: Palette) -> Element<'a, Message> {
 fn image_zoom_overlay<'a>(
     url: Option<&'a str>,
     diagram: Option<&iced::widget::image::Handle>,
-    cache: &HashMap<String, ImageState>,
+    cache: &ImageCache,
     pal: Palette,
 ) -> Element<'a, Message> {
     use iced::widget::image::viewer;
@@ -4049,6 +4111,16 @@ pub fn rasterize_svg(bytes: &[u8]) -> Result<(Vec<u8>, u32, u32), String> {
     Ok((pixmap.take(), pw, ph))
 }
 
+/// Read the raw SVG bytes back out of an svg handle (which owns them via
+/// `Data::Bytes`), so we don't have to store a separate copy alongside it.
+/// Returns empty for a path-backed handle, which mdv never constructs.
+fn svg_handle_bytes(handle: &iced::widget::svg::Handle) -> Vec<u8> {
+    match handle.data() {
+        iced::advanced::svg::Data::Bytes(b) => b.to_vec(),
+        iced::advanced::svg::Data::Path(_) => Vec::new(),
+    }
+}
+
 pub fn is_svg_bytes(b: &[u8]) -> bool {
     let head = &b[..b.len().min(512)];
     let s = std::str::from_utf8(head).unwrap_or("");
@@ -4196,6 +4268,58 @@ fn ipc_subscription_stream() -> impl iced::futures::Stream<Item = Message> {
 mod tests {
     use super::*;
     use crate::ast::{Block, DiagramKind, ListItem};
+
+    #[test]
+    fn image_cache_evicts_oldest_past_cap() {
+        let mut c = ImageCache::default();
+        for i in 0..IMAGE_CACHE_MAX {
+            c.insert(format!("url{i}"), ImageState::Loading);
+        }
+        assert_eq!(c.map.len(), IMAGE_CACHE_MAX);
+        assert!(c.contains_key("url0"));
+        // One past cap evicts the least-recently-used (url0).
+        c.insert("overflow".into(), ImageState::Loading);
+        assert_eq!(c.map.len(), IMAGE_CACHE_MAX);
+        assert!(!c.contains_key("url0"));
+        assert!(c.contains_key("url1"));
+        assert!(c.contains_key("overflow"));
+    }
+
+    #[test]
+    fn image_cache_get_marks_recently_used() {
+        let mut c = ImageCache::default();
+        for i in 0..IMAGE_CACHE_MAX {
+            c.insert(format!("url{i}"), ImageState::Loading);
+        }
+        // Touch url0 so it's no longer the oldest; get_mut marks recency.
+        let _ = c.get_mut("url0");
+        c.insert("overflow".into(), ImageState::Loading);
+        // url1 is now oldest and evicted; url0 survives.
+        assert!(c.contains_key("url0"));
+        assert!(!c.contains_key("url1"));
+    }
+
+    #[test]
+    fn image_cache_clear_drops_all() {
+        let mut c = ImageCache::default();
+        c.insert("a".into(), ImageState::Loading);
+        c.insert("b".into(), ImageState::Failed);
+        c.clear();
+        assert!(!c.contains_key("a"));
+        assert!(!c.contains_key("b"));
+        assert_eq!(c.map.len(), 0);
+        assert_eq!(c.order.len(), 0);
+    }
+
+    #[test]
+    fn image_cache_reinsert_updates_without_growth() {
+        let mut c = ImageCache::default();
+        c.insert("a".into(), ImageState::Loading);
+        c.insert("a".into(), ImageState::Failed);
+        assert_eq!(c.map.len(), 1);
+        assert_eq!(c.order.len(), 1);
+        assert!(matches!(c.get("a"), Some(ImageState::Failed)));
+    }
 
     #[test]
     fn diagram_hash_present_finds_nested_list_math() {

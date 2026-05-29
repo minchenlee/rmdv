@@ -1,4 +1,4 @@
-use crate::app::{ImageState, Message};
+use crate::app::{ImageCache, ImageState, Message};
 use crate::ast::{Block, BlockId, Inline, ListItem};
 use crate::diagram::{DiagramCache, DiagramState};
 use crate::theme::{Palette, Typography};
@@ -7,7 +7,6 @@ use iced::widget::{
     text, tooltip, Column, Space,
 };
 use iced::{Element, Length, Padding};
-use std::collections::HashMap;
 use std::path::Path;
 
 #[derive(Clone, Default)]
@@ -24,7 +23,7 @@ pub fn render<'a>(
     hl: &Highlight,
     viewport: Option<&iced::widget::scrollable::Viewport>,
     cache: &crate::virt::HeightCache,
-    image_cache: &'a HashMap<String, ImageState>,
+    image_cache: &'a ImageCache,
     current_file: Option<&'a Path>,
     folded: &std::collections::HashSet<BlockId>,
     hovered_heading: Option<BlockId>,
@@ -94,7 +93,7 @@ fn render_heading_with_chevron<'a>(
     folded: bool,
     visible: bool,
 ) -> Element<'a, Message> {
-    let cache = EMPTY_IMG_CACHE.get_or_init(HashMap::new);
+    let cache = EMPTY_IMG_CACHE.get_or_init(ImageCache::default);
     let dcache = EMPTY_DIAGRAM_CACHE.get_or_init(|| DiagramCache::new(1));
     let img = ImgCtx {
         cache,
@@ -133,8 +132,7 @@ fn render_heading_with_chevron<'a>(
         .into()
 }
 
-static EMPTY_IMG_CACHE: std::sync::OnceLock<HashMap<String, ImageState>> =
-    std::sync::OnceLock::new();
+static EMPTY_IMG_CACHE: std::sync::OnceLock<ImageCache> = std::sync::OnceLock::new();
 static EMPTY_DIAGRAM_CACHE: std::sync::OnceLock<DiagramCache> = std::sync::OnceLock::new();
 
 pub fn data_view<'a>(
@@ -481,7 +479,7 @@ fn colorize_toml(code: &str, pal: &Palette) -> Vec<(std::ops::Range<usize>, iced
 
 #[derive(Clone, Copy)]
 struct ImgCtx<'a> {
-    cache: &'a HashMap<String, ImageState>,
+    cache: &'a ImageCache,
     current_file: Option<&'a Path>,
     diagram_cache: &'a DiagramCache,
     diagram_theme_id: u32,

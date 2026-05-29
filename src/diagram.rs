@@ -122,6 +122,12 @@ impl DiagramCache {
     pub fn is_empty(&self) -> bool {
         self.inner.is_empty()
     }
+
+    /// Drop all cached diagrams, freeing their RGBA/SVG payloads. Called when
+    /// navigating to a different file so we don't retain prior docs' diagrams.
+    pub fn clear(&mut self) {
+        self.inner.clear();
+    }
 }
 
 impl Default for DiagramCache {
@@ -515,6 +521,17 @@ mod tests {
         cache.put((2, 0), DiagramState::Err("boom".into()));
         assert_eq!(cache.len(), 2);
         assert!(matches!(cache.get(&(1, 0)), Some(DiagramState::Pending)));
+    }
+
+    #[test]
+    fn cache_clear_drops_all_entries() {
+        let mut cache = DiagramCache::new(4);
+        cache.put((1, 0), DiagramState::Pending);
+        cache.put((2, 0), DiagramState::Pending);
+        assert_eq!(cache.len(), 2);
+        cache.clear();
+        assert!(cache.is_empty());
+        assert!(cache.peek(&(1, 0)).is_none());
     }
 
     #[test]
