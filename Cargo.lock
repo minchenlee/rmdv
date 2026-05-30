@@ -2063,6 +2063,8 @@ dependencies = [
 [[package]]
 name = "iced_math"
 version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9bf506f66b1a892ea1d2778a3983b67f2a60cab4377099cd8545332615587f90"
 dependencies = [
  "iced",
  "pulldown-latex",
