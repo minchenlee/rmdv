@@ -80,7 +80,6 @@ pub enum Overlay {
     ThemePicker,
     ImageZoom,
     Shortcuts,
-    VaultSearch,
 }
 
 #[derive(Debug, Clone)]
@@ -127,8 +126,13 @@ pub enum Message {
     OpenCommandPalette,
     OpenThemePicker,
     OpenVaultSearch,
+    VaultQueryChanged(String),
     VaultSearchDone(crate::vault_search::VaultResults),
+    VaultMove(isize),
+    VaultOpenSelected,
     VaultOpenHit(usize),
+    VaultToggleFile(PathBuf),
+    VaultClose,
     ToggleShortcuts,
     CloseOverlay,
     PickerNavigate(PathBuf),
@@ -171,6 +175,7 @@ pub enum Message {
     TreeScrolled(iced::widget::scrollable::Viewport),
     OutlineScrolled(iced::widget::scrollable::Viewport),
     OverlayScrolled(iced::widget::scrollable::Viewport),
+    VaultScrolled(iced::widget::scrollable::Viewport),
     BodyScrolled(iced::widget::scrollable::Viewport),
     ScrollerTick,
     CopyCode(String),
@@ -289,11 +294,19 @@ pub struct App {
     pub overlay: Overlay,
     pub overlay_query: String,
     pub overlay_selected: usize,
-    /// Vault-search hits for the current `overlay_query` (Overlay::VaultSearch).
+    /// Vault search results page (Zed-style) — full reader-area, not an overlay.
+    /// Shown when `vault_open`; workspace-level, so it renders even with no file.
+    pub vault_open: bool,
+    pub vault_query: String,
     pub vault_results: Vec<crate::vault_search::VaultHit>,
     pub vault_truncated: bool,
     /// Monotonic request counter; a `VaultSearchDone` whose seq != this is stale.
     pub vault_seq: u64,
+    /// Cursor over the *visible* (non-collapsed) flattened match list.
+    pub vault_cursor: usize,
+    /// Files whose result group the user has folded.
+    pub vault_collapsed: HashSet<PathBuf>,
+    pub vault_viewport: Option<iced::widget::scrollable::Viewport>,
     pub picker: Option<Picker>,
     pub tree_viewport: Option<iced::widget::scrollable::Viewport>,
     pub outline_viewport: Option<iced::widget::scrollable::Viewport>,
@@ -400,9 +413,14 @@ impl Default for App {
             overlay: Overlay::None,
             overlay_query: String::new(),
             overlay_selected: 0,
+            vault_open: false,
+            vault_query: String::new(),
             vault_results: Vec::new(),
             vault_truncated: false,
             vault_seq: 0,
+            vault_cursor: 0,
+            vault_collapsed: HashSet::new(),
+            vault_viewport: None,
             picker: None,
             tree_viewport: None,
             outline_viewport: None,
@@ -495,6 +513,43 @@ impl App {
     fn overlay_input_id() -> iced::widget::Id {
         iced::widget::Id::new("overlay-input")
     }
+    fn vault_input_id() -> iced::widget::Id {
+        iced::widget::Id::new("vault-input")
+    }
+    fn vault_scroll_id() -> iced::widget::Id {
+        iced::widget::Id::new("vault")
+    }
+
+    /// Indices into `vault_results` for matches whose file group is expanded.
+    /// The page cursor and `↑↓` nav operate over this list.
+    fn vault_visible_matches(&self) -> Vec<usize> {
+        self.vault_results
+            .iter()
+            .enumerate()
+            .filter(|(_, h)| !self.vault_collapsed.contains(&h.path))
+            .map(|(i, _)| i)
+            .collect()
+    }
+
+    /// Scroll the results page so the cursor's match block stays visible. Match
+    /// blocks vary in height (context lines), so this is an estimate using a
+    /// nominal per-block row height — good enough to keep the cursor on screen.
+    fn scroll_vault_to_cursor(&self) -> Task<Message> {
+        let visible = self.vault_visible_matches();
+        if visible.is_empty() {
+            return Task::none();
+        }
+        // Nominal block height: 1 header-ish gap + (1 + 2*CONTEXT) lines * line_h.
+        const LINE_H: f32 = 18.0;
+        let row_h = (1.0 + 2.0 * crate::vault_search::CONTEXT as f32 + 1.0) * LINE_H;
+        edge_scroll(
+            Self::vault_scroll_id(),
+            self.vault_viewport.as_ref(),
+            self.vault_cursor,
+            visible.len(),
+            row_h,
+        )
+    }
 
     fn scroll_tree_to_cursor(&self) -> Task<Message> {
         const ROW_H: f32 = 26.0;
@@ -539,7 +594,6 @@ impl App {
                 self.picker.as_ref().map(|p| p.entries.len()).unwrap_or(0),
                 33.0,
             ),
-            Overlay::VaultSearch => (self.vault_results.len(), 32.0),
             Overlay::None | Overlay::ImageZoom | Overlay::Shortcuts => (0, 32.0),
         };
         if total == 0 {
@@ -915,8 +969,6 @@ impl App {
         self.overlay_query.clear();
         self.overlay_selected = 0;
         self.overlay_viewport = None;
-        self.vault_results.clear();
-        self.vault_truncated = false;
         if kind == Overlay::FolderPicker {
             let start = self.workspace.clone().or_else(|| {
                 self.file
@@ -1184,30 +1236,90 @@ impl App {
                 self.open_overlay(Overlay::ThemePicker);
                 iced::widget::operation::focus(Self::overlay_input_id())
             }
-            Message::VaultOpenHit(idx) => {
-                if idx < self.vault_results.len() {
-                    self.overlay_selected = idx;
-                    return Task::done(Message::OverlayConfirm);
-                }
-                Task::none()
-            }
             Message::OpenVaultSearch => {
-                if self.workspace.is_some() {
-                    self.open_overlay(Overlay::VaultSearch);
-                    iced::widget::operation::focus(Self::overlay_input_id())
-                } else {
-                    // No folder open: fall back to picking one first.
+                if self.workspace.is_none() {
+                    // No folder open: pick one first.
                     self.open_overlay(Overlay::FolderPicker);
-                    iced::widget::operation::focus(Self::overlay_input_id())
+                    return iced::widget::operation::focus(Self::overlay_input_id());
                 }
+                self.vault_open = true;
+                self.vault_query.clear();
+                self.vault_results.clear();
+                self.vault_truncated = false;
+                self.vault_cursor = 0;
+                self.vault_collapsed.clear();
+                self.vault_viewport = None;
+                iced::widget::operation::focus(Self::vault_input_id())
+            }
+            Message::VaultQueryChanged(q) => {
+                self.vault_query = q;
+                self.vault_cursor = 0;
+                self.vault_seq += 1;
+                let seq = self.vault_seq;
+                let files = self.workspace_files.clone();
+                let query = self.vault_query.clone();
+                Task::perform(
+                    crate::vault_search::run(files, query, seq),
+                    Message::VaultSearchDone,
+                )
             }
             Message::VaultSearchDone(r) => {
                 // Drop stale results whose query was superseded mid-scan.
                 if r.seq == self.vault_seq {
                     self.vault_results = r.hits;
                     self.vault_truncated = r.truncated;
-                    self.overlay_selected = 0;
+                    self.vault_cursor = 0;
                 }
+                Task::none()
+            }
+            Message::VaultMove(d) => {
+                let visible = self.vault_visible_matches();
+                if visible.is_empty() {
+                    return Task::none();
+                }
+                let next =
+                    (self.vault_cursor as isize + d).clamp(0, visible.len() as isize - 1);
+                self.vault_cursor = next as usize;
+                self.scroll_vault_to_cursor()
+            }
+            Message::VaultToggleFile(path) => {
+                if !self.vault_collapsed.remove(&path) {
+                    self.vault_collapsed.insert(path);
+                }
+                // Keep the cursor on a still-visible match.
+                let visible = self.vault_visible_matches();
+                if self.vault_cursor >= visible.len() {
+                    self.vault_cursor = visible.len().saturating_sub(1);
+                }
+                Task::none()
+            }
+            Message::VaultOpenSelected => {
+                let visible = self.vault_visible_matches();
+                if let Some(&hi) = visible.get(self.vault_cursor) {
+                    if let Some(hit) = self.vault_results.get(hi).cloned() {
+                        self.vault_open = false;
+                        self.pending_nav = Some(PendingNav {
+                            line: Some(hit.line),
+                            ..Default::default()
+                        });
+                        return Task::done(Message::Open(hit.path));
+                    }
+                }
+                Task::none()
+            }
+            Message::VaultOpenHit(idx) => {
+                if let Some(hit) = self.vault_results.get(idx).cloned() {
+                    self.vault_open = false;
+                    self.pending_nav = Some(PendingNav {
+                        line: Some(hit.line),
+                        ..Default::default()
+                    });
+                    return Task::done(Message::Open(hit.path));
+                }
+                Task::none()
+            }
+            Message::VaultClose => {
+                self.vault_open = false;
                 Task::none()
             }
             Message::ToggleShortcuts => {
@@ -1749,16 +1861,6 @@ impl App {
             Message::OverlayQueryChanged(q) => {
                 self.overlay_query = q;
                 self.overlay_selected = 0;
-                if self.overlay == Overlay::VaultSearch {
-                    self.vault_seq += 1;
-                    let seq = self.vault_seq;
-                    let files = self.workspace_files.clone();
-                    let query = self.overlay_query.clone();
-                    return Task::perform(
-                        crate::vault_search::run(files, query, seq),
-                        Message::VaultSearchDone,
-                    );
-                }
                 Task::none()
             }
             Message::OverlayMove(d) => {
@@ -1769,7 +1871,6 @@ impl App {
                     Overlay::FolderPicker => {
                         self.picker.as_ref().map(|p| p.entries.len()).unwrap_or(0)
                     }
-                    Overlay::VaultSearch => self.vault_results.len(),
                     Overlay::None | Overlay::ImageZoom | Overlay::Shortcuts => 0,
                 };
                 if len == 0 {
@@ -1815,17 +1916,6 @@ impl App {
                                 return Task::done(Message::PickerOpenFile(e.path));
                             }
                         }
-                    }
-                    Task::none()
-                }
-                Overlay::VaultSearch => {
-                    if let Some(hit) = self.vault_results.get(self.overlay_selected).cloned() {
-                        self.overlay = Overlay::None;
-                        self.pending_nav = Some(PendingNav {
-                            line: Some(hit.line),
-                            ..Default::default()
-                        });
-                        return Task::done(Message::Open(hit.path));
                     }
                     Task::none()
                 }
@@ -2269,6 +2359,11 @@ impl App {
                 self.last_scroll_at = Some(std::time::Instant::now());
                 Task::none()
             }
+            Message::VaultScrolled(v) => {
+                self.vault_viewport = Some(v);
+                self.last_scroll_at = Some(std::time::Instant::now());
+                Task::none()
+            }
             Message::BodyScrolled(v) => {
                 self.body_viewport = Some(v);
                 self.last_scroll_at = Some(std::time::Instant::now());
@@ -2511,6 +2606,7 @@ impl App {
         let editing = self.view_mode == ViewMode::Raw && self.editor.is_some();
         let fold_chord = self.fold_chord_pending;
         let mindmap = self.view_mode == ViewMode::Mindmap;
+        let vault_open = self.vault_open;
         let keys = iced::event::listen_with(|ev, status, _id| {
             let is_keyboard = matches!(
                 &ev,
@@ -2535,6 +2631,7 @@ impl App {
             editing,
             fold_chord,
             mindmap,
+            vault_open,
         ))
         .map(
             |(
@@ -2547,6 +2644,7 @@ impl App {
                     editing,
                     fold_chord,
                     mindmap,
+                    vault_open,
                 ),
                 ev,
             )| {
@@ -2619,6 +2717,18 @@ impl App {
                         "y" if cmd && editing => return Message::EditorRedo,
                         _ => {}
                     }
+                }
+                // Vault search page owns Esc/arrows/Enter while open. The query
+                // text_input keeps focus but doesn't consume these, so they're
+                // handled here at the app key layer (like the overlay did).
+                if vault_open {
+                    return match key {
+                        Key::Named(Named::Escape) => Message::VaultClose,
+                        Key::Named(Named::ArrowDown) => Message::VaultMove(1),
+                        Key::Named(Named::ArrowUp) => Message::VaultMove(-1),
+                        Key::Named(Named::Enter) => Message::VaultOpenSelected,
+                        _ => Message::Noop,
+                    };
                 }
                 if matches!(&key, Key::Named(Named::Escape)) {
                     if overlay_open {
@@ -2796,7 +2906,19 @@ impl App {
             .last_scroll_at
             .is_some_and(|t| t.elapsed() < std::time::Duration::from_millis(SCROLLER_FADE_MS));
 
-        let reader: Element<'_, Message> = if let Some(err) = &self.error {
+        let reader: Element<'_, Message> = if self.vault_open {
+            // Workspace-level page — renders before the file/welcome checks so
+            // it works with no document open.
+            vault_search_page(
+                &self.vault_query,
+                &self.vault_results,
+                self.vault_cursor,
+                self.vault_truncated,
+                &self.vault_collapsed,
+                self.workspace.as_deref(),
+                pal,
+            )
+        } else if let Some(err) = &self.error {
             centered_card(
                 column![
                     text("Couldn't open file").size(20).color(pal.fg),
@@ -3050,14 +3172,6 @@ impl App {
                 )
             }
             Overlay::Shortcuts => shortcuts_overlay(pal),
-            Overlay::VaultSearch => vault_search_overlay(
-                &self.overlay_query,
-                &self.vault_results,
-                self.overlay_selected,
-                self.vault_truncated,
-                self.workspace.as_deref(),
-                pal,
-            ),
             Overlay::ImageZoom => image_zoom_overlay(
                 self.zoom_url.as_deref(),
                 self.zoom_diagram.as_ref(),
@@ -4189,36 +4303,64 @@ fn file_finder_overlay<'a>(
     overlay_frame(column![input, divider, body].into(), pal, 600.0, 460.0)
 }
 
-/// Vault-wide search overlay: a query input plus one row per matching line
-/// across the workspace. Rows show `relpath:line` and a trimmed snippet; the
-/// selected row is highlighted. Confirm (Enter/click) opens the file and lands
-/// on the line. Mirrors `file_finder_overlay`'s layout and styling.
-fn vault_search_overlay<'a>(
+/// Vault-wide search results page (Zed-style). Fills the reader area. Query bar
+/// plus match count on top, results grouped under collapsible file headers.
+/// Each match shows surrounding context lines with line numbers and the matched
+/// span highlighted. Arrow keys move the cursor over visible matches,
+/// Enter/click open the file at the line, Esc exits.
+fn vault_search_page<'a>(
     query: &'a str,
     hits: &'a [crate::vault_search::VaultHit],
-    selected: usize,
+    cursor: usize,
     truncated: bool,
+    collapsed: &HashSet<PathBuf>,
     workspace: Option<&std::path::Path>,
     pal: Palette,
 ) -> Element<'a, Message> {
-    let input = container(
-        text_input("Search all files…", query)
-            .id(App::overlay_input_id())
-            .on_input(Message::OverlayQueryChanged)
-            .on_submit(Message::OverlayConfirm)
-            .padding(Padding::from([10, 14]))
-            .size(14)
-            .style(move |_, _| iced::widget::text_input::Style {
-                background: Color::TRANSPARENT.into(),
-                border: Border::default(),
-                icon: pal.muted,
-                placeholder: pal.subtle,
-                value: pal.fg,
-                selection: pal.selection,
-            }),
-    );
+    // Query bar: input + "N matches in M files".
+    let file_count = {
+        let mut last: Option<&std::path::Path> = None;
+        let mut n = 0;
+        for h in hits {
+            if last != Some(h.path.as_path()) {
+                n += 1;
+                last = Some(h.path.as_path());
+            }
+        }
+        n
+    };
+    let count_text = if query.is_empty() {
+        String::new()
+    } else if truncated {
+        format!("{}+ matches (refine query)", crate::vault_search::MAX_HITS)
+    } else {
+        format!("{} matches in {} files", hits.len(), file_count)
+    };
+    let bar = container(
+        irow![
+            text_input("Search all files…", query)
+                .id(App::vault_input_id())
+                .on_input(Message::VaultQueryChanged)
+                .on_submit(Message::VaultOpenSelected)
+                .padding(Padding::from([8, 12]))
+                .size(14)
+                .style(move |_, _| iced::widget::text_input::Style {
+                    background: Color::TRANSPARENT.into(),
+                    border: Border::default(),
+                    icon: pal.muted,
+                    placeholder: pal.subtle,
+                    value: pal.fg,
+                    selection: pal.selection,
+                }),
+            text(count_text).size(12).color(pal.subtle),
+        ]
+        .spacing(12)
+        .align_y(iced::Alignment::Center),
+    )
+    .padding(Padding::from([6, 14]))
+    .width(Length::Fill);
 
-    let mut list = Column::new().spacing(0).padding(Padding::from([6, 8]));
+    let mut list = Column::new().spacing(0).padding(Padding::from([6, 10]));
     if query.is_empty() {
         list = list.push(
             container(
@@ -4231,45 +4373,91 @@ fn vault_search_overlay<'a>(
     } else if hits.is_empty() {
         list = list.push(container(text("No matches").color(pal.subtle).size(13)).padding(14));
     } else {
-        for (i, hit) in hits.iter().enumerate() {
-            let is_sel = i == selected;
+        // Walk hits in file-walk order; emit a header when the path changes,
+        // then each match block (unless the file is collapsed). `vis` tracks the
+        // visible-match index so the cursor maps to the right block.
+        let mut vis = 0usize;
+        let mut idx = 0usize;
+        while idx < hits.len() {
+            let path = hits[idx].path.clone();
+            let folded = collapsed.contains(&path);
+            // Count matches in this contiguous file run.
+            let run_start = idx;
+            while idx < hits.len() && hits[idx].path == path {
+                idx += 1;
+            }
+            let run_count = idx - run_start;
+
             let rel = workspace
-                .and_then(|ws| hit.path.strip_prefix(ws).ok())
-                .unwrap_or(&hit.path)
+                .and_then(|ws| path.strip_prefix(ws).ok())
+                .unwrap_or(&path)
                 .to_string_lossy()
                 .into_owned();
-            let location = format!("{rel}:{}", hit.line);
-            let inner = column![
-                text(location).size(12).color(pal.subtle),
-                text(hit.snippet.clone()).size(13).color(pal.fg),
-            ]
-            .spacing(2);
-            let row = button(inner)
-                .padding(Padding::from([5, 12]))
+            let caret = if folded { "▶" } else { "▼" };
+            let header_label = if folded {
+                format!("{caret}  {rel}  ({run_count})")
+            } else {
+                format!("{caret}  {rel}")
+            };
+            let header = button(text(header_label).size(13).color(pal.accent))
+                .padding(Padding::from([6, 8]))
                 .width(Length::Fill)
-                .height(Length::Fixed(32.0))
                 .style(move |_, status| button::Style {
-                    background: match (is_sel, status) {
-                        (true, _) => Some(Background::Color(pal.surface_alt)),
-                        (_, button::Status::Hovered) => Some(Background::Color(pal.surface_alt)),
+                    background: match status {
+                        button::Status::Hovered => Some(Background::Color(pal.surface_alt)),
                         _ => None,
                     },
-                    text_color: pal.fg,
+                    text_color: pal.accent,
                     border: Border {
-                        radius: 6.0.into(),
+                        radius: 5.0.into(),
                         ..Default::default()
                     },
                     ..Default::default()
                 })
-                .on_press(Message::VaultOpenHit(i));
-            list = list.push(row);
+                .on_press(Message::VaultToggleFile(path.clone()));
+            list = list.push(header);
+
+            if folded {
+                vis += run_count;
+                continue;
+            }
+
+            for (offset, hit) in hits[run_start..run_start + run_count].iter().enumerate() {
+                let hi = run_start + offset;
+                let is_cursor = vis == cursor;
+                vis += 1;
+
+                let mut block = Column::new().spacing(0);
+                for cl in &hit.context {
+                    block = block.push(context_line_row(cl, hit.col_start, hit.col_end, pal));
+                }
+                let row = button(block)
+                    .padding(Padding::from([4, 8]))
+                    .width(Length::Fill)
+                    .style(move |_, status| button::Style {
+                        background: match (is_cursor, status) {
+                            (true, _) => Some(Background::Color(pal.surface_alt)),
+                            (_, button::Status::Hovered) => Some(Background::Color(pal.surface_alt)),
+                            _ => None,
+                        },
+                        text_color: pal.fg,
+                        border: Border {
+                            radius: 5.0.into(),
+                            ..Default::default()
+                        },
+                        ..Default::default()
+                    })
+                    .on_press(Message::VaultOpenHit(hi));
+                list = list.push(row);
+            }
         }
     }
 
     let body = scrollable(list)
-        .id(App::overlay_scroll_id())
-        .on_scroll(Message::OverlayScrolled)
+        .id(App::vault_scroll_id())
+        .on_scroll(Message::VaultScrolled)
         .height(Length::Fill)
+        .width(Length::Fill)
         .direction(slim_scroll_direction())
         .style(move |_, status| sleek_scrollable_style(status, pal, true));
 
@@ -4280,23 +4468,82 @@ fn vault_search_overlay<'a>(
             ..Default::default()
         });
 
-    let footer_text = if query.is_empty() {
-        String::new()
-    } else if truncated {
-        format!("{}+ results (refine query)", crate::vault_search::MAX_HITS)
-    } else {
-        format!("{} results", hits.len())
-    };
-    let footer = container(text(footer_text).size(11).color(pal.subtle))
-        .padding(Padding::from([6, 14]))
-        .width(Length::Fill);
-
-    overlay_frame(
-        column![input, divider, body, footer].into(),
-        pal,
-        640.0,
-        460.0,
+    let footer = container(
+        text("↑↓ move · ⏎ open · esc exit")
+            .size(11)
+            .color(pal.subtle),
     )
+    .padding(Padding::from([6, 14]))
+    .width(Length::Fill);
+
+    container(column![bar, divider, body, footer])
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .into()
+}
+
+/// One context line: `{number} │ {text}` in monospace, with the matched span
+/// highlighted on the match line. Context lines are muted; the match line uses
+/// the foreground colour.
+fn context_line_row<'a>(
+    cl: &'a crate::vault_search::ContextLine,
+    col_start: usize,
+    col_end: usize,
+    pal: Palette,
+) -> Element<'a, Message> {
+    let num = text(format!("{:>4} │ ", cl.number))
+        .size(12)
+        .font(iced::Font::MONOSPACE)
+        .color(pal.subtle);
+
+    if !cl.is_match {
+        return irow![
+            num,
+            text(cl.text.clone())
+                .size(12)
+                .font(iced::Font::MONOSPACE)
+                .color(pal.muted),
+        ]
+        .into();
+    }
+
+    // Split the match line into before / match / after (char offsets).
+    let chars: Vec<char> = cl.text.chars().collect();
+    let s = col_start.min(chars.len());
+    let e = col_end.min(chars.len());
+    let before: String = chars[..s].iter().collect();
+    let matched: String = chars[s..e].iter().collect();
+    let after: String = chars[e..].iter().collect();
+
+    let highlight = container(
+        text(matched)
+            .size(12)
+            .font(iced::Font::MONOSPACE)
+            .color(pal.fg),
+    )
+    .style(move |_| container::Style {
+        background: Some(pal.selection.into()),
+        border: Border {
+            radius: 2.0.into(),
+            ..Default::default()
+        },
+        ..Default::default()
+    });
+
+    irow![
+        num,
+        text(before)
+            .size(12)
+            .font(iced::Font::MONOSPACE)
+            .color(pal.fg),
+        highlight,
+        text(after)
+            .size(12)
+            .font(iced::Font::MONOSPACE)
+            .color(pal.fg),
+    ]
+    .align_y(iced::Alignment::Center)
+    .into()
 }
 
 /// Static, read-only keyboard cheatsheet. Grouped by category, no search, no
