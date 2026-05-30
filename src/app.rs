@@ -80,6 +80,7 @@ pub enum Overlay {
     ThemePicker,
     ImageZoom,
     Shortcuts,
+    VaultSearch,
 }
 
 #[derive(Debug, Clone)]
@@ -125,6 +126,9 @@ pub enum Message {
     OpenFileFinder,
     OpenCommandPalette,
     OpenThemePicker,
+    OpenVaultSearch,
+    VaultSearchDone(crate::vault_search::VaultResults),
+    VaultOpenHit(usize),
     ToggleShortcuts,
     CloseOverlay,
     PickerNavigate(PathBuf),
@@ -285,6 +289,11 @@ pub struct App {
     pub overlay: Overlay,
     pub overlay_query: String,
     pub overlay_selected: usize,
+    /// Vault-search hits for the current `overlay_query` (Overlay::VaultSearch).
+    pub vault_results: Vec<crate::vault_search::VaultHit>,
+    pub vault_truncated: bool,
+    /// Monotonic request counter; a `VaultSearchDone` whose seq != this is stale.
+    pub vault_seq: u64,
     pub picker: Option<Picker>,
     pub tree_viewport: Option<iced::widget::scrollable::Viewport>,
     pub outline_viewport: Option<iced::widget::scrollable::Viewport>,
@@ -391,6 +400,9 @@ impl Default for App {
             overlay: Overlay::None,
             overlay_query: String::new(),
             overlay_selected: 0,
+            vault_results: Vec::new(),
+            vault_truncated: false,
+            vault_seq: 0,
             picker: None,
             tree_viewport: None,
             outline_viewport: None,
@@ -527,6 +539,7 @@ impl App {
                 self.picker.as_ref().map(|p| p.entries.len()).unwrap_or(0),
                 33.0,
             ),
+            Overlay::VaultSearch => (self.vault_results.len(), 32.0),
             Overlay::None | Overlay::ImageZoom | Overlay::Shortcuts => (0, 32.0),
         };
         if total == 0 {
@@ -902,6 +915,8 @@ impl App {
         self.overlay_query.clear();
         self.overlay_selected = 0;
         self.overlay_viewport = None;
+        self.vault_results.clear();
+        self.vault_truncated = false;
         if kind == Overlay::FolderPicker {
             let start = self.workspace.clone().or_else(|| {
                 self.file
@@ -1024,6 +1039,7 @@ impl App {
             ("Toggle Sidebar  ⌘B", Message::ToggleSidebar),
             ("Toggle Hidden Files  ⌘⇧.", Message::ToggleHidden),
             ("Find in Document  ⌘F", Message::ToggleSearch),
+            ("Search All Files…  ⌘⇧F", Message::OpenVaultSearch),
             ("Toggle Raw/Rendered  ⌘E", Message::ToggleViewMode),
             ("Increase Font Size  ⌘+", Message::FontSizeUp),
             ("Decrease Font Size  ⌘-", Message::FontSizeDown),
@@ -1167,6 +1183,32 @@ impl App {
             Message::OpenThemePicker => {
                 self.open_overlay(Overlay::ThemePicker);
                 iced::widget::operation::focus(Self::overlay_input_id())
+            }
+            Message::VaultOpenHit(idx) => {
+                if idx < self.vault_results.len() {
+                    self.overlay_selected = idx;
+                    return Task::done(Message::OverlayConfirm);
+                }
+                Task::none()
+            }
+            Message::OpenVaultSearch => {
+                if self.workspace.is_some() {
+                    self.open_overlay(Overlay::VaultSearch);
+                    iced::widget::operation::focus(Self::overlay_input_id())
+                } else {
+                    // No folder open: fall back to picking one first.
+                    self.open_overlay(Overlay::FolderPicker);
+                    iced::widget::operation::focus(Self::overlay_input_id())
+                }
+            }
+            Message::VaultSearchDone(r) => {
+                // Drop stale results whose query was superseded mid-scan.
+                if r.seq == self.vault_seq {
+                    self.vault_results = r.hits;
+                    self.vault_truncated = r.truncated;
+                    self.overlay_selected = 0;
+                }
+                Task::none()
             }
             Message::ToggleShortcuts => {
                 if self.overlay == Overlay::Shortcuts {
@@ -1707,6 +1749,16 @@ impl App {
             Message::OverlayQueryChanged(q) => {
                 self.overlay_query = q;
                 self.overlay_selected = 0;
+                if self.overlay == Overlay::VaultSearch {
+                    self.vault_seq += 1;
+                    let seq = self.vault_seq;
+                    let files = self.workspace_files.clone();
+                    let query = self.overlay_query.clone();
+                    return Task::perform(
+                        crate::vault_search::run(files, query, seq),
+                        Message::VaultSearchDone,
+                    );
+                }
                 Task::none()
             }
             Message::OverlayMove(d) => {
@@ -1717,6 +1769,7 @@ impl App {
                     Overlay::FolderPicker => {
                         self.picker.as_ref().map(|p| p.entries.len()).unwrap_or(0)
                     }
+                    Overlay::VaultSearch => self.vault_results.len(),
                     Overlay::None | Overlay::ImageZoom | Overlay::Shortcuts => 0,
                 };
                 if len == 0 {
@@ -1762,6 +1815,17 @@ impl App {
                                 return Task::done(Message::PickerOpenFile(e.path));
                             }
                         }
+                    }
+                    Task::none()
+                }
+                Overlay::VaultSearch => {
+                    if let Some(hit) = self.vault_results.get(self.overlay_selected).cloned() {
+                        self.overlay = Overlay::None;
+                        self.pending_nav = Some(PendingNav {
+                            line: Some(hit.line),
+                            ..Default::default()
+                        });
+                        return Task::done(Message::Open(hit.path));
                     }
                     Task::none()
                 }
@@ -2537,6 +2601,9 @@ impl App {
                         // since shift+. produces '>' on many layouts.
                         "." if cmd && mods.shift() => return Message::ToggleHidden,
                         ">" if cmd => return Message::ToggleHidden,
+                        // ⌘⇧F — vault-wide search. Match both 'f'+shift and the
+                        // capital 'F' some layouts emit; ordered before ⌘F.
+                        "f" | "F" if cmd && mods.shift() => return Message::OpenVaultSearch,
                         "f" if cmd => return Message::ToggleSearch,
                         "t" if cmd => return Message::ToggleTheme,
                         "e" if cmd => return Message::ToggleViewMode,
@@ -2983,6 +3050,14 @@ impl App {
                 )
             }
             Overlay::Shortcuts => shortcuts_overlay(pal),
+            Overlay::VaultSearch => vault_search_overlay(
+                &self.overlay_query,
+                &self.vault_results,
+                self.overlay_selected,
+                self.vault_truncated,
+                self.workspace.as_deref(),
+                pal,
+            ),
             Overlay::ImageZoom => image_zoom_overlay(
                 self.zoom_url.as_deref(),
                 self.zoom_diagram.as_ref(),
@@ -4114,6 +4189,116 @@ fn file_finder_overlay<'a>(
     overlay_frame(column![input, divider, body].into(), pal, 600.0, 460.0)
 }
 
+/// Vault-wide search overlay: a query input plus one row per matching line
+/// across the workspace. Rows show `relpath:line` and a trimmed snippet; the
+/// selected row is highlighted. Confirm (Enter/click) opens the file and lands
+/// on the line. Mirrors `file_finder_overlay`'s layout and styling.
+fn vault_search_overlay<'a>(
+    query: &'a str,
+    hits: &'a [crate::vault_search::VaultHit],
+    selected: usize,
+    truncated: bool,
+    workspace: Option<&std::path::Path>,
+    pal: Palette,
+) -> Element<'a, Message> {
+    let input = container(
+        text_input("Search all files…", query)
+            .id(App::overlay_input_id())
+            .on_input(Message::OverlayQueryChanged)
+            .on_submit(Message::OverlayConfirm)
+            .padding(Padding::from([10, 14]))
+            .size(14)
+            .style(move |_, _| iced::widget::text_input::Style {
+                background: Color::TRANSPARENT.into(),
+                border: Border::default(),
+                icon: pal.muted,
+                placeholder: pal.subtle,
+                value: pal.fg,
+                selection: pal.selection,
+            }),
+    );
+
+    let mut list = Column::new().spacing(0).padding(Padding::from([6, 8]));
+    if query.is_empty() {
+        list = list.push(
+            container(
+                text("Type to search every file in the workspace")
+                    .color(pal.subtle)
+                    .size(13),
+            )
+            .padding(14),
+        );
+    } else if hits.is_empty() {
+        list = list.push(container(text("No matches").color(pal.subtle).size(13)).padding(14));
+    } else {
+        for (i, hit) in hits.iter().enumerate() {
+            let is_sel = i == selected;
+            let rel = workspace
+                .and_then(|ws| hit.path.strip_prefix(ws).ok())
+                .unwrap_or(&hit.path)
+                .to_string_lossy()
+                .into_owned();
+            let location = format!("{rel}:{}", hit.line);
+            let inner = column![
+                text(location).size(12).color(pal.subtle),
+                text(hit.snippet.clone()).size(13).color(pal.fg),
+            ]
+            .spacing(2);
+            let row = button(inner)
+                .padding(Padding::from([5, 12]))
+                .width(Length::Fill)
+                .height(Length::Fixed(32.0))
+                .style(move |_, status| button::Style {
+                    background: match (is_sel, status) {
+                        (true, _) => Some(Background::Color(pal.surface_alt)),
+                        (_, button::Status::Hovered) => Some(Background::Color(pal.surface_alt)),
+                        _ => None,
+                    },
+                    text_color: pal.fg,
+                    border: Border {
+                        radius: 6.0.into(),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                })
+                .on_press(Message::VaultOpenHit(i));
+            list = list.push(row);
+        }
+    }
+
+    let body = scrollable(list)
+        .id(App::overlay_scroll_id())
+        .on_scroll(Message::OverlayScrolled)
+        .height(Length::Fill)
+        .direction(slim_scroll_direction())
+        .style(move |_, status| sleek_scrollable_style(status, pal, true));
+
+    let divider = container(Space::new().height(1.0))
+        .width(Length::Fill)
+        .style(move |_| container::Style {
+            background: Some(pal.rule.into()),
+            ..Default::default()
+        });
+
+    let footer_text = if query.is_empty() {
+        String::new()
+    } else if truncated {
+        format!("{}+ results (refine query)", crate::vault_search::MAX_HITS)
+    } else {
+        format!("{} results", hits.len())
+    };
+    let footer = container(text(footer_text).size(11).color(pal.subtle))
+        .padding(Padding::from([6, 14]))
+        .width(Length::Fill);
+
+    overlay_frame(
+        column![input, divider, body, footer].into(),
+        pal,
+        640.0,
+        460.0,
+    )
+}
+
 /// Static, read-only keyboard cheatsheet. Grouped by category, no search, no
 /// cursor. Esc or backdrop click dismisses (handled by `overlay_frame`).
 fn shortcuts_overlay<'a>(pal: Palette) -> Element<'a, Message> {
@@ -4132,6 +4317,7 @@ fn shortcuts_overlay<'a>(pal: Palette) -> Element<'a, Message> {
             "Navigation",
             &[
                 ("⌘F", "Find in Document"),
+                ("⌘⇧F", "Search All Files"),
                 ("⌘↑", "Scroll to Top"),
                 ("⌘↓", "Scroll to Bottom"),
                 ("↑ ↓", "Move outline / tree selection"),
