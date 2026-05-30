@@ -26,15 +26,43 @@ pub fn parse(src: &str) -> (Vec<(BlockId, Block)>, Vec<u32>) {
 /// the whole input (so bare fragments parse). Returns a sub-slice of `src` so
 /// byte offsets stay anchored to the original.
 fn document_body(src: &str) -> &str {
-    let Some(begin) = src.find("\\begin{document}") else {
+    let Some(begin) = find_uncommented(src, "\\begin{document}", 0) else {
         return src;
     };
     let after = begin + "\\begin{document}".len();
-    let end = src[after..]
-        .find("\\end{document}")
-        .map(|e| after + e)
-        .unwrap_or(src.len());
+    let end = find_uncommented(src, "\\end{document}", after).unwrap_or(src.len());
     &src[after..end]
+}
+
+/// Find `needle` at/after `from`, skipping matches that sit after an unescaped
+/// `%` on their own line (i.e. inside a LaTeX comment). Returns a byte index
+/// into `src` so callers' offsets stay anchored to the original document.
+fn find_uncommented(src: &str, needle: &str, from: usize) -> Option<usize> {
+    let mut search = from;
+    while let Some(rel) = src[search..].find(needle) {
+        let idx = search + rel;
+        // Scan back to line start; a match is commented if an unescaped `%`
+        // precedes it on the same line.
+        let line_start = src[..idx].rfind('\n').map(|n| n + 1).unwrap_or(0);
+        let prefix = src[line_start..idx].as_bytes();
+        let mut commented = false;
+        let mut i = 0;
+        while i < prefix.len() {
+            match prefix[i] {
+                b'\\' => i += 2, // escaped char, skip next
+                b'%' => {
+                    commented = true;
+                    break;
+                }
+                _ => i += 1,
+            }
+        }
+        if !commented {
+            return Some(idx);
+        }
+        search = idx + needle.len();
+    }
+    None
 }
 
 // ---- id / hash scheme (mirrors parser.rs) ----
@@ -158,6 +186,10 @@ struct Parser<'a> {
     /// Byte offset of `src` within the original document (for line-nav).
     base: u32,
     offsets: Vec<u32>,
+    /// Extra blocks produced by a single `parse_block` call (e.g. the trailing
+    /// blocks of an unknown multi-block environment). Drained by `blocks_until`
+    /// before parsing the next construct so no content is dropped.
+    pending: std::collections::VecDeque<Block>,
 }
 
 /// A buffered top-level block plus the byte offset where it started.
@@ -174,6 +206,7 @@ impl<'a> Parser<'a> {
             pos: 0,
             base,
             offsets: Vec::new(),
+            pending: std::collections::VecDeque::new(),
         }
     }
 
@@ -211,10 +244,16 @@ impl<'a> Parser<'a> {
                 continue;
             }
             if let Some(block) = self.parse_block() {
-                out.push(Emitted {
-                    block,
-                    offset: self.base + start as u32,
-                });
+                let offset = self.base + start as u32;
+                out.push(Emitted { block, offset });
+                // Flush any trailing blocks the construct buffered (unknown
+                // multi-block env), anchored at the same start offset.
+                while let Some(extra) = self.pending.pop_front() {
+                    out.push(Emitted {
+                        block: extra,
+                        offset,
+                    });
+                }
             } else if self.pos == start {
                 // Defensive: never spin.
                 self.pos += 1;
@@ -314,10 +353,13 @@ impl<'a> Parser<'a> {
             "figure" => Some(self.parse_figure()),
             "quote" | "quotation" => Some(self.parse_quote(env)),
             _ => {
-                // Unknown environment: render its body as paragraph(s); take
-                // the first emitted block, dropping any others (best effort).
-                let inner = self.blocks_until(Some(env));
-                inner.into_iter().next().map(|e| e.block)
+                // Unknown environment: render its body inline. Return the first
+                // block; buffer the rest in `pending` so multi-paragraph envs
+                // (abstract, theorem, proof, …) don't lose content.
+                let mut inner = self.blocks_until(Some(env)).into_iter();
+                let first = inner.next().map(|e| e.block);
+                self.pending.extend(inner.map(|e| e.block));
+                first
             }
         }
     }
@@ -469,8 +511,13 @@ impl<'a> Parser<'a> {
 
     fn parse_verbatim(&mut self, env: &str) -> Block {
         let close = format!("\\end{{{env}}}");
-        let _ = self.read_optional(); // lstlisting may carry [options]
-                                      // Skip a single leading newline right after \begin{env}.
+        // lstlisting may carry `[options]` on the SAME line as \begin. Only
+        // consume them there — read_optional()'s skip_inline_ws crosses newlines
+        // and would otherwise swallow a body line that starts with `[`.
+        if env == "lstlisting" && self.opt_on_current_line() {
+            let _ = self.read_optional();
+        }
+        // Skip a single leading newline right after \begin{env}.
         if self.at_str("\r\n") {
             self.pos += 2;
         } else if self.bytes.get(self.pos) == Some(&b'\n') {
@@ -509,11 +556,33 @@ impl<'a> Parser<'a> {
         let body = self.src[start..end].to_string();
         self.pos = (end + "\\end{figure}".len()).min(self.bytes.len());
 
-        let url = find_includegraphics(&body).unwrap_or_default();
-        Block::Image {
-            url,
-            alt: String::new(),
+        let urls = find_all_includegraphics(&body);
+        let caption = find_caption(&body);
+        // Emit one Image per graphic (subfigures), then the caption as an
+        // emphasized paragraph. Extras go to `pending`; return the first block.
+        let mut blocks: Vec<Block> = urls
+            .into_iter()
+            .map(|url| Block::Image {
+                url,
+                alt: String::new(),
+            })
+            .collect();
+        if let Some(cap) = caption {
+            let inlines = parse_inlines(&cap);
+            if !inlines.is_empty() {
+                blocks.push(Block::Paragraph(vec![Inline::Emph(inlines)]));
+            }
         }
+        if blocks.is_empty() {
+            // No graphic found: emit an empty image so the figure isn't dropped.
+            return Block::Image {
+                url: String::new(),
+                alt: String::new(),
+            };
+        }
+        let first = blocks.remove(0);
+        self.pending.extend(blocks);
+        first
     }
 
     fn parse_quote(&mut self, env: &str) -> Block {
@@ -612,8 +681,10 @@ impl<'a> Parser<'a> {
                         self.pos += 1;
                     }
                 } else {
-                    // Escaped symbol or \\ — take exactly one following byte.
-                    self.pos += 1;
+                    // Escaped symbol or \\ — take exactly one following char.
+                    // Must advance a full UTF-8 char so the `src[start..pos]`
+                    // slice below never lands mid-codepoint (e.g. `\é`).
+                    self.pos = (self.pos + utf8_len(nc)).min(self.bytes.len());
                 }
             }
             // Include the argument group(s) so inline parser sees them whole.
@@ -688,6 +759,16 @@ impl<'a> Parser<'a> {
             self.pos += 1;
         }
         self.src[start..self.pos].to_string()
+    }
+
+    /// True if an optional `[...]` group begins on the current line (only
+    /// spaces/tabs before the `[`, no intervening newline).
+    fn opt_on_current_line(&self) -> bool {
+        let mut i = self.pos;
+        while matches!(self.bytes.get(i), Some(b' ') | Some(b'\t')) {
+            i += 1;
+        }
+        self.bytes.get(i) == Some(&b'[')
     }
 
     /// Reads an optional `[...]` argument, returning its inner text if present.
@@ -870,9 +951,13 @@ fn split_rows(body: &str) -> Vec<String> {
     rows
 }
 
-/// Split a row into cells on unescaped `&`, dropping `\hline`.
+/// Split a row into cells on unescaped `&`, dropping rule macros. Arg-less
+/// rules (`\hline`, booktabs `\toprule`/`\midrule`/`\bottomrule`) are removed by
+/// the unknown-macro path in `parse_inlines`; the ones that carry a braced/paren
+/// argument (`\cline{1-2}`, `\cmidrule(lr){2-3}`) would leak that argument as
+/// cell text, so strip them here.
 fn split_cells(row: &str) -> Vec<String> {
-    let row = row.replace("\\hline", "");
+    let row = strip_partial_rules(&row.replace("\\hline", ""));
     let bytes = row.as_bytes();
     let mut cells = Vec::new();
     let mut start = 0;
@@ -890,6 +975,38 @@ fn split_cells(row: &str) -> Vec<String> {
     }
     cells.push(row[start..].to_string());
     cells
+}
+
+/// Remove `\cline{..}` and `\cmidrule[(..)]{..}` (with their arguments) so the
+/// span specs don't leak into cell text.
+fn strip_partial_rules(row: &str) -> String {
+    let mut out = String::with_capacity(row.len());
+    let mut rest = row;
+    'outer: while !rest.is_empty() {
+        for name in ["\\cmidrule", "\\cline"] {
+            if rest.starts_with(name) {
+                let mut s = rest[name.len()..].trim_start();
+                // optional `(lr)` trim spec before the brace group
+                if s.starts_with('(') {
+                    if let Some(j) = s.find(')') {
+                        s = &s[j + 1..];
+                    }
+                }
+                let s = s.trim_start();
+                if let Some((_, after)) = read_leading_group(s) {
+                    rest = after;
+                } else {
+                    rest = s;
+                }
+                continue 'outer;
+            }
+        }
+        let mut chars = rest.chars();
+        let c = chars.next().unwrap();
+        out.push(c);
+        rest = chars.as_str();
+    }
+    out
 }
 
 /// `\multicolumn{n}{a}{text}` → its `text`, discarding span/alignment.
@@ -946,11 +1063,31 @@ fn read_leading_group(s: &str) -> Option<(String, &str)> {
 
 // ---- figure helper ----
 
-fn find_includegraphics(body: &str) -> Option<String> {
-    let idx = body.find("\\includegraphics")?;
-    let rest = &body[idx + "\\includegraphics".len()..];
-    let rest = skip_optional(rest);
-    read_leading_group(rest).map(|(inner, _)| inner.trim().to_string())
+/// All `\includegraphics` targets in a figure body, in order (subfigures).
+fn find_all_includegraphics(body: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut rest = body;
+    while let Some(idx) = rest.find("\\includegraphics") {
+        let after = skip_optional(&rest[idx + "\\includegraphics".len()..]);
+        match read_leading_group(after) {
+            Some((inner, tail)) => {
+                let url = inner.trim().to_string();
+                if !url.is_empty() {
+                    out.push(url);
+                }
+                rest = tail;
+            }
+            None => rest = after,
+        }
+    }
+    out
+}
+
+/// The `\caption{...}` text of a figure, if any.
+fn find_caption(body: &str) -> Option<String> {
+    let idx = body.find("\\caption")?;
+    let after = skip_optional(&body[idx + "\\caption".len()..]);
+    read_leading_group(after).map(|(inner, _)| inner.trim().to_string())
 }
 
 fn skip_optional(s: &str) -> &str {
@@ -1129,12 +1266,13 @@ fn parse_control(s: &str) -> (Option<Inline>, usize, Option<String>) {
             )
         }
         "verb" => {
-            // \verb<delim>...<delim>
-            if let Some(&d) = bytes.get(after_name) {
-                let rest = &s[after_name + 1..];
-                if let Some(end) = rest.find(d as char) {
+            // \verb<delim>...<delim> — delim is a single char (may be multibyte).
+            if let Some(d) = s[after_name..].chars().next() {
+                let d_len = d.len_utf8();
+                let rest = &s[after_name + d_len..];
+                if let Some(end) = rest.find(d) {
                     let code = rest[..end].to_string();
-                    let total = after_name + 1 + end + 1;
+                    let total = after_name + d_len + end + d_len;
                     return (Some(Inline::Code(code)), total, None);
                 }
             }
@@ -1683,6 +1821,113 @@ mod tests {
         let _ = parse("\\end{itemize} stray");
         let _ = parse("\\begin{tabular}{ll} a & b");
         let _ = parse("{{{}}}\\href{u}");
+    }
+
+    #[test]
+    fn never_panics_on_multibyte_after_backslash() {
+        // A backslash followed by a multibyte char must not slice mid-codepoint.
+        let _ = parse("text \\é more");
+        let _ = parse("\\textbf{\\é}");
+        let _ = parse("$ \\é $");
+        let _ = parse("\\begin{itemize}\\item \\é\\end{itemize}");
+        let _ = parse("\\€ and \\𝕏");
+        // \verb with a multibyte delimiter.
+        let _ = parse("Type \\verb€x = 1€ now.");
+        let _ = parse("\\verb…unclosed");
+    }
+
+    #[test]
+    fn verb_multibyte_delimiter() {
+        let b = blocks("Type \\verb€x = 1€ now.");
+        match &b[0] {
+            Block::Paragraph(inl) => {
+                assert!(inl
+                    .iter()
+                    .any(|i| matches!(i, Inline::Code(c) if c == "x = 1")));
+            }
+            other => panic!("expected paragraph, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn unknown_env_keeps_all_blocks() {
+        let src = "\\begin{abstract}\nFirst para.\n\nSecond para.\n\nThird para.\n\\end{abstract}";
+        let paras: Vec<String> = blocks(src)
+            .iter()
+            .filter_map(|b| match b {
+                Block::Paragraph(inl) => Some(inline_to_string(inl)),
+                _ => None,
+            })
+            .collect();
+        assert!(paras.iter().any(|p| p.contains("First")));
+        assert!(paras.iter().any(|p| p.contains("Second")), "2nd para dropped");
+        assert!(paras.iter().any(|p| p.contains("Third")), "3rd para dropped");
+    }
+
+    #[test]
+    fn figure_multiple_images_and_caption() {
+        let src = "\\begin{figure}\\includegraphics{a.png}\\hfill\\includegraphics{b.png}\\caption{Two panels}\\end{figure}";
+        let b = blocks(src);
+        let imgs: Vec<String> = b
+            .iter()
+            .filter_map(|bl| match bl {
+                Block::Image { url, .. } => Some(url.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(imgs, vec!["a.png".to_string(), "b.png".to_string()]);
+        let has_caption = b.iter().any(|bl| matches!(bl, Block::Paragraph(inl)
+            if inline_to_string(inl).contains("Two panels")));
+        assert!(has_caption, "caption dropped");
+    }
+
+    #[test]
+    fn verbatim_keeps_leading_bracket_line() {
+        let src = "\\begin{verbatim}\n[server]\nhost = 1\n\\end{verbatim}";
+        match &blocks(src)[0] {
+            Block::CodeBlock { code, .. } => {
+                assert!(code.contains("[server]"), "leading [ line lost: {code:?}");
+                assert!(code.contains("host = 1"));
+            }
+            other => panic!("expected code block, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn lstlisting_options_still_consumed() {
+        let src = "\\begin{lstlisting}[language=Rust]\nfn main() {}\n\\end{lstlisting}";
+        match &blocks(src)[0] {
+            Block::CodeBlock { code, .. } => {
+                assert!(code.contains("fn main"));
+                assert!(!code.contains("language=Rust"), "options leaked: {code:?}");
+            }
+            other => panic!("expected code block, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cline_cmidrule_stripped_from_cells() {
+        let src = "\\begin{tabular}{ll} a & b \\\\ \\cline{1-2} c & d \\\\ \\cmidrule(lr){1-2} e & f \\end{tabular}";
+        let b = blocks(src);
+        if let Block::Table { rows, .. } = &b[0] {
+            for r in rows {
+                for cell in r {
+                    let t = inline_to_string(cell);
+                    assert!(!t.contains("1-2"), "rule span leaked into cell: {t:?}");
+                    assert!(!t.contains("lr"), "cmidrule trim leaked: {t:?}");
+                }
+            }
+        } else {
+            panic!("expected table, got {:?}", b[0]);
+        }
+    }
+
+    #[test]
+    fn document_body_ignores_commented_marker() {
+        let src = "\\documentclass{article}\n% see \\begin{document}\n\\begin{document}\n\\section{Real}\n\\end{document}";
+        let b = blocks(src);
+        // Only the real heading; the commented marker must not shift the body.
+        assert!(matches!(b.first(), Some(Block::Heading { level: 1, .. })));
     }
 
     #[test]

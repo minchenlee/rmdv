@@ -10,8 +10,21 @@ pub struct Section {
     pub line: u32,
 }
 
+/// Markdown sections (CLI/IPC default). For type-aware parsing (`.tex`), use
+/// [`list_sections_for`].
 pub fn list_sections(src: &str) -> Vec<Section> {
-    let (blocks, offsets) = parser::parse(src);
+    list_sections_for(src, false)
+}
+
+/// Build the heading outline, dispatching to the LaTeX parser when `is_tex` so
+/// `.tex` documents (whose AST is built by `crate::tex::parse`) produce the same
+/// headings the body renders — markdown-parsing raw LaTeX yields none.
+pub fn list_sections_for(src: &str, is_tex: bool) -> Vec<Section> {
+    let (blocks, offsets) = if is_tex {
+        crate::tex::parse(src)
+    } else {
+        parser::parse(src)
+    };
     let table = build_byte_to_line(src);
     let mut stack: Vec<(u8, String)> = Vec::new();
     let mut out = Vec::new();
@@ -75,5 +88,21 @@ fn push_inline(i: &Inline, out: &mut String) {
                 push_inline(x, out);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tex_sections_use_latex_parser() {
+        // Markdown parsing of LaTeX finds no headings; the tex path must.
+        let src = "\\section{Intro}\nbody\n\\subsection{Detail}\nmore";
+        assert!(list_sections_for(src, false).is_empty());
+        let tex = list_sections_for(src, true);
+        let titles: Vec<&str> = tex.iter().map(|s| s.title.as_str()).collect();
+        assert_eq!(titles, vec!["Intro", "Detail"]);
+        assert_eq!(tex[1].level, 2);
     }
 }

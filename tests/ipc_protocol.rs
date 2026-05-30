@@ -350,7 +350,11 @@ fn slugify_matches_github_style() {
     assert_eq!(slugify("Hello World"), "hello-world");
     assert_eq!(slugify("Getting Started"), "getting-started");
     assert_eq!(slugify("API_Reference"), "api-reference");
-    assert_eq!(slugify("Install & Setup!"), "install--setup");
+    // Runs of separators (here ` & ` with the `&` dropped) collapse to one `-`
+    // so headings match hand-written anchors with incidental extra spacing.
+    assert_eq!(slugify("Install & Setup!"), "install-setup");
+    assert_eq!(slugify("Results  Discussion"), "results-discussion");
+    assert_eq!(slugify("  Trim Me  "), "trim-me");
 }
 
 #[test]
@@ -367,11 +371,11 @@ fn external_link_detection() {
 #[test]
 fn fragment_resolves_to_heading_line() {
     let src = std::fs::read_to_string("tests/fixtures/sections.md").unwrap();
-    assert_eq!(line_for_fragment(&src, "install"), Some(5));
-    assert_eq!(line_for_fragment(&src, "usage"), Some(13));
+    assert_eq!(line_for_fragment(&src, "install", false), Some(5));
+    assert_eq!(line_for_fragment(&src, "usage", false), Some(13));
     // First matching heading wins (two "Setup" headings).
-    assert_eq!(line_for_fragment(&src, "setup"), Some(9));
-    assert_eq!(line_for_fragment(&src, "nope"), None);
+    assert_eq!(line_for_fragment(&src, "setup", false), Some(9));
+    assert_eq!(line_for_fragment(&src, "nope", false), None);
 }
 
 #[test]

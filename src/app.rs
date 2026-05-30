@@ -271,6 +271,10 @@ pub struct App {
     pub sidebar_tab: SidebarTab,
     pub tree_cursor: usize,
     pub outline_cursor: usize,
+    /// Heading outline, rebuilt in `load_ast_from_source` when the document
+    /// changes. Cached so the Outline sidebar (rendered every frame) and arrow
+    /// nav don't re-parse the whole source per event.
+    pub outline_sections: Vec<crate::ipc::sections::Section>,
     pub overlay: Overlay,
     pub overlay_query: String,
     pub overlay_selected: usize,
@@ -370,6 +374,7 @@ impl Default for App {
             sidebar_tab: SidebarTab::Files,
             tree_cursor: 0,
             outline_cursor: 0,
+            outline_sections: Vec::new(),
             overlay: Overlay::None,
             overlay_query: String::new(),
             overlay_selected: 0,
@@ -619,27 +624,69 @@ impl App {
         Task::done(Message::RestoreBodySnap(rel.clamp(0.0, 1.0)))
     }
 
-    fn scroll_to_current_match(&self) -> Task<Message> {
+    fn scroll_to_current_match(&mut self) -> Task<Message> {
         let Some(m) = self.matches.get(self.match_idx) else {
             return Task::none();
         };
-        let Some((id, _)) = self.ast.get(m.block) else {
+        let block_idx = m.block;
+        let Some((id, _)) = self.ast.get(block_idx) else {
             return Task::none();
         };
+        let id = *id;
+        // The match may sit under a folded heading, whose block container is
+        // then absent from the widget tree — the scroll Operation would find
+        // nothing and silently no-op. Reveal it first.
+        self.unfold_to_reveal(block_idx);
         // Use real laid-out widget bounds via the scroll operation rather than
         // height estimates, which diverge from the actual layout (code blocks,
         // images, diagrams, math) and left the match offscreen.
-        scroll_block_to_center(*id)
+        scroll_block_to_center(id)
     }
 
-    fn scroll_to_line_top(&self, line: u32) -> Task<Message> {
+    /// Remove fold state on every heading whose collapsed range hides the block
+    /// at `block_idx`, so a search/nav target under (possibly nested) folds is
+    /// actually rendered. Mirrors the fold logic in `render::render`: a folded
+    /// heading hides following blocks until a heading of level ≤ its own.
+    fn unfold_to_reveal(&mut self, block_idx: usize) {
+        if self.folded.is_empty() || block_idx >= self.ast.len() {
+            return;
+        }
+        // Stack of (heading_level, heading_id, is_folded) enclosing block_idx.
+        let mut ancestors: Vec<(u8, crate::ast::BlockId, bool)> = Vec::new();
+        for (i, (id, b)) in self.ast.iter().enumerate() {
+            if i == block_idx {
+                break;
+            }
+            if let Block::Heading { level, .. } = b {
+                let lvl = *level as u8;
+                while ancestors.last().is_some_and(|(l, _, _)| *l >= lvl) {
+                    ancestors.pop();
+                }
+                ancestors.push((lvl, *id, self.folded.contains(id)));
+            }
+        }
+        // Any folded heading on the ancestor path hides block_idx; reveal them.
+        for (_, id, folded) in ancestors {
+            if folded {
+                self.folded.remove(&id);
+            }
+        }
+    }
+
+    fn scroll_to_line_top(&mut self, line: u32) -> Task<Message> {
         let Some(idx) = crate::ipc::lines::block_for_line(line, &self.block_lines) else {
             return Task::none();
         };
         let Some((id, Block::Heading { .. })) = self.ast.get(idx) else {
             return Task::none();
         };
-        scroll_block_to_top(*id)
+        let id = *id;
+        // The scroll Operation walks the body scrollable, which only exists in
+        // Rendered view — outline/fragment nav fired from Raw or Mindmap would
+        // otherwise no-op. Switch to Rendered (and reveal the target if folded).
+        self.view_mode = ViewMode::Rendered;
+        self.unfold_to_reveal(idx);
+        scroll_block_to_top(id)
     }
 
     fn synthesize_data_ast(&mut self) -> Option<Vec<(crate::ast::BlockId, Block)>> {
@@ -686,9 +733,15 @@ impl App {
     fn load_ast_from_source(&mut self) {
         if let Some(ast) = self.synthesize_data_ast() {
             self.ast = ast;
+            // Data docs are one synthesized block at line 1; reset block_lines
+            // and the outline so a stale map from a prior file can't misroute
+            // line-nav.
+            self.block_lines = vec![1];
+            self.outline_sections.clear();
             return;
         }
-        let (mut parsed, block_offsets) = if is_tex_path(self.file.as_deref()) {
+        let is_tex = is_tex_path(self.file.as_deref());
+        let (mut parsed, block_offsets) = if is_tex {
             crate::tex::parse(&self.source)
         } else {
             parser::parse(&self.source)
@@ -711,6 +764,7 @@ impl App {
             .map(|&b| table.line_for_byte(b as usize))
             .collect();
         self.ast = parsed;
+        self.outline_sections = crate::ipc::sections::list_sections_for(&self.source, is_tex);
     }
 
     /// Walk the current AST and dispatch a background render for every
@@ -1722,7 +1776,9 @@ impl App {
                     let line = nav
                         .fragment
                         .as_deref()
-                        .and_then(|f| line_for_fragment(&self.source, f))
+                        .and_then(|f| {
+                            line_for_fragment(&self.source, f, is_tex_path(self.file.as_deref()))
+                        })
                         .or(nav.line);
                     Task::done(Message::Ipc(
                         crate::ipc::Request {
@@ -1756,7 +1812,10 @@ impl App {
                 };
                 // Bare `#fragment`: navigate within the current document.
                 if target.is_empty() {
-                    if let Some(line) = fragment.and_then(|f| line_for_fragment(&self.source, f)) {
+                    let is_tex = is_tex_path(self.file.as_deref());
+                    if let Some(line) =
+                        fragment.and_then(|f| line_for_fragment(&self.source, f, is_tex))
+                    {
                         return Task::done(goto_line_message(line));
                     }
                     return Task::none();
@@ -1974,7 +2033,7 @@ impl App {
                 }
             }
             Message::OutlineMove(d) => {
-                let len = crate::ipc::sections::list_sections(&self.source).len();
+                let len = self.outline_sections.len();
                 if len == 0 {
                     return Task::none();
                 }
@@ -1984,8 +2043,7 @@ impl App {
                 Task::none()
             }
             Message::OutlineActivate => {
-                let sections = crate::ipc::sections::list_sections(&self.source);
-                let Some(s) = sections.get(self.outline_cursor) else {
+                let Some(s) = self.outline_sections.get(self.outline_cursor) else {
                     return Task::none();
                 };
                 self.scroll_to_line_top(s.line)
@@ -3491,7 +3549,7 @@ fn sidebar_outline_body<'a>(
     pal: Palette,
     recently_scrolled: bool,
 ) -> Element<'a, Message> {
-    let sections = crate::ipc::sections::list_sections(&app.source);
+    let sections = &app.outline_sections;
     let mut list = Column::new().spacing(0).padding(Padding::from([4, 4]));
     if sections.is_empty() {
         list = list.push(
@@ -4422,24 +4480,33 @@ pub fn is_external_link(s: &str) -> bool {
     is_remote_url(s) || s.contains("://") || s.starts_with("mailto:") || s.starts_with("tel:")
 }
 
-/// GitHub-style heading slug: lowercase, spaces → `-`, drop other punctuation.
+/// GitHub-style heading slug: lowercase, runs of space/`-`/`_` collapse to a
+/// single `-`, other punctuation dropped, leading/trailing `-` trimmed. A
+/// single space and a run of spaces both yield one `-` so hand-written anchors
+/// (`#results-discussion`) match titles with incidental double spacing.
 pub fn slugify(title: &str) -> String {
     let mut out = String::new();
+    let mut pending_sep = false;
     for c in title.chars() {
         if c.is_alphanumeric() {
+            if pending_sep && !out.is_empty() {
+                out.push('-');
+            }
+            pending_sep = false;
             out.extend(c.to_lowercase());
         } else if c == ' ' || c == '-' || c == '_' {
-            out.push('-');
+            pending_sep = true;
         }
     }
     out
 }
 
 /// Resolve a link `#fragment` to a heading line in `src`, matching the
-/// GitHub-style slug of each heading title.
-pub fn line_for_fragment(src: &str, fragment: &str) -> Option<u32> {
+/// GitHub-style slug of each heading title. `is_tex` selects the LaTeX parser
+/// so `.tex` documents' `\section{}` headings are seen.
+pub fn line_for_fragment(src: &str, fragment: &str, is_tex: bool) -> Option<u32> {
     let want = slugify(fragment);
-    crate::ipc::sections::list_sections(src)
+    crate::ipc::sections::list_sections_for(src, is_tex)
         .into_iter()
         .find(|s| slugify(&s.title) == want)
         .map(|s| s.line)
@@ -4470,8 +4537,8 @@ fn apply_goto(
         return Response::err(id, "no file open");
     }
     let target_line = if let Some(sec) = section {
-        let sections = crate::ipc::sections::list_sections(&app.source);
-        match crate::ipc::sections::resolve_section_path(&sec, &sections) {
+        let sections = &app.outline_sections;
+        match crate::ipc::sections::resolve_section_path(&sec, sections) {
             Some(s) => s.line,
             None => return Response::err(id, format!("section \"{sec}\" not found")),
         }
