@@ -71,6 +71,7 @@ fn launch_instance(initial: Option<ipc::Request>) -> iced::Result {
             ipc::Cmd::Open { line, section, .. } => Some(mdv::app::PendingNav {
                 line: *line,
                 section: section.clone(),
+                ..Default::default()
             }),
             _ => None,
         },

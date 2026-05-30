@@ -1,0 +1,113 @@
+---
+source: tests/tex_snapshots.rs
+assertion_line: 8
+expression: blocks
+---
+- - 2661539264082735799
+  - Heading:
+      level: 1
+      id: introduction
+      inlines:
+        - Text: Introduction
+- - 122623145075350841
+  - Paragraph:
+      - Text: "This paper studies "
+      - Strong:
+          - Text: widgets
+      - Text: " and their "
+      - Emph:
+          - Text: properties
+      - Text: ". We cite\nprior work [smith2020] and refer to sec:method. Inline math like\n$E = mc^2$ stays literal in v1."
+- - 12057783420018668994
+  - Heading:
+      level: 1
+      id: method
+      inlines:
+        - Text: Method
+- - 14848798265787739755
+  - Paragraph:
+      - Text: The key identity is
+- - 6735363683195672689
+  - Diagram:
+      kind: Math
+      source: "\\begin{align}\na + b &= c \\\\\nx     &= y + z\n\\end{align}"
+      hash: 14356613728270920965
+- - 7315844307677009191
+  - Paragraph:
+      - Text: "and a single equation:"
+- - 16308494779802164853
+  - Diagram:
+      kind: Math
+      source: "\\int_0^1 x^2 \\, dx = \\frac{1}{3}"
+      hash: 18060799527387611359
+- - 13426944792690400547
+  - Heading:
+      level: 2
+      id: algorithm
+      inlines:
+        - Text: Algorithm
+- - 7980348644753469302
+  - Paragraph:
+      - Text: "The steps are:"
+- - 17609295807853276789
+  - List:
+      ordered: true
+      items:
+        - task: ~
+          blocks:
+            - Paragraph:
+                - Text: Initialize the state.
+        - task: ~
+          blocks:
+            - Paragraph:
+                - Text: Iterate until convergence.
+        - task: ~
+          blocks:
+            - Paragraph:
+                - Text: Return the result.
+- - 6512352886442734558
+  - Paragraph:
+      - Text: "Properties we rely on:"
+- - 17480580667991636828
+  - List:
+      ordered: false
+      items:
+        - task: ~
+          blocks:
+            - Paragraph:
+                - Text: Stability.
+        - task: ~
+          blocks:
+            - Paragraph:
+                - Text: Monotonicity.
+- - 1775830854103906664
+  - Heading:
+      level: 1
+      id: results
+      inlines:
+        - Text: Results
+- - 4341668821583623490
+  - Paragraph:
+      - Text: Our results are summarized below.
+- - 4442369663646610462
+  - Table:
+      headers:
+        - - Text: Method
+        - - Text: Score
+      rows:
+        - - - Text: Baseline
+          - - Text: "0.71"
+        - - - Text: Ours
+          - - Text: "0.93"
+- - 12991421837149708695
+  - Paragraph:
+      - Text: "See "
+      - Link:
+          url: "https://example.com"
+          children:
+            - Text: the project page
+      - Text: " for code."
+- - 8862586828243653054
+  - Image:
+      url: plot.png
+      alt: ""

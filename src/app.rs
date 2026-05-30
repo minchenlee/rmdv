@@ -22,6 +22,12 @@ pub enum ViewMode {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SidebarTab {
+    Files,
+    Outline,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MindmapDir {
     Up,
     Down,
@@ -136,11 +142,15 @@ pub enum Message {
     ReloadThemes,
     ThemeFilesChanged,
     ToggleSidebar,
+    SetSidebarTab(SidebarTab),
     /// Toggle visibility of dot-prefixed entries in tree + picker.
     ToggleHidden,
     TreeToggle(PathBuf),
     TreeMove(isize),
     TreeActivate,
+    OutlineMove(isize),
+    OutlineActivate,
+    ScrollToLine(u32),
     TreeToggleAtCursor,
     CopyTreePath,
     ScrollBy(f32),
@@ -226,6 +236,9 @@ pub enum Message {
 pub struct PendingNav {
     pub line: Option<u32>,
     pub section: Option<String>,
+    /// Link `#fragment` anchor, resolved by GitHub-style slug once the target
+    /// file has loaded. Distinct from `section` (exact-title IPC matching).
+    pub fragment: Option<String>,
 }
 
 pub struct App {
@@ -255,7 +268,9 @@ pub struct App {
     pub show_hidden: bool,
     pub expanded: HashSet<PathBuf>,
     pub sidebar_open: bool,
+    pub sidebar_tab: SidebarTab,
     pub tree_cursor: usize,
+    pub outline_cursor: usize,
     pub overlay: Overlay,
     pub overlay_query: String,
     pub overlay_selected: usize,
@@ -352,7 +367,9 @@ impl Default for App {
             show_hidden: false,
             expanded: HashSet::new(),
             sidebar_open: false,
+            sidebar_tab: SidebarTab::Files,
             tree_cursor: 0,
+            outline_cursor: 0,
             overlay: Overlay::None,
             overlay_query: String::new(),
             overlay_selected: 0,
@@ -603,32 +620,26 @@ impl App {
     }
 
     fn scroll_to_current_match(&self) -> Task<Message> {
-        if self.matches.is_empty() || self.ast.is_empty() {
-            return Task::none();
-        }
-        let m = self.matches[self.match_idx];
-        let Some((block_top, block_h)) =
-            crate::virt::estimated_block_position(&self.ast, &self.height_cache, m.block)
-        else {
+        let Some(m) = self.matches.get(self.match_idx) else {
             return Task::none();
         };
-        let estimated_h = crate::virt::estimated_content_height(&self.ast, &self.height_cache);
-        let (content_h, view_h) = self
-            .body_viewport
-            .as_ref()
-            .map(|v| {
-                (
-                    v.content_bounds().height.max(estimated_h),
-                    v.bounds().height,
-                )
-            })
-            .unwrap_or((estimated_h, 0.0));
-        let max_scroll = (content_h - view_h).max(1.0);
-        // Place the matched block slightly above center, using document-position
-        // estimates instead of block index so tall blocks don't skew the jump.
-        let target = block_top + block_h * 0.5 - view_h * 0.38;
-        let rel = (target / max_scroll).clamp(0.0, 1.0);
-        Task::done(Message::RestoreBodySnap(rel))
+        let Some((id, _)) = self.ast.get(m.block) else {
+            return Task::none();
+        };
+        // Use real laid-out widget bounds via the scroll operation rather than
+        // height estimates, which diverge from the actual layout (code blocks,
+        // images, diagrams, math) and left the match offscreen.
+        scroll_block_to_center(*id)
+    }
+
+    fn scroll_to_line_top(&self, line: u32) -> Task<Message> {
+        let Some(idx) = crate::ipc::lines::block_for_line(line, &self.block_lines) else {
+            return Task::none();
+        };
+        let Some((id, Block::Heading { .. })) = self.ast.get(idx) else {
+            return Task::none();
+        };
+        scroll_block_to_top(*id)
     }
 
     fn synthesize_data_ast(&mut self) -> Option<Vec<(crate::ast::BlockId, Block)>> {
@@ -663,12 +674,25 @@ impl App {
     }
 
     fn reparse_source(&mut self) {
+        self.load_ast_from_source();
+        self.rebuild_matches();
+    }
+
+    /// Parse `self.source` into `self.ast` (+ `block_lines`), dispatching by file
+    /// type: structured-data files (json/yaml/toml) synthesize a single code
+    /// block, `.tex` goes through the LaTeX parser, everything else is markdown.
+    /// Shared by `reparse_source` (post-edit) and the `FileLoaded` handler so a
+    /// `.tex` file can't render correctly on load then revert to markdown on edit.
+    fn load_ast_from_source(&mut self) {
         if let Some(ast) = self.synthesize_data_ast() {
             self.ast = ast;
-            self.rebuild_matches();
             return;
         }
-        let (mut parsed, block_offsets) = parser::parse(&self.source);
+        let (mut parsed, block_offsets) = if is_tex_path(self.file.as_deref()) {
+            crate::tex::parse(&self.source)
+        } else {
+            parser::parse(&self.source)
+        };
         for (_id, b) in parsed.iter_mut() {
             if let Block::CodeBlock {
                 lang: Some(l),
@@ -687,7 +711,6 @@ impl App {
             .map(|&b| table.line_for_byte(b as usize))
             .collect();
         self.ast = parsed;
-        self.rebuild_matches();
     }
 
     /// Walk the current AST and dispatch a background render for every
@@ -1668,32 +1691,11 @@ impl App {
                 }
                 self.source = src;
                 self.file = Some(path);
+                self.outline_cursor = 0;
                 self.is_data_doc = data_lang_for(self.file.as_deref()).is_some();
                 self.mindmap_collapsed.clear();
                 self.mindmap_selected = None;
-                if let Some(ast) = self.synthesize_data_ast() {
-                    self.ast = ast;
-                } else {
-                    let (mut parsed, block_offsets) = parser::parse(&self.source);
-                    for (_id, b) in parsed.iter_mut() {
-                        if let Block::CodeBlock {
-                            lang: Some(l),
-                            code,
-                            spans,
-                        } = b
-                        {
-                            if spans.is_empty() {
-                                *spans = self.hl_cache.highlight(l, code);
-                            }
-                        }
-                    }
-                    let table = crate::ipc::lines::build_byte_to_line(&self.source);
-                    self.block_lines = block_offsets
-                        .iter()
-                        .map(|&b| table.line_for_byte(b as usize))
-                        .collect();
-                    self.ast = parsed;
-                }
+                self.load_ast_from_source();
                 self.error = None;
                 self.rebuild_matches();
                 // Opening a file while in mindmap mode: focus root's first child
@@ -1715,11 +1717,18 @@ impl App {
                 self.refresh_diagram_theme_id();
                 let prime = self.prime_diagram_cache();
                 let nav_task: Task<Message> = if let Some(nav) = self.pending_nav.take() {
+                    // A link `#fragment` resolves to a line via slug matching;
+                    // IPC `line`/`section` pass through unchanged.
+                    let line = nav
+                        .fragment
+                        .as_deref()
+                        .and_then(|f| line_for_fragment(&self.source, f))
+                        .or(nav.line);
                     Task::done(Message::Ipc(
                         crate::ipc::Request {
                             id: 0,
                             cmd: crate::ipc::Cmd::Goto {
-                                line: nav.line,
+                                line,
                                 section: nav.section,
                                 focus: crate::ipc::FocusBehavior::Default,
                             },
@@ -1740,6 +1749,38 @@ impl App {
                 Task::perform(load_file(p), Message::FileLoaded)
             }
             Message::OpenLink(url) => {
+                // Split off a `#fragment` suffix (heading anchor).
+                let (target, fragment) = match url.split_once('#') {
+                    Some((t, f)) => (t, Some(f)),
+                    None => (url.as_str(), None),
+                };
+                // Bare `#fragment`: navigate within the current document.
+                if target.is_empty() {
+                    if let Some(line) = fragment.and_then(|f| line_for_fragment(&self.source, f)) {
+                        return Task::done(goto_line_message(line));
+                    }
+                    return Task::none();
+                }
+                // Local markdown file: open it in-app, then navigate to the
+                // fragment (if any) once it has loaded.
+                if !is_external_link(target) {
+                    if let Some(path) = resolve_image_path(target, self.file.as_deref()) {
+                        let is_md = path.extension().and_then(|e| e.to_str()).is_some_and(|e| {
+                            e.eq_ignore_ascii_case("md")
+                                || e.eq_ignore_ascii_case("markdown")
+                                || e.eq_ignore_ascii_case("tex")
+                        });
+                        if is_md && path.is_file() {
+                            if let Some(f) = fragment {
+                                self.pending_nav = Some(PendingNav {
+                                    fragment: Some(f.to_string()),
+                                    ..Default::default()
+                                });
+                            }
+                            return Task::done(Message::Open(path));
+                        }
+                    }
+                }
                 let _ = open::that_detached(&url);
                 Task::none()
             }
@@ -1871,6 +1912,10 @@ impl App {
                 self.sidebar_open = !self.sidebar_open;
                 self.restore_body_scroll()
             }
+            Message::SetSidebarTab(tab) => {
+                self.sidebar_tab = tab;
+                Task::none()
+            }
             Message::ToggleHidden => {
                 self.show_hidden = !self.show_hidden;
                 // Rebuild tree + workspace_files with the new filter. Keep
@@ -1928,6 +1973,24 @@ impl App {
                     Task::perform(load_file(p), Message::FileLoaded)
                 }
             }
+            Message::OutlineMove(d) => {
+                let len = crate::ipc::sections::list_sections(&self.source).len();
+                if len == 0 {
+                    return Task::none();
+                }
+                let len_i = len as isize;
+                self.outline_cursor =
+                    ((self.outline_cursor as isize + d).rem_euclid(len_i)) as usize;
+                Task::none()
+            }
+            Message::OutlineActivate => {
+                let sections = crate::ipc::sections::list_sections(&self.source);
+                let Some(s) = sections.get(self.outline_cursor) else {
+                    return Task::none();
+                };
+                self.scroll_to_line_top(s.line)
+            }
+            Message::ScrollToLine(line) => self.scroll_to_line_top(line),
             Message::TreeToggleAtCursor => {
                 let Some(root) = &self.workspace_tree else {
                     return Task::none();
@@ -2200,7 +2263,11 @@ impl App {
                         } else {
                             let path = std::path::PathBuf::from(file);
                             follow_up = Task::perform(load_file(path), Message::FileLoaded);
-                            self.pending_nav = Some(PendingNav { line, section });
+                            self.pending_nav = Some(PendingNav {
+                                line,
+                                section,
+                                ..Default::default()
+                            });
                             nav_focus = Some(focus);
                             Response::ok(id)
                         }
@@ -2243,7 +2310,10 @@ impl App {
             crate::theme_watch::watch_subscription().map(|()| Message::ThemeFilesChanged);
         let focused = self.search_open;
         let overlay_open = self.overlay != Overlay::None;
-        let tree_active = self.sidebar_open && self.workspace.is_some();
+        let sidebar_open = self.sidebar_open;
+        let outline_active = self.sidebar_open && self.sidebar_tab == SidebarTab::Outline;
+        let tree_active =
+            self.sidebar_open && self.workspace.is_some() && self.sidebar_tab == SidebarTab::Files;
         let editing = self.view_mode == ViewMode::Raw && self.editor.is_some();
         let fold_chord = self.fold_chord_pending;
         let mindmap = self.view_mode == ViewMode::Mindmap;
@@ -2266,12 +2336,26 @@ impl App {
             focused,
             overlay_open,
             tree_active,
+            outline_active,
+            sidebar_open,
             editing,
             fold_chord,
             mindmap,
         ))
         .map(
-            |((focused, overlay_open, tree_active, editing, fold_chord, mindmap), ev)| {
+            |(
+                (
+                    focused,
+                    overlay_open,
+                    tree_active,
+                    outline_active,
+                    sidebar_open,
+                    editing,
+                    fold_chord,
+                    mindmap,
+                ),
+                ev,
+            )| {
                 use iced::keyboard::{key::Named, Event as KEv, Key};
                 let (key, physical, mods) = match ev {
                     iced::Event::Keyboard(KEv::KeyPressed {
@@ -2368,25 +2452,45 @@ impl App {
                 let m: Option<Message> = match key {
                     // Sidebar wins arrow keys when open: keyboard file nav
                     // takes priority over mindmap node nav (handled below).
-                    Key::Named(Named::ArrowDown) if mindmap && !overlay_open && !tree_active => {
+                    Key::Named(Named::ArrowDown)
+                        if mindmap && !overlay_open && !tree_active && !outline_active =>
+                    {
                         Some(Message::MindmapNavigate(MindmapDir::Down))
                     }
-                    Key::Named(Named::ArrowUp) if mindmap && !overlay_open && !tree_active => {
+                    Key::Named(Named::ArrowUp)
+                        if mindmap && !overlay_open && !tree_active && !outline_active =>
+                    {
                         Some(Message::MindmapNavigate(MindmapDir::Up))
                     }
-                    Key::Named(Named::ArrowLeft) if mindmap && !overlay_open && !tree_active => {
+                    Key::Named(Named::ArrowLeft)
+                        if mindmap && !overlay_open && !tree_active && !outline_active =>
+                    {
                         Some(Message::MindmapNavigate(MindmapDir::Left))
                     }
-                    Key::Named(Named::ArrowRight) if mindmap && !overlay_open && !tree_active => {
+                    Key::Named(Named::ArrowRight)
+                        if mindmap && !overlay_open && !tree_active && !outline_active =>
+                    {
                         Some(Message::MindmapNavigate(MindmapDir::Right))
                     }
-                    Key::Named(Named::Space) if mindmap && !overlay_open && !tree_active => {
+                    Key::Named(Named::Space)
+                        if mindmap && !overlay_open && !tree_active && !outline_active =>
+                    {
                         Some(Message::MindmapToggleSelected)
                     }
                     Key::Named(Named::ArrowDown) if tree_active => Some(Message::TreeMove(1)),
                     Key::Named(Named::ArrowUp) if tree_active => Some(Message::TreeMove(-1)),
+                    Key::Named(Named::ArrowDown) if outline_active => Some(Message::OutlineMove(1)),
+                    Key::Named(Named::ArrowUp) if outline_active => Some(Message::OutlineMove(-1)),
+                    Key::Named(Named::ArrowLeft) if sidebar_open => {
+                        Some(Message::SetSidebarTab(SidebarTab::Files))
+                    }
+                    Key::Named(Named::ArrowRight) if sidebar_open => {
+                        Some(Message::SetSidebarTab(SidebarTab::Outline))
+                    }
                     Key::Named(Named::Enter) if tree_active => Some(Message::TreeActivate),
                     Key::Named(Named::Space) if tree_active => Some(Message::TreeActivate),
+                    Key::Named(Named::Enter) if outline_active => Some(Message::OutlineActivate),
+                    Key::Named(Named::Space) if outline_active => Some(Message::OutlineActivate),
                     Key::Named(Named::ArrowDown) if mods.command() => Some(Message::ScrollToBottom),
                     Key::Named(Named::ArrowUp) if mods.command() => Some(Message::ScrollToTop),
                     Key::Named(Named::ArrowDown) => Some(Message::ScrollBy(40.0)),
@@ -2985,6 +3089,121 @@ fn edge_scroll(
     )
 }
 
+fn scroll_block_to_top(id: crate::ast::BlockId) -> Task<Message> {
+    struct ScrollBlockToTop {
+        body_id: iced::widget::Id,
+        target_id: iced::widget::Id,
+        content_top: Option<f32>,
+        target_top: Option<f32>,
+    }
+
+    impl iced::advanced::widget::Operation<Message> for ScrollBlockToTop {
+        fn traverse(
+            &mut self,
+            operate: &mut dyn FnMut(&mut dyn iced::advanced::widget::Operation<Message>),
+        ) {
+            operate(self);
+        }
+
+        fn scrollable(
+            &mut self,
+            id: Option<&iced::widget::Id>,
+            _bounds: iced::Rectangle,
+            content_bounds: iced::Rectangle,
+            _translation: iced::Vector,
+            _state: &mut dyn iced::advanced::widget::operation::Scrollable,
+        ) {
+            if id == Some(&self.body_id) {
+                self.content_top = Some(content_bounds.y);
+            }
+        }
+
+        fn container(&mut self, id: Option<&iced::widget::Id>, bounds: iced::Rectangle) {
+            if id == Some(&self.target_id) {
+                if let Some(content_top) = self.content_top {
+                    self.target_top = Some((bounds.y - content_top).max(0.0));
+                }
+            }
+        }
+
+        fn finish(&self) -> iced::advanced::widget::operation::Outcome<Message> {
+            self.target_top
+                .map_or(iced::advanced::widget::operation::Outcome::None, |y| {
+                    iced::advanced::widget::operation::Outcome::Some(Message::RestoreBodyScroll(y))
+                })
+        }
+    }
+
+    iced::advanced::widget::operate(ScrollBlockToTop {
+        body_id: App::scroll_id(),
+        target_id: crate::render::block_anchor_id(id),
+        content_top: None,
+        target_top: None,
+    })
+}
+
+/// Scroll the body so the given block lands slightly above center, using real
+/// laid-out widget bounds (not height estimates). Used by find/highlight nav so
+/// the matched word is always actually visible.
+fn scroll_block_to_center(id: crate::ast::BlockId) -> Task<Message> {
+    struct ScrollBlockToCenter {
+        body_id: iced::widget::Id,
+        target_id: iced::widget::Id,
+        content_top: Option<f32>,
+        view_h: f32,
+        target_y: Option<f32>,
+    }
+
+    impl iced::advanced::widget::Operation<Message> for ScrollBlockToCenter {
+        fn traverse(
+            &mut self,
+            operate: &mut dyn FnMut(&mut dyn iced::advanced::widget::Operation<Message>),
+        ) {
+            operate(self);
+        }
+
+        fn scrollable(
+            &mut self,
+            id: Option<&iced::widget::Id>,
+            bounds: iced::Rectangle,
+            content_bounds: iced::Rectangle,
+            _translation: iced::Vector,
+            _state: &mut dyn iced::advanced::widget::operation::Scrollable,
+        ) {
+            if id == Some(&self.body_id) {
+                self.content_top = Some(content_bounds.y);
+                self.view_h = bounds.height;
+            }
+        }
+
+        fn container(&mut self, id: Option<&iced::widget::Id>, bounds: iced::Rectangle) {
+            if id == Some(&self.target_id) {
+                if let Some(content_top) = self.content_top {
+                    let block_top = bounds.y - content_top;
+                    // Place block slightly above center so following context shows.
+                    let y = block_top + bounds.height * 0.5 - self.view_h * 0.38;
+                    self.target_y = Some(y.max(0.0));
+                }
+            }
+        }
+
+        fn finish(&self) -> iced::advanced::widget::operation::Outcome<Message> {
+            self.target_y
+                .map_or(iced::advanced::widget::operation::Outcome::None, |y| {
+                    iced::advanced::widget::operation::Outcome::Some(Message::RestoreBodyScroll(y))
+                })
+        }
+    }
+
+    iced::advanced::widget::operate(ScrollBlockToCenter {
+        body_id: App::scroll_id(),
+        target_id: crate::render::block_anchor_id(id),
+        content_top: None,
+        view_h: 0.0,
+        target_y: None,
+    })
+}
+
 fn welcome_view<'a>(pal: Palette) -> Element<'a, Message> {
     let kbd = |label: &'static str, key: &'static str| {
         irow![
@@ -3056,7 +3275,6 @@ fn search_bar_view<'a>(
             text_input("type to search…", query)
                 .id(App::search_input_id())
                 .on_input(Message::QueryChanged)
-                .on_submit(Message::NextMatch)
                 .padding(Padding::from([6, 10]))
                 .size(13)
                 .style(move |_, _| iced::widget::text_input::Style {
@@ -3132,6 +3350,22 @@ fn sidebar_view<'a>(app: &'a App, pal: Palette) -> Element<'a, Message> {
     .spacing(6)
     .align_y(iced::Alignment::Center);
 
+    let tab_row = irow![
+        sidebar_tab_button(
+            "Files",
+            app.sidebar_tab == SidebarTab::Files,
+            SidebarTab::Files,
+            pal
+        ),
+        sidebar_tab_button(
+            "Outline",
+            app.sidebar_tab == SidebarTab::Outline,
+            SidebarTab::Outline,
+            pal
+        ),
+    ]
+    .spacing(6);
+
     let header = container(column![
         Space::new().height(Length::Fixed(sidebar_titlebar_reserve())),
         container(title_row)
@@ -3142,9 +3376,73 @@ fn sidebar_view<'a>(app: &'a App, pal: Palette) -> Element<'a, Message> {
                 left: 14.0,
             })
             .width(Length::Fill),
+        container(tab_row)
+            .padding(Padding {
+                top: 0.0,
+                right: 14.0,
+                bottom: 8.0,
+                left: 14.0,
+            })
+            .width(Length::Fill),
     ])
     .width(Length::Fill);
 
+    let body: Element<'a, Message> = match app.sidebar_tab {
+        SidebarTab::Files => sidebar_files_body(app, pal, recently_scrolled),
+        SidebarTab::Outline => sidebar_outline_body(app, pal, recently_scrolled),
+    };
+
+    container(column![header, body])
+        .width(Length::Fixed(app.sidebar_width))
+        .height(Length::Fill)
+        .style(move |_| container::Style {
+            background: Some(pal.sidebar.into()),
+            ..Default::default()
+        })
+        .into()
+}
+
+fn sidebar_tab_button<'a>(
+    label: &'a str,
+    active: bool,
+    tab: SidebarTab,
+    pal: Palette,
+) -> Element<'a, Message> {
+    button(
+        text(label)
+            .size(11)
+            .color(if active { pal.fg } else { pal.muted }),
+    )
+    .padding(Padding::from([3, 9]))
+    .style(move |_, status| {
+        let bg = if active {
+            Some(Background::Color(pal.surface_alt))
+        } else {
+            match status {
+                button::Status::Hovered => Some(Background::Color(pal.surface_alt)),
+                _ => None,
+            }
+        };
+        button::Style {
+            background: bg,
+            text_color: pal.fg,
+            border: Border {
+                color: if active { pal.rule } else { Color::TRANSPARENT },
+                width: 1.0,
+                radius: 5.0.into(),
+            },
+            ..Default::default()
+        }
+    })
+    .on_press(Message::SetSidebarTab(tab))
+    .into()
+}
+
+fn sidebar_files_body<'a>(
+    app: &'a App,
+    pal: Palette,
+    recently_scrolled: bool,
+) -> Element<'a, Message> {
     // Measure longest row so we can pin the Column to a Fixed width. With
     // `Direction::Both`, an unsized Column collapses to its widest *Shrink*
     // child — which would shrink the selection ring to text width. Setting an
@@ -3181,18 +3479,78 @@ fn sidebar_view<'a>(app: &'a App, pal: Palette) -> Element<'a, Message> {
         .on_scroll(Message::TreeScrolled)
         .direction(slim_scroll_direction())
         .style(move |_, status| sleek_scrollable_style(status, pal, recently_scrolled));
-    let body = scrollable(inner)
+    scrollable(inner)
         .height(Length::Fill)
         .direction(slim_scroll_direction_horizontal())
-        .style(move |_, status| sleek_scrollable_style(status, pal, recently_scrolled));
+        .style(move |_, status| sleek_scrollable_style(status, pal, recently_scrolled))
+        .into()
+}
 
-    container(column![header, body])
-        .width(Length::Fixed(app.sidebar_width))
+fn sidebar_outline_body<'a>(
+    app: &'a App,
+    pal: Palette,
+    recently_scrolled: bool,
+) -> Element<'a, Message> {
+    let sections = crate::ipc::sections::list_sections(&app.source);
+    let mut list = Column::new().spacing(0).padding(Padding::from([4, 4]));
+    if sections.is_empty() {
+        list = list.push(
+            container(text("No headings").size(12).color(pal.muted))
+                .padding(Padding::from([8, 10])),
+        );
+    } else {
+        for (i, s) in sections.iter().enumerate() {
+            list = list.push(outline_row(s, i == app.outline_cursor, pal));
+        }
+    }
+    scrollable(list.width(Length::Fill))
         .height(Length::Fill)
-        .style(move |_| container::Style {
-            background: Some(pal.sidebar.into()),
+        .direction(slim_scroll_direction())
+        .style(move |_, status| sleek_scrollable_style(status, pal, recently_scrolled))
+        .into()
+}
+
+fn outline_row<'a>(
+    s: &crate::ipc::sections::Section,
+    is_cursor: bool,
+    pal: Palette,
+) -> Element<'a, Message> {
+    let indent = TREE_INDENT * (s.level.saturating_sub(1)) as f32;
+    let weight = if s.level <= 1 {
+        iced::font::Weight::Medium
+    } else {
+        iced::font::Weight::Normal
+    };
+    let mut font = iced::Font::with_name("Inter");
+    font.weight = weight;
+    let label = text(s.title.clone())
+        .size(13)
+        .color(if s.level <= 1 { pal.fg } else { pal.muted })
+        .font(font)
+        .wrapping(text::Wrapping::None);
+    let content =
+        irow![Space::new().width(Length::Fixed(indent)), label].align_y(iced::Alignment::Center);
+    button(content)
+        .padding(Padding::from([4, 8]))
+        .width(Length::Fill)
+        .height(Length::Fixed(26.0))
+        .style(move |_, status| button::Style {
+            background: if is_cursor {
+                Some(Background::Color(pal.tree_selected_bg))
+            } else {
+                match status {
+                    button::Status::Hovered => Some(Background::Color(pal.surface_alt)),
+                    _ => None,
+                }
+            },
+            text_color: pal.fg,
+            border: Border {
+                radius: 6.0.into(),
+                ..Default::default()
+            },
             ..Default::default()
         })
+        .on_press(goto_line_message(s.line))
         .into()
 }
 
@@ -3333,17 +3691,13 @@ fn tree_row<'a>(
                     _ => None,
                 }
             };
-            let show_border = is_current || is_cursor;
+            // Selection and keyboard cursor: background fill only, no ring.
             button::Style {
                 background: bg,
                 text_color: pal.fg,
                 border: Border {
-                    color: if show_border {
-                        pal.tree_selected_border
-                    } else {
-                        Color::TRANSPARENT
-                    },
-                    width: if show_border { 1.0 } else { 0.0 },
+                    color: Color::TRANSPARENT,
+                    width: 0.0,
                     radius: 6.0.into(),
                 },
                 ..Default::default()
@@ -3974,6 +4328,14 @@ fn sleek_scrollable_style(
     }
 }
 
+/// True for `.tex` files, which route through the LaTeX parser instead of
+/// the markdown one.
+fn is_tex_path(path: Option<&std::path::Path>) -> bool {
+    path.and_then(|p| p.extension())
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| e.eq_ignore_ascii_case("tex"))
+}
+
 fn data_lang_for(path: Option<&std::path::Path>) -> Option<&'static str> {
     let ext = path.and_then(|p| p.extension()).and_then(|e| e.to_str())?;
     match ext.to_ascii_lowercase().as_str() {
@@ -4054,6 +4416,35 @@ pub fn is_remote_url(s: &str) -> bool {
     s.starts_with("http://") || s.starts_with("https://")
 }
 
+/// True for links that should hand off to the OS rather than open in-app:
+/// remote URLs and any scheme:// / mailto:-style target.
+pub fn is_external_link(s: &str) -> bool {
+    is_remote_url(s) || s.contains("://") || s.starts_with("mailto:") || s.starts_with("tel:")
+}
+
+/// GitHub-style heading slug: lowercase, spaces → `-`, drop other punctuation.
+pub fn slugify(title: &str) -> String {
+    let mut out = String::new();
+    for c in title.chars() {
+        if c.is_alphanumeric() {
+            out.extend(c.to_lowercase());
+        } else if c == ' ' || c == '-' || c == '_' {
+            out.push('-');
+        }
+    }
+    out
+}
+
+/// Resolve a link `#fragment` to a heading line in `src`, matching the
+/// GitHub-style slug of each heading title.
+pub fn line_for_fragment(src: &str, fragment: &str) -> Option<u32> {
+    let want = slugify(fragment);
+    crate::ipc::sections::list_sections(src)
+        .into_iter()
+        .find(|s| slugify(&s.title) == want)
+        .map(|s| s.line)
+}
+
 pub fn resolve_image_path(url: &str, current_file: Option<&std::path::Path>) -> Option<PathBuf> {
     let p = std::path::Path::new(url);
     if p.is_absolute() {
@@ -4061,6 +4452,11 @@ pub fn resolve_image_path(url: &str, current_file: Option<&std::path::Path>) -> 
     }
     let base = current_file.and_then(|f| f.parent())?;
     Some(base.join(url))
+}
+
+/// Build the in-app navigation message used by link anchors and outline clicks.
+fn goto_line_message(line: u32) -> Message {
+    Message::ScrollToLine(line)
 }
 
 fn apply_goto(

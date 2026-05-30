@@ -343,6 +343,37 @@ fn resolve_section_missing_returns_none() {
     assert!(resolve_section_path("Nope", &sections).is_none());
 }
 
+use mdv::app::{is_external_link, line_for_fragment, slugify};
+
+#[test]
+fn slugify_matches_github_style() {
+    assert_eq!(slugify("Hello World"), "hello-world");
+    assert_eq!(slugify("Getting Started"), "getting-started");
+    assert_eq!(slugify("API_Reference"), "api-reference");
+    assert_eq!(slugify("Install & Setup!"), "install--setup");
+}
+
+#[test]
+fn external_link_detection() {
+    assert!(is_external_link("https://example.com"));
+    assert!(is_external_link("http://example.com"));
+    assert!(is_external_link("mailto:a@b.com"));
+    assert!(is_external_link("ftp://host/file"));
+    assert!(!is_external_link("other.md"));
+    assert!(!is_external_link("../docs/guide.md#setup"));
+    assert!(!is_external_link("#section"));
+}
+
+#[test]
+fn fragment_resolves_to_heading_line() {
+    let src = std::fs::read_to_string("tests/fixtures/sections.md").unwrap();
+    assert_eq!(line_for_fragment(&src, "install"), Some(5));
+    assert_eq!(line_for_fragment(&src, "usage"), Some(13));
+    // First matching heading wins (two "Setup" headings).
+    assert_eq!(line_for_fragment(&src, "setup"), Some(9));
+    assert_eq!(line_for_fragment(&src, "nope"), None);
+}
+
 #[test]
 fn socket_path_is_user_scoped() {
     let p = mdv::ipc::socket::default_path();

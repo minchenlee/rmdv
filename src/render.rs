@@ -10,6 +10,10 @@ use iced::{Element, Length, Padding};
 use std::collections::HashMap;
 use std::path::Path;
 
+pub fn block_anchor_id(id: BlockId) -> iced::widget::Id {
+    iced::widget::Id::from(format!("block-anchor-{}", id.0))
+}
+
 #[derive(Clone, Default)]
 pub struct Highlight {
     pub query: String,
@@ -76,7 +80,10 @@ pub fn render<'a>(
         } else {
             None
         };
-        col = col.push(render_block(b, pal, typ, &hl.query, local, &img_ctx));
+        col = col.push(
+            container(render_block(b, pal, typ, &hl.query, local, &img_ctx))
+                .id(block_anchor_id(*id)),
+        );
     }
 
     // Reading column cap: 780px (mdv design system READING_MAX, render.rs).
@@ -127,10 +134,13 @@ fn render_heading_with_chevron<'a>(
         .interaction(iced::mouse::Interaction::Pointer)
         .on_press(Message::ToggleFold(id));
     let stacked = stack![head_clickable, chev_layer];
-    mouse_area(stacked)
-        .on_enter(Message::HeadingHoverEnter(id))
-        .on_exit(Message::HeadingHoverExit(id))
-        .into()
+    container(
+        mouse_area(stacked)
+            .on_enter(Message::HeadingHoverEnter(id))
+            .on_exit(Message::HeadingHoverExit(id)),
+    )
+    .id(block_anchor_id(id))
+    .into()
 }
 
 static EMPTY_IMG_CACHE: std::sync::OnceLock<HashMap<String, ImageState>> =
@@ -512,11 +522,11 @@ fn render_block<'a>(
                 _ => typ.h6_size,
             };
             let spans = inline_spans(inlines, pal, size, &mut ctx);
-            rich_text(spans).into()
+            rich_text_links(spans)
         }
         Block::Paragraph(inlines) => {
             let spans = inline_spans(inlines, pal, typ.body_size, &mut ctx);
-            rich_text(spans).into()
+            rich_text_links(spans)
         }
         Block::CodeBlock { code, spans, .. } => {
             let pal_c = *pal;
@@ -632,6 +642,12 @@ fn render_block<'a>(
 }
 
 type RtSpan<'a> = iced::advanced::text::Span<'a, Message, iced::Font>;
+
+/// `rich_text` whose link spans dispatch their carried `Message` on click.
+/// The span `Link` type is `Message`, so the click handler is the identity.
+fn rich_text_links<'a>(spans: Vec<RtSpan<'a>>) -> Element<'a, Message> {
+    rich_text(spans).on_link_click(|m| m).into()
+}
 
 struct HlCtx<'a> {
     query: &'a str,
@@ -1191,7 +1207,7 @@ fn render_block_inner<'a>(
     match b {
         Block::Paragraph(inlines) => {
             let spans = inline_spans(inlines, pal, typ.body_size, ctx);
-            rich_text(spans).into()
+            rich_text_links(spans)
         }
         _ => render_block(b, pal, typ, ctx.query, ctx.current_in_block, img),
     }
@@ -1229,7 +1245,7 @@ fn render_table<'a>(
     for i in 0..cols {
         let content: Element<'a, Message> = if let Some(cell) = headers.get(i) {
             let spans = inline_spans(cell, pal, typ.body_size, ctx);
-            rich_text(spans).into()
+            rich_text_links(spans)
         } else {
             text("").into()
         };
@@ -1255,7 +1271,7 @@ fn render_table<'a>(
         for i in 0..cols {
             let content: Element<'a, Message> = if let Some(cell) = row_cells.get(i) {
                 let spans = inline_spans(cell, pal, typ.body_size, ctx);
-                rich_text(spans).into()
+                rich_text_links(spans)
             } else {
                 text("").into()
             };

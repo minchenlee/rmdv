@@ -143,7 +143,13 @@ impl Picker {
 pub fn is_markdown_path(p: &Path) -> bool {
     matches!(
         p.extension().and_then(|s| s.to_str()),
-        Some("md") | Some("markdown") | Some("json") | Some("yaml") | Some("yml") | Some("toml")
+        Some("md")
+            | Some("markdown")
+            | Some("tex")
+            | Some("json")
+            | Some("yaml")
+            | Some("yml")
+            | Some("toml")
     )
 }
 
