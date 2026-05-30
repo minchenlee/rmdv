@@ -57,6 +57,8 @@ const SIDEBAR_MAX: f32 = 600.0;
 const MIND_PANEL_DEFAULT: f32 = 380.0;
 const MIND_PANEL_MIN: f32 = 240.0;
 const MIND_PANEL_MAX: f32 = 900.0;
+/// Window-width fractions cycled by ⌘⌥W: 1/3, 1/2, 3/5.
+const MIND_PANEL_FRACS: [f32; 3] = [1.0 / 3.0, 0.5, 0.6];
 const MIND_PANEL_MAX_BLOCKS: usize = 80;
 const MIND_PANEL_MAX_TEXT_BYTES: usize = 24 * 1024;
 
@@ -77,6 +79,7 @@ pub enum Overlay {
     Command,
     ThemePicker,
     ImageZoom,
+    Shortcuts,
 }
 
 #[derive(Debug, Clone)]
@@ -122,6 +125,7 @@ pub enum Message {
     OpenFileFinder,
     OpenCommandPalette,
     OpenThemePicker,
+    ToggleShortcuts,
     CloseOverlay,
     PickerNavigate(PathBuf),
     PickerParent,
@@ -161,6 +165,7 @@ pub enum Message {
     NextMatch,
     PrevMatch,
     TreeScrolled(iced::widget::scrollable::Viewport),
+    OutlineScrolled(iced::widget::scrollable::Viewport),
     OverlayScrolled(iced::widget::scrollable::Viewport),
     BodyScrolled(iced::widget::scrollable::Viewport),
     ScrollerTick,
@@ -193,6 +198,8 @@ pub enum Message {
     MindmapPanelDragEnd,
     ToggleMindmapAutocenter,
     ToggleMindmapPanel,
+    MindmapCyclePanelWidth,
+    WindowResized(iced::Size),
     HintSelection,
     FoldChordStart,
     FoldChordCancel,
@@ -280,6 +287,10 @@ pub struct App {
     pub overlay_selected: usize,
     pub picker: Option<Picker>,
     pub tree_viewport: Option<iced::widget::scrollable::Viewport>,
+    pub outline_viewport: Option<iced::widget::scrollable::Viewport>,
+    /// Latest window size, tracked via `window::resize_events` for ⌘⌥W
+    /// fraction-of-window panel sizing. `None` until the first resize event.
+    pub window_size: Option<iced::Size>,
     pub overlay_viewport: Option<iced::widget::scrollable::Viewport>,
     pub body_viewport: Option<iced::widget::scrollable::Viewport>,
     pub last_body_range: std::cell::Cell<(usize, usize)>,
@@ -309,6 +320,8 @@ pub struct App {
     pub mindmap_panel_open: bool,
     pub mindmap_selected: Option<crate::ast::BlockId>,
     pub mindmap_panel_width: f32,
+    /// Current step in the ⌘⌥W width cycle (indexes `MIND_PANEL_FRACS`).
+    pub mindmap_panel_step: usize,
     pub mindmap_panel_drag: Option<(f32, Option<f32>)>,
     pub mindmap_autocenter: bool,
     /// T3 — diagram render cache. T4 will populate it from a pre-walk +
@@ -380,6 +393,8 @@ impl Default for App {
             overlay_selected: 0,
             picker: None,
             tree_viewport: None,
+            outline_viewport: None,
+            window_size: None,
             overlay_viewport: None,
             body_viewport: None,
             last_body_range: std::cell::Cell::new((0, 0)),
@@ -408,6 +423,7 @@ impl Default for App {
             mindmap_panel_open: false,
             mindmap_selected: None,
             mindmap_panel_width: MIND_PANEL_DEFAULT,
+            mindmap_panel_step: 0,
             mindmap_panel_drag: None,
             mindmap_autocenter: true,
             diagram_cache: crate::diagram::DiagramCache::new(64),
@@ -455,6 +471,9 @@ impl App {
     fn tree_scroll_id() -> iced::widget::Id {
         iced::widget::Id::new("tree")
     }
+    fn outline_scroll_id() -> iced::widget::Id {
+        iced::widget::Id::new("outline")
+    }
     fn overlay_scroll_id() -> iced::widget::Id {
         iced::widget::Id::new("overlay")
     }
@@ -483,6 +502,22 @@ impl App {
         )
     }
 
+    fn scroll_outline_to_cursor(&self) -> Task<Message> {
+        // Row height matches `outline_row`'s fixed height.
+        const ROW_H: f32 = 26.0;
+        let total = self.outline_sections.len();
+        if total == 0 {
+            return Task::none();
+        }
+        edge_scroll(
+            Self::outline_scroll_id(),
+            self.outline_viewport.as_ref(),
+            self.outline_cursor,
+            total,
+            ROW_H,
+        )
+    }
+
     fn scroll_overlay_to_cursor(&self) -> Task<Message> {
         let (total, row_h) = match self.overlay {
             Overlay::FileFinder => (self.filtered_files().len().min(80), 32.0),
@@ -492,7 +527,7 @@ impl App {
                 self.picker.as_ref().map(|p| p.entries.len()).unwrap_or(0),
                 33.0,
             ),
-            Overlay::None | Overlay::ImageZoom => (0, 32.0),
+            Overlay::None | Overlay::ImageZoom | Overlay::Shortcuts => (0, 32.0),
         };
         if total == 0 {
             return Task::none();
@@ -997,6 +1032,10 @@ impl App {
             ("Toggle Mindmap  ⌘M", Message::ToggleMindmap),
             ("Toggle Mindmap Panel  ⌘⌥B", Message::ToggleMindmapPanel),
             (
+                "Cycle Mindmap Panel Width  ⌘⌥W",
+                Message::MindmapCyclePanelWidth,
+            ),
+            (
                 "Toggle Mindmap Auto-Center",
                 Message::ToggleMindmapAutocenter,
             ),
@@ -1009,6 +1048,7 @@ impl App {
                 "Toggle Auto-Focus on Agent Nav",
                 Message::ToggleAutoFocusOnNav,
             ),
+            ("Show Keyboard Shortcuts  ⌘/", Message::ToggleShortcuts),
         ]
     }
 
@@ -1127,6 +1167,14 @@ impl App {
             Message::OpenThemePicker => {
                 self.open_overlay(Overlay::ThemePicker);
                 iced::widget::operation::focus(Self::overlay_input_id())
+            }
+            Message::ToggleShortcuts => {
+                if self.overlay == Overlay::Shortcuts {
+                    self.overlay = Overlay::None;
+                } else {
+                    self.open_overlay(Overlay::Shortcuts);
+                }
+                Task::none()
             }
             Message::CloseOverlay => {
                 let was_zoom = self.overlay == Overlay::ImageZoom;
@@ -1433,6 +1481,25 @@ impl App {
                 }
                 Task::none()
             }
+            Message::WindowResized(size) => {
+                self.window_size = Some(size);
+                Task::none()
+            }
+            Message::MindmapCyclePanelWidth => {
+                // Open the panel if it was closed so the size change is visible.
+                self.mindmap_panel_open = true;
+                self.mindmap_panel_drag = None;
+                self.mindmap_panel_step = (self.mindmap_panel_step + 1) % MIND_PANEL_FRACS.len();
+                let frac = MIND_PANEL_FRACS[self.mindmap_panel_step];
+                // Fall back to the default px width until the first resize event
+                // gives us a real window width.
+                let target = match self.window_size {
+                    Some(s) => s.width * frac,
+                    None => MIND_PANEL_DEFAULT,
+                };
+                self.mindmap_panel_width = target.clamp(MIND_PANEL_MIN, MIND_PANEL_MAX);
+                Task::none()
+            }
             Message::MindmapToggleSelected => {
                 if let Some(id) = self.mindmap_selected {
                     if self.mindmap_collapsed.contains(&id) {
@@ -1650,7 +1717,7 @@ impl App {
                     Overlay::FolderPicker => {
                         self.picker.as_ref().map(|p| p.entries.len()).unwrap_or(0)
                     }
-                    Overlay::None | Overlay::ImageZoom => 0,
+                    Overlay::None | Overlay::ImageZoom | Overlay::Shortcuts => 0,
                 };
                 if len == 0 {
                     return Task::none();
@@ -1698,7 +1765,7 @@ impl App {
                     }
                     Task::none()
                 }
-                Overlay::None | Overlay::ImageZoom => Task::none(),
+                Overlay::None | Overlay::ImageZoom | Overlay::Shortcuts => Task::none(),
             },
             Message::OverlayDescend => {
                 if self.overlay == Overlay::FolderPicker {
@@ -2040,7 +2107,7 @@ impl App {
                 let len_i = len as isize;
                 self.outline_cursor =
                     ((self.outline_cursor as isize + d).rem_euclid(len_i)) as usize;
-                Task::none()
+                self.scroll_outline_to_cursor()
             }
             Message::OutlineActivate => {
                 let Some(s) = self.outline_sections.get(self.outline_cursor) else {
@@ -2125,6 +2192,11 @@ impl App {
             }
             Message::TreeScrolled(v) => {
                 self.tree_viewport = Some(v);
+                self.last_scroll_at = Some(std::time::Instant::now());
+                Task::none()
+            }
+            Message::OutlineScrolled(v) => {
+                self.outline_viewport = Some(v);
                 self.last_scroll_at = Some(std::time::Instant::now());
                 Task::none()
             }
@@ -2432,6 +2504,11 @@ impl App {
                     if let Physical::Code(Code::KeyB) = physical {
                         return Message::ToggleMindmapPanel;
                     }
+                    if let Physical::Code(Code::KeyW) = physical {
+                        if mindmap {
+                            return Message::MindmapCyclePanelWidth;
+                        }
+                    }
                     if let Physical::Code(Code::KeyC) = physical {
                         if tree_active {
                             return Message::CopyTreePath;
@@ -2467,6 +2544,7 @@ impl App {
                         "-" if cmd => return Message::FontSizeDown,
                         "0" if cmd => return Message::FontSizeReset,
                         "m" if cmd => return Message::ToggleMindmap,
+                        "/" if cmd => return Message::ToggleShortcuts,
                         "c" if cmd && !editing && !overlay_open => return Message::HintSelection,
                         "s" if cmd => return Message::SaveFile,
                         "z" if cmd && editing && mods.shift() => return Message::EditorRedo,
@@ -2604,6 +2682,7 @@ impl App {
             iced::Subscription::none()
         };
         let ipc = iced::Subscription::run(ipc_subscription_stream);
+        let resize = iced::window::resize_events().map(|(_, size)| Message::WindowResized(size));
         iced::Subscription::batch([
             dnd,
             watcher,
@@ -2612,6 +2691,7 @@ impl App {
             scroller,
             drag,
             mind_drag,
+            resize,
             ipc,
         ])
     }
@@ -2902,6 +2982,7 @@ impl App {
                     pal,
                 )
             }
+            Overlay::Shortcuts => shortcuts_overlay(pal),
             Overlay::ImageZoom => image_zoom_overlay(
                 self.zoom_url.as_deref(),
                 self.zoom_diagram.as_ref(),
@@ -3562,7 +3643,9 @@ fn sidebar_outline_body<'a>(
         }
     }
     scrollable(list.width(Length::Fill))
+        .id(App::outline_scroll_id())
         .height(Length::Fill)
+        .on_scroll(Message::OutlineScrolled)
         .direction(slim_scroll_direction())
         .style(move |_, status| sleek_scrollable_style(status, pal, recently_scrolled))
         .into()
@@ -4029,6 +4112,178 @@ fn file_finder_overlay<'a>(
         });
 
     overlay_frame(column![input, divider, body].into(), pal, 600.0, 460.0)
+}
+
+/// Static, read-only keyboard cheatsheet. Grouped by category, no search, no
+/// cursor. Esc or backdrop click dismisses (handled by `overlay_frame`).
+fn shortcuts_overlay<'a>(pal: Palette) -> Element<'a, Message> {
+    // (group title, [(keys, action)]). Hand-authored so we can group by category
+    // and include non-command bindings (arrows, Space) the palette omits.
+    let groups: [(&str, &[(&str, &str)]); 5] = [
+        (
+            "File",
+            &[
+                ("⌘O", "Open Folder"),
+                ("⌘P", "Find File in Workspace"),
+                ("⌘S", "Save"),
+            ],
+        ),
+        (
+            "Navigation",
+            &[
+                ("⌘F", "Find in Document"),
+                ("⌘↑", "Scroll to Top"),
+                ("⌘↓", "Scroll to Bottom"),
+                ("↑ ↓", "Move outline / tree selection"),
+                ("Enter", "Jump to selection"),
+            ],
+        ),
+        (
+            "View",
+            &[
+                ("⌘B", "Toggle Sidebar"),
+                ("⌘E", "Toggle Raw / Rendered"),
+                ("⌘T", "Cycle Theme"),
+                ("⌘⇧.", "Toggle Hidden Files"),
+                ("⌘+ ⌘-", "Font Size Up / Down"),
+                ("⌘0", "Reset Font Size"),
+                ("⌘⇧P", "Command Palette"),
+            ],
+        ),
+        (
+            "Mindmap",
+            &[
+                ("⌘M", "Toggle Mindmap"),
+                ("⌘⌥B", "Toggle Panel"),
+                ("⌘⌥W", "Cycle Panel Width"),
+                ("← ↑ → ↓", "Navigate nodes"),
+                ("Space", "Fold / unfold node"),
+            ],
+        ),
+        ("Help", &[("⌘/", "Show Shortcuts")]),
+    ];
+
+    // Three balanced columns so the sheet is compact and nothing clips:
+    // File + Navigation | View | Mindmap + Help (each ≤ 8 rows).
+    let columns: [&[(&str, &[(&str, &str)])]; 3] =
+        [&groups[0..2], &groups[2..3], &groups[3..5]];
+
+    let mut cols = irow![].spacing(24);
+    for col_groups in columns {
+        let mut col = Column::new().spacing(2).width(Length::Fixed(300.0));
+        for (gi, (title, rows)) in col_groups.iter().enumerate() {
+            let top = if gi == 0 { 0.0 } else { 18.0 };
+            let mut header_font = iced::Font::with_name("Inter");
+            header_font.weight = iced::font::Weight::Semibold;
+            col = col.push(
+                container(text(*title).size(11).color(pal.muted).font(header_font)).padding(
+                    Padding {
+                        top,
+                        bottom: 5.0,
+                        left: 2.0,
+                        right: 0.0,
+                    },
+                ),
+            );
+            for (keys, action) in rows.iter() {
+                let row = irow![
+                    container(key_caps(keys, pal)).width(Length::Fixed(118.0)),
+                    text(*action).size(13).color(pal.fg),
+                ]
+                .spacing(12)
+                .align_y(iced::Alignment::Center);
+                col = col.push(container(row).padding(Padding::from([4, 2])));
+            }
+        }
+        cols = cols.push(col);
+    }
+
+    let card = container(cols).padding(Padding::from([34, 40]));
+
+    // Dedicated frame: vertically centered (equal top/bottom margin). Scrim
+    // darkness matches the command palette (`overlay_frame`).
+    let panel = container(card)
+        .max_width(1060.0)
+        .max_height(520.0)
+        .style(move |_| container::Style {
+            background: Some(pal.surface.into()),
+            border: Border {
+                color: pal.rule,
+                width: 1.0,
+                radius: 16.0.into(),
+            },
+            shadow: iced::Shadow {
+                color: Color::from_rgba(0.0, 0.0, 0.0, 0.35),
+                offset: iced::Vector::new(0.0, 18.0),
+                blur_radius: 60.0,
+            },
+            ..Default::default()
+        });
+
+    let scrim = mouse_area(
+        container(Space::new().width(Length::Fill).height(Length::Fill))
+            .style(|_| container::Style {
+                background: Some(Background::Color(Color::from_rgba(0.0, 0.0, 0.0, 0.18))),
+                ..Default::default()
+            })
+            .width(Length::Fill)
+            .height(Length::Fill),
+    )
+    .on_press(Message::CloseOverlay);
+
+    let centered = container(panel)
+        .padding(Padding::from([60, 40]))
+        .center_x(Length::Fill)
+        .center_y(Length::Fill);
+
+    stack![scrim, centered].into()
+}
+
+/// Render a shortcut string as a row of square key caps. Space-separated
+/// combos; within a combo each character gets its own square box, except
+/// multi-letter words (e.g. `Enter`, `Space`) which stay as one wider cap.
+fn key_caps<'a>(keys: &str, pal: Palette) -> Element<'a, Message> {
+    let mut row = irow![].spacing(4).align_y(iced::Alignment::Center);
+    for combo in keys.split(' ').filter(|s| !s.is_empty()) {
+        let is_word = combo.chars().count() > 1 && combo.chars().all(|c| c.is_ascii_alphabetic());
+        let caps: Vec<String> = if is_word {
+            vec![combo.to_string()]
+        } else {
+            combo.chars().map(|c| c.to_string()).collect()
+        };
+        for cap in caps {
+            let multi = cap.chars().count() > 1;
+            let cap_text = text(cap).size(12).color(pal.fg).font(editor_font());
+            // Square (24x24) for single glyphs; wider but same height for words.
+            let w = if multi {
+                Length::Shrink
+            } else {
+                Length::Fixed(24.0)
+            };
+            row = row.push(
+                container(cap_text)
+                    .width(w)
+                    .height(Length::Fixed(24.0))
+                    .padding(if multi {
+                        Padding::from([0, 8])
+                    } else {
+                        Padding::ZERO
+                    })
+                    .align_x(iced::alignment::Horizontal::Center)
+                    .align_y(iced::alignment::Vertical::Center)
+                    .style(move |_| container::Style {
+                        background: Some(pal.surface_alt.into()),
+                        border: Border {
+                            color: pal.rule,
+                            width: 1.0,
+                            radius: 5.0.into(),
+                        },
+                        ..Default::default()
+                    }),
+            );
+        }
+    }
+    row.into()
 }
 
 fn command_overlay<'a>(
