@@ -127,12 +127,18 @@ pub enum Message {
     OpenThemePicker,
     OpenVaultSearch,
     VaultQueryChanged(String),
+    /// Run the search for the current query (Enter when the query has changed).
+    VaultRunSearch,
+    /// Enter in the vault page: search if the query was edited, else open the hit.
+    VaultEnter,
     VaultSearchDone(crate::vault_search::VaultResults),
     VaultMove(isize),
     VaultOpenSelected,
     VaultOpenHit(usize),
     VaultToggleFile(PathBuf),
     VaultClose,
+    /// Apply a measured absolute scroll offset to the vault results page.
+    VaultScrollTo(f32),
     ToggleShortcuts,
     CloseOverlay,
     PickerNavigate(PathBuf),
@@ -298,6 +304,10 @@ pub struct App {
     /// Shown when `vault_open`; workspace-level, so it renders even with no file.
     pub vault_open: bool,
     pub vault_query: String,
+    /// The query the currently-displayed results were searched for. `None` until
+    /// the first search. Enter searches when this differs from `vault_query`
+    /// (query edited), otherwise opens the selected hit.
+    pub vault_searched_query: Option<String>,
     pub vault_results: Vec<crate::vault_search::VaultHit>,
     pub vault_truncated: bool,
     /// Monotonic request counter; a `VaultSearchDone` whose seq != this is stale.
@@ -415,6 +425,7 @@ impl Default for App {
             overlay_selected: 0,
             vault_open: false,
             vault_query: String::new(),
+            vault_searched_query: None,
             vault_results: Vec::new(),
             vault_truncated: false,
             vault_seq: 0,
@@ -519,6 +530,11 @@ impl App {
     fn vault_scroll_id() -> iced::widget::Id {
         iced::widget::Id::new("vault")
     }
+    /// Stable id for the n-th visible match block, used to scroll to the cursor
+    /// by measured bounds (blocks vary in height, so estimation can't track it).
+    fn vault_match_anchor_id(vis_idx: usize) -> iced::widget::Id {
+        iced::widget::Id::from(format!("vault-match-{vis_idx}"))
+    }
 
     /// Indices into `vault_results` for matches whose file group is expanded.
     /// The page cursor and `↑↓` nav operate over this list.
@@ -531,24 +547,16 @@ impl App {
             .collect()
     }
 
-    /// Scroll the results page so the cursor's match block stays visible. Match
-    /// blocks vary in height (context lines), so this is an estimate using a
-    /// nominal per-block row height — good enough to keep the cursor on screen.
+    /// Scroll the results page so the cursor's match block is visible. Blocks
+    /// vary in height (variable context lines, file headers, wrapped lines), so
+    /// estimation can't track them — instead measure the block's real laid-out
+    /// bounds by id and scroll just enough to bring it on screen.
     fn scroll_vault_to_cursor(&self) -> Task<Message> {
         let visible = self.vault_visible_matches();
         if visible.is_empty() {
             return Task::none();
         }
-        // Nominal block height: 1 header-ish gap + (1 + 2*CONTEXT) lines * line_h.
-        const LINE_H: f32 = 18.0;
-        let row_h = (1.0 + 2.0 * crate::vault_search::CONTEXT as f32 + 1.0) * LINE_H;
-        edge_scroll(
-            Self::vault_scroll_id(),
-            self.vault_viewport.as_ref(),
-            self.vault_cursor,
-            visible.len(),
-            row_h,
-        )
+        scroll_vault_to_match(self.vault_cursor)
     }
 
     fn scroll_tree_to_cursor(&self) -> Task<Message> {
@@ -1244,17 +1252,37 @@ impl App {
                 }
                 self.vault_open = true;
                 self.vault_query.clear();
+                self.vault_searched_query = None;
                 self.vault_results.clear();
                 self.vault_truncated = false;
                 self.vault_cursor = 0;
                 self.vault_collapsed.clear();
                 self.vault_viewport = None;
+                // Bump seq so any in-flight `run` from a prior open is dropped
+                // by the `VaultSearchDone` seq guard instead of repopulating
+                // the freshly-blank page.
+                self.vault_seq += 1;
                 iced::widget::operation::focus(Self::vault_input_id())
             }
             Message::VaultQueryChanged(q) => {
+                // Typing only updates the query text; the search runs on Enter
+                // (VaultRunSearch) so we don't re-scan the vault per keystroke.
                 self.vault_query = q;
+                Task::none()
+            }
+            Message::VaultEnter => {
+                // Enter searches when the query was edited since the last search,
+                // otherwise opens the hit the cursor is on.
+                if self.vault_searched_query.as_deref() == Some(self.vault_query.as_str()) {
+                    Task::done(Message::VaultOpenSelected)
+                } else {
+                    Task::done(Message::VaultRunSearch)
+                }
+            }
+            Message::VaultRunSearch => {
                 self.vault_cursor = 0;
                 self.vault_seq += 1;
+                self.vault_searched_query = Some(self.vault_query.clone());
                 let seq = self.vault_seq;
                 let files = self.workspace_files.clone();
                 let query = self.vault_query.clone();
@@ -1283,29 +1311,28 @@ impl App {
                 self.scroll_vault_to_cursor()
             }
             Message::VaultToggleFile(path) => {
+                // Remember which hit the cursor pointed at so it tracks that
+                // match across the visible-list shift (collapsing a group above
+                // the cursor otherwise silently re-targets it).
+                let anchor = self.vault_visible_matches().get(self.vault_cursor).copied();
                 if !self.vault_collapsed.remove(&path) {
                     self.vault_collapsed.insert(path);
                 }
-                // Keep the cursor on a still-visible match.
                 let visible = self.vault_visible_matches();
-                if self.vault_cursor >= visible.len() {
-                    self.vault_cursor = visible.len().saturating_sub(1);
-                }
+                self.vault_cursor = anchor
+                    .and_then(|hi| visible.iter().position(|&v| v == hi))
+                    .unwrap_or_else(|| {
+                        // Anchored hit is now hidden: clamp to the last visible.
+                        self.vault_cursor.min(visible.len().saturating_sub(1))
+                    });
                 Task::none()
             }
             Message::VaultOpenSelected => {
-                let visible = self.vault_visible_matches();
-                if let Some(&hi) = visible.get(self.vault_cursor) {
-                    if let Some(hit) = self.vault_results.get(hi).cloned() {
-                        self.vault_open = false;
-                        self.pending_nav = Some(PendingNav {
-                            line: Some(hit.line),
-                            ..Default::default()
-                        });
-                        return Task::done(Message::Open(hit.path));
-                    }
+                // Resolve the cursor to a hit index and share VaultOpenHit's path.
+                match self.vault_visible_matches().get(self.vault_cursor).copied() {
+                    Some(hi) => Task::done(Message::VaultOpenHit(hi)),
+                    None => Task::none(),
                 }
-                Task::none()
             }
             Message::VaultOpenHit(idx) => {
                 if let Some(hit) = self.vault_results.get(idx).cloned() {
@@ -1322,6 +1349,10 @@ impl App {
                 self.vault_open = false;
                 Task::none()
             }
+            Message::VaultScrollTo(y) => iced::widget::operation::scroll_to(
+                Self::vault_scroll_id(),
+                iced::widget::scrollable::AbsoluteOffset { x: 0.0, y },
+            ),
             Message::ToggleShortcuts => {
                 if self.overlay == Overlay::Shortcuts {
                     self.overlay = Overlay::None;
@@ -2688,6 +2719,15 @@ impl App {
                     return Message::FoldChordCancel;
                 }
                 if let Key::Character(c) = &key {
+                    // Vault search page owns the screen: only ⌘⇧F (re-open,
+                    // idempotent) passes; every other ⌘-shortcut would mutate
+                    // state under the page, so swallow it.
+                    if vault_open {
+                        if (c.as_str() == "f" || c.as_str() == "F") && cmd && mods.shift() {
+                            return Message::OpenVaultSearch;
+                        }
+                        return Message::Noop;
+                    }
                     match c.as_str() {
                         "p" if cmd && mods.shift() => return Message::OpenCommandPalette,
                         "P" if cmd => return Message::OpenCommandPalette,
@@ -2726,7 +2766,7 @@ impl App {
                         Key::Named(Named::Escape) => Message::VaultClose,
                         Key::Named(Named::ArrowDown) => Message::VaultMove(1),
                         Key::Named(Named::ArrowUp) => Message::VaultMove(-1),
-                        Key::Named(Named::Enter) => Message::VaultOpenSelected,
+                        Key::Named(Named::Enter) => Message::VaultEnter,
                         _ => Message::Noop,
                     };
                 }
@@ -2911,6 +2951,7 @@ impl App {
             // it works with no document open.
             vault_search_page(
                 &self.vault_query,
+                self.vault_searched_query.as_deref(),
                 &self.vault_results,
                 self.vault_cursor,
                 self.vault_truncated,
@@ -3527,6 +3568,83 @@ fn scroll_block_to_center(id: crate::ast::BlockId) -> Task<Message> {
         body_id: App::scroll_id(),
         target_id: crate::render::block_anchor_id(id),
         content_top: None,
+        view_h: 0.0,
+        target_y: None,
+    })
+}
+
+/// Scroll the vault results page just enough to bring the cursor's match block
+/// fully into view, measuring its real bounds (blocks have variable height).
+/// Only moves when the block is off-screen, like a code editor's cursor follow.
+fn scroll_vault_to_match(vis_idx: usize) -> Task<Message> {
+    struct ScrollVaultToMatch {
+        scroll_id: iced::widget::Id,
+        target_id: iced::widget::Id,
+        content_top: Option<f32>,
+        view_top: f32,
+        view_h: f32,
+        target_y: Option<f32>,
+    }
+
+    impl iced::advanced::widget::Operation<Message> for ScrollVaultToMatch {
+        fn traverse(
+            &mut self,
+            operate: &mut dyn FnMut(&mut dyn iced::advanced::widget::Operation<Message>),
+        ) {
+            operate(self);
+        }
+
+        fn scrollable(
+            &mut self,
+            id: Option<&iced::widget::Id>,
+            bounds: iced::Rectangle,
+            content_bounds: iced::Rectangle,
+            translation: iced::Vector,
+            _state: &mut dyn iced::advanced::widget::operation::Scrollable,
+        ) {
+            if id == Some(&self.scroll_id) {
+                self.content_top = Some(content_bounds.y);
+                self.view_top = translation.y;
+                self.view_h = bounds.height;
+            }
+        }
+
+        fn container(&mut self, id: Option<&iced::widget::Id>, bounds: iced::Rectangle) {
+            if id == Some(&self.target_id) {
+                if let Some(content_top) = self.content_top {
+                    const PAD: f32 = 12.0;
+                    let block_top = bounds.y - content_top;
+                    let block_bot = block_top + bounds.height;
+                    let view_top = self.view_top;
+                    let view_bot = view_top + self.view_h;
+                    let y = if block_top < view_top {
+                        block_top - PAD
+                    } else if block_bot > view_bot {
+                        // Reveal the block's bottom; if taller than the viewport,
+                        // pin its top so the match line stays visible.
+                        let candidate = block_bot - self.view_h + PAD;
+                        candidate.min(block_top - PAD)
+                    } else {
+                        return; // already fully visible — don't move
+                    };
+                    self.target_y = Some(y.max(0.0));
+                }
+            }
+        }
+
+        fn finish(&self) -> iced::advanced::widget::operation::Outcome<Message> {
+            self.target_y
+                .map_or(iced::advanced::widget::operation::Outcome::None, |y| {
+                    iced::advanced::widget::operation::Outcome::Some(Message::VaultScrollTo(y))
+                })
+        }
+    }
+
+    iced::advanced::widget::operate(ScrollVaultToMatch {
+        scroll_id: App::vault_scroll_id(),
+        target_id: App::vault_match_anchor_id(vis_idx),
+        content_top: None,
+        view_top: 0.0,
         view_h: 0.0,
         target_y: None,
     })
@@ -4308,8 +4426,10 @@ fn file_finder_overlay<'a>(
 /// Each match shows surrounding context lines with line numbers and the matched
 /// span highlighted. Arrow keys move the cursor over visible matches,
 /// Enter/click open the file at the line, Esc exits.
+#[allow(clippy::too_many_arguments)] // cohesive view fn; splitting args adds noise
 fn vault_search_page<'a>(
     query: &'a str,
+    searched_query: Option<&str>,
     hits: &'a [crate::vault_search::VaultHit],
     cursor: usize,
     truncated: bool,
@@ -4329,8 +4449,13 @@ fn vault_search_page<'a>(
         }
         n
     };
+    // The displayed results reflect `searched_query`; if the live `query` has
+    // since been edited, prompt for Enter rather than showing a stale count.
+    let edited = searched_query != Some(query);
     let count_text = if query.is_empty() {
         String::new()
+    } else if edited {
+        "press Enter to search".to_string()
     } else if truncated {
         format!("{}+ matches (refine query)", crate::vault_search::MAX_HITS)
     } else {
@@ -4338,10 +4463,10 @@ fn vault_search_page<'a>(
     };
     let bar = container(
         irow![
-            text_input("Search all files…", query)
+            text_input("Search all files… (press Enter)", query)
                 .id(App::vault_input_id())
                 .on_input(Message::VaultQueryChanged)
-                .on_submit(Message::VaultOpenSelected)
+                .on_submit(Message::VaultEnter)
                 .padding(Padding::from([8, 12]))
                 .size(14)
                 .style(move |_, _| iced::widget::text_input::Style {
@@ -4364,7 +4489,17 @@ fn vault_search_page<'a>(
     if query.is_empty() {
         list = list.push(
             container(
-                text("Type to search every file in the workspace")
+                text("Type a query and press Enter to search every file")
+                    .color(pal.subtle)
+                    .size(13),
+            )
+            .padding(14),
+        );
+    } else if edited {
+        // Query typed but not yet searched (search runs on Enter, not per key).
+        list = list.push(
+            container(
+                text("Press Enter to search")
                     .color(pal.subtle)
                     .size(13),
             )
@@ -4393,13 +4528,23 @@ fn vault_search_page<'a>(
                 .unwrap_or(&path)
                 .to_string_lossy()
                 .into_owned();
-            let caret = if folded { "▶" } else { "▼" };
-            let header_label = if folded {
-                format!("{caret}  {rel}  ({run_count})")
+            let chevron = if folded {
+                icon::ic::CHEVRON_RIGHT
             } else {
-                format!("{caret}  {rel}")
+                icon::ic::CHEVRON_DOWN
             };
-            let header = button(text(header_label).size(13).color(pal.accent))
+            let header_label = if folded {
+                format!("{rel}  ({run_count})")
+            } else {
+                rel
+            };
+            let header_row = irow![
+                icon::glyph(chevron, 13.0, pal.accent),
+                text(header_label).size(13).color(pal.accent),
+            ]
+            .spacing(8)
+            .align_y(iced::Alignment::Center);
+            let header = button(header_row)
                 .padding(Padding::from([6, 8]))
                 .width(Length::Fill)
                 .style(move |_, status| button::Style {
@@ -4418,7 +4563,10 @@ fn vault_search_page<'a>(
             list = list.push(header);
 
             if folded {
-                vis += run_count;
+                // Skip emitting this file's blocks. Do NOT advance `vis`: it
+                // must count only VISIBLE blocks so it stays aligned with
+                // `vault_visible_matches()`/`vault_cursor` (which exclude
+                // collapsed files), keeping is_cursor + the anchor id correct.
                 continue;
             }
 
@@ -4427,17 +4575,18 @@ fn vault_search_page<'a>(
                 let is_cursor = vis == cursor;
                 vis += 1;
 
-                let mut block = Column::new().spacing(0);
+                let mut block = Column::new().spacing(1);
                 for cl in &hit.context {
-                    block = block.push(context_line_row(cl, hit.col_start, hit.col_end, pal));
+                    block =
+                        block.push(context_line_row(cl, hit.col_start, hit.col_end, is_cursor, pal));
                 }
                 let row = button(block)
-                    .padding(Padding::from([4, 8]))
+                    .padding(Padding::from([6, 8]))
                     .width(Length::Fill)
                     .style(move |_, status| button::Style {
                         background: match (is_cursor, status) {
                             (true, _) => Some(Background::Color(pal.surface_alt)),
-                            (_, button::Status::Hovered) => Some(Background::Color(pal.surface_alt)),
+                            (_, button::Status::Hovered) => Some(Background::Color(pal.code_bg)),
                             _ => None,
                         },
                         text_color: pal.fg,
@@ -4448,10 +4597,20 @@ fn vault_search_page<'a>(
                         ..Default::default()
                     })
                     .on_press(Message::VaultOpenHit(hi));
+                // Stable id so cursor-follow can scroll by measured bounds.
+                let row = container(row)
+                    .id(App::vault_match_anchor_id(vis - 1))
+                    .width(Length::Fill);
                 list = list.push(row);
             }
         }
     }
+
+    // Constrain the results column to a comfortable reading width so long lines
+    // wrap instead of sprawling edge-to-edge; centre it in the viewport.
+    let list = container(container(list).max_width(1100.0).width(Length::Fill))
+        .width(Length::Fill)
+        .align_x(iced::Alignment::Center);
 
     let body = scrollable(list)
         .id(App::vault_scroll_id())
@@ -4479,71 +4638,125 @@ fn vault_search_page<'a>(
     container(column![bar, divider, body, footer])
         .width(Length::Fill)
         .height(Length::Fill)
+        .style(move |_| container::Style {
+            background: Some(pal.bg.into()),
+            ..Default::default()
+        })
         .into()
 }
 
-/// One context line: `{number} │ {text}` in monospace, with the matched span
-/// highlighted on the match line. Context lines are muted; the match line uses
-/// the foreground colour.
+/// One context line: a fixed-width line-number gutter + the source line as
+/// markdown-highlighted `rich_text`. On the match line the matched character
+/// span gets a highlight background; context lines are dimmed. Long lines wrap
+/// within the filled text column (no horizontal blow-out).
 fn context_line_row<'a>(
     cl: &'a crate::vault_search::ContextLine,
     col_start: usize,
     col_end: usize,
+    is_cursor: bool,
     pal: Palette,
 ) -> Element<'a, Message> {
-    let num = text(format!("{:>4} │ ", cl.number))
-        .size(12)
-        .font(iced::Font::MONOSPACE)
-        .color(pal.subtle);
+    use iced::widget::{rich_text, span};
 
-    if !cl.is_match {
-        return irow![
-            num,
-            text(cl.text.clone())
-                .size(12)
-                .font(iced::Font::MONOSPACE)
-                .color(pal.muted),
-        ]
-        .into();
+    const SIZE: f32 = 12.5;
+
+    let gutter = container(
+        text(format!("{:>4}", cl.number))
+            .size(SIZE)
+            .font(iced::Font::MONOSPACE)
+            .color(pal.subtle),
+    )
+    .width(Length::Fixed(40.0))
+    .padding(Padding::from([0, 8]));
+
+    // Byte range of the match within this line, for the highlight background.
+    let (mb_start, mb_end) = if cl.is_match {
+        let s = byte_index_for_char(&cl.text, col_start);
+        let e = byte_index_for_char(&cl.text, col_end);
+        (s, e)
+    } else {
+        (0, 0)
+    };
+    let match_bg = if is_cursor {
+        pal.match_current_bg
+    } else {
+        pal.match_bg
+    };
+
+    // Build (byte-range, color) segments from the highlight spans: highlighted
+    // ranges get their style colour, gaps get the base colour. Then overlay the
+    // match window by splitting any segment that straddles it.
+    let line = &cl.text;
+    let base_color = if cl.is_match { pal.fg } else { pal.muted };
+    let mut segs: Vec<(usize, usize, iced::Color)> = Vec::new();
+    let mut cursor = 0usize;
+    for sp in &cl.spans {
+        let r = sp.range.clone();
+        // Spans may overlap (highlight() emits nested captures); drop any that
+        // starts inside a range already claimed, like the code-block renderer.
+        if r.start < cursor || r.start >= line.len() {
+            continue;
+        }
+        let end = r.end.min(line.len());
+        if r.start > cursor {
+            segs.push((cursor, r.start, base_color));
+        }
+        if end > r.start {
+            segs.push((r.start, end, crate::render::style_color(sp.style, &pal)));
+        }
+        cursor = end;
+    }
+    if cursor < line.len() {
+        segs.push((cursor, line.len(), base_color));
     }
 
-    // Split the match line into before / match / after (char offsets).
-    let chars: Vec<char> = cl.text.chars().collect();
-    let s = col_start.min(chars.len());
-    let e = col_end.min(chars.len());
-    let before: String = chars[..s].iter().collect();
-    let matched: String = chars[s..e].iter().collect();
-    let after: String = chars[e..].iter().collect();
+    let mut rt: Vec<iced::advanced::text::Span<'a, Message, iced::Font>> = Vec::new();
+    for (lo, hi, color) in segs {
+        // Split this segment on the match window so the overlap carries match_bg.
+        let parts: [(usize, usize, Option<iced::Color>); 3] =
+            if cl.is_match && mb_end > lo && mb_start < hi {
+                [
+                    (lo, mb_start.max(lo), None),
+                    (mb_start.max(lo), mb_end.min(hi), Some(match_bg)),
+                    (mb_end.min(hi), hi, None),
+                ]
+            } else {
+                [(lo, hi, None), (hi, hi, None), (hi, hi, None)]
+            };
+        for (a, b, bg) in parts {
+            if a >= b {
+                continue;
+            }
+            let mut s = span(&line[a..b])
+                .font(iced::Font::MONOSPACE)
+                .size(SIZE)
+                .color(color);
+            if let Some(c) = bg {
+                s = s.background(c);
+            }
+            rt.push(s);
+        }
+    }
+    if rt.is_empty() {
+        rt.push(
+            span(" ")
+                .font(iced::Font::MONOSPACE)
+                .size(SIZE)
+                .color(base_color),
+        );
+    }
 
-    let highlight = container(
-        text(matched)
-            .size(12)
-            .font(iced::Font::MONOSPACE)
-            .color(pal.fg),
-    )
-    .style(move |_| container::Style {
-        background: Some(pal.selection.into()),
-        border: Border {
-            radius: 2.0.into(),
-            ..Default::default()
-        },
-        ..Default::default()
-    });
+    let body = container(rich_text(rt).size(SIZE)).width(Length::Fill);
 
-    irow![
-        num,
-        text(before)
-            .size(12)
-            .font(iced::Font::MONOSPACE)
-            .color(pal.fg),
-        highlight,
-        text(after)
-            .size(12)
-            .font(iced::Font::MONOSPACE)
-            .color(pal.fg),
-    ]
-    .align_y(iced::Alignment::Center)
-    .into()
+    irow![gutter, body]
+        .width(Length::Fill)
+        .spacing(4)
+        .into()
+}
+
+/// Byte offset of the `n`-th char in `s` (clamped to `s.len()`).
+fn byte_index_for_char(s: &str, n: usize) -> usize {
+    s.char_indices().nth(n).map(|(b, _)| b).unwrap_or(s.len())
 }
 
 /// Static, read-only keyboard cheatsheet. Grouped by category, no search, no

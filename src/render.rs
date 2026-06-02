@@ -1304,7 +1304,7 @@ fn render_table<'a>(
         .into()
 }
 
-fn style_color(s: crate::ast::HlStyle, pal: &Palette) -> iced::Color {
+pub fn style_color(s: crate::ast::HlStyle, pal: &Palette) -> iced::Color {
     use crate::ast::HlStyle::*;
     let sx = &pal.syntax;
     match s {

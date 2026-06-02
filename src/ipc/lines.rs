@@ -4,6 +4,13 @@ pub struct ByteToLine {
 }
 
 impl ByteToLine {
+    /// Byte offset where 1-based `line` starts, or `None` if out of range.
+    pub fn line_start(&self, line: u32) -> Option<usize> {
+        line.checked_sub(1)
+            .and_then(|i| self.line_starts.get(i as usize))
+            .map(|&b| b as usize)
+    }
+
     /// 1-indexed line number for a byte offset. Returns the last line if `byte`
     /// is past the end. Empty source returns 1.
     pub fn line_for_byte(&self, byte: usize) -> u32 {

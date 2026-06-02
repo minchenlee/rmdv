@@ -4,8 +4,13 @@ use std::sync::{Mutex, OnceLock};
 use streaming_iterator::StreamingIterator;
 use tree_sitter::{Language, Parser, Query, QueryCursor};
 
-fn lang_cache() -> &'static Mutex<HashMap<String, (Language, &'static str)>> {
-    static CACHE: OnceLock<Mutex<HashMap<String, (Language, &'static str)>>> = OnceLock::new();
+/// Per-language cache of the parsed `Language` plus its **compiled** highlight
+/// `Query`. Compiling a tree-sitter query (parsing the `.scm` DSL) is expensive;
+/// caching the `Arc<Query>` turns per-call recompilation into a one-time cost.
+type LangEntry = (Language, std::sync::Arc<Query>);
+
+fn lang_cache() -> &'static Mutex<HashMap<String, Option<LangEntry>>> {
+    static CACHE: OnceLock<Mutex<HashMap<String, Option<LangEntry>>>> = OnceLock::new();
     CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
@@ -13,16 +18,16 @@ pub fn highlight(lang: &str, code: &str) -> Vec<HlSpan> {
     let key = lang.trim().to_ascii_lowercase();
     let entry = {
         let mut guard = lang_cache().lock().unwrap();
-        if let Some(v) = guard.get(&key) {
-            Some(v.clone())
-        } else if let Some(v) = lang_for(&key) {
-            guard.insert(key.clone(), v.clone());
-            Some(v)
-        } else {
-            None
-        }
+        guard
+            .entry(key.clone())
+            .or_insert_with(|| {
+                let (language, queries) = lang_for(&key)?;
+                let query = Query::new(&language, queries).ok()?;
+                Some((language, std::sync::Arc::new(query)))
+            })
+            .clone()
     };
-    let Some((language, queries)) = entry else {
+    let Some((language, query)) = entry else {
         return Vec::new();
     };
     let mut parser = Parser::new();
@@ -30,9 +35,6 @@ pub fn highlight(lang: &str, code: &str) -> Vec<HlSpan> {
         return Vec::new();
     }
     let Some(tree) = parser.parse(code, None) else {
-        return Vec::new();
-    };
-    let Ok(query) = Query::new(&language, queries) else {
         return Vec::new();
     };
     let mut cursor = QueryCursor::new();

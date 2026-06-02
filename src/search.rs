@@ -1,16 +1,39 @@
 use crate::ast::{Block, BlockId, Inline, ListItem};
 
+/// Case-insensitive substring search. Returns byte offsets **into `haystack`**
+/// (the original string), so callers can index `haystack` directly.
+///
+/// `to_lowercase()` is not length-preserving for some scalars (Turkish `İ`,
+/// `ẞ`, ligatures), so a lowercased copy's offsets do not map onto the
+/// original. We lowercase once but keep an offset map from each lowercased
+/// byte back to the originating char's start in `haystack`, then translate the
+/// match positions back. O(n), non-overlapping (matches the previous contract).
 pub fn find_all(haystack: &str, needle: &str) -> Vec<usize> {
     if needle.is_empty() {
         return Vec::new();
     }
-    let h = haystack.to_lowercase();
     let n = needle.to_lowercase();
+
+    // Lowercase the haystack, recording for each resulting byte the original
+    // byte offset of the source char that produced it.
+    let mut h = String::with_capacity(haystack.len());
+    let mut map: Vec<usize> = Vec::with_capacity(haystack.len());
+    for (orig_off, ch) in haystack.char_indices() {
+        for lc in ch.to_lowercase() {
+            let before = h.len();
+            h.push(lc);
+            for _ in before..h.len() {
+                map.push(orig_off);
+            }
+        }
+    }
+
     let mut out = Vec::new();
     let mut start = 0;
     while let Some(idx) = h[start..].find(&n) {
-        out.push(start + idx);
-        start += idx + n.len();
+        let lc_pos = start + idx;
+        out.push(map[lc_pos]);
+        start = lc_pos + n.len();
     }
     out
 }

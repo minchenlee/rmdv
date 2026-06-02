@@ -6,11 +6,12 @@
 
 use std::path::{Path, PathBuf};
 
+use crate::ast::HlSpan;
 use crate::ipc::lines::build_byte_to_line;
 use crate::search::find_all;
 
 /// One source line shown in a hit's context window.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ContextLine {
     /// 1-based source line number.
     pub number: u32,
@@ -18,6 +19,9 @@ pub struct ContextLine {
     pub text: String,
     /// True for the line containing the match.
     pub is_match: bool,
+    /// Markdown syntax-highlight spans over `text` (byte ranges), computed once
+    /// here so the render path doesn't re-parse every frame.
+    pub spans: Vec<HlSpan>,
 }
 
 /// One match in one file, with surrounding context lines.
@@ -66,17 +70,30 @@ fn scan_text(text: &str, query: &str, path: &Path, out: &mut Vec<VaultHit>) -> b
         }
         let line = table.line_for_byte(off);
         let li = (line as usize).saturating_sub(1); // 0-based index into `lines`
-        let line_start = text[..off].rfind('\n').map(|i| i + 1).unwrap_or(0);
+        // Line start comes from the byte→line table (no extra backward scan).
+        let line_start = table.line_start(line).unwrap_or(0);
         let col_start = text[line_start..off].chars().count();
         let col_end = col_start + q_chars;
 
         let lo = li.saturating_sub(CONTEXT);
         let hi = (li + CONTEXT).min(lines.len().saturating_sub(1));
         let context = (lo..=hi)
-            .map(|i| ContextLine {
-                number: (i + 1) as u32,
-                text: lines[i].trim_end_matches('\r').to_string(),
-                is_match: i == li,
+            .map(|i| {
+                let text = lines[i].trim_end_matches('\r').to_string();
+                // Highlight only the match line (Zed-style): context lines render
+                // as dim plain text, so skipping their highlight cuts the span
+                // count ~5× and avoids extra tree-sitter parses per hit.
+                let spans = if i == li {
+                    crate::highlight::highlight("md", &text)
+                } else {
+                    Vec::new()
+                };
+                ContextLine {
+                    number: (i + 1) as u32,
+                    text,
+                    is_match: i == li,
+                    spans,
+                }
             })
             .collect();
 
@@ -105,18 +122,65 @@ pub async fn run(files: Vec<PathBuf>, query: String, seq: u64) -> VaultResults {
 
     tokio::time::sleep(std::time::Duration::from_millis(150)).await;
 
+    use futures::stream::{self, StreamExt};
+
+    // Read + scan files concurrently (I/O latency overlaps) but keep results in
+    // file-walk order via `buffered`, so the UI's contiguous-per-file grouping
+    // still holds. Each file scans into its own bucket and reports whether its
+    // own scan hit the per-file cap. We drain the stream in order and stop
+    // feeding results once the global MAX_HITS cap is reached, so we don't merge
+    // the long tail (the in-flight `buffered` futures still finish, but their
+    // buckets are dropped).
+    const READ_CONCURRENCY: usize = 16;
+    let mut stream = stream::iter(files.iter().cloned())
+        .map(|path| {
+            let query = query.clone();
+            async move {
+                let Ok(bytes) = tokio::fs::read(&path).await else {
+                    return (Vec::new(), false);
+                };
+                let Ok(text) = String::from_utf8(bytes) else {
+                    return (Vec::new(), false);
+                };
+                let mut local = Vec::new();
+                let capped = scan_text(&text, &query, &path, &mut local);
+                (local, capped)
+            }
+        })
+        .buffered(READ_CONCURRENCY);
+
     let mut hits = Vec::new();
     let mut truncated = false;
-    for path in &files {
-        let Ok(bytes) = tokio::fs::read(path).await else {
+    while let Some((mut bucket, capped)) = stream.next().await {
+        // A file whose own scan hit the per-file cap means matches were dropped
+        // within that file, regardless of the global cap.
+        truncated |= capped;
+        if bucket.is_empty() {
             continue;
-        };
-        let Ok(text) = String::from_utf8(bytes) else {
-            continue;
-        };
-        if scan_text(&text, &query, path, &mut hits) {
+        }
+        let room = MAX_HITS - hits.len();
+        if bucket.len() > room {
+            // This bucket overflows the global cap: keep what fits, drop the rest.
+            bucket.truncate(room);
+            hits.append(&mut bucket);
             truncated = true;
             break;
+        }
+        hits.append(&mut bucket);
+        if hits.len() == MAX_HITS {
+            // Exactly full. Any further non-empty bucket would be dropped, so
+            // that — and only that — counts as truncation (an exact fill with no
+            // remaining matches is not truncated).
+            break;
+        }
+    }
+    if hits.len() == MAX_HITS && !truncated {
+        // We stopped at an exact fill; flag truncation iff more matches remain.
+        while let Some((bucket, capped)) = stream.next().await {
+            if !bucket.is_empty() || capped {
+                truncated = true;
+                break;
+            }
         }
     }
 
@@ -147,6 +211,22 @@ mod tests {
         let hits = scan(text, "needle");
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].line, 2);
+    }
+
+    #[test]
+    fn length_changing_lowercase_does_not_panic_or_misreport() {
+        // 'İ' (U+0130) lowercases to "i̇" (2 chars / 3 bytes) — longer than the
+        // 1-char / 2-byte original. find_all used to return offsets into the
+        // lowercased copy, which indexed past / off-boundary in the original
+        // and panicked. Offsets must now be original-relative.
+        let text = "İİİ needle\nİx";
+        let hits = scan(text, "needle");
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].line, 1);
+        // "İİİ " is 4 chars before the match.
+        assert_eq!(hits[0].col_start, 4);
+        let m = hits[0].context.iter().find(|c| c.is_match).unwrap();
+        assert_eq!(&m.text[m.text.char_indices().nth(4).unwrap().0..], "needle");
     }
 
     #[test]
@@ -255,5 +335,51 @@ mod tests {
         assert!(r.hits.is_empty());
         assert!(!r.truncated);
         assert_eq!(r.seq, 42);
+    }
+
+    #[test]
+    fn run_single_file_over_cap_reports_truncated() {
+        // A single file with more than MAX_HITS matches: scan_text caps the
+        // file's own bucket at MAX_HITS and drops the rest, so `run` must still
+        // report `truncated` even though the merge sees only one (full) bucket.
+        // Regression for the false-negative where scan_text's capped return was
+        // discarded by the per-file-bucket refactor.
+        let dir = std::env::temp_dir().join(format!("mdv_vault_run_test_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("big.md");
+        std::fs::write(&file, "needle\n".repeat(MAX_HITS + 50)).unwrap();
+
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let r = rt.block_on(run(vec![file.clone()], "needle".to_string(), 1));
+        assert_eq!(r.hits.len(), MAX_HITS);
+        assert!(r.truncated, "single file over cap must report truncated");
+
+        let _ = std::fs::remove_file(&file);
+        let _ = std::fs::remove_dir(&dir);
+    }
+
+    #[test]
+    fn run_exact_cap_no_remainder_not_truncated() {
+        // Exactly MAX_HITS matches across the corpus with nothing left over must
+        // NOT be flagged truncated (guards against an over-eager exact-fill flag).
+        let dir =
+            std::env::temp_dir().join(format!("mdv_vault_exact_test_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("exact.md");
+        std::fs::write(&file, "needle\n".repeat(MAX_HITS)).unwrap();
+
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let r = rt.block_on(run(vec![file.clone()], "needle".to_string(), 1));
+        assert_eq!(r.hits.len(), MAX_HITS);
+        assert!(!r.truncated, "exact fill with no remainder is not truncated");
+
+        let _ = std::fs::remove_file(&file);
+        let _ = std::fs::remove_dir(&dir);
     }
 }
