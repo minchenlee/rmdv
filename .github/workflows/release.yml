@@ -198,10 +198,13 @@ jobs:
           name: linux-x86_64
           path: dist/*
 
-  # ── Windows: NSIS installer (no in-app updater on Windows).
+  # ── Windows: NSIS installer (no in-app updater on Windows). Best-effort —
+  #    Windows is out of the mac+linux release scope and must not block the
+  #    publish job, so a build failure here is tolerated.
   build-windows:
     name: Windows x86_64
     runs-on: windows-latest
+    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
