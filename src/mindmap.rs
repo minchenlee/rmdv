@@ -725,69 +725,43 @@ impl<'a, Message: Clone> canvas::Program<Message, Theme, Renderer> for MindmapPr
             .with_color(self.palette.subtle)
             .with_width(1.0);
 
-        let accent_backgrounds = Path::new(|b| {
-            for (i, n) in self.nodes.iter().enumerate() {
-                if n.level == 0 {
-                    let (nx, ny) = positions[i];
-                    let sx = proj_x(nx);
-                    let sy = proj_y(ny);
-                    if !visible(sx, sy) {
-                        continue;
-                    }
-                    append_rounded_rect(b, sx, sy, s_w, s_h, radius);
-                }
+        // One pass over nodes feeding all five paths (was five full passes).
+        // Per-path append order and the dots' lack of culling are preserved so
+        // the produced geometry is identical.
+        let mut accent_bg_b = path::Builder::new();
+        let mut surface_bg_b = path::Builder::new();
+        let mut accent_border_b = path::Builder::new();
+        let mut subtle_border_b = path::Builder::new();
+        let mut hidden_dots_b = path::Builder::new();
+        for (i, n) in self.nodes.iter().enumerate() {
+            let (nx, ny) = positions[i];
+            if n.has_hidden_children {
+                let cx = proj_x(nx + NODE_W) - dot_offset;
+                let cy = proj_y(ny + NODE_H / 2.0);
+                hidden_dots_b.circle(Point::new(cx, cy), dot_r);
+                hidden_dots_b.close();
             }
-        });
-        let surface_backgrounds = Path::new(|b| {
-            for (i, n) in self.nodes.iter().enumerate() {
-                if n.level != 0 {
-                    let (nx, ny) = positions[i];
-                    let sx = proj_x(nx);
-                    let sy = proj_y(ny);
-                    if !visible(sx, sy) {
-                        continue;
-                    }
-                    append_rounded_rect(b, sx, sy, s_w, s_h, radius);
-                }
+            let sx = proj_x(nx);
+            let sy = proj_y(ny);
+            if !visible(sx, sy) {
+                continue;
             }
-        });
-        let accent_borders = Path::new(|b| {
-            for (i, n) in self.nodes.iter().enumerate() {
-                if n.level == 0 || n.has_hidden_children {
-                    let (nx, ny) = positions[i];
-                    let sx = proj_x(nx);
-                    let sy = proj_y(ny);
-                    if !visible(sx, sy) {
-                        continue;
-                    }
-                    append_rounded_rect(b, sx, sy, s_w, s_h, radius);
-                }
+            if n.level == 0 {
+                append_rounded_rect(&mut accent_bg_b, sx, sy, s_w, s_h, radius);
+            } else {
+                append_rounded_rect(&mut surface_bg_b, sx, sy, s_w, s_h, radius);
             }
-        });
-        let subtle_borders = Path::new(|b| {
-            for (i, n) in self.nodes.iter().enumerate() {
-                if n.level != 0 && !n.has_hidden_children {
-                    let (nx, ny) = positions[i];
-                    let sx = proj_x(nx);
-                    let sy = proj_y(ny);
-                    if !visible(sx, sy) {
-                        continue;
-                    }
-                    append_rounded_rect(b, sx, sy, s_w, s_h, radius);
-                }
+            if n.level == 0 || n.has_hidden_children {
+                append_rounded_rect(&mut accent_border_b, sx, sy, s_w, s_h, radius);
+            } else {
+                append_rounded_rect(&mut subtle_border_b, sx, sy, s_w, s_h, radius);
             }
-        });
-        let hidden_dots = Path::new(|b| {
-            for (i, n) in self.nodes.iter().enumerate() {
-                if n.has_hidden_children {
-                    let (nx, ny) = positions[i];
-                    let cx = proj_x(nx + NODE_W) - dot_offset;
-                    let cy = proj_y(ny + NODE_H / 2.0);
-                    b.circle(Point::new(cx, cy), dot_r);
-                    b.close();
-                }
-            }
-        });
+        }
+        let accent_backgrounds = accent_bg_b.build();
+        let surface_backgrounds = surface_bg_b.build();
+        let accent_borders = accent_border_b.build();
+        let subtle_borders = subtle_border_b.build();
+        let hidden_dots = hidden_dots_b.build();
 
         // Nodes.
         frame.fill(&surface_backgrounds, surface_fill);

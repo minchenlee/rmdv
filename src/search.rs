@@ -38,6 +38,26 @@ pub fn find_all(haystack: &str, needle: &str) -> Vec<usize> {
     out
 }
 
+/// `find_all(haystack, needle).len()` without building the offset map or the
+/// match Vec. Takes the needle already lowercased so per-block callers lower
+/// it once. Same lowercasing + non-overlapping scan, so counts are identical.
+pub fn count_all_lowered(haystack: &str, lowered_needle: &str) -> usize {
+    if lowered_needle.is_empty() {
+        return 0;
+    }
+    let mut h = String::with_capacity(haystack.len());
+    for ch in haystack.chars() {
+        h.extend(ch.to_lowercase());
+    }
+    let mut count = 0;
+    let mut start = 0;
+    while let Some(idx) = h[start..].find(lowered_needle) {
+        count += 1;
+        start = start + idx + lowered_needle.len();
+    }
+    count
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct MatchPos {
     pub block: usize,
@@ -48,10 +68,11 @@ pub fn find_in_blocks(blocks: &[(BlockId, Block)], query: &str) -> Vec<MatchPos>
     if query.is_empty() {
         return Vec::new();
     }
+    let lowered = query.to_lowercase();
     let mut out = Vec::new();
     for (bi, (_id, b)) in blocks.iter().enumerate() {
         let text = block_text(b);
-        let n = find_all(&text, query).len();
+        let n = count_all_lowered(&text, &lowered);
         for k in 0..n {
             out.push(MatchPos {
                 block: bi,

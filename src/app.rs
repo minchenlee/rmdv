@@ -309,6 +309,9 @@ pub struct App {
     /// (query edited), otherwise opens the selected hit.
     pub vault_searched_query: Option<String>,
     pub vault_results: Vec<crate::vault_search::VaultHit>,
+    /// Distinct files in `vault_results`, computed when results change so the
+    /// vault page doesn't re-scan the hit list every frame.
+    pub vault_file_count: usize,
     pub vault_truncated: bool,
     /// Monotonic request counter; a `VaultSearchDone` whose seq != this is stale.
     pub vault_seq: u64,
@@ -431,6 +434,7 @@ impl Default for App {
             vault_query: String::new(),
             vault_searched_query: None,
             vault_results: Vec::new(),
+            vault_file_count: 0,
             vault_truncated: false,
             vault_seq: 0,
             vault_cursor: 0,
@@ -564,12 +568,11 @@ impl App {
         scroll_vault_to_match(self.vault_cursor)
     }
 
-    fn scroll_tree_to_cursor(&self) -> Task<Message> {
+    /// Edge-scroll the sidebar tree to the cursor. Takes the flattened row
+    /// count from the caller (`TreeMove` already flattens for clamping) so the
+    /// tree isn't flattened twice per keystroke.
+    fn scroll_tree_to_cursor_with_len(&self, total: usize) -> Task<Message> {
         const ROW_H: f32 = 26.0;
-        let Some(root) = &self.workspace_tree else {
-            return Task::none();
-        };
-        let total = tree::flatten(root, &self.expanded).len();
         if total == 0 {
             return Task::none();
         }
@@ -599,14 +602,24 @@ impl App {
     }
 
     fn scroll_overlay_to_cursor(&self) -> Task<Message> {
+        let len = match self.overlay {
+            Overlay::FileFinder => self.filtered_files().len(),
+            Overlay::Command => self.filtered_commands().len(),
+            Overlay::ThemePicker => self.filtered_themes().len(),
+            Overlay::FolderPicker => self.picker.as_ref().map(|p| p.entries.len()).unwrap_or(0),
+            Overlay::None | Overlay::ImageZoom | Overlay::Shortcuts => 0,
+        };
+        self.scroll_overlay_to_cursor_with_len(len)
+    }
+
+    /// `scroll_overlay_to_cursor` for callers that already computed the
+    /// filtered list length this update (`OverlayMove` does, every arrow key).
+    fn scroll_overlay_to_cursor_with_len(&self, len: usize) -> Task<Message> {
         let (total, row_h) = match self.overlay {
-            Overlay::FileFinder => (self.filtered_files().len().min(80), 32.0),
-            Overlay::Command => (self.filtered_commands().len(), 32.0),
-            Overlay::ThemePicker => (self.filtered_themes().len(), 32.0),
-            Overlay::FolderPicker => (
-                self.picker.as_ref().map(|p| p.entries.len()).unwrap_or(0),
-                33.0,
-            ),
+            // FileFinder renders at most 80 rows; scroll math matches.
+            Overlay::FileFinder => (len.min(80), 32.0),
+            Overlay::Command | Overlay::ThemePicker => (len, 32.0),
+            Overlay::FolderPicker => (len, 33.0),
             Overlay::None | Overlay::ImageZoom | Overlay::Shortcuts => (0, 32.0),
         };
         if total == 0 {
@@ -1285,6 +1298,7 @@ impl App {
                 self.vault_query.clear();
                 self.vault_searched_query = None;
                 self.vault_results.clear();
+                self.vault_file_count = 0;
                 self.vault_truncated = false;
                 self.vault_cursor = 0;
                 self.vault_collapsed.clear();
@@ -1326,6 +1340,17 @@ impl App {
                 // Drop stale results whose query was superseded mid-scan.
                 if r.seq == self.vault_seq {
                     self.vault_results = r.hits;
+                    // Hits arrive grouped by file, so distinct files = number
+                    // of adjacent path runs (same walk the view used to do).
+                    let mut last: Option<&std::path::Path> = None;
+                    let mut n = 0;
+                    for h in &self.vault_results {
+                        if last != Some(h.path.as_path()) {
+                            n += 1;
+                            last = Some(h.path.as_path());
+                        }
+                    }
+                    self.vault_file_count = n;
                     self.vault_truncated = r.truncated;
                     self.vault_cursor = 0;
                 }
@@ -1939,7 +1964,7 @@ impl App {
                 }
                 let next = (self.overlay_selected as isize + d).clamp(0, len as isize - 1);
                 self.overlay_selected = next as usize;
-                self.scroll_overlay_to_cursor()
+                self.scroll_overlay_to_cursor_with_len(len)
             }
             Message::OverlayConfirm => match self.overlay {
                 Overlay::FileFinder => {
@@ -2293,7 +2318,7 @@ impl App {
                 }
                 let len_i = len as isize;
                 self.tree_cursor = ((self.tree_cursor as isize + d).rem_euclid(len_i)) as usize;
-                self.scroll_tree_to_cursor()
+                self.scroll_tree_to_cursor_with_len(len)
             }
             Message::TreeActivate => {
                 let Some(root) = &self.workspace_tree else {
@@ -2983,6 +3008,7 @@ impl App {
                 &self.vault_query,
                 self.vault_searched_query.as_deref(),
                 &self.vault_results,
+                self.vault_file_count,
                 self.vault_cursor,
                 self.vault_truncated,
                 &self.vault_collapsed,
@@ -4457,24 +4483,14 @@ fn vault_search_page<'a>(
     query: &'a str,
     searched_query: Option<&str>,
     hits: &'a [crate::vault_search::VaultHit],
+    // Distinct files in `hits`; computed once in VaultSearchDone.
+    file_count: usize,
     cursor: usize,
     truncated: bool,
     collapsed: &HashSet<PathBuf>,
     workspace: Option<&std::path::Path>,
     pal: Palette,
 ) -> Element<'a, Message> {
-    // Query bar: input + "N matches in M files".
-    let file_count = {
-        let mut last: Option<&std::path::Path> = None;
-        let mut n = 0;
-        for h in hits {
-            if last != Some(h.path.as_path()) {
-                n += 1;
-                last = Some(h.path.as_path());
-            }
-        }
-        n
-    };
     // The displayed results reflect `searched_query`; if the live `query` has
     // since been edited, prompt for Enter rather than showing a stale count.
     let edited = searched_query != Some(query);

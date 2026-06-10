@@ -507,6 +507,7 @@ fn render_block<'a>(
 ) -> Element<'a, Message> {
     let mut ctx = HlCtx {
         query,
+        lower_query: query.to_lowercase(),
         counter: 0,
         current_in_block,
         pal: *pal,
@@ -651,6 +652,8 @@ fn rich_text_links<'a>(spans: Vec<RtSpan<'a>>) -> Element<'a, Message> {
 
 struct HlCtx<'a> {
     query: &'a str,
+    /// `query.to_lowercase()` computed once per block, not per span.
+    lower_query: String,
     counter: usize,
     current_in_block: Option<usize>,
     pal: Palette,
@@ -730,7 +733,7 @@ fn push_text_with_hl<'a>(
         return;
     }
     let lower_text = text_str.to_lowercase();
-    let lower_q = ctx.query.to_lowercase();
+    let lower_q = ctx.lower_query.as_str();
     let mut cursor = 0usize;
     while let Some(rel) = lower_text[cursor..].find(&lower_q) {
         let abs = cursor + rel;
@@ -792,7 +795,7 @@ fn push_code_with_hl<'a>(
         return;
     }
     let lower_text = text_str.to_lowercase();
-    let lower_q = ctx.query.to_lowercase();
+    let lower_q = ctx.lower_query.as_str();
     let mut cursor = 0usize;
     while let Some(rel) = lower_text[cursor..].find(&lower_q) {
         let abs = cursor + rel;
