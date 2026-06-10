@@ -4,6 +4,7 @@ pub mod bench;
 pub mod cli;
 pub mod diagram;
 pub mod highlight;
+pub mod history;
 pub mod icon;
 pub mod ipc;
 pub mod md_highlight;

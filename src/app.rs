@@ -48,6 +48,114 @@ pub enum ImageState {
     Failed,
 }
 
+/// Retained heap cost of one image entry: encoded/decoded payload bytes.
+/// `svg::Handle::from_memory` keeps its own copy of the SVG payload alongside
+/// the `bytes` Arc, hence the ×2.
+fn image_state_cost(s: &ImageState) -> usize {
+    fn handle_cost(h: &iced::widget::image::Handle) -> usize {
+        match h {
+            iced::widget::image::Handle::Rgba { pixels, .. } => pixels.len(),
+            iced::widget::image::Handle::Bytes(_, bytes) => bytes.len(),
+            iced::widget::image::Handle::Path(..) => 0,
+        }
+    }
+    match s {
+        ImageState::Loading | ImageState::Failed => 0,
+        ImageState::Loaded(h) => handle_cost(h),
+        ImageState::LoadedSvg { bytes, raster, .. } => {
+            bytes.len() * 2 + raster.as_ref().map(handle_cost).unwrap_or(0)
+        }
+    }
+}
+
+/// Soft byte budget for `ImageCache`. Bounds session-long accumulation of
+/// fetched remote images and SVG zoom rasters; generous enough that a single
+/// document's images never get evicted in realistic use.
+const IMAGE_CACHE_BYTE_BUDGET: usize = 256 * 1024 * 1024;
+
+/// Insertion-ordered image cache with a soft byte budget. Entries were
+/// previously kept in a bare `HashMap` for the whole session; `trim` (called
+/// after each image load) evicts the oldest entries NOT referenced by the
+/// current document, so what's on screen never changes.
+#[derive(Debug, Default)]
+pub struct ImageCache {
+    map: HashMap<String, ImageState>,
+    /// Insertion order, oldest first. Only ever holds keys present in `map`.
+    order: Vec<String>,
+    /// Running total of `image_state_cost` over all entries, so the budget
+    /// check on each image load is O(1) instead of a full map walk.
+    bytes: usize,
+}
+
+impl ImageCache {
+    pub fn get(&self, key: &str) -> Option<&ImageState> {
+        self.map.get(key)
+    }
+
+    /// Mutable access for in-place updates (SVG raster fill). Callers that
+    /// grow an entry's payload must re-sync the running cost via `resync_cost`.
+    pub fn get_mut(&mut self, key: &str) -> Option<&mut ImageState> {
+        self.map.get_mut(key)
+    }
+
+    pub fn contains_key(&self, key: &str) -> bool {
+        self.map.contains_key(key)
+    }
+
+    pub fn insert(&mut self, key: String, value: ImageState) {
+        self.bytes += image_state_cost(&value);
+        if let Some(replaced) = self.map.insert(key.clone(), value) {
+            self.bytes = self.bytes.saturating_sub(image_state_cost(&replaced));
+        } else {
+            self.order.push(key);
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        self.map.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.map.is_empty()
+    }
+
+    /// Total retained payload bytes (tracked incrementally; O(1)).
+    pub fn cost_bytes(&self) -> usize {
+        self.bytes
+    }
+
+    /// Recompute the running cost from scratch. Call after mutating an entry
+    /// in place through `get_mut`.
+    fn resync_cost(&mut self) {
+        self.bytes = self.map.values().map(image_state_cost).sum();
+    }
+
+    /// Evict oldest-inserted entries until under `budget`, skipping any key
+    /// `keep` returns true for (the current document's images). Zero-cost
+    /// entries (`Loading`/`Failed`) are never evicted: dropping them can't
+    /// reach the budget, and evicting a `Failed` sentinel would silently
+    /// re-enable fetch retries that the old unbounded cache never made.
+    pub fn trim(&mut self, budget: usize, keep: impl Fn(&str) -> bool) {
+        if self.bytes <= budget {
+            return;
+        }
+        let map = &mut self.map;
+        let bytes = &mut self.bytes;
+        self.order.retain(|key| {
+            if *bytes <= budget || keep(key) {
+                return true;
+            }
+            let cost = map.get(key).map(image_state_cost).unwrap_or(0);
+            if cost == 0 {
+                return true;
+            }
+            map.remove(key);
+            *bytes = bytes.saturating_sub(cost);
+            false
+        });
+    }
+}
+
 const SIDEBAR_WIDTH: f32 = 280.0;
 const READING_MAX: f32 = 780.0;
 const TREE_INDENT: f32 = 14.0;
@@ -340,13 +448,13 @@ pub struct App {
     pub toast_seq: u64,
     pub custom_themes: Vec<crate::theme_load::CustomTheme>,
     pub theme_id: crate::theme::ThemeId,
-    pub image_cache: HashMap<String, ImageState>,
+    pub image_cache: ImageCache,
     pub zoom_url: Option<String>,
     pub view_mode: ViewMode,
     pub editor: Option<iced::widget::text_editor::Content>,
     pub dirty: bool,
-    pub edit_history: Vec<String>,
-    pub edit_redo: Vec<String>,
+    pub edit_history: crate::history::SnapshotStack,
+    pub edit_redo: crate::history::SnapshotStack,
     pub is_data_doc: bool,
     pub folded: HashSet<crate::ast::BlockId>,
     pub hovered_heading: Option<crate::ast::BlockId>,
@@ -457,13 +565,13 @@ impl Default for App {
             toast_seq: 0,
             custom_themes: Vec::new(),
             theme_id: crate::theme::ThemeId::Preset(preset),
-            image_cache: HashMap::new(),
+            image_cache: ImageCache::default(),
             zoom_url: None,
             view_mode: ViewMode::Rendered,
             editor: None,
             dirty: false,
-            edit_history: Vec::new(),
-            edit_redo: Vec::new(),
+            edit_history: crate::history::SnapshotStack::default(),
+            edit_redo: crate::history::SnapshotStack::default(),
             is_data_doc: false,
             folded: HashSet::new(),
             hovered_heading: None,
@@ -921,6 +1029,26 @@ impl App {
         debug_assert!(self.ast.len() == block_offsets.len());
         self.outline_sections =
             crate::ipc::sections::list_sections_from_ast(&self.ast, &block_offsets, &table);
+    }
+
+    /// Evict oldest fetched images once the cache exceeds its byte budget.
+    /// Images referenced by the current document (or the open zoom modal) are
+    /// never evicted, so what's on screen never changes.
+    fn trim_image_cache(&mut self) {
+        if self.image_cache.cost_bytes() <= IMAGE_CACHE_BYTE_BUDGET {
+            return;
+        }
+        let keep: HashSet<&str> = self
+            .ast
+            .iter()
+            .filter_map(|(_, b)| match b {
+                Block::Image { url, .. } => Some(url.as_str()),
+                _ => None,
+            })
+            .chain(self.zoom_url.as_deref())
+            .collect();
+        self.image_cache
+            .trim(IMAGE_CACHE_BYTE_BUDGET, |k| keep.contains(k));
     }
 
     /// Walk the current AST and dispatch a background render for every
@@ -1445,6 +1573,7 @@ impl App {
                     ImageState::Loaded(handle)
                 };
                 self.image_cache.insert(url, state);
+                self.trim_image_cache();
                 Task::none()
             }
             Message::SvgRasterized(key, Ok(rgba_bytes_w_h)) => {
@@ -1454,9 +1583,11 @@ impl App {
                     if let ImageState::LoadedSvg { raster, .. } = entry {
                         *raster = Some(handle);
                     }
+                    self.image_cache.resync_cost();
                 } else {
                     self.image_cache.insert(key, ImageState::Loaded(handle));
                 }
+                self.trim_image_cache();
                 Task::none()
             }
             Message::SvgRasterized(key, Err(_)) => {
@@ -1793,11 +1924,9 @@ impl App {
                     let edits = action.is_edit();
                     if edits {
                         let prev = ed.text();
-                        let push = self.edit_history.last().map(|s| s != &prev).unwrap_or(true);
-                        if push {
-                            self.edit_history.push(prev);
+                        if self.edit_history.push_if_changed(prev) {
                             if self.edit_history.len() > 200 {
-                                self.edit_history.remove(0);
+                                self.edit_history.drop_oldest();
                             }
                             self.edit_redo.clear();
                         }
@@ -3357,7 +3486,7 @@ fn toast_overlay<'a>(text: &str, pal: Palette) -> Element<'a, Message> {
 fn image_zoom_overlay<'a>(
     url: Option<&'a str>,
     diagram: Option<&iced::widget::image::Handle>,
-    cache: &HashMap<String, ImageState>,
+    cache: &ImageCache,
     pal: Palette,
 ) -> Element<'a, Message> {
     use iced::widget::image::viewer;
@@ -5621,5 +5750,68 @@ mod tests {
         )];
 
         assert!(diagram_hash_present(&blocks, 42));
+    }
+
+    fn loaded_image(bytes: usize) -> ImageState {
+        ImageState::Loaded(iced::widget::image::Handle::from_bytes(vec![0u8; bytes]))
+    }
+
+    #[test]
+    fn image_cache_trim_evicts_oldest_unreferenced_first() {
+        let mut cache = ImageCache::default();
+        cache.insert("a".into(), loaded_image(400));
+        cache.insert("b".into(), loaded_image(400));
+        cache.insert("c".into(), loaded_image(400));
+        assert_eq!(cache.cost_bytes(), 1200);
+        cache.trim(800, |_| false);
+        assert!(!cache.contains_key("a"), "oldest entry should evict first");
+        assert!(cache.contains_key("b"));
+        assert!(cache.contains_key("c"));
+    }
+
+    #[test]
+    fn image_cache_trim_never_evicts_kept_keys() {
+        let mut cache = ImageCache::default();
+        cache.insert("current-doc".into(), loaded_image(400));
+        cache.insert("old-doc".into(), loaded_image(400));
+        cache.trim(0, |k| k == "current-doc");
+        assert!(cache.contains_key("current-doc"));
+        assert!(!cache.contains_key("old-doc"));
+    }
+
+    #[test]
+    fn image_cache_trim_noop_under_budget() {
+        let mut cache = ImageCache::default();
+        cache.insert("a".into(), loaded_image(100));
+        cache.insert("b".into(), loaded_image(100));
+        cache.trim(1024, |_| false);
+        assert_eq!(cache.len(), 2);
+    }
+
+    #[test]
+    fn image_cache_reinsert_does_not_duplicate_order() {
+        let mut cache = ImageCache::default();
+        cache.insert("a".into(), ImageState::Loading);
+        cache.insert("a".into(), loaded_image(400));
+        cache.insert("b".into(), loaded_image(400));
+        cache.trim(500, |_| false);
+        // "a" (oldest) evicted exactly once; "b" stays.
+        assert!(!cache.contains_key("a"));
+        assert!(cache.contains_key("b"));
+        assert_eq!(cache.len(), 1);
+    }
+
+    #[test]
+    fn image_cache_svg_cost_counts_payload_twice_plus_raster() {
+        let state = ImageState::LoadedSvg {
+            svg: iced::widget::svg::Handle::from_memory(vec![0u8; 100]),
+            bytes: std::sync::Arc::new(vec![0u8; 100]),
+            raster: Some(iced::widget::image::Handle::from_rgba(
+                5,
+                5,
+                vec![0u8; 100],
+            )),
+        };
+        assert_eq!(image_state_cost(&state), 300);
     }
 }
