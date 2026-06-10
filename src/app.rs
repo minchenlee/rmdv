@@ -356,6 +356,10 @@ pub struct App {
     pub mindmap_panel_step: usize,
     pub mindmap_panel_drag: Option<(f32, Option<f32>)>,
     pub mindmap_autocenter: bool,
+    /// Cached mindmap layout, lazily rebuilt from (ast, file, mindmap_collapsed).
+    /// Every mutation of those inputs must call `invalidate_mindmap_layout`.
+    /// RefCell so `view(&self)` can populate it on first read.
+    mindmap_layout: std::cell::RefCell<Option<(std::sync::Arc<Vec<crate::mindmap::MNode>>, iced::Size)>>,
     /// T3 — diagram render cache. T4 will populate it from a pre-walk +
     /// `iced::Task::perform` of `diagram::render_blocking`.
     pub diagram_cache: crate::diagram::DiagramCache,
@@ -467,6 +471,7 @@ impl Default for App {
             mindmap_panel_step: 0,
             mindmap_panel_drag: None,
             mindmap_autocenter: true,
+            mindmap_layout: std::cell::RefCell::new(None),
             diagram_cache: crate::diagram::DiagramCache::new(64),
             diagram_theme_id: 0,
             zoom_diagram: None,
@@ -811,6 +816,27 @@ impl App {
         Some(vec![(crate::ast::BlockId(0), block)])
     }
 
+    /// Cached `mindmap::build_layout` result, rebuilt on first read after an
+    /// invalidation. Pure function of (ast, file, mindmap_collapsed); see the
+    /// field doc on `mindmap_layout` for the invalidation contract.
+    fn mindmap_layout(&self) -> (std::sync::Arc<Vec<crate::mindmap::MNode>>, iced::Size) {
+        let mut cache = self.mindmap_layout.borrow_mut();
+        if cache.is_none() {
+            let (nodes, size) = crate::mindmap::build_layout(
+                &self.ast,
+                self.file.as_deref(),
+                &self.mindmap_collapsed,
+            );
+            *cache = Some((std::sync::Arc::new(nodes), size));
+        }
+        let (nodes, size) = cache.as_ref().unwrap();
+        (std::sync::Arc::clone(nodes), *size)
+    }
+
+    fn invalidate_mindmap_layout(&self) {
+        *self.mindmap_layout.borrow_mut() = None;
+    }
+
     /// Select root's first child if nothing is selected, opening the preview
     /// panel. Called on mindmap toggle-on and on file load while in mindmap
     /// mode, so a freshly opened document focuses its first heading.
@@ -818,8 +844,7 @@ impl App {
         if self.view_mode != ViewMode::Mindmap || self.mindmap_selected.is_some() {
             return;
         }
-        let (nodes, _) =
-            crate::mindmap::build_layout(&self.ast, self.file.as_deref(), &self.mindmap_collapsed);
+        let (nodes, _) = self.mindmap_layout();
         if let Some(id) = nodes
             .first()
             .and_then(|root| root.children.first().copied())
@@ -841,6 +866,9 @@ impl App {
     /// Shared by `reparse_source` (post-edit) and the `FileLoaded` handler so a
     /// `.tex` file can't render correctly on load then revert to markdown on edit.
     fn load_ast_from_source(&mut self) {
+        // Covers every `self.ast` write below; `self.file` and
+        // `mindmap_collapsed` writes in FileLoaded happen before this call.
+        self.invalidate_mindmap_layout();
         if let Some(ast) = self.synthesize_data_ast() {
             self.ast = ast;
             // Data docs are one synthesized block at line 1; reset block_lines
@@ -1582,6 +1610,7 @@ impl App {
                 } else {
                     self.mindmap_collapsed.insert(id);
                 }
+                self.invalidate_mindmap_layout();
                 Task::none()
             }
             Message::MindmapSelectLeaf(id) => {
@@ -1596,11 +1625,7 @@ impl App {
                 Task::none()
             }
             Message::MindmapNavigate(dir) => {
-                let (nodes, _) = crate::mindmap::build_layout(
-                    &self.ast,
-                    self.file.as_deref(),
-                    &self.mindmap_collapsed,
-                );
+                let (nodes, _) = self.mindmap_layout();
                 // Build parent index.
                 let mut parents: Vec<Option<usize>> = vec![None; nodes.len()];
                 for (i, n) in nodes.iter().enumerate() {
@@ -1647,6 +1672,7 @@ impl App {
                             // Expand the collapsed node, then on next press right will descend.
                             if let Some(id) = n.id {
                                 self.mindmap_collapsed.remove(&id);
+                                self.invalidate_mindmap_layout();
                             }
                             None
                         } else {
@@ -1695,6 +1721,7 @@ impl App {
                     } else {
                         self.mindmap_collapsed.insert(id);
                     }
+                    self.invalidate_mindmap_layout();
                 }
                 Task::none()
             }
@@ -2988,11 +3015,7 @@ impl App {
                     .unwrap_or(0),
             };
             let body: Element<'_, Message> = if self.view_mode == ViewMode::Mindmap {
-                let (nodes, content_size) = crate::mindmap::build_layout(
-                    &self.ast,
-                    self.file.as_deref(),
-                    &self.mindmap_collapsed,
-                );
+                let (nodes, content_size) = self.mindmap_layout();
                 let program = crate::mindmap::MindmapProgram {
                     nodes,
                     content_size,

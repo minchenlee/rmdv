@@ -278,7 +278,7 @@ struct PanAnim {
 }
 
 pub struct MindmapProgram<'a, Message> {
-    pub nodes: Vec<MNode>,
+    pub nodes: std::sync::Arc<Vec<MNode>>,
     pub content_size: Size,
     pub palette: Palette,
     pub selected: Option<BlockId>,
