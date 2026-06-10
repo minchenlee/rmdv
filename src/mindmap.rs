@@ -698,7 +698,11 @@ impl<'a, Message: Clone> canvas::Program<Message, Theme, Renderer> for MindmapPr
             .with_color(self.palette.subtle)
             .with_width(1.5);
 
-        // Edges in screen space.
+        // Edges in screen space. Each curve's control points all lie inside
+        // the AABB of its two endpoints (controls are (mx,py)/(mx,cy) with
+        // mx between px and cx), and a bezier stays inside its control hull,
+        // so an endpoint-AABB test against the viewport is an exact
+        // conservative cull. Margin covers the stroke width.
         let edges_path = Path::new(|b| {
             for (i, n) in self.nodes.iter().enumerate() {
                 let (nx, ny) = positions[i];
@@ -708,6 +712,15 @@ impl<'a, Message: Clone> canvas::Program<Message, Theme, Renderer> for MindmapPr
                     let (cnx, cny) = positions[c];
                     let cx = proj_x(cnx);
                     let cy = proj_y(cny + NODE_H / 2.0);
+                    let (x0, x1) = if px <= cx { (px, cx) } else { (cx, px) };
+                    let (y0, y1) = if py <= cy { (py, cy) } else { (cy, py) };
+                    if x1 < view.x - 2.0
+                        || y1 < view.y - 2.0
+                        || x0 > view.x + view.width + 2.0
+                        || y0 > view.y + view.height + 2.0
+                    {
+                        continue;
+                    }
                     let mx = (px + cx) / 2.0;
                     b.move_to(Point::new(px, py));
                     b.bezier_curve_to(Point::new(mx, py), Point::new(mx, cy), Point::new(cx, cy));
@@ -726,8 +739,10 @@ impl<'a, Message: Clone> canvas::Program<Message, Theme, Renderer> for MindmapPr
             .with_width(1.0);
 
         // One pass over nodes feeding all five paths (was five full passes).
-        // Per-path append order and the dots' lack of culling are preserved so
-        // the produced geometry is identical.
+        // Per-path append order is preserved. Dots share the node's cull test:
+        // the dot center sits 10·z inside the right edge with radius
+        // max(3·z, 1) ≤ 10·z for all z ≥ ZOOM_MIN, so the dot always lies
+        // inside the node's AABB and culling it with the node is exact.
         let mut accent_bg_b = path::Builder::new();
         let mut surface_bg_b = path::Builder::new();
         let mut accent_border_b = path::Builder::new();
@@ -735,16 +750,16 @@ impl<'a, Message: Clone> canvas::Program<Message, Theme, Renderer> for MindmapPr
         let mut hidden_dots_b = path::Builder::new();
         for (i, n) in self.nodes.iter().enumerate() {
             let (nx, ny) = positions[i];
+            let sx = proj_x(nx);
+            let sy = proj_y(ny);
+            if !visible(sx, sy) {
+                continue;
+            }
             if n.has_hidden_children {
                 let cx = proj_x(nx + NODE_W) - dot_offset;
                 let cy = proj_y(ny + NODE_H / 2.0);
                 hidden_dots_b.circle(Point::new(cx, cy), dot_r);
                 hidden_dots_b.close();
-            }
-            let sx = proj_x(nx);
-            let sy = proj_y(ny);
-            if !visible(sx, sy) {
-                continue;
             }
             if n.level == 0 {
                 append_rounded_rect(&mut accent_bg_b, sx, sy, s_w, s_h, radius);
