@@ -874,7 +874,10 @@ impl App {
             .map(|&b| table.line_for_byte(b as usize))
             .collect();
         self.ast = parsed;
-        self.outline_sections = crate::ipc::sections::list_sections_for(&self.source, is_tex);
+        // Reuse the parse + byte-to-line table from above instead of letting
+        // list_sections_for re-run both on the same source.
+        self.outline_sections =
+            crate::ipc::sections::list_sections_from_ast(&self.ast, &block_offsets, &table);
     }
 
     /// Walk the current AST and dispatch a background render for every

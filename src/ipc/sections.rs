@@ -26,6 +26,17 @@ pub fn list_sections_for(src: &str, is_tex: bool) -> Vec<Section> {
         parser::parse(src)
     };
     let table = build_byte_to_line(src);
+    list_sections_from_ast(&blocks, &offsets, &table)
+}
+
+/// Same outline as [`list_sections_for`], but from an already-parsed AST so
+/// callers that just parsed the document (e.g. `load_ast_from_source`) don't
+/// pay a second full parse + byte-to-line scan.
+pub fn list_sections_from_ast(
+    blocks: &[(crate::ast::BlockId, Block)],
+    offsets: &[u32],
+    table: &crate::ipc::lines::ByteToLine,
+) -> Vec<Section> {
     let mut stack: Vec<(u8, String)> = Vec::new();
     let mut out = Vec::new();
     for (i, (_, block)) in blocks.iter().enumerate() {
@@ -94,6 +105,24 @@ fn push_inline(i: &Inline, out: &mut String) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn from_ast_matches_from_source() {
+        let md = "# A\ntext\n\n```rust\nfn x() {}\n```\n\n## B\n\n### C\nmore\n\n## D";
+        let (blocks, offsets) = parser::parse(md);
+        let table = build_byte_to_line(md);
+        assert_eq!(
+            list_sections_from_ast(&blocks, &offsets, &table),
+            list_sections_for(md, false)
+        );
+        let tex = "\\section{Intro}\nbody\n\\subsection{Detail}\nmore";
+        let (blocks, offsets) = crate::tex::parse(tex);
+        let table = build_byte_to_line(tex);
+        assert_eq!(
+            list_sections_from_ast(&blocks, &offsets, &table),
+            list_sections_for(tex, true)
+        );
+    }
 
     #[test]
     fn tex_sections_use_latex_parser() {
