@@ -158,6 +158,10 @@ impl ImageCache {
 
 const SIDEBAR_WIDTH: f32 = 280.0;
 const READING_MAX: f32 = 780.0;
+/// Top padding of the body scrollable's content (`Padding::from([56, 32])` in
+/// `view`). Virt-window math works in body-relative px; every conversion from
+/// scrollable offsets must subtract this.
+const BODY_TOP_PAD: f32 = 56.0;
 const TREE_INDENT: f32 = 14.0;
 const SCROLLER_FADE_MS: u64 = 1200;
 const SIDEBAR_MIN: f32 = 160.0;
@@ -301,6 +305,13 @@ pub enum Message {
     /// `RestoreBodyScroll(y)` uses absolute px offset.
     RestoreBodySnap(f32),
     RestoreBodyScroll(f32),
+    /// Real laid-out heights for windowed blocks, harvested by a widget
+    /// operation after a virt-window rebuild. Feeds `HeightCache` so prefix
+    /// estimates converge to real geometry. The `f32` is the body offset at
+    /// dispatch time: scroll-anchoring compensation is only valid if the
+    /// viewport hasn't moved since (a nav jump in between would make the
+    /// compensation fight the landing).
+    BlockHeightsMeasured(Vec<(crate::ast::BlockId, f32)>, f32),
     ToastExpire(u64),
     ImageFetched(String, Result<Vec<u8>, String>),
     SvgRasterized(String, Result<(Vec<u8>, u32, u32), String>),
@@ -494,6 +505,20 @@ pub struct App {
     /// `apply_goto` which can't perform scroll math during the IPC handler
     /// without re-entering `update`.
     pub queued_snap: Option<f32>,
+    /// Precise-landing companion to `queued_snap`: after the estimate snap,
+    /// run a widget operation that centers this block from its real laid-out
+    /// bounds (the virt window around it was rebuilt by `apply_goto`).
+    pub queued_goto: Option<crate::ast::BlockId>,
+    /// Windowed-rendering state for the body (display list, prefix sums,
+    /// rendered range + hysteresis band). Rebuilt only in `update` — on doc
+    /// load/reparse, fold changes, font changes, measured-height feedback,
+    /// goto jumps, and scroll-band exits — and read by `view`/`render`.
+    pub(crate) virt_window: crate::virt::VirtWindow,
+    /// AST index of an in-flight navigation target. While set, a band-exit
+    /// rebuild recenters the window on the target instead of the raw offset,
+    /// so the estimate snap can't evict the block the precise scroll op needs.
+    /// Cleared on the first scroll event after the jump.
+    pub(crate) nav_anchor: Option<usize>,
     /// User preferences (persisted to `~/.config/mdv/prefs.json`).
     pub prefs: crate::prefs::Prefs,
 }
@@ -590,6 +615,9 @@ impl Default for App {
             block_lines: Vec::new(),
             pending_nav: None,
             queued_snap: None,
+            queued_goto: None,
+            virt_window: crate::virt::VirtWindow::default(),
+            nav_anchor: None,
             prefs,
         }
     }
@@ -860,6 +888,58 @@ impl App {
         Task::done(Message::RestoreBodySnap(rel.clamp(0.0, 1.0)))
     }
 
+    /// Body-relative scroll offset (px past the top of the rendered column).
+    fn body_offset(&self) -> f32 {
+        self.body_viewport
+            .as_ref()
+            .map(|v| (v.absolute_offset().y - BODY_TOP_PAD).max(0.0))
+            .unwrap_or(0.0)
+    }
+
+    /// Body viewport height, falling back to the window height before the
+    /// first scroll event has reported real bounds.
+    fn body_viewport_h(&self) -> f32 {
+        self.body_viewport
+            .as_ref()
+            .map(|v| v.bounds().height)
+            .or(self.window_size.map(|s| s.height))
+            .unwrap_or(1000.0)
+    }
+
+    /// Rebuild the virt window around the current scroll position.
+    fn rebuild_virt_here(&mut self) {
+        let offset = self.body_offset();
+        let vh = self.body_viewport_h();
+        self.virt_window
+            .rebuild(&self.ast, &self.folded, &self.height_cache, offset, vh);
+    }
+
+    /// Rebuild the virt window centered on an AST block (goto/search jumps),
+    /// so the target is materialized before a precise scroll operation runs.
+    fn rebuild_virt_around_block(&mut self, ast_idx: usize) {
+        let vh = self.body_viewport_h();
+        self.virt_window
+            .rebuild_around(&self.ast, &self.folded, &self.height_cache, ast_idx, vh);
+    }
+
+    /// Widget operation harvesting real laid-out heights for the windowed
+    /// blocks. Dispatch after window rebuilds (NOT from the measurement
+    /// handler itself — that would loop).
+    fn measure_window_heights(&self) -> Task<Message> {
+        if !self.virt_window.active {
+            return Task::none();
+        }
+        let (s, e) = self.virt_window.range;
+        let targets: std::collections::HashMap<iced::widget::Id, crate::ast::BlockId> = self
+            .virt_window
+            .display[s.min(self.virt_window.display.len())..e.min(self.virt_window.display.len())]
+            .iter()
+            .filter_map(|&i| self.ast.get(i).map(|(id, _)| *id))
+            .map(|id| (crate::render::block_anchor_id(id), id))
+            .collect();
+        measure_block_heights(targets, self.body_offset())
+    }
+
     fn scroll_to_current_match(&mut self) -> Task<Message> {
         let Some(m) = self.matches.get(self.match_idx) else {
             return Task::none();
@@ -873,6 +953,13 @@ impl App {
         // then absent from the widget tree — the scroll Operation would find
         // nothing and silently no-op. Reveal it first.
         self.unfold_to_reveal(block_idx);
+        // Materialize the target before the scroll operation traverses the
+        // tree — an off-window block has no widget for the op to find. No
+        // measure pass here: it would compute scroll-anchoring against the
+        // pre-jump offset and fight the landing; the post-landing BodyScrolled
+        // band-exit measures instead.
+        self.rebuild_virt_around_block(block_idx);
+        self.nav_anchor = Some(block_idx);
         // Use real laid-out widget bounds via the scroll operation rather than
         // height estimates, which diverge from the actual layout (code blocks,
         // images, diagrams, math) and left the match offscreen.
@@ -922,6 +1009,8 @@ impl App {
         // otherwise no-op. Switch to Rendered (and reveal the target if folded).
         self.view_mode = ViewMode::Rendered;
         self.unfold_to_reveal(idx);
+        self.rebuild_virt_around_block(idx);
+        self.nav_anchor = Some(idx);
         scroll_block_to_top(id)
     }
 
@@ -997,6 +1086,7 @@ impl App {
             // line-nav.
             self.block_lines = vec![1];
             self.outline_sections.clear();
+            self.rebuild_virt_here();
             return;
         }
         let is_tex = is_tex_path(self.file.as_deref());
@@ -1029,6 +1119,9 @@ impl App {
         debug_assert!(self.ast.len() == block_offsets.len());
         self.outline_sections =
             crate::ipc::sections::list_sections_from_ast(&self.ast, &block_offsets, &table);
+        // New AST → new display list/prefix sums. BlockIds are content-hashed,
+        // so measured heights survive for unchanged blocks across reparses.
+        self.rebuild_virt_here();
     }
 
     /// Evict oldest fetched images once the cache exceeds its byte budget.
@@ -1216,8 +1309,8 @@ impl App {
                         pal,
                         &self.typography,
                         hl,
-                        self.body_viewport.as_ref(),
-                        &self.height_cache,
+                        // Bounded slice in its own scrollable — never windowed.
+                        None,
                         &self.image_cache,
                         self.file.as_deref(),
                         &self.folded,
@@ -1380,7 +1473,15 @@ impl App {
             // Drain any pending IPC-driven scroll BEFORE dispatching the new
             // message so the snap lands before further state mutation.
             // The new message is requeued via a follow-up task.
-            return Task::batch([Task::done(Message::RestoreBodySnap(rel)), Task::done(msg)]);
+            let mut tasks = vec![Task::done(Message::RestoreBodySnap(rel))];
+            if let Some(id) = self.queued_goto.take() {
+                // Precise pass: the estimate snap above lands near the target;
+                // this op re-lands it from real laid-out bounds (the block is
+                // materialized — apply_goto rebuilt the window around it).
+                tasks.push(scroll_block_to_center(id));
+            }
+            tasks.push(Task::done(msg));
+            return Task::batch(tasks);
         }
         match msg {
             Message::Open(p) => Task::perform(load_file(p), Message::FileLoaded),
@@ -1574,7 +1675,8 @@ impl App {
                 };
                 self.image_cache.insert(url, state);
                 self.trim_image_cache();
-                Task::none()
+                // Loaded image replaces a one-line placeholder — re-measure.
+                self.measure_window_heights()
             }
             Message::SvgRasterized(key, Ok(rgba_bytes_w_h)) => {
                 let (rgba, w, h) = rgba_bytes_w_h;
@@ -1624,12 +1726,14 @@ impl App {
                         }
                     }
                 }
-                Task::none()
+                self.rebuild_virt_here();
+                self.measure_window_heights()
             }
             Message::ToggleFold(id) => {
                 if self.folded.contains(&id) {
                     self.folded.remove(&id);
-                    return Task::none();
+                    self.rebuild_virt_here();
+                    return self.measure_window_heights();
                 }
                 let mut parent_level: Option<u8> = None;
                 let mut new_folds: Vec<crate::ast::BlockId> = Vec::new();
@@ -1652,7 +1756,8 @@ impl App {
                         self.folded.insert(bid);
                     }
                 }
-                Task::none()
+                self.rebuild_virt_here();
+                self.measure_window_heights()
             }
             Message::HeadingHoverEnter(id) => {
                 self.hovered_heading = Some(id);
@@ -1667,18 +1772,30 @@ impl App {
             Message::FontSizeUp => {
                 let size = self.adjust_font_scale(1.1);
                 self.height_cache.clear();
-                self.show_toast(format!("Font {:.0} px", size))
+                self.rebuild_virt_here();
+                Task::batch([
+                    self.measure_window_heights(),
+                    self.show_toast(format!("Font {:.0} px", size)),
+                ])
             }
             Message::FontSizeDown => {
                 let size = self.adjust_font_scale(1.0 / 1.1);
                 self.height_cache.clear();
-                self.show_toast(format!("Font {:.0} px", size))
+                self.rebuild_virt_here();
+                Task::batch([
+                    self.measure_window_heights(),
+                    self.show_toast(format!("Font {:.0} px", size)),
+                ])
             }
             Message::FontSizeReset => {
                 self.font_scale = 1.0;
                 self.typography = self.typography_base;
                 self.height_cache.clear();
-                self.show_toast("Font reset".to_string())
+                self.rebuild_virt_here();
+                Task::batch([
+                    self.measure_window_heights(),
+                    self.show_toast("Font reset".to_string()),
+                ])
             }
             Message::ToggleFooter => {
                 self.show_footer = !self.show_footer;
@@ -2185,6 +2302,15 @@ impl App {
                         self.tree_cursor = 0;
                     }
                 }
+                // Opening a DIFFERENT file: the body scrollable's offset gets
+                // clamped by iced on the next layout, but if the new content
+                // fits the viewport no scroll notification ever fires — the
+                // stale viewport would poison body-offset math (current-line
+                // estimate, virt window). Watcher reloads of the same file
+                // keep it, preserving scroll position.
+                if self.file.as_deref() != Some(path.as_path()) {
+                    self.body_viewport = None;
+                }
                 self.source = src;
                 self.file = Some(path);
                 self.outline_cursor = 0;
@@ -2523,17 +2649,34 @@ impl App {
                 Self::scroll_id(),
                 iced::widget::scrollable::AbsoluteOffset { x: 0.0, y: dy },
             ),
-            Message::ScrollToTop => iced::widget::operation::scroll_to(
-                Self::scroll_id(),
-                iced::widget::scrollable::AbsoluteOffset { x: 0.0, y: 0.0 },
-            ),
-            Message::ScrollToBottom => iced::widget::operation::scroll_to(
-                Self::scroll_id(),
-                iced::widget::scrollable::AbsoluteOffset {
-                    x: 0.0,
-                    y: f32::MAX,
-                },
-            ),
+            Message::ScrollToTop => {
+                // Pre-position the window so the jump never lands on a spacer.
+                // No measure pass: it would anchor against the pre-jump offset.
+                let vh = self.body_viewport_h();
+                self.virt_window
+                    .rebuild(&self.ast, &self.folded, &self.height_cache, 0.0, vh);
+                iced::widget::operation::scroll_to(
+                    Self::scroll_id(),
+                    iced::widget::scrollable::AbsoluteOffset { x: 0.0, y: 0.0 },
+                )
+            }
+            Message::ScrollToBottom => {
+                let vh = self.body_viewport_h();
+                self.virt_window.rebuild(
+                    &self.ast,
+                    &self.folded,
+                    &self.height_cache,
+                    f32::MAX,
+                    vh,
+                );
+                iced::widget::operation::scroll_to(
+                    Self::scroll_id(),
+                    iced::widget::scrollable::AbsoluteOffset {
+                        x: 0.0,
+                        y: f32::MAX,
+                    },
+                )
+            }
             Message::ToggleSearch => {
                 self.search_open = !self.search_open;
                 if !self.search_open {
@@ -2586,8 +2729,30 @@ impl App {
                 Task::none()
             }
             Message::BodyScrolled(v) => {
+                // A width change reflows text, invalidating measured heights;
+                // a height change alters the window padding. Either way the
+                // window must be rebuilt around the (possibly new) offset.
+                let bounds_changed = self
+                    .body_viewport
+                    .as_ref()
+                    .is_some_and(|p| p.bounds().size() != v.bounds().size());
+                if bounds_changed {
+                    self.height_cache.clear();
+                }
                 self.body_viewport = Some(v);
                 self.last_scroll_at = Some(std::time::Instant::now());
+                let offset = self.body_offset();
+                let anchor = self.nav_anchor.take();
+                if bounds_changed || self.virt_window.needs_rebuild(offset) {
+                    // A scroll event during an in-flight nav jump comes from
+                    // the estimate snap; keep the target materialized for the
+                    // precise scroll op instead of windowing the raw offset.
+                    match anchor {
+                        Some(idx) => self.rebuild_virt_around_block(idx),
+                        None => self.rebuild_virt_here(),
+                    }
+                    return self.measure_window_heights();
+                }
                 Task::none()
             }
             Message::CopyCode(s) => {
@@ -2656,7 +2821,9 @@ impl App {
                     Err(msg) => crate::diagram::DiagramState::Err(msg),
                 };
                 self.diagram_cache.put((hash, theme_id), state);
-                Task::none()
+                // A Ready diagram replaces its faded-source placeholder with
+                // an image of a different height — refresh measured heights.
+                self.measure_window_heights()
             }
             Message::SidebarDragStart => {
                 self.sidebar_drag = Some(self.sidebar_width);
@@ -2688,6 +2855,55 @@ impl App {
                 Self::scroll_id(),
                 iced::widget::scrollable::AbsoluteOffset { x: 0.0, y },
             ),
+            Message::BlockHeightsMeasured(measured, at_offset) => {
+                let body_off = self.body_offset();
+                // Compensation is anchored to the offset the measurement was
+                // dispatched at; if the viewport moved since (nav jump, user
+                // scroll), a scroll_by would fight that movement — skip it.
+                let offset_stable = (body_off - at_offset).abs() <= 1.0;
+                let (s, e) = self.virt_window.range;
+                let mut by_id: HashMap<crate::ast::BlockId, usize> = HashMap::new();
+                for (k, &i) in self.virt_window.display
+                    [s.min(self.virt_window.display.len())..e.min(self.virt_window.display.len())]
+                    .iter()
+                    .enumerate()
+                {
+                    if let Some((bid, _)) = self.ast.get(i) {
+                        by_id.insert(*bid, s + k);
+                    }
+                }
+                let mut delta_above = 0.0f32;
+                let mut any = false;
+                for (bid, h) in measured {
+                    let Some(&dpos) = by_id.get(&bid) else { continue };
+                    let old = self.virt_window.block_height(dpos);
+                    if (h - old).abs() <= 0.5 {
+                        continue;
+                    }
+                    any = true;
+                    // Estimate error in blocks fully above the viewport shifts
+                    // everything on screen once corrected; track it so the
+                    // offset can be compensated (scroll anchoring).
+                    if self.virt_window.block_top(dpos) + old <= body_off {
+                        delta_above += h - old;
+                    }
+                    self.height_cache.set_measured(bid, h);
+                }
+                if !any {
+                    return Task::none();
+                }
+                self.rebuild_virt_here();
+                if offset_stable && delta_above.abs() > 0.5 {
+                    return iced::widget::operation::scroll_by(
+                        Self::scroll_id(),
+                        iced::widget::scrollable::AbsoluteOffset {
+                            x: 0.0,
+                            y: delta_above,
+                        },
+                    );
+                }
+                Task::none()
+            }
             Message::Noop => Task::none(),
             Message::ToggleAutoFocusOnNav => {
                 self.prefs.auto_focus_on_nav = !self.prefs.auto_focus_on_nav;
@@ -3269,8 +3485,7 @@ impl App {
                         &pal,
                         &self.typography,
                         &hl,
-                        self.body_viewport.as_ref(),
-                        &self.height_cache,
+                        Some(&self.virt_window),
                         &self.image_cache,
                         self.file.as_deref(),
                         &self.folded,
@@ -3285,8 +3500,7 @@ impl App {
                     &pal,
                     &self.typography,
                     &hl,
-                    self.body_viewport.as_ref(),
-                    &self.height_cache,
+                    Some(&self.virt_window),
                     &self.image_cache,
                     self.file.as_deref(),
                     &self.folded,
@@ -3757,6 +3971,54 @@ fn scroll_block_to_center(id: crate::ast::BlockId) -> Task<Message> {
         content_top: None,
         view_h: 0.0,
         target_y: None,
+    })
+}
+
+/// Harvest real laid-out heights for the given anchored block containers.
+/// Feeds the virt-window `HeightCache` so prefix estimates converge.
+fn measure_block_heights(
+    targets: HashMap<iced::widget::Id, crate::ast::BlockId>,
+    at_offset: f32,
+) -> Task<Message> {
+    struct MeasureHeights {
+        targets: HashMap<iced::widget::Id, crate::ast::BlockId>,
+        at_offset: f32,
+        out: Vec<(crate::ast::BlockId, f32)>,
+    }
+
+    impl iced::advanced::widget::Operation<Message> for MeasureHeights {
+        fn traverse(
+            &mut self,
+            operate: &mut dyn FnMut(&mut dyn iced::advanced::widget::Operation<Message>),
+        ) {
+            operate(self);
+        }
+
+        fn container(&mut self, id: Option<&iced::widget::Id>, bounds: iced::Rectangle) {
+            if let Some(bid) = id.and_then(|i| self.targets.get(i)) {
+                self.out.push((*bid, bounds.height));
+            }
+        }
+
+        fn finish(&self) -> iced::advanced::widget::operation::Outcome<Message> {
+            if self.out.is_empty() {
+                iced::advanced::widget::operation::Outcome::None
+            } else {
+                iced::advanced::widget::operation::Outcome::Some(Message::BlockHeightsMeasured(
+                    self.out.clone(),
+                    self.at_offset,
+                ))
+            }
+        }
+    }
+
+    if targets.is_empty() {
+        return Task::none();
+    }
+    iced::advanced::widget::operate(MeasureHeights {
+        targets,
+        at_offset,
+        out: Vec::new(),
     })
 }
 
@@ -5636,12 +5898,17 @@ fn apply_goto(
     let Some(idx) = crate::ipc::lines::block_for_line(target_line, &app.block_lines) else {
         return Response::err(id, "no blocks");
     };
-    let Some((block_top, block_h)) =
-        crate::virt::estimated_block_position(&app.ast, &app.height_cache, idx)
-    else {
+    // Reveal a fold-hidden target (mirrors search nav) and materialize its
+    // window so the precise scroll op queued below can find its widget.
+    app.unfold_to_reveal(idx);
+    app.rebuild_virt_around_block(idx);
+    let Some(dpos) = app.virt_window.display_pos(idx) else {
         return Response::err(id, "could not locate block");
     };
-    let estimated_h = crate::virt::estimated_content_height(&app.ast, &app.height_cache);
+    let block_top = app.virt_window.block_top(dpos);
+    let block_h = app.virt_window.block_height(dpos);
+    // Body estimate + the scrollable's vertical content padding (56 top/bottom).
+    let estimated_h = app.virt_window.total_height() + 2.0 * BODY_TOP_PAD;
     let (content_h, view_h) = app
         .body_viewport
         .as_ref()
@@ -5653,9 +5920,11 @@ fn apply_goto(
         })
         .unwrap_or((estimated_h, 0.0));
     let max_scroll = (content_h - view_h).max(1.0);
-    let target = block_top + block_h * 0.5 - view_h * 0.38;
+    let target = BODY_TOP_PAD + block_top + block_h * 0.5 - view_h * 0.38;
     let rel = (target / max_scroll).clamp(0.0, 1.0);
     app.queued_snap = Some(rel);
+    app.queued_goto = app.ast.get(idx).map(|(bid, _)| *bid);
+    app.nav_anchor = Some(idx);
     crate::ipc::Response::ok(id)
 }
 
@@ -5666,22 +5935,10 @@ fn current_line_estimate(app: &App) -> Option<u32> {
     if content_h <= view_h {
         return app.block_lines.first().copied();
     }
-    let rel = v.absolute_offset().y / (content_h - view_h);
-    let est_total = crate::virt::estimated_content_height(&app.ast, &app.height_cache).max(1.0);
-    let target_px = rel * est_total;
-    let mut best: Option<u32> = None;
-    for (i, _) in app.ast.iter().enumerate() {
-        if let Some((top, _)) =
-            crate::virt::estimated_block_position(&app.ast, &app.height_cache, i)
-        {
-            if top <= target_px {
-                best = app.block_lines.get(i).copied();
-            } else {
-                break;
-            }
-        }
-    }
-    best
+    let body_off = (v.absolute_offset().y - BODY_TOP_PAD).max(0.0);
+    let dpos = app.virt_window.display_pos_at(body_off)?;
+    let ast_idx = *app.virt_window.display.get(dpos)?;
+    app.block_lines.get(ast_idx).copied()
 }
 
 fn diagram_hash_present(blocks: &[(crate::ast::BlockId, Block)], hash: u64) -> bool {

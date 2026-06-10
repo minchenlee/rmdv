@@ -7,6 +7,7 @@ pub mod highlight;
 pub mod history;
 pub mod icon;
 pub mod ipc;
+pub mod keyed_body;
 pub mod md_highlight;
 pub mod mindmap;
 pub mod parser;

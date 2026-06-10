@@ -1,6 +1,7 @@
 use crate::app::{ImageCache, ImageState, Message};
 use crate::ast::{Block, BlockId, Inline, ListItem};
 use crate::diagram::{DiagramCache, DiagramState};
+use crate::keyed_body::{KeyedBody, RowKey};
 use crate::theme::{Palette, Typography};
 use iced::widget::{
     container, image as image_widget, mouse_area, rich_text, row, span, stack, svg as svg_widget,
@@ -25,8 +26,7 @@ pub fn render<'a>(
     pal: &Palette,
     typ: &Typography,
     hl: &Highlight,
-    viewport: Option<&iced::widget::scrollable::Viewport>,
-    cache: &crate::virt::HeightCache,
+    virt: Option<&crate::virt::VirtWindow>,
     image_cache: &'a ImageCache,
     current_file: Option<&'a Path>,
     folded: &std::collections::HashSet<BlockId>,
@@ -34,60 +34,62 @@ pub fn render<'a>(
     diagram_cache: &'a DiagramCache,
     diagram_theme_id: u32,
 ) -> Element<'a, Message> {
-    // Virt scroll disabled: rebuilding the visible-window Element tree on
-    // every scroll event causes per-frame rich_text reflow jank in Iced 0.13.
-    // Full render lets Iced's scrollable handle scrolling internally without
-    // re-emitting the body tree per delta.
-    let _ = (viewport, cache);
     let img_ctx = ImgCtx {
         cache: image_cache,
         current_file,
         diagram_cache,
         diagram_theme_id,
     };
-    let mut col = Column::new().spacing(14);
-    let mut fold_until: Option<u8> = None;
-    for (idx, (id, b)) in blocks.iter().enumerate() {
-        if let Block::Heading { level, .. } = b {
-            let lvl = *level as u8;
-            if let Some(thresh) = fold_until {
-                if lvl > thresh {
-                    continue;
-                }
-                fold_until = None;
-            }
-            let local = if hl.current_block == Some(idx) {
-                Some(hl.current_in_block)
-            } else {
-                None
-            };
-            let is_folded = folded.contains(id);
-            let show_chev = is_folded || hovered_heading == Some(*id);
-            col = col.push(render_heading_with_chevron(
-                *id, b, pal, typ, &hl.query, local, is_folded, show_chev,
-            ));
-            if is_folded {
-                fold_until = Some(lvl);
-            }
-            continue;
+    // Which blocks to materialize: the precomputed fold-aware window (body
+    // view; built in `App::update`, never here), or the full fold-aware list
+    // (mindmap panel, small docs). Spacers stand in for off-window blocks so
+    // scrollbar geometry matches `VirtWindow`'s prefix sums.
+    let local_display: Vec<usize>;
+    let (display, (start, end)) = match virt {
+        Some(w) => (w.display.as_slice(), w.range),
+        None => {
+            local_display = crate::virt::display_list(blocks, folded);
+            let n = local_display.len();
+            (local_display.as_slice(), (0, n))
         }
-        if fold_until.is_some() {
-            continue;
-        }
+    };
+    // Rows are keyed (content-stable BlockId) and the column is wrapped in
+    // `KeyedBody`, whose diff moves widget state with the key — blocks that
+    // stay in the window when it slides keep their shaped paragraphs instead
+    // of re-shaping per shift (the historical virtualization jank).
+    let mut keys: Vec<RowKey> = Vec::with_capacity(end - start + 2);
+    let mut col = Column::with_capacity(end - start + 2).spacing(crate::virt::BLOCK_GAP_PX);
+    if let Some(h) = virt.and_then(|w| w.top_spacer()) {
+        keys.push(RowKey::TopSpacer);
+        col = col.push(Space::new().height(h));
+    }
+    for &idx in &display[start.min(display.len())..end.min(display.len())] {
+        let (id, b) = &blocks[idx];
         let local = if hl.current_block == Some(idx) {
             Some(hl.current_in_block)
         } else {
             None
         };
-        col = col.push(
+        let el: Element<'a, Message> = if let Block::Heading { .. } = b {
+            let is_folded = folded.contains(id);
+            let show_chev = is_folded || hovered_heading == Some(*id);
+            render_heading_with_chevron(*id, b, pal, typ, &hl.query, local, is_folded, show_chev)
+        } else {
             container(render_block(b, pal, typ, &hl.query, local, &img_ctx))
-                .id(block_anchor_id(*id)),
-        );
+                .id(block_anchor_id(*id))
+                .into()
+        };
+        keys.push(RowKey::Block(id.0));
+        col = col.push(el);
+    }
+    if let Some(h) = virt.and_then(|w| w.bottom_spacer()) {
+        keys.push(RowKey::BottomSpacer);
+        col = col.push(Space::new().height(h));
     }
 
     // Reading column cap: 780px (mdv design system READING_MAX, render.rs).
     let _ = typ.measure_ch;
-    container(col).max_width(780.0).into()
+    container(KeyedBody::new(keys, col)).max_width(780.0).into()
 }
 
 fn render_heading_with_chevron<'a>(
