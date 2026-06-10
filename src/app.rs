@@ -326,6 +326,7 @@ pub enum Message {
     MindmapSelectLeaf(crate::ast::BlockId),
     MindmapDeselect,
     MindmapNavigate(MindmapDir),
+    MindmapPanelSettle(u64),
     MindmapToggleSelected,
     MindmapPanelDragStart(f32),
     MindmapPanelDragMove(f32),
@@ -473,6 +474,14 @@ pub struct App {
     pub mindmap_collapsed: HashSet<crate::ast::BlockId>,
     pub mindmap_panel_open: bool,
     pub mindmap_selected: Option<crate::ast::BlockId>,
+    /// What the preview panel actually renders. Lags `mindmap_selected` by a
+    /// short debounce during arrow-key navigation: rebuilding the rendered
+    /// slice (shaping + highlighting up to MIND_PANEL_MAX_BLOCKS) on every
+    /// key-repeat press churns multi-MB allocations per frame.
+    pub mindmap_panel_shown: Option<crate::ast::BlockId>,
+    /// Generation counter pairing debounce timers with the latest selection;
+    /// a stale timer's `MindmapPanelSettle` is ignored.
+    mindmap_panel_settle_gen: u64,
     pub mindmap_panel_width: f32,
     /// Current step in the ⌘⌥W width cycle (indexes `MIND_PANEL_FRACS`).
     pub mindmap_panel_step: usize,
@@ -604,6 +613,8 @@ impl Default for App {
             mindmap_collapsed: HashSet::new(),
             mindmap_panel_open: false,
             mindmap_selected: None,
+            mindmap_panel_shown: None,
+            mindmap_panel_settle_gen: 0,
             mindmap_panel_width: MIND_PANEL_DEFAULT,
             mindmap_panel_step: 0,
             mindmap_panel_drag: None,
@@ -1061,6 +1072,7 @@ impl App {
             .and_then(|idx| nodes[idx].id)
         {
             self.mindmap_selected = Some(id);
+            self.mindmap_panel_shown = Some(id);
             self.mindmap_panel_open = true;
         }
     }
@@ -1294,7 +1306,7 @@ impl App {
         panel_width: f32,
     ) -> Element<'_, Message> {
         let pal_c = *pal;
-        let content: Element<'_, Message> = match self.mindmap_selected {
+        let content: Element<'_, Message> = match self.mindmap_panel_shown {
             None => container(
                 text("Click a leaf heading to see its content")
                     .color(pal.muted)
@@ -1890,11 +1902,13 @@ impl App {
             }
             Message::MindmapSelectLeaf(id) => {
                 self.mindmap_selected = Some(id);
+                self.mindmap_panel_shown = Some(id);
                 self.mindmap_panel_open = true;
                 Task::none()
             }
             Message::MindmapDeselect => {
                 self.mindmap_selected = None;
+                self.mindmap_panel_shown = None;
                 self.mindmap_panel_open = false;
                 self.mindmap_panel_drag = None;
                 Task::none()
@@ -1963,7 +1977,24 @@ impl App {
                     if let Some(id) = nodes[idx].id {
                         self.mindmap_selected = Some(id);
                         self.mindmap_panel_open = true;
+                        // Debounce the panel rebuild: the selection ring moves
+                        // immediately, but the rendered slice only updates once
+                        // navigation pauses, so key-repeat doesn't re-shape the
+                        // panel content on every press.
+                        self.mindmap_panel_settle_gen =
+                            self.mindmap_panel_settle_gen.wrapping_add(1);
+                        let settle_gen = self.mindmap_panel_settle_gen;
+                        return Task::perform(
+                            tokio::time::sleep(std::time::Duration::from_millis(75)),
+                            move |_| Message::MindmapPanelSettle(settle_gen),
+                        );
                     }
+                }
+                Task::none()
+            }
+            Message::MindmapPanelSettle(settle_gen) => {
+                if settle_gen == self.mindmap_panel_settle_gen {
+                    self.mindmap_panel_shown = self.mindmap_selected;
                 }
                 Task::none()
             }
@@ -1971,6 +2002,10 @@ impl App {
                 self.mindmap_panel_open = !self.mindmap_panel_open;
                 if !self.mindmap_panel_open {
                     self.mindmap_panel_drag = None;
+                } else {
+                    // Re-opening shows the current selection without waiting
+                    // for a (possibly never-firing) settle timer.
+                    self.mindmap_panel_shown = self.mindmap_selected;
                 }
                 Task::none()
             }
@@ -2317,6 +2352,7 @@ impl App {
                 self.is_data_doc = data_lang_for(self.file.as_deref()).is_some();
                 self.mindmap_collapsed.clear();
                 self.mindmap_selected = None;
+                self.mindmap_panel_shown = None;
                 self.load_ast_from_source();
                 self.error = None;
                 self.rebuild_matches();
