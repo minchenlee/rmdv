@@ -916,7 +916,9 @@ impl App {
             .collect();
         self.ast = parsed;
         // Reuse the parse + byte-to-line table from above instead of letting
-        // list_sections_for re-run both on the same source.
+        // list_sections_for re-run both on the same source. Valid only while
+        // the span-fill loop above never adds/removes blocks:
+        debug_assert!(self.ast.len() == block_offsets.len());
         self.outline_sections =
             crate::ipc::sections::list_sections_from_ast(&self.ast, &block_offsets, &table);
     }
@@ -1694,7 +1696,11 @@ impl App {
                         if !n.children.is_empty() {
                             n.children.first().copied()
                         } else if n.has_hidden_children {
-                            // Expand the collapsed node, then on next press right will descend.
+                            // First Right on a collapsed node expands it (and
+                            // invalidates the layout cache); we keep using the
+                            // pre-expand `nodes` for the rest of this handler
+                            // and return None, so the SECOND Right press sees
+                            // the rebuilt layout's children and descends.
                             if let Some(id) = n.id {
                                 self.mindmap_collapsed.remove(&id);
                                 self.invalidate_mindmap_layout();
