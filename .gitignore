@@ -6,3 +6,11 @@
 .vscode/
 Cargo.lock.bak
 .superpowers/
+
+# Local agent/tooling state — not part of the project
+CLAUDE.md
+.claude/rules/
+.claude/skills/mdv-cli/
+.claude/skills/mdv-cli-workspace/
+.agents/
+.codex/
