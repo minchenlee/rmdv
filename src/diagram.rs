@@ -46,6 +46,12 @@ pub const MAX_SVG_BYTES: usize = 4 * 1024 * 1024;
 /// Default LRU cache capacity.
 pub const DEFAULT_CACHE_CAP: usize = 64;
 
+/// Soft byte budget for the diagram cache. Entry heights are uncapped
+/// (MAX_WIDTH only bounds width), so 64 tall retina pixmaps can reach
+/// hundreds of MB; this bounds retained RGBA + SVG bytes. Generous enough
+/// that a realistic single document never evicts.
+pub const DEFAULT_CACHE_BYTE_BUDGET: usize = 256 * 1024 * 1024;
+
 /// Retina supersample factor for inline rasterization. The pixmap is rendered
 /// at this multiple of the SVG's intrinsic size for crispness; consumers that
 /// want intrinsic logical size (math display) divide pixel dims by this.
@@ -87,17 +93,49 @@ pub enum DiagramState {
     Err(String),
 }
 
+/// Retained heap cost of one cache entry: decoded RGBA pixels plus the raw
+/// SVG payload. `Pending` costs nothing; `Err` only its message.
+fn state_cost(s: &DiagramState) -> usize {
+    match s {
+        DiagramState::Pending => 0,
+        DiagramState::Err(msg) => msg.len(),
+        DiagramState::Ready {
+            inline,
+            source_bytes,
+            ..
+        } => {
+            let pixels = match inline {
+                image::Handle::Rgba { pixels, .. } => pixels.len(),
+                _ => 0,
+            };
+            pixels + source_bytes.len()
+        }
+    }
+}
+
 /// LRU cache of rendered diagrams, keyed by `(content_hash, theme_id)`.
+/// Bounded by entry count AND total byte cost: on insert, least-recently-used
+/// entries are dropped until the tracked cost fits the byte budget. The entry
+/// just inserted is never evicted, so the diagram being rendered right now
+/// always displays.
 #[derive(Debug)]
 pub struct DiagramCache {
     inner: lru::LruCache<(u64, u32), DiagramState>,
+    bytes: usize,
+    byte_budget: usize,
 }
 
 impl DiagramCache {
     pub fn new(cap: usize) -> Self {
+        Self::with_byte_budget(cap, DEFAULT_CACHE_BYTE_BUDGET)
+    }
+
+    pub fn with_byte_budget(cap: usize, byte_budget: usize) -> Self {
         let cap = NonZeroUsize::new(cap.max(1)).expect("cap >= 1");
         Self {
             inner: lru::LruCache::new(cap),
+            bytes: 0,
+            byte_budget,
         }
     }
 
@@ -112,7 +150,32 @@ impl DiagramCache {
     }
 
     pub fn put(&mut self, key: (u64, u32), value: DiagramState) {
-        self.inner.put(key, value);
+        // LruCache::put drops the LRU entry silently when inserting a new key
+        // at capacity; pop it ourselves first so the byte tracking stays exact.
+        if !self.inner.contains(&key) && self.inner.len() == self.inner.cap().get() {
+            if let Some((_, dropped)) = self.inner.pop_lru() {
+                self.bytes = self.bytes.saturating_sub(state_cost(&dropped));
+            }
+        }
+        self.bytes += state_cost(&value);
+        if let Some(replaced) = self.inner.put(key, value) {
+            self.bytes = self.bytes.saturating_sub(state_cost(&replaced));
+        }
+        while self.bytes > self.byte_budget && self.inner.len() > 1 {
+            // A Pending entry at the LRU end costs 0 bytes — evicting it can't
+            // reach the budget and would orphan its in-flight render task
+            // (prime_diagram_cache would re-dispatch on the next pass). Stop
+            // and accept the overshoot; the budget re-converges once the
+            // pending renders complete and re-bump their keys.
+            if matches!(self.inner.peek_lru(), Some((_, DiagramState::Pending))) {
+                break;
+            }
+            if let Some((_, dropped)) = self.inner.pop_lru() {
+                self.bytes = self.bytes.saturating_sub(state_cost(&dropped));
+            } else {
+                break;
+            }
+        }
     }
 
     pub fn len(&self) -> usize {
@@ -121,6 +184,11 @@ impl DiagramCache {
 
     pub fn is_empty(&self) -> bool {
         self.inner.is_empty()
+    }
+
+    /// Tracked retained cost in bytes (RGBA pixels + SVG payloads).
+    pub fn cost_bytes(&self) -> usize {
+        self.bytes
     }
 }
 
@@ -515,6 +583,70 @@ mod tests {
         cache.put((2, 0), DiagramState::Err("boom".into()));
         assert_eq!(cache.len(), 2);
         assert!(matches!(cache.get(&(1, 0)), Some(DiagramState::Pending)));
+    }
+
+    fn ready_state(pixel_bytes: usize) -> DiagramState {
+        let px = pixel_bytes / 4;
+        DiagramState::Ready {
+            inline: image::Handle::from_rgba(px as u32, 1, vec![0u8; pixel_bytes]),
+            source_bytes: Arc::new(Vec::new()),
+            device_w: px as u32,
+        }
+    }
+
+    #[test]
+    fn cache_tracks_byte_cost() {
+        let mut cache = DiagramCache::with_byte_budget(8, 1024);
+        cache.put((1, 0), ready_state(400));
+        cache.put((2, 0), ready_state(400));
+        assert_eq!(cache.cost_bytes(), 800);
+        // Replacing a key swaps its cost instead of double-counting.
+        cache.put((1, 0), ready_state(200));
+        assert_eq!(cache.cost_bytes(), 600);
+        assert_eq!(cache.len(), 2);
+    }
+
+    #[test]
+    fn cache_evicts_lru_when_over_byte_budget() {
+        let mut cache = DiagramCache::with_byte_budget(8, 1000);
+        cache.put((1, 0), ready_state(400));
+        cache.put((2, 0), ready_state(400));
+        // Third insert exceeds the budget: (1,0) is least recently used, drops.
+        cache.put((3, 0), ready_state(400));
+        assert!(cache.peek(&(1, 0)).is_none());
+        assert!(cache.peek(&(2, 0)).is_some());
+        assert!(cache.peek(&(3, 0)).is_some());
+        assert_eq!(cache.cost_bytes(), 800);
+    }
+
+    #[test]
+    fn cache_never_evicts_just_inserted_entry() {
+        // Single oversized entry stays even though it busts the budget.
+        let mut cache = DiagramCache::with_byte_budget(8, 100);
+        cache.put((1, 0), ready_state(4000));
+        assert!(cache.peek(&(1, 0)).is_some());
+        assert_eq!(cache.len(), 1);
+    }
+
+    #[test]
+    fn cache_budget_eviction_spares_pending_sentinels() {
+        let mut cache = DiagramCache::with_byte_budget(8, 1000);
+        cache.put((1, 0), DiagramState::Pending);
+        // Busts the budget with the Pending entry at the LRU end: the loop
+        // must stop rather than orphan the in-flight render.
+        cache.put((2, 0), ready_state(2000));
+        assert!(cache.peek(&(1, 0)).is_some(), "in-flight Pending survives");
+        assert!(cache.peek(&(2, 0)).is_some());
+    }
+
+    #[test]
+    fn cache_count_cap_eviction_keeps_byte_tracking_exact() {
+        let mut cache = DiagramCache::with_byte_budget(2, usize::MAX);
+        cache.put((1, 0), ready_state(400));
+        cache.put((2, 0), ready_state(400));
+        cache.put((3, 0), ready_state(400)); // count cap evicts (1,0)
+        assert_eq!(cache.len(), 2);
+        assert_eq!(cache.cost_bytes(), 800);
     }
 
     #[test]

@@ -1,13 +1,13 @@
-use crate::app::{ImageState, Message};
+use crate::app::{ImageCache, ImageState, Message};
 use crate::ast::{Block, BlockId, Inline, ListItem};
 use crate::diagram::{DiagramCache, DiagramState};
+use crate::keyed_body::{KeyedBody, RowKey};
 use crate::theme::{Palette, Typography};
 use iced::widget::{
     container, image as image_widget, mouse_area, rich_text, row, span, stack, svg as svg_widget,
     text, tooltip, Column, Space,
 };
 use iced::{Element, Length, Padding};
-use std::collections::HashMap;
 use std::path::Path;
 
 pub fn block_anchor_id(id: BlockId) -> iced::widget::Id {
@@ -26,69 +26,70 @@ pub fn render<'a>(
     pal: &Palette,
     typ: &Typography,
     hl: &Highlight,
-    viewport: Option<&iced::widget::scrollable::Viewport>,
-    cache: &crate::virt::HeightCache,
-    image_cache: &'a HashMap<String, ImageState>,
+    virt: Option<&crate::virt::VirtWindow>,
+    image_cache: &'a ImageCache,
     current_file: Option<&'a Path>,
     folded: &std::collections::HashSet<BlockId>,
     hovered_heading: Option<BlockId>,
     diagram_cache: &'a DiagramCache,
     diagram_theme_id: u32,
 ) -> Element<'a, Message> {
-    // Virt scroll disabled: rebuilding the visible-window Element tree on
-    // every scroll event causes per-frame rich_text reflow jank in Iced 0.13.
-    // Full render lets Iced's scrollable handle scrolling internally without
-    // re-emitting the body tree per delta.
-    let _ = (viewport, cache);
     let img_ctx = ImgCtx {
         cache: image_cache,
         current_file,
         diagram_cache,
         diagram_theme_id,
     };
-    let mut col = Column::new().spacing(14);
-    let mut fold_until: Option<u8> = None;
-    for (idx, (id, b)) in blocks.iter().enumerate() {
-        if let Block::Heading { level, .. } = b {
-            let lvl = *level as u8;
-            if let Some(thresh) = fold_until {
-                if lvl > thresh {
-                    continue;
-                }
-                fold_until = None;
-            }
-            let local = if hl.current_block == Some(idx) {
-                Some(hl.current_in_block)
-            } else {
-                None
-            };
-            let is_folded = folded.contains(id);
-            let show_chev = is_folded || hovered_heading == Some(*id);
-            col = col.push(render_heading_with_chevron(
-                *id, b, pal, typ, &hl.query, local, is_folded, show_chev,
-            ));
-            if is_folded {
-                fold_until = Some(lvl);
-            }
-            continue;
+    // Which blocks to materialize: the precomputed fold-aware window (body
+    // view; built in `App::update`, never here), or the full fold-aware list
+    // (mindmap panel, small docs). Spacers stand in for off-window blocks so
+    // scrollbar geometry matches `VirtWindow`'s prefix sums.
+    let local_display: Vec<usize>;
+    let (display, (start, end)) = match virt {
+        Some(w) => (w.display.as_slice(), w.range),
+        None => {
+            local_display = crate::virt::display_list(blocks, folded);
+            let n = local_display.len();
+            (local_display.as_slice(), (0, n))
         }
-        if fold_until.is_some() {
-            continue;
-        }
+    };
+    // Rows are keyed (content-stable BlockId) and the column is wrapped in
+    // `KeyedBody`, whose diff moves widget state with the key — blocks that
+    // stay in the window when it slides keep their shaped paragraphs instead
+    // of re-shaping per shift (the historical virtualization jank).
+    let mut keys: Vec<RowKey> = Vec::with_capacity(end - start + 2);
+    let mut col = Column::with_capacity(end - start + 2).spacing(crate::virt::BLOCK_GAP_PX);
+    if let Some(h) = virt.and_then(|w| w.top_spacer()) {
+        keys.push(RowKey::TopSpacer);
+        col = col.push(Space::new().height(h));
+    }
+    for &idx in &display[start.min(display.len())..end.min(display.len())] {
+        let (id, b) = &blocks[idx];
         let local = if hl.current_block == Some(idx) {
             Some(hl.current_in_block)
         } else {
             None
         };
-        col = col.push(
+        let el: Element<'a, Message> = if let Block::Heading { .. } = b {
+            let is_folded = folded.contains(id);
+            let show_chev = is_folded || hovered_heading == Some(*id);
+            render_heading_with_chevron(*id, b, pal, typ, &hl.query, local, is_folded, show_chev)
+        } else {
             container(render_block(b, pal, typ, &hl.query, local, &img_ctx))
-                .id(block_anchor_id(*id)),
-        );
+                .id(block_anchor_id(*id))
+                .into()
+        };
+        keys.push(RowKey::Block(id.0));
+        col = col.push(el);
+    }
+    if let Some(h) = virt.and_then(|w| w.bottom_spacer()) {
+        keys.push(RowKey::BottomSpacer);
+        col = col.push(Space::new().height(h));
     }
 
     // Reading column cap: 780px (mdv design system READING_MAX, render.rs).
     let _ = typ.measure_ch;
-    container(col).max_width(780.0).into()
+    container(KeyedBody::new(keys, col)).max_width(780.0).into()
 }
 
 fn render_heading_with_chevron<'a>(
@@ -101,7 +102,7 @@ fn render_heading_with_chevron<'a>(
     folded: bool,
     visible: bool,
 ) -> Element<'a, Message> {
-    let cache = EMPTY_IMG_CACHE.get_or_init(HashMap::new);
+    let cache = EMPTY_IMG_CACHE.get_or_init(ImageCache::default);
     let dcache = EMPTY_DIAGRAM_CACHE.get_or_init(|| DiagramCache::new(1));
     let img = ImgCtx {
         cache,
@@ -143,8 +144,7 @@ fn render_heading_with_chevron<'a>(
     .into()
 }
 
-static EMPTY_IMG_CACHE: std::sync::OnceLock<HashMap<String, ImageState>> =
-    std::sync::OnceLock::new();
+static EMPTY_IMG_CACHE: std::sync::OnceLock<ImageCache> = std::sync::OnceLock::new();
 static EMPTY_DIAGRAM_CACHE: std::sync::OnceLock<DiagramCache> = std::sync::OnceLock::new();
 
 pub fn data_view<'a>(
@@ -491,7 +491,7 @@ fn colorize_toml(code: &str, pal: &Palette) -> Vec<(std::ops::Range<usize>, iced
 
 #[derive(Clone, Copy)]
 struct ImgCtx<'a> {
-    cache: &'a HashMap<String, ImageState>,
+    cache: &'a ImageCache,
     current_file: Option<&'a Path>,
     diagram_cache: &'a DiagramCache,
     diagram_theme_id: u32,
@@ -507,6 +507,7 @@ fn render_block<'a>(
 ) -> Element<'a, Message> {
     let mut ctx = HlCtx {
         query,
+        lower_query: query.to_lowercase(),
         counter: 0,
         current_in_block,
         pal: *pal,
@@ -651,6 +652,8 @@ fn rich_text_links<'a>(spans: Vec<RtSpan<'a>>) -> Element<'a, Message> {
 
 struct HlCtx<'a> {
     query: &'a str,
+    /// `query.to_lowercase()` computed once per block, not per span.
+    lower_query: String,
     counter: usize,
     current_in_block: Option<usize>,
     pal: Palette,
@@ -730,7 +733,7 @@ fn push_text_with_hl<'a>(
         return;
     }
     let lower_text = text_str.to_lowercase();
-    let lower_q = ctx.query.to_lowercase();
+    let lower_q = ctx.lower_query.as_str();
     let mut cursor = 0usize;
     while let Some(rel) = lower_text[cursor..].find(&lower_q) {
         let abs = cursor + rel;
@@ -792,7 +795,7 @@ fn push_code_with_hl<'a>(
         return;
     }
     let lower_text = text_str.to_lowercase();
-    let lower_q = ctx.query.to_lowercase();
+    let lower_q = ctx.lower_query.as_str();
     let mut cursor = 0usize;
     while let Some(rel) = lower_text[cursor..].find(&lower_q) {
         let abs = cursor + rel;

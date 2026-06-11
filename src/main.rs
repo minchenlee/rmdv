@@ -58,6 +58,25 @@ fn main() -> iced::Result {
 }
 
 fn launch_instance(initial: Option<ipc::Request>) -> iced::Result {
+    // Rapid render bursts (mindmap arrow-nav) churn GBs of multi-MB
+    // allocations through malloc; libmalloc's large-entry cache holds the
+    // freed pages as empty MALLOC_LARGE regions for ~a minute, so footprint
+    // reads hundreds of MB above live heap. The cache knob is read at
+    // libmalloc init (before main), so re-exec the GUI process once with it
+    // disabled. Respects an explicitly set MallocLargeCache.
+    #[cfg(target_os = "macos")]
+    if std::env::var_os("MallocLargeCache").is_none() {
+        use std::os::unix::process::CommandExt;
+        if let Ok(exe) = std::env::current_exe() {
+            let err = std::process::Command::new(exe)
+                .args(std::env::args_os().skip(1))
+                .env("MallocLargeCache", "0")
+                .exec();
+            // exec only returns on failure; run without the knob.
+            eprintln!("mdv: malloc-tuning re-exec failed: {err}");
+        }
+    }
+
     let initial_path: Option<PathBuf> = match &initial {
         Some(req) => match &req.cmd {
             ipc::Cmd::Open { file, .. } => Some(PathBuf::from(file)),
