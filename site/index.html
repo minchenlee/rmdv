@@ -11,15 +11,17 @@
 <meta property="og:type" content="website">
 <link rel="icon" href="assets/icon.png">
 <link rel="preload" href="assets/fonts/inter-400.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="assets/fonts/inter-600.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="preload" href="assets/fonts/inter-700.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="preload" href="assets/fonts/jbmono-400.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="stylesheet" href="style.css">
 <script>
-// Set theme before first paint — no flash.
+// Set theme before first paint — no flash. Mark JS-on so motion styles apply.
 (function () {
   var t = localStorage.getItem('mdv-theme');
   if (!t) t = matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
   document.documentElement.dataset.theme = t;
+  document.documentElement.classList.add('js');
 })();
 </script>
 </head>
@@ -37,8 +39,8 @@
       <a href="#agents">Agents</a>
       <a href="#install">Install</a>
       <a href="https://github.com/minchenlee/mdv" class="gh">GitHub</a>
-      <button class="kbd-btn" id="palette-hint" title="Command palette">
-        <kbd data-mod>⌘</kbd><kbd>K</kbd>
+      <button class="kbd-btn" id="palette-hint" title="Command palette" aria-label="Command palette">
+        <kbd data-mod>⌘</kbd><kbd>⇧</kbd><kbd>P</kbd>
       </button>
     </nav>
   </div>
@@ -48,7 +50,8 @@
 
   <!-- ───────────────────────── hero -->
   <section class="hero">
-    <h1>Markdown, rendered<br>at native speed.</h1>
+    <p class="invoke"><span class="prompt">$</span>mdv README.md<span class="caret" aria-hidden="true"></span></p>
+    <h1>Markdown, rendered<br>at <span class="accent">native speed</span>.</h1>
     <p class="tagline">
       mdv is a free, open-source markdown viewer written in Rust.
       No Electron, no webview, no JS runtime — just a ~30&nbsp;MB binary
@@ -59,19 +62,21 @@
       <a class="btn" href="https://github.com/minchenlee/mdv">Source on GitHub</a>
     </div>
     <p class="hint">
-      This page speaks mdv: <kbd>j</kbd><kbd>k</kbd> scroll · <kbd>g</kbd><kbd>G</kbd> top/bottom ·
-      <kbd>t</kbd> theme · <kbd data-mod>⌘</kbd><kbd>K</kbd> palette · <kbd>?</kbd> all keys
+      This page speaks mdv: <kbd data-key="j">j</kbd><kbd data-key="k">k</kbd> scroll ·
+      <kbd data-key="g">g</kbd><kbd data-key="G">G</kbd> top/bottom ·
+      <kbd data-key="t">t</kbd> theme · <kbd data-mod>⌘</kbd><kbd>⇧</kbd><kbd>P</kbd> palette ·
+      <kbd data-key="?">?</kbd> all keys
     </p>
 
     <figure class="shot">
       <div class="chrome"><i></i><i></i><i></i><span>README.md — mdv</span></div>
       <img class="shot-light" src="assets/shot-doc-light.png" alt="mdv rendering its own README: sidebar file tree, rendered markdown with syntax-highlighted code" width="1024" height="768">
-      <img class="shot-dark" src="assets/shot-doc-dark.png" alt="" width="1024" height="768" loading="lazy">
+      <img class="shot-dark" src="assets/shot-doc-dark.png" alt="mdv rendering its own README: sidebar file tree, rendered markdown with syntax-highlighted code" width="1024" height="768" loading="lazy">
     </figure>
   </section>
 
   <!-- ───────────────────────── why -->
-  <section id="why">
+  <section id="why" class="reveal">
     <h2><span class="h-mark">##</span> Why mdv</h2>
     <p>
       For reading folders of <code>.md</code> files without spinning up Obsidian's vault,
@@ -96,12 +101,12 @@
   </section>
 
   <!-- ───────────────────────── perf -->
-  <section id="fast">
+  <section id="fast" class="reveal">
     <h2><span class="h-mark">##</span> Rust-fast, measurably</h2>
     <div class="stats">
       <div class="stat"><strong>~150<em>ms</em></strong><span>cold start to first paint</span></div>
       <div class="stat"><strong>8.1<em>ms</em></strong><span>to parse a 10k-line document</span></div>
-      <div class="stat"><strong>70<em>MB</em></strong><span>memory on that same document<br>(was 453 MB before virtual scrolling)</span></div>
+      <div class="stat"><strong>70<em>MB</em></strong><span>memory on that same document<br>(was 453 MB)</span></div>
       <div class="stat"><strong>~30<em>MB</em></strong><span>single binary, no runtime</span></div>
     </div>
     <p class="fine">
@@ -112,7 +117,7 @@
   </section>
 
   <!-- ───────────────────────── features -->
-  <section id="features">
+  <section id="features" class="reveal">
     <h2><span class="h-mark">##</span> Features</h2>
     <div class="grid">
       <div class="card">
@@ -151,31 +156,34 @@
   </section>
 
   <!-- ───────────────────────── keyboard -->
-  <section id="keyboard">
+  <section id="keyboard" class="reveal">
     <h2><span class="h-mark">##</span> Keyboard-first</h2>
-    <p>Everything reachable without the mouse. The same keys work on this page — try them.</p>
+    <p>Everything reachable without the mouse. The scroll keys work on this page — try them.</p>
     <div class="keys">
-      <div class="keyrow"><span class="cap"><kbd data-mod>⌘</kbd><kbd>K</kbd></span><span>command palette</span></div>
       <div class="keyrow"><span class="cap"><kbd data-mod>⌘</kbd><kbd>P</kbd></span><span>fuzzy file finder</span></div>
+      <div class="keyrow"><span class="cap"><kbd data-mod>⌘</kbd><kbd>⇧</kbd><kbd>P</kbd></span><span>command palette</span></div>
       <div class="keyrow"><span class="cap"><kbd data-mod>⌘</kbd><kbd>F</kbd></span><span>search in document</span></div>
       <div class="keyrow"><span class="cap"><kbd data-mod>⌘</kbd><kbd>⇧</kbd><kbd>F</kbd></span><span>search whole vault</span></div>
       <div class="keyrow"><span class="cap"><kbd data-mod>⌘</kbd><kbd>B</kbd></span><span>toggle sidebar</span></div>
       <div class="keyrow"><span class="cap"><kbd data-mod>⌘</kbd><kbd>M</kbd></span><span>mindmap view</span></div>
-      <div class="keyrow"><span class="cap"><kbd>j</kbd><kbd>k</kbd></span><span>scroll down / up</span></div>
-      <div class="keyrow"><span class="cap"><kbd>g</kbd><kbd>G</kbd></span><span>top / bottom</span></div>
+      <div class="keyrow"><span class="cap"><kbd data-mod>⌘</kbd><kbd>E</kbd></span><span>edit mode</span></div>
+      <div class="keyrow"><span class="cap"><kbd data-mod>⌘</kbd><kbd>K</kbd><kbd>0–6</kbd></span><span>fold headings to level</span></div>
+      <div class="keyrow"><span class="cap"><kbd data-key="j">j</kbd><kbd data-key="k">k</kbd></span><span>scroll down / up</span></div>
+      <div class="keyrow"><span class="cap"><kbd data-key="g">g</kbd><kbd data-key="G">G</kbd></span><span>top / bottom</span></div>
       <div class="keyrow"><span class="cap"><kbd data-mod>⌘</kbd><kbd>T</kbd></span><span>toggle theme</span></div>
+      <div class="keyrow"><span class="cap"><kbd data-mod>⌘</kbd><kbd>/</kbd></span><span>all shortcuts, in-app</span></div>
     </div>
   </section>
 
   <!-- ───────────────────────── agents -->
-  <section id="agents">
+  <section id="agents" class="reveal">
     <h2><span class="h-mark">##</span> Built for coding agents</h2>
     <p>
       mdv is single-instance with an IPC socket. Claude Code, Codex, or any agent
       can drive the window the human is reading — open files, jump to sections,
       switch view modes — without touching the keyboard.
     </p>
-    <pre class="code"><code><span class="c"># open a file at a specific line</span>
+    <pre class="code" data-lang="bash"><code><span class="c"># open a file at a specific line</span>
 mdv path/to/spec.md --line 42
 
 <span class="c"># navigate the running instance</span>
@@ -192,7 +200,7 @@ mdv list-sections spec.md | jq -r <span class="s">'.[].path'</span></code></pre>
   </section>
 
   <!-- ───────────────────────── install -->
-  <section id="install">
+  <section id="install" class="reveal">
     <h2><span class="h-mark">##</span> Install</h2>
     <div class="installs">
       <div class="inst">
@@ -206,22 +214,23 @@ mdv list-sections spec.md | jq -r <span class="s">'.[].path'</span></code></pre>
         <p><a class="btn small" data-asset="x86_64.AppImage" href="https://github.com/minchenlee/mdv/releases/latest">x86_64 AppImage</a></p>
         <p class="fine">Single file, self-updating.</p>
       </div>
-      <div class="inst">
+      <div class="inst wide">
         <h3>From source</h3>
-        <pre class="code"><code>git clone https://github.com/minchenlee/mdv
+        <pre class="code" data-lang="bash"><code>git clone https://github.com/minchenlee/mdv
 cd mdv &amp;&amp; cargo build --release</code></pre>
         <p class="fine">Rust 1.80+. Windows builds this way too.</p>
       </div>
     </div>
   </section>
 
+  <div class="md-hr" aria-hidden="true">---</div>
   <footer>
     <p>
       MIT licensed · <a href="https://github.com/minchenlee/mdv">github.com/minchenlee/mdv</a>
       · <a href="https://github.com/minchenlee/mdv/releases">releases</a>
       · built with <a href="https://iced.rs">Iced</a>
     </p>
-    <p class="fine">This page is hand-written HTML + CSS + 6 KB of JS. No framework. It loads the way mdv starts.</p>
+    <p class="fine">This page is hand-written HTML + CSS + 7 KB of JS. No framework. It loads the way mdv starts.</p>
   </footer>
 
 </main>
@@ -229,30 +238,33 @@ cd mdv &amp;&amp; cargo build --release</code></pre>
 <!-- ───────────────────────── command palette -->
 <div class="overlay" id="palette" hidden>
   <div class="panel" role="dialog" aria-modal="true" aria-label="Command palette">
-    <input id="palette-input" type="text" placeholder="Type a command…" autocomplete="off" spellcheck="false">
-    <ul id="palette-list"></ul>
+    <input id="palette-input" type="text" placeholder="Type a command…" autocomplete="off" spellcheck="false"
+           role="combobox" aria-expanded="true" aria-controls="palette-list" aria-autocomplete="list">
+    <ul id="palette-list" role="listbox" aria-label="Commands"></ul>
   </div>
 </div>
 
 <!-- ───────────────────────── cheatsheet -->
 <div class="overlay" id="cheat" hidden>
-  <div class="panel cheat-panel" role="dialog" aria-modal="true" aria-label="Keyboard shortcuts">
+  <div class="panel cheat-panel" role="dialog" aria-modal="true" aria-label="Keyboard shortcuts" tabindex="-1">
     <h3>Keyboard shortcuts — this page</h3>
     <div class="cheat-grid">
-      <div class="keyrow"><span class="cap"><kbd>j</kbd></span><span>scroll down</span></div>
-      <div class="keyrow"><span class="cap"><kbd>k</kbd></span><span>scroll up</span></div>
-      <div class="keyrow"><span class="cap"><kbd>g</kbd></span><span>go to top</span></div>
-      <div class="keyrow"><span class="cap"><kbd>G</kbd></span><span>go to bottom</span></div>
+      <div class="keyrow"><span class="cap"><kbd data-key="j">j</kbd></span><span>scroll down</span></div>
+      <div class="keyrow"><span class="cap"><kbd data-key="k">k</kbd></span><span>scroll up</span></div>
+      <div class="keyrow"><span class="cap"><kbd data-key="g">g</kbd></span><span>go to top</span></div>
+      <div class="keyrow"><span class="cap"><kbd data-key="G">G</kbd></span><span>go to bottom</span></div>
       <div class="keyrow"><span class="cap"><kbd>Space</kbd></span><span>page down</span></div>
       <div class="keyrow"><span class="cap"><kbd>⇧</kbd><kbd>Space</kbd></span><span>page up</span></div>
-      <div class="keyrow"><span class="cap"><kbd data-mod>⌘</kbd><kbd>K</kbd></span><span>command palette</span></div>
-      <div class="keyrow"><span class="cap"><kbd>t</kbd></span><span>toggle theme</span></div>
-      <div class="keyrow"><span class="cap"><kbd>?</kbd></span><span>this cheatsheet</span></div>
+      <div class="keyrow"><span class="cap"><kbd data-mod>⌘</kbd><kbd>⇧</kbd><kbd>P</kbd></span><span>palette</span></div>
+      <div class="keyrow"><span class="cap"><kbd data-key="t">t</kbd></span><span>toggle theme</span></div>
+      <div class="keyrow"><span class="cap"><kbd data-key="?">?</kbd></span><span>cheatsheet</span></div>
       <div class="keyrow"><span class="cap"><kbd>Esc</kbd></span><span>close overlay</span></div>
     </div>
     <p class="fine">The app itself has many more — press <kbd data-mod>⌘</kbd><kbd>/</kbd> inside mdv.</p>
   </div>
 </div>
+
+<div id="sr-status" class="sr-only" aria-live="polite"></div>
 
 <script src="app.js" defer></script>
 </body>
