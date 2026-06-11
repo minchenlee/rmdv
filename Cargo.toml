@@ -1,10 +1,11 @@
 [package]
 name = "mdv"
-version = "0.2.1"
+version = "0.2.2"
 edition = "2021"
 rust-version = "1.80"
 description = "Lightweight beautiful markdown viewer"
 license = "MIT"
+repository = "https://github.com/minchenlee/mdv"
 build = "build.rs"
 
 [dependencies]
