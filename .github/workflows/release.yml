@@ -11,30 +11,26 @@ on:
         required: true
         type: string
 
+# Build jobs only need to read the repo; only the publish job writes releases.
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  build:
-    name: Build ${{ matrix.name }}
-    runs-on: ${{ matrix.os }}
+  # ── macOS: signed + notarized .dmg and .app.tar.gz (the in-app updater
+  #    downloads the .app.tar.gz and self-replaces). Signing mirrors the
+  #    c9watch release workflow: import a Developer ID cert into a temp
+  #    keychain, codesign --options runtime, then notarize + staple.
+  build-macos:
+    name: macOS ${{ matrix.arch }}
+    runs-on: macos-14
     strategy:
       fail-fast: false
       matrix:
         include:
-          - name: macOS arm64
-            os: macos-14
-            target: aarch64-apple-darwin
-            format: dmg
-          - name: macOS x86_64
-            os: macos-14
-            target: x86_64-apple-darwin
-            format: dmg
-          - name: Windows x86_64
-            os: windows-latest
-            target: x86_64-pc-windows-msvc
-            format: nsis
-
+          - target: aarch64-apple-darwin
+            arch: aarch64
+          - target: x86_64-apple-darwin
+            arch: x86_64
     steps:
       - uses: actions/checkout@v4
 
@@ -49,32 +45,201 @@ jobs:
           key: ${{ matrix.target }}
 
       - name: Install cargo-packager
-        shell: bash
         run: cargo install cargo-packager --locked
 
       - name: Build release
         run: cargo build --release --target ${{ matrix.target }}
 
-      - name: Package
-        run: cargo packager --release --target ${{ matrix.target }} -f ${{ matrix.format }}
+      - name: Package (.app bundle)
+        run: cargo packager --release --target ${{ matrix.target }} -f app
 
-      - name: Upload artifacts
+      - name: Import signing certificate
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+        run: |
+          if [ -z "${APPLE_CERTIFICATE:-}" ]; then
+            echo "No APPLE_CERTIFICATE secret set; skipping import (ad-hoc sign later)."
+            exit 0
+          fi
+          KEYCHAIN_PATH=$RUNNER_TEMP/app-signing.keychain-db
+          KEYCHAIN_PASSWORD=$(openssl rand -base64 32)
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          echo "$APPLE_CERTIFICATE" | base64 --decode > $RUNNER_TEMP/certificate.p12
+          security import $RUNNER_TEMP/certificate.p12 -P "$APPLE_CERTIFICATE_PASSWORD" \
+            -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+          security list-keychain -d user -s "$KEYCHAIN_PATH"
+          rm -f $RUNNER_TEMP/certificate.p12
+
+      - name: Sign, notarize, and stage artifacts
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+          ARCH: ${{ matrix.arch }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          OUT="target/${{ matrix.target }}/release"
+          APP="$OUT/mdv.app"
+          mkdir -p dist
+
+          # cargo-packager produces an ad-hoc signed .app. Re-sign with the
+          # Developer ID, notarize, and staple the bundle. (Packager's own dmg
+          # step rebuilds + re-adhoc-signs the app, so we build the dmg by hand
+          # below to keep the Developer ID signature intact.)
+          if [ -n "${APPLE_SIGNING_IDENTITY:-}" ]; then
+            codesign --force --deep --options runtime \
+              --sign "$APPLE_SIGNING_IDENTITY" "$APP"
+            # Notarize the .app (zipped for submission), then staple the bundle.
+            ditto -c -k --keepParent "$APP" "$RUNNER_TEMP/mdv-notarize.zip"
+            xcrun notarytool submit "$RUNNER_TEMP/mdv-notarize.zip" \
+              --apple-id "$APPLE_ID" \
+              --password "$APPLE_PASSWORD" \
+              --team-id "$APPLE_TEAM_ID" \
+              --wait
+            xcrun stapler staple "$APP"
+          else
+            # No cert configured: ad-hoc sign so the bundle is at least sealed.
+            codesign --force --deep --options runtime --sign - "$APP" || true
+          fi
+
+          # The updater payload: a tarball of the signed (+ stapled) .app.
+          tar -C "$OUT" -czf "dist/mdv_${TAG}_${ARCH}.app.tar.gz" mdv.app
+
+          # Build the dmg by hand from the signed app (hdiutil preserves the
+          # signature; cargo-packager's dmg path would not).
+          STAGE="$RUNNER_TEMP/dmg-stage"
+          rm -rf "$STAGE"; mkdir -p "$STAGE"
+          cp -R "$APP" "$STAGE/"
+          ln -s /Applications "$STAGE/Applications"
+          hdiutil create -volname mdv -srcfolder "$STAGE" -ov -format UDZO \
+            "dist/mdv_${TAG}_${ARCH}.dmg"
+          # Notarize + staple the dmg too, so the downloaded installer is clean.
+          if [ -n "${APPLE_SIGNING_IDENTITY:-}" ]; then
+            xcrun notarytool submit "dist/mdv_${TAG}_${ARCH}.dmg" \
+              --apple-id "$APPLE_ID" \
+              --password "$APPLE_PASSWORD" \
+              --team-id "$APPLE_TEAM_ID" \
+              --wait
+            xcrun stapler staple "dist/mdv_${TAG}_${ARCH}.dmg" || true
+          fi
+
+      - name: Upload macOS artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: mdv-${{ matrix.target }}
-          path: |
-            target/${{ matrix.target }}/release/*.dmg
-            target/${{ matrix.target }}/release/*.exe
-            target/${{ matrix.target }}/release/*-setup.exe
-          if-no-files-found: warn
+          name: macos-${{ matrix.arch }}
+          path: dist/*
 
-  release:
-    name: Publish release
-    needs: build
+  # ── Linux: AppImage (the in-app updater swaps the single AppImage file).
+  build-linux:
+    name: Linux x86_64
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-gnu
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: x86_64-unknown-linux-gnu
+
+      - name: Install system deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-3-dev libxkbcommon-dev libwayland-dev \
+            libssl-dev pkg-config fuse libfuse2 file desktop-file-utils
+
+      - name: Build release
+        run: cargo build --release --target x86_64-unknown-linux-gnu
+
+      - name: Build AppImage
+        env:
+          TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          BIN=target/x86_64-unknown-linux-gnu/release/mdv
+          APPDIR=mdv.AppDir
+          rm -rf "$APPDIR"
+          mkdir -p "$APPDIR/usr/bin"
+          cp "$BIN" "$APPDIR/usr/bin/mdv"
+          cp assets/icon.png "$APPDIR/mdv.png"
+          cat > "$APPDIR/mdv.desktop" <<'DESKTOP'
+          [Desktop Entry]
+          Name=mdv
+          Exec=mdv
+          Icon=mdv
+          Type=Application
+          Categories=Utility;
+          DESKTOP
+          cat > "$APPDIR/AppRun" <<'APPRUN'
+          #!/bin/sh
+          HERE="$(dirname "$(readlink -f "$0")")"
+          exec "$HERE/usr/bin/mdv" "$@"
+          APPRUN
+          chmod +x "$APPDIR/AppRun"
+
+          # AppImageKit is archived, so its "continuous" asset is frozen —
+          # pin its hash so a hijacked asset can't slip a build tool in.
+          wget -q https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage
+          echo "b90f4a8b18967545fda78a445b27680a1642f1ef9488ced28b65398f2be7add2  appimagetool-x86_64.AppImage" | sha256sum -c -
+          chmod +x appimagetool-x86_64.AppImage
+          ./appimagetool-x86_64.AppImage --appimage-extract >/dev/null
+          mkdir -p dist
+          ARCH=x86_64 ./squashfs-root/AppRun "$APPDIR" "dist/mdv-${TAG}-x86_64.AppImage"
+
+      - name: Upload Linux artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-x86_64
+          path: dist/*
+
+  # ── Windows: NSIS installer (no in-app updater on Windows). Best-effort —
+  #    Windows is out of the mac+linux release scope and must not block the
+  #    publish job, so a build failure here is tolerated.
+  build-windows:
+    name: Windows x86_64
+    runs-on: windows-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: x86_64-pc-windows-msvc
+      - name: Install cargo-packager
+        run: cargo install cargo-packager --locked
+      - name: Build release
+        run: cargo build --release --target x86_64-pc-windows-msvc
+      - name: Package
+        run: cargo packager --release --target x86_64-pc-windows-msvc -f nsis
+      - name: Upload Windows artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-x86_64
+          path: |
+            target/x86_64-pc-windows-msvc/release/*.exe
+            target/x86_64-pc-windows-msvc/release/*-setup.exe
+          if-no-files-found: warn
+
+  # ── Assemble checksums + updater manifest, publish the GitHub release.
+  release:
+    name: Publish release
+    needs: [build-macos, build-linux, build-windows]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
@@ -90,6 +255,42 @@ jobs:
             echo "tag=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: Collect artifacts + checksums + manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="${{ steps.tag.outputs.tag }}"
+          VERSION="${TAG#v}"
+          mkdir -p out
+          find artifacts -type f \
+            \( -name '*.dmg' -o -name '*.app.tar.gz' -o -name '*.AppImage' \
+               -o -name '*.exe' \) -exec cp {} out/ \;
+
+          cd out
+          # SHA256SUMS over every published artifact.
+          sha256sum * > SHA256SUMS
+
+          # Per-platform sha for the updater manifest.
+          sha_of() { sha256sum "$1" | cut -d' ' -f1; }
+          AARCH64="mdv_${TAG}_aarch64.app.tar.gz"
+          X86_64="mdv_${TAG}_x86_64.app.tar.gz"
+          LINUX="mdv-${TAG}-x86_64.AppImage"
+          BASE="https://github.com/${{ github.repository }}/releases/download/${TAG}"
+          NOTES="https://github.com/${{ github.repository }}/releases/tag/${TAG}"
+
+          cat > latest.json <<MANIFEST
+          {
+            "version": "${VERSION}",
+            "notes_url": "${NOTES}",
+            "platforms": {
+              "darwin-aarch64": { "url": "${BASE}/${AARCH64}", "sha256": "$(sha_of "$AARCH64")" },
+              "darwin-x86_64":  { "url": "${BASE}/${X86_64}",  "sha256": "$(sha_of "$X86_64")" },
+              "linux-x86_64":   { "url": "${BASE}/${LINUX}",   "sha256": "$(sha_of "$LINUX")" }
+            }
+          }
+          MANIFEST
+          cat latest.json
+
       - name: Create release
         uses: softprops/action-gh-release@v2
         with:
@@ -97,6 +298,10 @@ jobs:
           name: ${{ steps.tag.outputs.tag }}
           generate_release_notes: true
           files: |
-            artifacts/**/*.dmg
-            artifacts/**/*.exe
+            out/*.dmg
+            out/*.app.tar.gz
+            out/*.AppImage
+            out/*.exe
+            out/SHA256SUMS
+            out/latest.json
           fail_on_unmatched_files: false

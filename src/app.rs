@@ -313,6 +313,12 @@ pub enum Message {
     /// compensation fight the landing).
     BlockHeightsMeasured(Vec<(crate::ast::BlockId, f32)>, f32),
     ToastExpire(u64),
+    /// An update was downloaded + verified and is ready to install.
+    UpdateAvailable(crate::update::ReadyUpdate),
+    /// User confirmed install: self-replace + relaunch.
+    InstallUpdate,
+    /// User dismissed the update banner.
+    DismissUpdate,
     ImageFetched(String, Result<Vec<u8>, String>),
     SvgRasterized(String, Result<(Vec<u8>, u32, u32), String>),
     OpenImageZoom(String),
@@ -530,6 +536,9 @@ pub struct App {
     pub(crate) nav_anchor: Option<usize>,
     /// User preferences (persisted to `~/.config/mdv/prefs.json`).
     pub prefs: crate::prefs::Prefs,
+    /// A downloaded + verified update awaiting user-initiated install. Drives
+    /// the update banner. `None` until the background check finds a newer build.
+    pub pending_update: Option<crate::update::ReadyUpdate>,
 }
 
 #[derive(Debug, Clone)]
@@ -630,6 +639,7 @@ impl Default for App {
             virt_window: crate::virt::VirtWindow::default(),
             nav_anchor: None,
             prefs,
+            pending_update: None,
         }
     }
 }
@@ -801,7 +811,13 @@ impl App {
             }
             None => Task::none(),
         };
-        (app, task)
+        // Background update check on launch. A failed/absent manifest is a
+        // silent no-op (maps to DismissUpdate, which clears nothing).
+        let update_check = Task::perform(crate::update::check_and_download(), |res| match res {
+            Ok(Some(ready)) => Message::UpdateAvailable(ready),
+            _ => Message::DismissUpdate,
+        });
+        (app, Task::batch([task, update_check]))
     }
 
     /// Returns the next theme in cycle order: all built-in presets followed
@@ -1596,6 +1612,13 @@ impl App {
                     self.vault_file_count = n;
                     self.vault_truncated = r.truncated;
                     self.vault_cursor = 0;
+                    // New result set: drop the stale viewport so virtualization
+                    // renders from the top, and scroll the list back to 0.
+                    self.vault_viewport = None;
+                    return iced::widget::operation::scroll_to(
+                        Self::vault_scroll_id(),
+                        iced::widget::scrollable::AbsoluteOffset { x: 0.0, y: 0.0 },
+                    );
                 }
                 Task::none()
             }
@@ -2571,6 +2594,24 @@ impl App {
                 }
                 Task::none()
             }
+            Message::UpdateAvailable(ready) => {
+                self.pending_update = Some(ready);
+                Task::none()
+            }
+            Message::DismissUpdate => {
+                self.pending_update = None;
+                Task::none()
+            }
+            Message::InstallUpdate => {
+                if let Some(ready) = &self.pending_update {
+                    // apply() relaunches + exits on success; only returns on error.
+                    if let Err(e) = crate::update::apply(ready) {
+                        self.pending_update = None;
+                        return self.show_toast(format!("Update failed: {e}"));
+                    }
+                }
+                Task::none()
+            }
             Message::ToggleSidebar => {
                 self.sidebar_open = !self.sidebar_open;
                 self.restore_body_scroll()
@@ -3400,6 +3441,7 @@ impl App {
                 self.vault_truncated,
                 &self.vault_collapsed,
                 self.workspace.as_deref(),
+                self.vault_viewport.as_ref(),
                 pal,
             )
         } else if let Some(err) = &self.error {
@@ -3671,8 +3713,52 @@ impl App {
             Some(t) => toast_overlay(&t.text, pal),
             None => Space::new().into(),
         };
-        iced::widget::stack![base, toast_layer].into()
+        let update_layer: Element<'_, Message> = match &self.pending_update {
+            Some(u) => update_banner(&u.version, pal),
+            None => Space::new().into(),
+        };
+        iced::widget::stack![base, toast_layer, update_layer].into()
     }
+}
+
+/// Bottom-center banner inviting the user to install a downloaded update.
+fn update_banner<'a>(version: &str, pal: Palette) -> Element<'a, Message> {
+    use iced::widget::{button, container, row, text as text_w};
+    let label = text_w(format!("mdv {version} ready to install"))
+        .size(13.5)
+        .color(pal.fg);
+    let install = button(text_w("Install & Restart").size(13.0))
+        .padding([5, 12])
+        .on_press(Message::InstallUpdate);
+    let later = button(text_w("Later").size(13.0))
+        .padding([5, 12])
+        .on_press(Message::DismissUpdate);
+    let bar = container(
+        row![label, install, later]
+            .spacing(12)
+            .align_y(iced::alignment::Vertical::Center),
+    )
+    .padding([10, 16])
+    .style(move |_| container::Style {
+        background: Some(pal.surface.into()),
+        border: iced::Border {
+            color: pal.rule,
+            width: 1.0,
+            radius: 10.0.into(),
+        },
+        text_color: Some(pal.fg),
+        ..Default::default()
+    });
+    container(bar)
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .padding(iced::Padding {
+            bottom: 24.0,
+            ..iced::Padding::ZERO
+        })
+        .align_x(iced::alignment::Horizontal::Center)
+        .align_y(iced::alignment::Vertical::Bottom)
+        .into()
 }
 
 /// Bottom status bar: word count + estimated reading time (~200 wpm).
@@ -4922,6 +5008,7 @@ fn vault_search_page<'a>(
     truncated: bool,
     collapsed: &HashSet<PathBuf>,
     workspace: Option<&std::path::Path>,
+    viewport: Option<&iced::widget::scrollable::Viewport>,
     pal: Palette,
 ) -> Element<'a, Message> {
     // The displayed results reflect `searched_query`; if the live `query` has
@@ -4983,101 +5070,219 @@ fn vault_search_page<'a>(
     } else if hits.is_empty() {
         list = list.push(container(text("No matches").color(pal.subtle).size(13)).padding(14));
     } else {
-        // Walk hits in file-walk order; emit a header when the path changes,
-        // then each match block (unless the file is collapsed). `vis` tracks the
-        // visible-match index so the cursor maps to the right block.
+        // Virtualized results list. Walk all hits once to build a flat row model
+        // (one Header per file run, one Hit per visible match) with estimated
+        // heights, then render only the rows intersecting the viewport plus an
+        // overscan — and always the cursor row, so the cursor-follow scroll
+        // Operation can measure its real bounds by anchor id. Skipped rows above
+        // and below collapse into `Space` of their summed estimated heights so
+        // the scrollbar extent and positions stay correct.
+        enum Row {
+            Header {
+                path: PathBuf,
+                run_count: usize,
+                folded: bool,
+            },
+            Hit {
+                hi: usize,
+                vis_idx: usize,
+            },
+        }
+
+        // Exact per-row heights. Context lines are fixed single-line rows
+        // (SIZE * LINE_H, no wrapping), so these estimates match the real layout
+        // — which keeps the virtualization spacers from drifting against the
+        // measured scroll offset.
+        const LINE_PX: f32 = 12.5 * 1.4; // context_line_row fixed height
+        const ROW_GAP: f32 = 1.0; // Column::spacing(1) between context lines
+        const ROW_PAD_H: f32 = 12.0; // hit button padding (6 top + 6 bottom)
+        const HEADER_H: f32 = 12.0 + 13.0 * 1.3 + 2.0; // header button: pad + 13px line
+        let hit_height = |hi: usize| -> f32 {
+            let n = hits[hi].context.len() as f32;
+            ROW_PAD_H + n * LINE_PX + (n - 1.0).max(0.0) * ROW_GAP
+        };
+
+        // Build the row model in file-walk order.
+        let mut rows: Vec<Row> = Vec::new();
         let mut vis = 0usize;
         let mut idx = 0usize;
         while idx < hits.len() {
             let path = hits[idx].path.clone();
             let folded = collapsed.contains(&path);
-            // Count matches in this contiguous file run.
             let run_start = idx;
             while idx < hits.len() && hits[idx].path == path {
                 idx += 1;
             }
             let run_count = idx - run_start;
-
-            let rel = workspace
-                .and_then(|ws| path.strip_prefix(ws).ok())
-                .unwrap_or(&path)
-                .to_string_lossy()
-                .into_owned();
-            let chevron = if folded {
-                icon::ic::CHEVRON_RIGHT
-            } else {
-                icon::ic::CHEVRON_DOWN
-            };
-            let header_label = if folded {
-                format!("{rel}  ({run_count})")
-            } else {
-                rel
-            };
-            let header_row = irow![
-                icon::glyph(chevron, 13.0, pal.accent),
-                text(header_label).size(13).color(pal.accent),
-            ]
-            .spacing(8)
-            .align_y(iced::Alignment::Center);
-            let header = button(header_row)
-                .padding(Padding::from([6, 8]))
-                .width(Length::Fill)
-                .style(move |_, status| button::Style {
-                    background: match status {
-                        button::Status::Hovered => Some(Background::Color(pal.surface_alt)),
-                        _ => None,
-                    },
-                    text_color: pal.accent,
-                    border: Border {
-                        radius: 5.0.into(),
-                        ..Default::default()
-                    },
-                    ..Default::default()
-                })
-                .on_press(Message::VaultToggleFile(path.clone()));
-            list = list.push(header);
-
+            rows.push(Row::Header {
+                path,
+                run_count,
+                folded,
+            });
             if folded {
-                // Skip emitting this file's blocks. Do NOT advance `vis`: it
-                // must count only VISIBLE blocks so it stays aligned with
-                // `vault_visible_matches()`/`vault_cursor` (which exclude
-                // collapsed files), keeping is_cursor + the anchor id correct.
                 continue;
             }
-
-            for (offset, hit) in hits[run_start..run_start + run_count].iter().enumerate() {
-                let hi = run_start + offset;
-                let is_cursor = vis == cursor;
+            for hi in run_start..run_start + run_count {
+                rows.push(Row::Hit { hi, vis_idx: vis });
                 vis += 1;
-
-                let mut block = Column::new().spacing(1);
-                for cl in &hit.context {
-                    block =
-                        block.push(context_line_row(cl, hit.col_start, hit.col_end, is_cursor, pal));
-                }
-                let row = button(block)
-                    .padding(Padding::from([6, 8]))
-                    .width(Length::Fill)
-                    .style(move |_, status| button::Style {
-                        background: match (is_cursor, status) {
-                            (true, _) => Some(Background::Color(pal.surface_alt)),
-                            (_, button::Status::Hovered) => Some(Background::Color(pal.code_bg)),
-                            _ => None,
-                        },
-                        text_color: pal.fg,
-                        border: Border {
-                            radius: 5.0.into(),
-                            ..Default::default()
-                        },
-                        ..Default::default()
-                    })
-                    .on_press(Message::VaultOpenHit(hi));
-                // Stable id so cursor-follow can scroll by measured bounds.
-                let row = container(row)
-                    .id(App::vault_match_anchor_id(vis - 1))
-                    .width(Length::Fill);
-                list = list.push(row);
             }
+        }
+
+        // Cumulative tops + total height from the estimates.
+        let mut tops: Vec<f32> = Vec::with_capacity(rows.len());
+        let mut y = 0.0f32;
+        for r in &rows {
+            tops.push(y);
+            y += match r {
+                Row::Header { .. } => HEADER_H,
+                Row::Hit { hi, .. } => hit_height(*hi),
+            };
+        }
+        let total_h = y;
+
+        // Viewport window in content coordinates (fall back to "render all" until
+        // the first scroll event lands a viewport).
+        let virtualize = std::env::var("MDV_NO_VIRT").is_err();
+        let (win_top, win_bot) = match (virtualize, viewport) {
+            (true, Some(vp)) => {
+                let off = vp.absolute_offset().y;
+                let vh = vp.bounds().height;
+                const OVERSCAN: f32 = 600.0;
+                (off - OVERSCAN, off + vh + OVERSCAN)
+            }
+            _ => (0.0, total_h),
+        };
+
+        let row_h = |i: usize| -> f32 {
+            match &rows[i] {
+                Row::Header { .. } => HEADER_H,
+                Row::Hit { hi, .. } => hit_height(*hi),
+            }
+        };
+        let in_window = |i: usize| -> bool {
+            let top = tops[i];
+            let bot = top + row_h(i);
+            bot >= win_top && top <= win_bot
+        };
+
+        // Render with a leading spacer for skipped rows, the windowed rows, and a
+        // trailing spacer. The cursor's hit row is force-rendered even if off the
+        // window so its anchor id exists for measurement.
+        let mut skipped_above = 0.0f32;
+        let mut pending_below = 0.0f32;
+        let mut started = false;
+        for (i, r) in rows.iter().enumerate() {
+            let is_cursor_row = matches!(r, Row::Hit { vis_idx, .. } if *vis_idx == cursor);
+            let render = in_window(i) || is_cursor_row;
+            if !render {
+                if started {
+                    pending_below += row_h(i);
+                } else {
+                    skipped_above += row_h(i);
+                }
+                continue;
+            }
+            if !started {
+                if skipped_above > 0.0 {
+                    list = list.push(Space::new().height(skipped_above));
+                }
+                started = true;
+            } else if pending_below > 0.0 {
+                // Reclaim a gap created by jumping to the cursor row out of window.
+                list = list.push(Space::new().height(pending_below));
+                pending_below = 0.0;
+            }
+
+            match r {
+                Row::Header {
+                    path,
+                    run_count,
+                    folded,
+                } => {
+                    let rel = workspace
+                        .and_then(|ws| path.strip_prefix(ws).ok())
+                        .unwrap_or(path)
+                        .to_string_lossy()
+                        .into_owned();
+                    let chevron = if *folded {
+                        icon::ic::CHEVRON_RIGHT
+                    } else {
+                        icon::ic::CHEVRON_DOWN
+                    };
+                    let header_label = if *folded {
+                        format!("{rel}  ({run_count})")
+                    } else {
+                        rel
+                    };
+                    let header_row = irow![
+                        icon::glyph(chevron, 13.0, pal.accent),
+                        text(header_label).size(13).color(pal.accent),
+                    ]
+                    .spacing(8)
+                    .align_y(iced::Alignment::Center);
+                    let path = path.clone();
+                    let header = button(header_row)
+                        .padding(Padding::from([6, 8]))
+                        .width(Length::Fill)
+                        .style(move |_, status| button::Style {
+                            background: match status {
+                                button::Status::Hovered => Some(Background::Color(pal.surface_alt)),
+                                _ => None,
+                            },
+                            text_color: pal.accent,
+                            border: Border {
+                                radius: 5.0.into(),
+                                ..Default::default()
+                            },
+                            ..Default::default()
+                        })
+                        .on_press(Message::VaultToggleFile(path));
+                    list = list.push(header);
+                }
+                Row::Hit { hi, vis_idx } => {
+                    let hi = *hi;
+                    let is_cursor = *vis_idx == cursor;
+                    let hit = &hits[hi];
+                    let mut block = Column::new().spacing(1);
+                    for cl in &hit.context {
+                        block = block.push(context_line_row(
+                            cl,
+                            hit.col_start,
+                            hit.col_end,
+                            is_cursor,
+                            pal,
+                        ));
+                    }
+                    let row = button(block)
+                        .padding(Padding::from([6, 8]))
+                        .width(Length::Fill)
+                        .style(move |_, status| button::Style {
+                            background: match (is_cursor, status) {
+                                (true, _) => Some(Background::Color(pal.surface_alt)),
+                                (_, button::Status::Hovered) => {
+                                    Some(Background::Color(pal.code_bg))
+                                }
+                                _ => None,
+                            },
+                            text_color: pal.fg,
+                            border: Border {
+                                radius: 5.0.into(),
+                                ..Default::default()
+                            },
+                            ..Default::default()
+                        })
+                        .on_press(Message::VaultOpenHit(hi));
+                    // Stable id so cursor-follow can scroll by measured bounds.
+                    let row = container(row)
+                        .id(App::vault_match_anchor_id(*vis_idx))
+                        .width(Length::Fill);
+                    list = list.push(row);
+                }
+            }
+        }
+        // Trailing spacer for everything skipped after the last rendered row.
+        if pending_below > 0.0 {
+            list = list.push(Space::new().height(pending_below));
         }
     }
 
@@ -5134,15 +5339,15 @@ fn context_line_row<'a>(
     use iced::widget::{rich_text, span};
 
     const SIZE: f32 = 12.5;
+    const LINE_H: f32 = 1.4;
 
-    let gutter = container(
-        text(format!("{:>4}", cl.number))
-            .size(SIZE)
-            .font(iced::Font::MONOSPACE)
-            .color(pal.subtle),
-    )
-    .width(Length::Fixed(40.0))
-    .padding(Padding::from([0, 8]));
+    // Plain (shrink-height) gutter text; a fixed-width box would let the row's
+    // height be driven by container sizing rather than the text line.
+    let gutter = text(format!("{:>5} ", cl.number))
+        .size(SIZE)
+        .line_height(LINE_H)
+        .font(iced::Font::MONOSPACE)
+        .color(pal.subtle);
 
     // Byte range of the match within this line, for the highlight background.
     let (mb_start, mb_end) = if cl.is_match {
@@ -5205,6 +5410,7 @@ fn context_line_row<'a>(
             let mut s = span(&line[a..b])
                 .font(iced::Font::MONOSPACE)
                 .size(SIZE)
+                .line_height(LINE_H)
                 .color(color);
             if let Some(c) = bg {
                 s = s.background(c);
@@ -5217,15 +5423,27 @@ fn context_line_row<'a>(
             span(" ")
                 .font(iced::Font::MONOSPACE)
                 .size(SIZE)
+                .line_height(LINE_H)
                 .color(base_color),
         );
     }
 
-    let body = container(rich_text(rt).size(SIZE)).width(Length::Fill);
+    // Single visual line per source line (Zed-style): no wrapping, so every row
+    // is exactly one line tall. This keeps long / CJK / table lines from blowing
+    // the row height up vertically AND makes the virtualization height estimate
+    // exact. Overflow past the column width is clipped by the parent.
+    let body = rich_text(rt)
+        .size(SIZE)
+        .line_height(LINE_H)
+        .wrapping(iced::widget::text::Wrapping::None)
+        .width(Length::Fill);
 
     irow![gutter, body]
         .width(Length::Fill)
+        .height(Length::Fixed(SIZE * LINE_H))
         .spacing(4)
+        .align_y(iced::Alignment::Center)
+        .clip(true)
         .into()
 }
 
