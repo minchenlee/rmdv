@@ -11,8 +11,9 @@ on:
         required: true
         type: string
 
+# Build jobs only need to read the repo; only the publish job writes releases.
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   # ── macOS: signed + notarized .dmg and .app.tar.gz (the in-app updater
@@ -186,7 +187,10 @@ jobs:
           APPRUN
           chmod +x "$APPDIR/AppRun"
 
+          # AppImageKit is archived, so its "continuous" asset is frozen —
+          # pin its hash so a hijacked asset can't slip a build tool in.
           wget -q https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage
+          echo "b90f4a8b18967545fda78a445b27680a1642f1ef9488ced28b65398f2be7add2  appimagetool-x86_64.AppImage" | sha256sum -c -
           chmod +x appimagetool-x86_64.AppImage
           ./appimagetool-x86_64.AppImage --appimage-extract >/dev/null
           mkdir -p dist
@@ -233,6 +237,8 @@ jobs:
     name: Publish release
     needs: [build-macos, build-linux, build-windows]
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - name: Download all artifacts
         uses: actions/download-artifact@v4

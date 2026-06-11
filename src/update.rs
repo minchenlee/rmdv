@@ -12,6 +12,7 @@
 use anyhow::{anyhow, bail, Context, Result};
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 /// Manifest published alongside each GitHub release (`latest.json`).
 #[derive(Debug, Clone, Deserialize)]
@@ -37,12 +38,22 @@ pub struct ReadyUpdate {
     /// Path to the verified, downloaded artifact (`.app.tar.gz` on macOS,
     /// `.AppImage` on Linux).
     pub artifact: PathBuf,
+    /// Expected SHA-256 of the artifact; re-checked from disk in [`apply`]
+    /// since the staged file sits in a world-writable temp dir.
+    pub sha256: String,
 }
 
 /// Manifest URL. Points at the `latest.json` asset on the newest GitHub
 /// release. The `latest` redirect resolves to whatever tag is most recent.
 const MANIFEST_URL: &str =
     "https://github.com/minchenlee/mdv/releases/latest/download/latest.json";
+
+/// Artifact URLs from the manifest must live under this repo's release
+/// downloads — a tampered manifest must not be able to point elsewhere.
+const ARTIFACT_URL_PREFIX: &str = "https://github.com/minchenlee/mdv/releases/download/";
+
+/// Refuse artifacts larger than this; release bundles are tens of MB.
+const MAX_ARTIFACT_BYTES: u64 = 200 * 1024 * 1024;
 
 /// The `platforms` key for the current OS + arch, matching the keys the
 /// release workflow writes. Returns `None` on unsupported platforms (Windows),
@@ -88,10 +99,12 @@ pub async fn check_and_download() -> Result<Option<ReadyUpdate>> {
 
     let client = reqwest::Client::builder()
         .user_agent(concat!("mdv/", env!("CARGO_PKG_VERSION")))
+        .connect_timeout(Duration::from_secs(10))
         .build()?;
 
     let manifest_bytes = client
         .get(MANIFEST_URL)
+        .timeout(Duration::from_secs(30))
         .send()
         .await
         .context("fetch manifest")?
@@ -111,17 +124,25 @@ pub async fn check_and_download() -> Result<Option<ReadyUpdate>> {
         .get(key)
         .ok_or_else(|| anyhow!("no artifact for platform {key}"))?
         .clone();
+    if !entry.url.starts_with(ARTIFACT_URL_PREFIX) {
+        bail!("artifact url outside release downloads: {}", entry.url);
+    }
 
-    let bytes = client
+    let resp = client
         .get(&entry.url)
+        .timeout(Duration::from_secs(300))
         .send()
         .await
         .context("download artifact")?
         .error_for_status()
-        .context("artifact status")?
-        .bytes()
-        .await
-        .context("read artifact body")?;
+        .context("artifact status")?;
+    if resp.content_length().is_some_and(|len| len > MAX_ARTIFACT_BYTES) {
+        bail!("artifact too large");
+    }
+    let bytes = resp.bytes().await.context("read artifact body")?;
+    if bytes.len() as u64 > MAX_ARTIFACT_BYTES {
+        bail!("artifact too large");
+    }
 
     verify_sha256(&bytes, &entry.sha256)?;
 
@@ -144,6 +165,7 @@ pub async fn check_and_download() -> Result<Option<ReadyUpdate>> {
         version: manifest.version,
         notes_url: manifest.notes_url,
         artifact,
+        sha256: entry.sha256,
     }))
 }
 
@@ -228,12 +250,20 @@ fn sha256_hex(data: &[u8]) -> String {
 /// Where to stage a downloaded artifact. Uses the OS temp dir + a versioned
 /// filename so re-downloads overwrite cleanly.
 fn staged_path(url: &str, version: &str) -> Result<PathBuf> {
+    // Both pieces come from the remote manifest — strip anything that could
+    // escape the temp dir or smuggle path separators.
+    fn sanitize(s: &str) -> String {
+        s.chars()
+            .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+            .collect()
+    }
     let name = url
         .rsplit('/')
         .next()
+        .map(sanitize)
         .filter(|s| !s.is_empty())
-        .unwrap_or("mdv-update");
-    Ok(std::env::temp_dir().join(format!("mdv-{version}-{name}")))
+        .unwrap_or_else(|| "mdv-update".into());
+    Ok(std::env::temp_dir().join(format!("mdv-{}-{name}", sanitize(version))))
 }
 
 /// Apply a downloaded update in place, then relaunch the new build.
@@ -247,6 +277,12 @@ fn staged_path(url: &str, version: &str) -> Result<PathBuf> {
 /// Returns `Ok(())` only on success; on failure the running app is left
 /// untouched and the caller surfaces the error.
 pub fn apply(ready: &ReadyUpdate) -> Result<()> {
+    // Re-verify from disk: the staged file lives in a world-writable temp dir
+    // and could have been swapped since the in-memory check at download time.
+    let bytes = std::fs::read(&ready.artifact).context("read staged artifact")?;
+    verify_sha256(&bytes, &ready.sha256)?;
+    drop(bytes);
+
     match std::env::consts::OS {
         "macos" => apply_macos(&ready.artifact),
         "linux" => apply_linux(&ready.artifact),
