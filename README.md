@@ -58,11 +58,16 @@ Requires Rust 1.80+.
 | Key | Action |
 |---|---|
 | `⌘P` | Open file finder |
-| `⌘K` | Open command palette |
+| `⌘⇧P` | Open command palette |
 | `⌘O` | Open folder |
 | `⌘B` | Toggle sidebar |
 | `⌘F` | Search in document |
+| `⌘⇧F` | Search whole vault |
 | `⌘T` | Toggle theme |
+| `⌘E` | Toggle edit mode |
+| `⌘M` | Mindmap view |
+| `⌘K` `0–6` | Fold headings to level |
+| `⌘/` | Shortcut cheatsheet |
 | `j` / `k` | Scroll down / up |
 | `g` / `G` | Top / bottom |
 | `Space` / `Shift+Space` | Page down / up |
@@ -100,8 +105,8 @@ See [`docs/benchmarks.md`](docs/benchmarks.md) for measured numbers and how to r
 
 ## Roadmap
 
-- [ ] Code signing (mac notarization, Windows cert)
-- [ ] Auto-update
+- [x] Code signing (mac notarization)
+- [x] Auto-update
 - [ ] Export to PDF / HTML
 - [ ] More tree-sitter grammars
 
