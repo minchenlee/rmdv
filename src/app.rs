@@ -48,8 +48,120 @@ pub enum ImageState {
     Failed,
 }
 
+/// Retained heap cost of one image entry: encoded/decoded payload bytes.
+/// `svg::Handle::from_memory` keeps its own copy of the SVG payload alongside
+/// the `bytes` Arc, hence the ×2.
+fn image_state_cost(s: &ImageState) -> usize {
+    fn handle_cost(h: &iced::widget::image::Handle) -> usize {
+        match h {
+            iced::widget::image::Handle::Rgba { pixels, .. } => pixels.len(),
+            iced::widget::image::Handle::Bytes(_, bytes) => bytes.len(),
+            iced::widget::image::Handle::Path(..) => 0,
+        }
+    }
+    match s {
+        ImageState::Loading | ImageState::Failed => 0,
+        ImageState::Loaded(h) => handle_cost(h),
+        ImageState::LoadedSvg { bytes, raster, .. } => {
+            bytes.len() * 2 + raster.as_ref().map(handle_cost).unwrap_or(0)
+        }
+    }
+}
+
+/// Soft byte budget for `ImageCache`. Bounds session-long accumulation of
+/// fetched remote images and SVG zoom rasters; generous enough that a single
+/// document's images never get evicted in realistic use.
+const IMAGE_CACHE_BYTE_BUDGET: usize = 256 * 1024 * 1024;
+
+/// Insertion-ordered image cache with a soft byte budget. Entries were
+/// previously kept in a bare `HashMap` for the whole session; `trim` (called
+/// after each image load) evicts the oldest entries NOT referenced by the
+/// current document, so what's on screen never changes.
+#[derive(Debug, Default)]
+pub struct ImageCache {
+    map: HashMap<String, ImageState>,
+    /// Insertion order, oldest first. Only ever holds keys present in `map`.
+    order: Vec<String>,
+    /// Running total of `image_state_cost` over all entries, so the budget
+    /// check on each image load is O(1) instead of a full map walk.
+    bytes: usize,
+}
+
+impl ImageCache {
+    pub fn get(&self, key: &str) -> Option<&ImageState> {
+        self.map.get(key)
+    }
+
+    /// Mutable access for in-place updates (SVG raster fill). Callers that
+    /// grow an entry's payload must re-sync the running cost via `resync_cost`.
+    pub fn get_mut(&mut self, key: &str) -> Option<&mut ImageState> {
+        self.map.get_mut(key)
+    }
+
+    pub fn contains_key(&self, key: &str) -> bool {
+        self.map.contains_key(key)
+    }
+
+    pub fn insert(&mut self, key: String, value: ImageState) {
+        self.bytes += image_state_cost(&value);
+        if let Some(replaced) = self.map.insert(key.clone(), value) {
+            self.bytes = self.bytes.saturating_sub(image_state_cost(&replaced));
+        } else {
+            self.order.push(key);
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        self.map.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.map.is_empty()
+    }
+
+    /// Total retained payload bytes (tracked incrementally; O(1)).
+    pub fn cost_bytes(&self) -> usize {
+        self.bytes
+    }
+
+    /// Recompute the running cost from scratch. Call after mutating an entry
+    /// in place through `get_mut`.
+    fn resync_cost(&mut self) {
+        self.bytes = self.map.values().map(image_state_cost).sum();
+    }
+
+    /// Evict oldest-inserted entries until under `budget`, skipping any key
+    /// `keep` returns true for (the current document's images). Zero-cost
+    /// entries (`Loading`/`Failed`) are never evicted: dropping them can't
+    /// reach the budget, and evicting a `Failed` sentinel would silently
+    /// re-enable fetch retries that the old unbounded cache never made.
+    pub fn trim(&mut self, budget: usize, keep: impl Fn(&str) -> bool) {
+        if self.bytes <= budget {
+            return;
+        }
+        let map = &mut self.map;
+        let bytes = &mut self.bytes;
+        self.order.retain(|key| {
+            if *bytes <= budget || keep(key) {
+                return true;
+            }
+            let cost = map.get(key).map(image_state_cost).unwrap_or(0);
+            if cost == 0 {
+                return true;
+            }
+            map.remove(key);
+            *bytes = bytes.saturating_sub(cost);
+            false
+        });
+    }
+}
+
 const SIDEBAR_WIDTH: f32 = 280.0;
 const READING_MAX: f32 = 780.0;
+/// Top padding of the body scrollable's content (`Padding::from([56, 32])` in
+/// `view`). Virt-window math works in body-relative px; every conversion from
+/// scrollable offsets must subtract this.
+const BODY_TOP_PAD: f32 = 56.0;
 const TREE_INDENT: f32 = 14.0;
 const SCROLLER_FADE_MS: u64 = 1200;
 const SIDEBAR_MIN: f32 = 160.0;
@@ -193,6 +305,13 @@ pub enum Message {
     /// `RestoreBodyScroll(y)` uses absolute px offset.
     RestoreBodySnap(f32),
     RestoreBodyScroll(f32),
+    /// Real laid-out heights for windowed blocks, harvested by a widget
+    /// operation after a virt-window rebuild. Feeds `HeightCache` so prefix
+    /// estimates converge to real geometry. The `f32` is the body offset at
+    /// dispatch time: scroll-anchoring compensation is only valid if the
+    /// viewport hasn't moved since (a nav jump in between would make the
+    /// compensation fight the landing).
+    BlockHeightsMeasured(Vec<(crate::ast::BlockId, f32)>, f32),
     ToastExpire(u64),
     /// An update was downloaded + verified and is ready to install.
     UpdateAvailable(crate::update::ReadyUpdate),
@@ -213,6 +332,7 @@ pub enum Message {
     MindmapSelectLeaf(crate::ast::BlockId),
     MindmapDeselect,
     MindmapNavigate(MindmapDir),
+    MindmapPanelSettle(u64),
     MindmapToggleSelected,
     MindmapPanelDragStart(f32),
     MindmapPanelDragMove(f32),
@@ -315,6 +435,9 @@ pub struct App {
     /// (query edited), otherwise opens the selected hit.
     pub vault_searched_query: Option<String>,
     pub vault_results: Vec<crate::vault_search::VaultHit>,
+    /// Distinct files in `vault_results`, computed when results change so the
+    /// vault page doesn't re-scan the hit list every frame.
+    pub vault_file_count: usize,
     pub vault_truncated: bool,
     /// Monotonic request counter; a `VaultSearchDone` whose seq != this is stale.
     pub vault_seq: u64,
@@ -343,13 +466,13 @@ pub struct App {
     pub toast_seq: u64,
     pub custom_themes: Vec<crate::theme_load::CustomTheme>,
     pub theme_id: crate::theme::ThemeId,
-    pub image_cache: HashMap<String, ImageState>,
+    pub image_cache: ImageCache,
     pub zoom_url: Option<String>,
     pub view_mode: ViewMode,
     pub editor: Option<iced::widget::text_editor::Content>,
     pub dirty: bool,
-    pub edit_history: Vec<String>,
-    pub edit_redo: Vec<String>,
+    pub edit_history: crate::history::SnapshotStack,
+    pub edit_redo: crate::history::SnapshotStack,
     pub is_data_doc: bool,
     pub folded: HashSet<crate::ast::BlockId>,
     pub hovered_heading: Option<crate::ast::BlockId>,
@@ -357,11 +480,23 @@ pub struct App {
     pub mindmap_collapsed: HashSet<crate::ast::BlockId>,
     pub mindmap_panel_open: bool,
     pub mindmap_selected: Option<crate::ast::BlockId>,
+    /// What the preview panel actually renders. Lags `mindmap_selected` by a
+    /// short debounce during arrow-key navigation: rebuilding the rendered
+    /// slice (shaping + highlighting up to MIND_PANEL_MAX_BLOCKS) on every
+    /// key-repeat press churns multi-MB allocations per frame.
+    pub mindmap_panel_shown: Option<crate::ast::BlockId>,
+    /// Generation counter pairing debounce timers with the latest selection;
+    /// a stale timer's `MindmapPanelSettle` is ignored.
+    mindmap_panel_settle_gen: u64,
     pub mindmap_panel_width: f32,
     /// Current step in the ⌘⌥W width cycle (indexes `MIND_PANEL_FRACS`).
     pub mindmap_panel_step: usize,
     pub mindmap_panel_drag: Option<(f32, Option<f32>)>,
     pub mindmap_autocenter: bool,
+    /// Cached mindmap layout, lazily rebuilt from (ast, file, mindmap_collapsed).
+    /// Every mutation of those inputs must call `invalidate_mindmap_layout`.
+    /// RefCell so `view(&self)` can populate it on first read.
+    mindmap_layout: std::cell::RefCell<Option<(std::sync::Arc<Vec<crate::mindmap::MNode>>, iced::Size)>>,
     /// T3 — diagram render cache. T4 will populate it from a pre-walk +
     /// `iced::Task::perform` of `diagram::render_blocking`.
     pub diagram_cache: crate::diagram::DiagramCache,
@@ -385,6 +520,20 @@ pub struct App {
     /// `apply_goto` which can't perform scroll math during the IPC handler
     /// without re-entering `update`.
     pub queued_snap: Option<f32>,
+    /// Precise-landing companion to `queued_snap`: after the estimate snap,
+    /// run a widget operation that centers this block from its real laid-out
+    /// bounds (the virt window around it was rebuilt by `apply_goto`).
+    pub queued_goto: Option<crate::ast::BlockId>,
+    /// Windowed-rendering state for the body (display list, prefix sums,
+    /// rendered range + hysteresis band). Rebuilt only in `update` — on doc
+    /// load/reparse, fold changes, font changes, measured-height feedback,
+    /// goto jumps, and scroll-band exits — and read by `view`/`render`.
+    pub(crate) virt_window: crate::virt::VirtWindow,
+    /// AST index of an in-flight navigation target. While set, a band-exit
+    /// rebuild recenters the window on the target instead of the raw offset,
+    /// so the estimate snap can't evict the block the precise scroll op needs.
+    /// Cleared on the first scroll event after the jump.
+    pub(crate) nav_anchor: Option<usize>,
     /// User preferences (persisted to `~/.config/mdv/prefs.json`).
     pub prefs: crate::prefs::Prefs,
     /// A downloaded + verified update awaiting user-initiated install. Drives
@@ -436,6 +585,7 @@ impl Default for App {
             vault_query: String::new(),
             vault_searched_query: None,
             vault_results: Vec::new(),
+            vault_file_count: 0,
             vault_truncated: false,
             vault_seq: 0,
             vault_cursor: 0,
@@ -458,13 +608,13 @@ impl Default for App {
             toast_seq: 0,
             custom_themes: Vec::new(),
             theme_id: crate::theme::ThemeId::Preset(preset),
-            image_cache: HashMap::new(),
+            image_cache: ImageCache::default(),
             zoom_url: None,
             view_mode: ViewMode::Rendered,
             editor: None,
             dirty: false,
-            edit_history: Vec::new(),
-            edit_redo: Vec::new(),
+            edit_history: crate::history::SnapshotStack::default(),
+            edit_redo: crate::history::SnapshotStack::default(),
             is_data_doc: false,
             folded: HashSet::new(),
             hovered_heading: None,
@@ -472,16 +622,22 @@ impl Default for App {
             mindmap_collapsed: HashSet::new(),
             mindmap_panel_open: false,
             mindmap_selected: None,
+            mindmap_panel_shown: None,
+            mindmap_panel_settle_gen: 0,
             mindmap_panel_width: MIND_PANEL_DEFAULT,
             mindmap_panel_step: 0,
             mindmap_panel_drag: None,
             mindmap_autocenter: true,
+            mindmap_layout: std::cell::RefCell::new(None),
             diagram_cache: crate::diagram::DiagramCache::new(64),
             diagram_theme_id: 0,
             zoom_diagram: None,
             block_lines: Vec::new(),
             pending_nav: None,
             queued_snap: None,
+            queued_goto: None,
+            virt_window: crate::virt::VirtWindow::default(),
+            nav_anchor: None,
             prefs,
             pending_update: None,
         }
@@ -569,12 +725,11 @@ impl App {
         scroll_vault_to_match(self.vault_cursor)
     }
 
-    fn scroll_tree_to_cursor(&self) -> Task<Message> {
+    /// Edge-scroll the sidebar tree to the cursor. Takes the flattened row
+    /// count from the caller (`TreeMove` already flattens for clamping) so the
+    /// tree isn't flattened twice per keystroke.
+    fn scroll_tree_to_cursor_with_len(&self, total: usize) -> Task<Message> {
         const ROW_H: f32 = 26.0;
-        let Some(root) = &self.workspace_tree else {
-            return Task::none();
-        };
-        let total = tree::flatten(root, &self.expanded).len();
         if total == 0 {
             return Task::none();
         }
@@ -604,14 +759,24 @@ impl App {
     }
 
     fn scroll_overlay_to_cursor(&self) -> Task<Message> {
+        let len = match self.overlay {
+            Overlay::FileFinder => self.filtered_files().len(),
+            Overlay::Command => self.filtered_commands().len(),
+            Overlay::ThemePicker => self.filtered_themes().len(),
+            Overlay::FolderPicker => self.picker.as_ref().map(|p| p.entries.len()).unwrap_or(0),
+            Overlay::None | Overlay::ImageZoom | Overlay::Shortcuts => 0,
+        };
+        self.scroll_overlay_to_cursor_with_len(len)
+    }
+
+    /// `scroll_overlay_to_cursor` for callers that already computed the
+    /// filtered list length this update (`OverlayMove` does, every arrow key).
+    fn scroll_overlay_to_cursor_with_len(&self, len: usize) -> Task<Message> {
         let (total, row_h) = match self.overlay {
-            Overlay::FileFinder => (self.filtered_files().len().min(80), 32.0),
-            Overlay::Command => (self.filtered_commands().len(), 32.0),
-            Overlay::ThemePicker => (self.filtered_themes().len(), 32.0),
-            Overlay::FolderPicker => (
-                self.picker.as_ref().map(|p| p.entries.len()).unwrap_or(0),
-                33.0,
-            ),
+            // FileFinder renders at most 80 rows; scroll math matches.
+            Overlay::FileFinder => (len.min(80), 32.0),
+            Overlay::Command | Overlay::ThemePicker => (len, 32.0),
+            Overlay::FolderPicker => (len, 33.0),
             Overlay::None | Overlay::ImageZoom | Overlay::Shortcuts => (0, 32.0),
         };
         if total == 0 {
@@ -750,6 +915,58 @@ impl App {
         Task::done(Message::RestoreBodySnap(rel.clamp(0.0, 1.0)))
     }
 
+    /// Body-relative scroll offset (px past the top of the rendered column).
+    fn body_offset(&self) -> f32 {
+        self.body_viewport
+            .as_ref()
+            .map(|v| (v.absolute_offset().y - BODY_TOP_PAD).max(0.0))
+            .unwrap_or(0.0)
+    }
+
+    /// Body viewport height, falling back to the window height before the
+    /// first scroll event has reported real bounds.
+    fn body_viewport_h(&self) -> f32 {
+        self.body_viewport
+            .as_ref()
+            .map(|v| v.bounds().height)
+            .or(self.window_size.map(|s| s.height))
+            .unwrap_or(1000.0)
+    }
+
+    /// Rebuild the virt window around the current scroll position.
+    fn rebuild_virt_here(&mut self) {
+        let offset = self.body_offset();
+        let vh = self.body_viewport_h();
+        self.virt_window
+            .rebuild(&self.ast, &self.folded, &self.height_cache, offset, vh);
+    }
+
+    /// Rebuild the virt window centered on an AST block (goto/search jumps),
+    /// so the target is materialized before a precise scroll operation runs.
+    fn rebuild_virt_around_block(&mut self, ast_idx: usize) {
+        let vh = self.body_viewport_h();
+        self.virt_window
+            .rebuild_around(&self.ast, &self.folded, &self.height_cache, ast_idx, vh);
+    }
+
+    /// Widget operation harvesting real laid-out heights for the windowed
+    /// blocks. Dispatch after window rebuilds (NOT from the measurement
+    /// handler itself — that would loop).
+    fn measure_window_heights(&self) -> Task<Message> {
+        if !self.virt_window.active {
+            return Task::none();
+        }
+        let (s, e) = self.virt_window.range;
+        let targets: std::collections::HashMap<iced::widget::Id, crate::ast::BlockId> = self
+            .virt_window
+            .display[s.min(self.virt_window.display.len())..e.min(self.virt_window.display.len())]
+            .iter()
+            .filter_map(|&i| self.ast.get(i).map(|(id, _)| *id))
+            .map(|id| (crate::render::block_anchor_id(id), id))
+            .collect();
+        measure_block_heights(targets, self.body_offset())
+    }
+
     fn scroll_to_current_match(&mut self) -> Task<Message> {
         let Some(m) = self.matches.get(self.match_idx) else {
             return Task::none();
@@ -763,6 +980,13 @@ impl App {
         // then absent from the widget tree — the scroll Operation would find
         // nothing and silently no-op. Reveal it first.
         self.unfold_to_reveal(block_idx);
+        // Materialize the target before the scroll operation traverses the
+        // tree — an off-window block has no widget for the op to find. No
+        // measure pass here: it would compute scroll-anchoring against the
+        // pre-jump offset and fight the landing; the post-landing BodyScrolled
+        // band-exit measures instead.
+        self.rebuild_virt_around_block(block_idx);
+        self.nav_anchor = Some(block_idx);
         // Use real laid-out widget bounds via the scroll operation rather than
         // height estimates, which diverge from the actual layout (code blocks,
         // images, diagrams, math) and left the match offscreen.
@@ -812,6 +1036,8 @@ impl App {
         // otherwise no-op. Switch to Rendered (and reveal the target if folded).
         self.view_mode = ViewMode::Rendered;
         self.unfold_to_reveal(idx);
+        self.rebuild_virt_around_block(idx);
+        self.nav_anchor = Some(idx);
         scroll_block_to_top(id)
     }
 
@@ -827,6 +1053,27 @@ impl App {
         Some(vec![(crate::ast::BlockId(0), block)])
     }
 
+    /// Cached `mindmap::build_layout` result, rebuilt on first read after an
+    /// invalidation. Pure function of (ast, file, mindmap_collapsed); see the
+    /// field doc on `mindmap_layout` for the invalidation contract.
+    fn mindmap_layout(&self) -> (std::sync::Arc<Vec<crate::mindmap::MNode>>, iced::Size) {
+        let mut cache = self.mindmap_layout.borrow_mut();
+        if cache.is_none() {
+            let (nodes, size) = crate::mindmap::build_layout(
+                &self.ast,
+                self.file.as_deref(),
+                &self.mindmap_collapsed,
+            );
+            *cache = Some((std::sync::Arc::new(nodes), size));
+        }
+        let (nodes, size) = cache.as_ref().unwrap();
+        (std::sync::Arc::clone(nodes), *size)
+    }
+
+    fn invalidate_mindmap_layout(&self) {
+        *self.mindmap_layout.borrow_mut() = None;
+    }
+
     /// Select root's first child if nothing is selected, opening the preview
     /// panel. Called on mindmap toggle-on and on file load while in mindmap
     /// mode, so a freshly opened document focuses its first heading.
@@ -834,14 +1081,14 @@ impl App {
         if self.view_mode != ViewMode::Mindmap || self.mindmap_selected.is_some() {
             return;
         }
-        let (nodes, _) =
-            crate::mindmap::build_layout(&self.ast, self.file.as_deref(), &self.mindmap_collapsed);
+        let (nodes, _) = self.mindmap_layout();
         if let Some(id) = nodes
             .first()
             .and_then(|root| root.children.first().copied())
             .and_then(|idx| nodes[idx].id)
         {
             self.mindmap_selected = Some(id);
+            self.mindmap_panel_shown = Some(id);
             self.mindmap_panel_open = true;
         }
     }
@@ -857,6 +1104,9 @@ impl App {
     /// Shared by `reparse_source` (post-edit) and the `FileLoaded` handler so a
     /// `.tex` file can't render correctly on load then revert to markdown on edit.
     fn load_ast_from_source(&mut self) {
+        // Covers every `self.ast` write below; `self.file` and
+        // `mindmap_collapsed` writes in FileLoaded happen before this call.
+        self.invalidate_mindmap_layout();
         if let Some(ast) = self.synthesize_data_ast() {
             self.ast = ast;
             // Data docs are one synthesized block at line 1; reset block_lines
@@ -864,6 +1114,7 @@ impl App {
             // line-nav.
             self.block_lines = vec![1];
             self.outline_sections.clear();
+            self.rebuild_virt_here();
             return;
         }
         let is_tex = is_tex_path(self.file.as_deref());
@@ -890,7 +1141,35 @@ impl App {
             .map(|&b| table.line_for_byte(b as usize))
             .collect();
         self.ast = parsed;
-        self.outline_sections = crate::ipc::sections::list_sections_for(&self.source, is_tex);
+        // Reuse the parse + byte-to-line table from above instead of letting
+        // list_sections_for re-run both on the same source. Valid only while
+        // the span-fill loop above never adds/removes blocks:
+        debug_assert!(self.ast.len() == block_offsets.len());
+        self.outline_sections =
+            crate::ipc::sections::list_sections_from_ast(&self.ast, &block_offsets, &table);
+        // New AST → new display list/prefix sums. BlockIds are content-hashed,
+        // so measured heights survive for unchanged blocks across reparses.
+        self.rebuild_virt_here();
+    }
+
+    /// Evict oldest fetched images once the cache exceeds its byte budget.
+    /// Images referenced by the current document (or the open zoom modal) are
+    /// never evicted, so what's on screen never changes.
+    fn trim_image_cache(&mut self) {
+        if self.image_cache.cost_bytes() <= IMAGE_CACHE_BYTE_BUDGET {
+            return;
+        }
+        let keep: HashSet<&str> = self
+            .ast
+            .iter()
+            .filter_map(|(_, b)| match b {
+                Block::Image { url, .. } => Some(url.as_str()),
+                _ => None,
+            })
+            .chain(self.zoom_url.as_deref())
+            .collect();
+        self.image_cache
+            .trim(IMAGE_CACHE_BYTE_BUDGET, |k| keep.contains(k));
     }
 
     /// Walk the current AST and dispatch a background render for every
@@ -1043,7 +1322,7 @@ impl App {
         panel_width: f32,
     ) -> Element<'_, Message> {
         let pal_c = *pal;
-        let content: Element<'_, Message> = match self.mindmap_selected {
+        let content: Element<'_, Message> = match self.mindmap_panel_shown {
             None => container(
                 text("Click a leaf heading to see its content")
                     .color(pal.muted)
@@ -1058,8 +1337,8 @@ impl App {
                         pal,
                         &self.typography,
                         hl,
-                        self.body_viewport.as_ref(),
-                        &self.height_cache,
+                        // Bounded slice in its own scrollable — never windowed.
+                        None,
                         &self.image_cache,
                         self.file.as_deref(),
                         &self.folded,
@@ -1222,7 +1501,15 @@ impl App {
             // Drain any pending IPC-driven scroll BEFORE dispatching the new
             // message so the snap lands before further state mutation.
             // The new message is requeued via a follow-up task.
-            return Task::batch([Task::done(Message::RestoreBodySnap(rel)), Task::done(msg)]);
+            let mut tasks = vec![Task::done(Message::RestoreBodySnap(rel))];
+            if let Some(id) = self.queued_goto.take() {
+                // Precise pass: the estimate snap above lands near the target;
+                // this op re-lands it from real laid-out bounds (the block is
+                // materialized — apply_goto rebuilt the window around it).
+                tasks.push(scroll_block_to_center(id));
+            }
+            tasks.push(Task::done(msg));
+            return Task::batch(tasks);
         }
         match msg {
             Message::Open(p) => Task::perform(load_file(p), Message::FileLoaded),
@@ -1270,6 +1557,7 @@ impl App {
                 self.vault_query.clear();
                 self.vault_searched_query = None;
                 self.vault_results.clear();
+                self.vault_file_count = 0;
                 self.vault_truncated = false;
                 self.vault_cursor = 0;
                 self.vault_collapsed.clear();
@@ -1311,6 +1599,17 @@ impl App {
                 // Drop stale results whose query was superseded mid-scan.
                 if r.seq == self.vault_seq {
                     self.vault_results = r.hits;
+                    // Hits arrive grouped by file, so distinct files = number
+                    // of adjacent path runs (same walk the view used to do).
+                    let mut last: Option<&std::path::Path> = None;
+                    let mut n = 0;
+                    for h in &self.vault_results {
+                        if last != Some(h.path.as_path()) {
+                            n += 1;
+                            last = Some(h.path.as_path());
+                        }
+                    }
+                    self.vault_file_count = n;
                     self.vault_truncated = r.truncated;
                     self.vault_cursor = 0;
                     // New result set: drop the stale viewport so virtualization
@@ -1410,7 +1709,9 @@ impl App {
                     ImageState::Loaded(handle)
                 };
                 self.image_cache.insert(url, state);
-                Task::none()
+                self.trim_image_cache();
+                // Loaded image replaces a one-line placeholder — re-measure.
+                self.measure_window_heights()
             }
             Message::SvgRasterized(key, Ok(rgba_bytes_w_h)) => {
                 let (rgba, w, h) = rgba_bytes_w_h;
@@ -1419,9 +1720,11 @@ impl App {
                     if let ImageState::LoadedSvg { raster, .. } = entry {
                         *raster = Some(handle);
                     }
+                    self.image_cache.resync_cost();
                 } else {
                     self.image_cache.insert(key, ImageState::Loaded(handle));
                 }
+                self.trim_image_cache();
                 Task::none()
             }
             Message::SvgRasterized(key, Err(_)) => {
@@ -1458,12 +1761,14 @@ impl App {
                         }
                     }
                 }
-                Task::none()
+                self.rebuild_virt_here();
+                self.measure_window_heights()
             }
             Message::ToggleFold(id) => {
                 if self.folded.contains(&id) {
                     self.folded.remove(&id);
-                    return Task::none();
+                    self.rebuild_virt_here();
+                    return self.measure_window_heights();
                 }
                 let mut parent_level: Option<u8> = None;
                 let mut new_folds: Vec<crate::ast::BlockId> = Vec::new();
@@ -1486,7 +1791,8 @@ impl App {
                         self.folded.insert(bid);
                     }
                 }
-                Task::none()
+                self.rebuild_virt_here();
+                self.measure_window_heights()
             }
             Message::HeadingHoverEnter(id) => {
                 self.hovered_heading = Some(id);
@@ -1501,18 +1807,30 @@ impl App {
             Message::FontSizeUp => {
                 let size = self.adjust_font_scale(1.1);
                 self.height_cache.clear();
-                self.show_toast(format!("Font {:.0} px", size))
+                self.rebuild_virt_here();
+                Task::batch([
+                    self.measure_window_heights(),
+                    self.show_toast(format!("Font {:.0} px", size)),
+                ])
             }
             Message::FontSizeDown => {
                 let size = self.adjust_font_scale(1.0 / 1.1);
                 self.height_cache.clear();
-                self.show_toast(format!("Font {:.0} px", size))
+                self.rebuild_virt_here();
+                Task::batch([
+                    self.measure_window_heights(),
+                    self.show_toast(format!("Font {:.0} px", size)),
+                ])
             }
             Message::FontSizeReset => {
                 self.font_scale = 1.0;
                 self.typography = self.typography_base;
                 self.height_cache.clear();
-                self.show_toast("Font reset".to_string())
+                self.rebuild_virt_here();
+                Task::batch([
+                    self.measure_window_heights(),
+                    self.show_toast("Font reset".to_string()),
+                ])
             }
             Message::ToggleFooter => {
                 self.show_footer = !self.show_footer;
@@ -1602,25 +1920,24 @@ impl App {
                 } else {
                     self.mindmap_collapsed.insert(id);
                 }
+                self.invalidate_mindmap_layout();
                 Task::none()
             }
             Message::MindmapSelectLeaf(id) => {
                 self.mindmap_selected = Some(id);
+                self.mindmap_panel_shown = Some(id);
                 self.mindmap_panel_open = true;
                 Task::none()
             }
             Message::MindmapDeselect => {
                 self.mindmap_selected = None;
+                self.mindmap_panel_shown = None;
                 self.mindmap_panel_open = false;
                 self.mindmap_panel_drag = None;
                 Task::none()
             }
             Message::MindmapNavigate(dir) => {
-                let (nodes, _) = crate::mindmap::build_layout(
-                    &self.ast,
-                    self.file.as_deref(),
-                    &self.mindmap_collapsed,
-                );
+                let (nodes, _) = self.mindmap_layout();
                 // Build parent index.
                 let mut parents: Vec<Option<usize>> = vec![None; nodes.len()];
                 for (i, n) in nodes.iter().enumerate() {
@@ -1664,9 +1981,14 @@ impl App {
                         if !n.children.is_empty() {
                             n.children.first().copied()
                         } else if n.has_hidden_children {
-                            // Expand the collapsed node, then on next press right will descend.
+                            // First Right on a collapsed node expands it (and
+                            // invalidates the layout cache); we keep using the
+                            // pre-expand `nodes` for the rest of this handler
+                            // and return None, so the SECOND Right press sees
+                            // the rebuilt layout's children and descends.
                             if let Some(id) = n.id {
                                 self.mindmap_collapsed.remove(&id);
+                                self.invalidate_mindmap_layout();
                             }
                             None
                         } else {
@@ -1678,7 +2000,24 @@ impl App {
                     if let Some(id) = nodes[idx].id {
                         self.mindmap_selected = Some(id);
                         self.mindmap_panel_open = true;
+                        // Debounce the panel rebuild: the selection ring moves
+                        // immediately, but the rendered slice only updates once
+                        // navigation pauses, so key-repeat doesn't re-shape the
+                        // panel content on every press.
+                        self.mindmap_panel_settle_gen =
+                            self.mindmap_panel_settle_gen.wrapping_add(1);
+                        let settle_gen = self.mindmap_panel_settle_gen;
+                        return Task::perform(
+                            tokio::time::sleep(std::time::Duration::from_millis(75)),
+                            move |_| Message::MindmapPanelSettle(settle_gen),
+                        );
                     }
+                }
+                Task::none()
+            }
+            Message::MindmapPanelSettle(settle_gen) => {
+                if settle_gen == self.mindmap_panel_settle_gen {
+                    self.mindmap_panel_shown = self.mindmap_selected;
                 }
                 Task::none()
             }
@@ -1686,6 +2025,10 @@ impl App {
                 self.mindmap_panel_open = !self.mindmap_panel_open;
                 if !self.mindmap_panel_open {
                     self.mindmap_panel_drag = None;
+                } else {
+                    // Re-opening shows the current selection without waiting
+                    // for a (possibly never-firing) settle timer.
+                    self.mindmap_panel_shown = self.mindmap_selected;
                 }
                 Task::none()
             }
@@ -1715,6 +2058,7 @@ impl App {
                     } else {
                         self.mindmap_collapsed.insert(id);
                     }
+                    self.invalidate_mindmap_layout();
                 }
                 Task::none()
             }
@@ -1755,11 +2099,9 @@ impl App {
                     let edits = action.is_edit();
                     if edits {
                         let prev = ed.text();
-                        let push = self.edit_history.last().map(|s| s != &prev).unwrap_or(true);
-                        if push {
-                            self.edit_history.push(prev);
+                        if self.edit_history.push_if_changed(prev) {
                             if self.edit_history.len() > 200 {
-                                self.edit_history.remove(0);
+                                self.edit_history.drop_oldest();
                             }
                             self.edit_redo.clear();
                         }
@@ -1932,7 +2274,7 @@ impl App {
                 }
                 let next = (self.overlay_selected as isize + d).clamp(0, len as isize - 1);
                 self.overlay_selected = next as usize;
-                self.scroll_overlay_to_cursor()
+                self.scroll_overlay_to_cursor_with_len(len)
             }
             Message::OverlayConfirm => match self.overlay {
                 Overlay::FileFinder => {
@@ -2018,12 +2360,22 @@ impl App {
                         self.tree_cursor = 0;
                     }
                 }
+                // Opening a DIFFERENT file: the body scrollable's offset gets
+                // clamped by iced on the next layout, but if the new content
+                // fits the viewport no scroll notification ever fires — the
+                // stale viewport would poison body-offset math (current-line
+                // estimate, virt window). Watcher reloads of the same file
+                // keep it, preserving scroll position.
+                if self.file.as_deref() != Some(path.as_path()) {
+                    self.body_viewport = None;
+                }
                 self.source = src;
                 self.file = Some(path);
                 self.outline_cursor = 0;
                 self.is_data_doc = data_lang_for(self.file.as_deref()).is_some();
                 self.mindmap_collapsed.clear();
                 self.mindmap_selected = None;
+                self.mindmap_panel_shown = None;
                 self.load_ast_from_source();
                 self.error = None;
                 self.rebuild_matches();
@@ -2304,7 +2656,7 @@ impl App {
                 }
                 let len_i = len as isize;
                 self.tree_cursor = ((self.tree_cursor as isize + d).rem_euclid(len_i)) as usize;
-                self.scroll_tree_to_cursor()
+                self.scroll_tree_to_cursor_with_len(len)
             }
             Message::TreeActivate => {
                 let Some(root) = &self.workspace_tree else {
@@ -2374,17 +2726,34 @@ impl App {
                 Self::scroll_id(),
                 iced::widget::scrollable::AbsoluteOffset { x: 0.0, y: dy },
             ),
-            Message::ScrollToTop => iced::widget::operation::scroll_to(
-                Self::scroll_id(),
-                iced::widget::scrollable::AbsoluteOffset { x: 0.0, y: 0.0 },
-            ),
-            Message::ScrollToBottom => iced::widget::operation::scroll_to(
-                Self::scroll_id(),
-                iced::widget::scrollable::AbsoluteOffset {
-                    x: 0.0,
-                    y: f32::MAX,
-                },
-            ),
+            Message::ScrollToTop => {
+                // Pre-position the window so the jump never lands on a spacer.
+                // No measure pass: it would anchor against the pre-jump offset.
+                let vh = self.body_viewport_h();
+                self.virt_window
+                    .rebuild(&self.ast, &self.folded, &self.height_cache, 0.0, vh);
+                iced::widget::operation::scroll_to(
+                    Self::scroll_id(),
+                    iced::widget::scrollable::AbsoluteOffset { x: 0.0, y: 0.0 },
+                )
+            }
+            Message::ScrollToBottom => {
+                let vh = self.body_viewport_h();
+                self.virt_window.rebuild(
+                    &self.ast,
+                    &self.folded,
+                    &self.height_cache,
+                    f32::MAX,
+                    vh,
+                );
+                iced::widget::operation::scroll_to(
+                    Self::scroll_id(),
+                    iced::widget::scrollable::AbsoluteOffset {
+                        x: 0.0,
+                        y: f32::MAX,
+                    },
+                )
+            }
             Message::ToggleSearch => {
                 self.search_open = !self.search_open;
                 if !self.search_open {
@@ -2437,8 +2806,30 @@ impl App {
                 Task::none()
             }
             Message::BodyScrolled(v) => {
+                // A width change reflows text, invalidating measured heights;
+                // a height change alters the window padding. Either way the
+                // window must be rebuilt around the (possibly new) offset.
+                let bounds_changed = self
+                    .body_viewport
+                    .as_ref()
+                    .is_some_and(|p| p.bounds().size() != v.bounds().size());
+                if bounds_changed {
+                    self.height_cache.clear();
+                }
                 self.body_viewport = Some(v);
                 self.last_scroll_at = Some(std::time::Instant::now());
+                let offset = self.body_offset();
+                let anchor = self.nav_anchor.take();
+                if bounds_changed || self.virt_window.needs_rebuild(offset) {
+                    // A scroll event during an in-flight nav jump comes from
+                    // the estimate snap; keep the target materialized for the
+                    // precise scroll op instead of windowing the raw offset.
+                    match anchor {
+                        Some(idx) => self.rebuild_virt_around_block(idx),
+                        None => self.rebuild_virt_here(),
+                    }
+                    return self.measure_window_heights();
+                }
                 Task::none()
             }
             Message::CopyCode(s) => {
@@ -2507,7 +2898,9 @@ impl App {
                     Err(msg) => crate::diagram::DiagramState::Err(msg),
                 };
                 self.diagram_cache.put((hash, theme_id), state);
-                Task::none()
+                // A Ready diagram replaces its faded-source placeholder with
+                // an image of a different height — refresh measured heights.
+                self.measure_window_heights()
             }
             Message::SidebarDragStart => {
                 self.sidebar_drag = Some(self.sidebar_width);
@@ -2539,6 +2932,55 @@ impl App {
                 Self::scroll_id(),
                 iced::widget::scrollable::AbsoluteOffset { x: 0.0, y },
             ),
+            Message::BlockHeightsMeasured(measured, at_offset) => {
+                let body_off = self.body_offset();
+                // Compensation is anchored to the offset the measurement was
+                // dispatched at; if the viewport moved since (nav jump, user
+                // scroll), a scroll_by would fight that movement — skip it.
+                let offset_stable = (body_off - at_offset).abs() <= 1.0;
+                let (s, e) = self.virt_window.range;
+                let mut by_id: HashMap<crate::ast::BlockId, usize> = HashMap::new();
+                for (k, &i) in self.virt_window.display
+                    [s.min(self.virt_window.display.len())..e.min(self.virt_window.display.len())]
+                    .iter()
+                    .enumerate()
+                {
+                    if let Some((bid, _)) = self.ast.get(i) {
+                        by_id.insert(*bid, s + k);
+                    }
+                }
+                let mut delta_above = 0.0f32;
+                let mut any = false;
+                for (bid, h) in measured {
+                    let Some(&dpos) = by_id.get(&bid) else { continue };
+                    let old = self.virt_window.block_height(dpos);
+                    if (h - old).abs() <= 0.5 {
+                        continue;
+                    }
+                    any = true;
+                    // Estimate error in blocks fully above the viewport shifts
+                    // everything on screen once corrected; track it so the
+                    // offset can be compensated (scroll anchoring).
+                    if self.virt_window.block_top(dpos) + old <= body_off {
+                        delta_above += h - old;
+                    }
+                    self.height_cache.set_measured(bid, h);
+                }
+                if !any {
+                    return Task::none();
+                }
+                self.rebuild_virt_here();
+                if offset_stable && delta_above.abs() > 0.5 {
+                    return iced::widget::operation::scroll_by(
+                        Self::scroll_id(),
+                        iced::widget::scrollable::AbsoluteOffset {
+                            x: 0.0,
+                            y: delta_above,
+                        },
+                    );
+                }
+                Task::none()
+            }
             Message::Noop => Task::none(),
             Message::ToggleAutoFocusOnNav => {
                 self.prefs.auto_focus_on_nav = !self.prefs.auto_focus_on_nav;
@@ -2994,6 +3436,7 @@ impl App {
                 &self.vault_query,
                 self.vault_searched_query.as_deref(),
                 &self.vault_results,
+                self.vault_file_count,
                 self.vault_cursor,
                 self.vault_truncated,
                 &self.vault_collapsed,
@@ -3027,11 +3470,7 @@ impl App {
                     .unwrap_or(0),
             };
             let body: Element<'_, Message> = if self.view_mode == ViewMode::Mindmap {
-                let (nodes, content_size) = crate::mindmap::build_layout(
-                    &self.ast,
-                    self.file.as_deref(),
-                    &self.mindmap_collapsed,
-                );
+                let (nodes, content_size) = self.mindmap_layout();
                 let program = crate::mindmap::MindmapProgram {
                     nodes,
                     content_size,
@@ -3124,8 +3563,7 @@ impl App {
                         &pal,
                         &self.typography,
                         &hl,
-                        self.body_viewport.as_ref(),
-                        &self.height_cache,
+                        Some(&self.virt_window),
                         &self.image_cache,
                         self.file.as_deref(),
                         &self.folded,
@@ -3140,8 +3578,7 @@ impl App {
                     &pal,
                     &self.typography,
                     &hl,
-                    self.body_viewport.as_ref(),
-                    &self.height_cache,
+                    Some(&self.virt_window),
                     &self.image_cache,
                     self.file.as_deref(),
                     &self.folded,
@@ -3385,7 +3822,7 @@ fn toast_overlay<'a>(text: &str, pal: Palette) -> Element<'a, Message> {
 fn image_zoom_overlay<'a>(
     url: Option<&'a str>,
     diagram: Option<&iced::widget::image::Handle>,
-    cache: &HashMap<String, ImageState>,
+    cache: &ImageCache,
     pal: Palette,
 ) -> Element<'a, Message> {
     use iced::widget::image::viewer;
@@ -3656,6 +4093,54 @@ fn scroll_block_to_center(id: crate::ast::BlockId) -> Task<Message> {
         content_top: None,
         view_h: 0.0,
         target_y: None,
+    })
+}
+
+/// Harvest real laid-out heights for the given anchored block containers.
+/// Feeds the virt-window `HeightCache` so prefix estimates converge.
+fn measure_block_heights(
+    targets: HashMap<iced::widget::Id, crate::ast::BlockId>,
+    at_offset: f32,
+) -> Task<Message> {
+    struct MeasureHeights {
+        targets: HashMap<iced::widget::Id, crate::ast::BlockId>,
+        at_offset: f32,
+        out: Vec<(crate::ast::BlockId, f32)>,
+    }
+
+    impl iced::advanced::widget::Operation<Message> for MeasureHeights {
+        fn traverse(
+            &mut self,
+            operate: &mut dyn FnMut(&mut dyn iced::advanced::widget::Operation<Message>),
+        ) {
+            operate(self);
+        }
+
+        fn container(&mut self, id: Option<&iced::widget::Id>, bounds: iced::Rectangle) {
+            if let Some(bid) = id.and_then(|i| self.targets.get(i)) {
+                self.out.push((*bid, bounds.height));
+            }
+        }
+
+        fn finish(&self) -> iced::advanced::widget::operation::Outcome<Message> {
+            if self.out.is_empty() {
+                iced::advanced::widget::operation::Outcome::None
+            } else {
+                iced::advanced::widget::operation::Outcome::Some(Message::BlockHeightsMeasured(
+                    self.out.clone(),
+                    self.at_offset,
+                ))
+            }
+        }
+    }
+
+    if targets.is_empty() {
+        return Task::none();
+    }
+    iced::advanced::widget::operate(MeasureHeights {
+        targets,
+        at_offset,
+        out: Vec::new(),
     })
 }
 
@@ -4517,6 +5002,8 @@ fn vault_search_page<'a>(
     query: &'a str,
     searched_query: Option<&str>,
     hits: &'a [crate::vault_search::VaultHit],
+    // Distinct files in `hits`; computed once in VaultSearchDone.
+    file_count: usize,
     cursor: usize,
     truncated: bool,
     collapsed: &HashSet<PathBuf>,
@@ -4524,18 +5011,6 @@ fn vault_search_page<'a>(
     viewport: Option<&iced::widget::scrollable::Viewport>,
     pal: Palette,
 ) -> Element<'a, Message> {
-    // Query bar: input + "N matches in M files".
-    let file_count = {
-        let mut last: Option<&std::path::Path> = None;
-        let mut n = 0;
-        for h in hits {
-            if last != Some(h.path.as_path()) {
-                n += 1;
-                last = Some(h.path.as_path());
-            }
-        }
-        n
-    };
     // The displayed results reflect `searched_query`; if the live `query` has
     // since been edited, prompt for Enter rather than showing a stale count.
     let edited = searched_query != Some(query);
@@ -5677,12 +6152,17 @@ fn apply_goto(
     let Some(idx) = crate::ipc::lines::block_for_line(target_line, &app.block_lines) else {
         return Response::err(id, "no blocks");
     };
-    let Some((block_top, block_h)) =
-        crate::virt::estimated_block_position(&app.ast, &app.height_cache, idx)
-    else {
+    // Reveal a fold-hidden target (mirrors search nav) and materialize its
+    // window so the precise scroll op queued below can find its widget.
+    app.unfold_to_reveal(idx);
+    app.rebuild_virt_around_block(idx);
+    let Some(dpos) = app.virt_window.display_pos(idx) else {
         return Response::err(id, "could not locate block");
     };
-    let estimated_h = crate::virt::estimated_content_height(&app.ast, &app.height_cache);
+    let block_top = app.virt_window.block_top(dpos);
+    let block_h = app.virt_window.block_height(dpos);
+    // Body estimate + the scrollable's vertical content padding (56 top/bottom).
+    let estimated_h = app.virt_window.total_height() + 2.0 * BODY_TOP_PAD;
     let (content_h, view_h) = app
         .body_viewport
         .as_ref()
@@ -5694,9 +6174,11 @@ fn apply_goto(
         })
         .unwrap_or((estimated_h, 0.0));
     let max_scroll = (content_h - view_h).max(1.0);
-    let target = block_top + block_h * 0.5 - view_h * 0.38;
+    let target = BODY_TOP_PAD + block_top + block_h * 0.5 - view_h * 0.38;
     let rel = (target / max_scroll).clamp(0.0, 1.0);
     app.queued_snap = Some(rel);
+    app.queued_goto = app.ast.get(idx).map(|(bid, _)| *bid);
+    app.nav_anchor = Some(idx);
     crate::ipc::Response::ok(id)
 }
 
@@ -5707,22 +6189,10 @@ fn current_line_estimate(app: &App) -> Option<u32> {
     if content_h <= view_h {
         return app.block_lines.first().copied();
     }
-    let rel = v.absolute_offset().y / (content_h - view_h);
-    let est_total = crate::virt::estimated_content_height(&app.ast, &app.height_cache).max(1.0);
-    let target_px = rel * est_total;
-    let mut best: Option<u32> = None;
-    for (i, _) in app.ast.iter().enumerate() {
-        if let Some((top, _)) =
-            crate::virt::estimated_block_position(&app.ast, &app.height_cache, i)
-        {
-            if top <= target_px {
-                best = app.block_lines.get(i).copied();
-            } else {
-                break;
-            }
-        }
-    }
-    best
+    let body_off = (v.absolute_offset().y - BODY_TOP_PAD).max(0.0);
+    let dpos = app.virt_window.display_pos_at(body_off)?;
+    let ast_idx = *app.virt_window.display.get(dpos)?;
+    app.block_lines.get(ast_idx).copied()
 }
 
 fn diagram_hash_present(blocks: &[(crate::ast::BlockId, Block)], hash: u64) -> bool {
@@ -5791,5 +6261,68 @@ mod tests {
         )];
 
         assert!(diagram_hash_present(&blocks, 42));
+    }
+
+    fn loaded_image(bytes: usize) -> ImageState {
+        ImageState::Loaded(iced::widget::image::Handle::from_bytes(vec![0u8; bytes]))
+    }
+
+    #[test]
+    fn image_cache_trim_evicts_oldest_unreferenced_first() {
+        let mut cache = ImageCache::default();
+        cache.insert("a".into(), loaded_image(400));
+        cache.insert("b".into(), loaded_image(400));
+        cache.insert("c".into(), loaded_image(400));
+        assert_eq!(cache.cost_bytes(), 1200);
+        cache.trim(800, |_| false);
+        assert!(!cache.contains_key("a"), "oldest entry should evict first");
+        assert!(cache.contains_key("b"));
+        assert!(cache.contains_key("c"));
+    }
+
+    #[test]
+    fn image_cache_trim_never_evicts_kept_keys() {
+        let mut cache = ImageCache::default();
+        cache.insert("current-doc".into(), loaded_image(400));
+        cache.insert("old-doc".into(), loaded_image(400));
+        cache.trim(0, |k| k == "current-doc");
+        assert!(cache.contains_key("current-doc"));
+        assert!(!cache.contains_key("old-doc"));
+    }
+
+    #[test]
+    fn image_cache_trim_noop_under_budget() {
+        let mut cache = ImageCache::default();
+        cache.insert("a".into(), loaded_image(100));
+        cache.insert("b".into(), loaded_image(100));
+        cache.trim(1024, |_| false);
+        assert_eq!(cache.len(), 2);
+    }
+
+    #[test]
+    fn image_cache_reinsert_does_not_duplicate_order() {
+        let mut cache = ImageCache::default();
+        cache.insert("a".into(), ImageState::Loading);
+        cache.insert("a".into(), loaded_image(400));
+        cache.insert("b".into(), loaded_image(400));
+        cache.trim(500, |_| false);
+        // "a" (oldest) evicted exactly once; "b" stays.
+        assert!(!cache.contains_key("a"));
+        assert!(cache.contains_key("b"));
+        assert_eq!(cache.len(), 1);
+    }
+
+    #[test]
+    fn image_cache_svg_cost_counts_payload_twice_plus_raster() {
+        let state = ImageState::LoadedSvg {
+            svg: iced::widget::svg::Handle::from_memory(vec![0u8; 100]),
+            bytes: std::sync::Arc::new(vec![0u8; 100]),
+            raster: Some(iced::widget::image::Handle::from_rgba(
+                5,
+                5,
+                vec![0u8; 100],
+            )),
+        };
+        assert_eq!(image_state_cost(&state), 300);
     }
 }

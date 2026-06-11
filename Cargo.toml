@@ -16,7 +16,7 @@ open = "5"
 arboard = "3"
 dirs = "5"
 dark-light = "1"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "fs", "sync"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "fs", "sync", "time"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 resvg = { version = "0.45", default-features = false, features = ["text", "system-fonts"] }
 serde = { version = "1", features = ["derive"] }
