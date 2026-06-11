@@ -1,0 +1,12 @@
+// Deploys the landing site (site/) as a Cloudflare Worker with static assets.
+// `custom_domain: true` auto-creates the mdv.mclee.dev DNS record on deploy.
+{
+  "name": "mdv-site",
+  "compatibility_date": "2026-06-12",
+  "assets": {
+    "directory": "./site"
+  },
+  "routes": [
+    { "pattern": "mdv.mclee.dev", "custom_domain": true }
+  ]
+}
