@@ -20,11 +20,6 @@
   src: url('assets/fonts/jbmono-400.woff2') format('woff2');
   font-weight: 400; font-display: swap;
 }
-@font-face {
-  font-family: 'JetBrains Mono';
-  src: url('assets/fonts/jbmono-600.woff2') format('woff2');
-  font-weight: 600; font-display: swap;
-}
 /* metric-matched fallback: text lays out at Inter's metrics before the woff2
    arrives, so the swap doesn't reflow the page (was CLS 0.10 on mobile) */
 @font-face {
