@@ -25,6 +25,16 @@
   src: url('assets/fonts/jbmono-600.woff2') format('woff2');
   font-weight: 600; font-display: swap;
 }
+/* metric-matched fallback: text lays out at Inter's metrics before the woff2
+   arrives, so the swap doesn't reflow the page (was CLS 0.10 on mobile) */
+@font-face {
+  font-family: 'Inter Fallback';
+  src: local('Arial');
+  size-adjust: 107.4%;
+  ascent-override: 90.2%;
+  descent-override: 22.5%;
+  line-gap-override: 0%;
+}
 
 :root {
   /* motion tokens — editor-grade snappiness */
@@ -99,7 +109,7 @@ body {
   margin: 0;
   background: var(--bg);
   color: var(--fg);
-  font: 400 16.5px/1.65 'Inter', system-ui, -apple-system, sans-serif;
+  font: 400 16.5px/1.65 'Inter', 'Inter Fallback', system-ui, -apple-system, sans-serif;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
 }
