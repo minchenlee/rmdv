@@ -35,13 +35,21 @@
   descent-override: 22.5%;
   line-gap-override: 0%;
 }
+@font-face {
+  font-family: 'JetBrains Mono Fallback';
+  src: local('Menlo'), local('Courier New');
+  size-adjust: 99.7%;
+  ascent-override: 102%;
+  descent-override: 30%;
+  line-gap-override: 0%;
+}
 
 :root {
   /* motion tokens — editor-grade snappiness */
   --t-fast: 90ms;
   --t-med: 160ms;
   --ease: cubic-bezier(.2, .8, .2, 1);
-  --mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  --mono: 'JetBrains Mono', 'JetBrains Mono Fallback', ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 
 :root[data-theme="light"] {
