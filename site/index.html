@@ -22,6 +22,12 @@
   if (!t) t = matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
   document.documentElement.dataset.theme = t;
   document.documentElement.classList.add('js');
+  // The hero screenshot's src is JS-set per theme; preload it from the head
+  // so the fetch starts now, not when the parser reaches the <img>.
+  var l = document.createElement('link');
+  l.rel = 'preload'; l.as = 'image'; l.fetchPriority = 'high';
+  l.href = 'assets/shot-doc-' + t + '.png';
+  document.head.appendChild(l);
 })();
 </script>
 </head>
