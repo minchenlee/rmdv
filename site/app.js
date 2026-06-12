@@ -17,6 +17,8 @@
   function setTheme(t) {
     document.documentElement.dataset.theme = t;
     localStorage.setItem('mdv-theme', t);
+    const shot = $('#shot-img');
+    if (shot) shot.src = shot.dataset[t === 'dark' ? 'dark' : 'light'];
   }
   function toggleTheme() {
     const next = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark';

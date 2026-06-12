@@ -37,6 +37,7 @@
 :root[data-theme="light"] {
   --bg: rgb(250, 250, 250);
   --surface: rgb(255, 255, 255);
+  --surface-alt: rgb(240, 240, 241);
   --sidebar: rgb(245, 245, 246);
   --fg: rgb(56, 58, 66);
   /* muted/subtle darkened from the app values just enough to clear WCAG AA on --bg */
@@ -60,6 +61,7 @@
 :root[data-theme="dark"] {
   --bg: rgb(40, 44, 52);
   --surface: rgb(33, 37, 43);
+  --surface-alt: rgb(47, 52, 61);
   --sidebar: rgb(33, 37, 43);
   --fg: rgb(220, 223, 228);
   --muted: rgb(150, 156, 167);
@@ -184,25 +186,28 @@ code { font-size: .88em; background: var(--code-bg); padding: .12em .35em; borde
   display: flex; gap: 3px;
 }
 
-/* ── keycaps — square boxes, mono, like the app cheatsheet ── */
+/* ── keycaps — flat surface_alt boxes, exactly the app's kbd (app.rs key_caps) ── */
 kbd {
   display: inline-block;
-  min-width: 1.9em; padding: .14em .42em;
-  font-size: .78em; font-weight: 600; line-height: 1.5;
+  min-width: 24px; padding: 2px 7px;
+  font-size: 12px; font-weight: 400; line-height: 1.5;
   text-align: center;
   color: var(--fg);
-  background: var(--surface);
+  background: var(--surface-alt);
   border: 1px solid var(--rule);
-  border-bottom-width: 2px;
   border-radius: 5px;
   transition: transform var(--t-fast) var(--ease),
               border-color var(--t-fast) var(--ease),
               background var(--t-fast) var(--ease);
 }
+/* in cap rows: 24×24 squares like the app cheatsheet */
+.cap kbd {
+  display: inline-flex; align-items: center; justify-content: center;
+  height: 24px; padding: 0 6px;
+}
 /* visual echo when the real key is pressed */
 kbd.hit {
   transform: translateY(1px);
-  border-bottom-width: 1px;
   border-color: var(--accent);
   background: var(--selection);
 }
@@ -224,13 +229,16 @@ kbd.hit {
 }
 .hero > * { position: relative; }
 
-/* staggered load reveal — fast, one orchestrated moment */
+/* staggered load reveal — fast, one orchestrated moment.
+   Desktop only: on mobile the held opacity:0 adds straight onto LCP. */
+@media (min-width: 641px) {
 .js .hero > * { animation: rise .5s var(--ease) both; }
 .js .hero > *:nth-child(2) { animation-delay: .05s; }
 .js .hero > *:nth-child(3) { animation-delay: .1s; }
 .js .hero > *:nth-child(4) { animation-delay: .15s; }
 .js .hero > *:nth-child(5) { animation-delay: .2s; }
 .js .hero > *:nth-child(6) { animation-delay: .25s; }
+}
 @keyframes rise {
   from { opacity: 0; transform: translateY(10px); }
 }
@@ -316,19 +324,21 @@ kbd.hit {
   margin-right: 47px; /* balance the three dots */
 }
 .shot img { display: block; width: 100%; height: auto; }
-:root[data-theme="light"] .shot-dark { display: none; }
-:root[data-theme="dark"] .shot-light { display: none; }
 
 /* ── sections ────────────────────────────────── */
 section { padding: 58px 0 6px; }
 
-/* scroll reveal — subtle, fast, once */
-.js .reveal {
-  opacity: 0;
-  transform: translateY(14px);
-  transition: opacity .32s var(--ease), transform .32s var(--ease);
+/* scroll reveal — subtle, fast, once.
+   Desktop only: holding sections at opacity:0 until JS runs is pure LCP
+   render delay on throttled mobile (PSI measured ~8s on the #why text). */
+@media (min-width: 641px) {
+  .js .reveal {
+    opacity: 0;
+    transform: translateY(14px);
+    transition: opacity .32s var(--ease), transform .32s var(--ease);
+  }
+  .js .reveal.in { opacity: 1; transform: none; }
 }
-.js .reveal.in { opacity: 1; transform: none; }
 
 h2 {
   font-size: 27px; font-weight: 700; letter-spacing: -.015em;
@@ -366,10 +376,13 @@ th, td {
 tbody tr:last-child th, tbody tr:last-child td { border-bottom: 0; }
 th:first-child, td:first-child { text-align: left; color: var(--muted); }
 th { color: var(--subtle); font-weight: 600; }
+tbody th { font-weight: 400; }
 thead th:nth-child(2), tbody td:nth-child(2) {
   background: var(--selection);
   font-weight: 600;
 }
+/* the accent-tinted column needs full-contrast header text (PSI: 3.06:1 on subtle) */
+thead th:nth-child(2) { color: var(--fg); }
 td.y { color: var(--accent-text); font-weight: 700; }
 td.n, td.m { color: var(--subtle); }
 
@@ -421,19 +434,19 @@ td.n, td.m { color: var(--subtle); }
 .card h3 { margin: 0 0 6px; font-size: 15.5px; font-weight: 600; }
 .card p { margin: 0; font-size: 13.5px; color: var(--muted); line-height: 1.55; }
 
-/* keyboard rows */
-.keys, .cheat-grid {
+/* keyboard rows — caps left in a fixed column, fg labels, like the app */
+.keys {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
   gap: 8px 26px;
   margin-top: 22px;
 }
 .keyrow {
   display: flex; align-items: center; gap: 12px;
-  font-size: 14px; color: var(--muted);
-  padding: 5px 0;
+  font-size: 13.5px; color: var(--fg);
+  padding: 4px 0;
 }
-.cap { display: flex; gap: 3px; min-width: 74px; justify-content: flex-end; flex-shrink: 0; }
+.cap { display: flex; gap: 4px; min-width: 104px; justify-content: flex-start; flex-shrink: 0; }
 
 /* code blocks — fences visible, like reading the source */
 pre.code {
@@ -490,24 +503,22 @@ footer {
 }
 footer a { text-decoration: underline; }
 
-/* ── overlays (match app: centered, blurred backdrop) ── */
+/* ── overlays — scrim and frame lifted from the app (18% black, no blur) ── */
 .overlay {
   position: fixed; inset: 0; z-index: 100;
   display: flex; align-items: flex-start; justify-content: center;
-  padding: 14vh 20px 0;
-  background: rgba(0, 0, 0, 0.45);
-  -webkit-backdrop-filter: blur(3px);
-  backdrop-filter: blur(3px);
+  padding: 12vh 20px 0;
+  background: rgba(0, 0, 0, 0.18);
   animation: fade .12s var(--ease);
 }
 .overlay[hidden] { display: none; }
 @keyframes fade { from { opacity: 0; } }
 .panel {
-  width: 100%; max-width: 480px;
+  width: 100%; max-width: 560px;
   background: var(--surface);
   border: 1px solid var(--rule);
-  border-radius: 12px;
-  box-shadow: var(--shadow);
+  border-radius: 14px;
+  box-shadow: 0 14px 50px rgba(0, 0, 0, 0.28);
   overflow: hidden;
   animation: pop .14s var(--ease);
 }
@@ -516,11 +527,11 @@ footer a { text-decoration: underline; }
 }
 #palette-input {
   width: 100%;
-  padding: 14px 18px;
+  padding: 12px 16px;
   border: 0; outline: 0;
   background: transparent;
   color: var(--fg);
-  font: 400 15.5px 'Inter', system-ui, sans-serif;
+  font: 400 15px 'Inter', system-ui, sans-serif;
   border-bottom: 1px solid var(--rule);
 }
 #palette-input::placeholder { color: var(--subtle); }
@@ -530,24 +541,41 @@ footer a { text-decoration: underline; }
 }
 #palette-list li {
   display: flex; justify-content: space-between; align-items: center;
-  padding: 9px 12px;
-  border-radius: 7px;
-  font-size: 14.5px;
+  padding: 7px 12px;
+  border-radius: 6px;
+  font-size: 13.5px;
   cursor: pointer;
 }
 #palette-list li .pk { color: var(--subtle); font-size: 12px; font-family: var(--mono); }
-#palette-list li.sel {
-  background: var(--selection);
-  box-shadow: inset 2px 0 0 var(--accent);
-}
+/* selection is neutral surface_alt, like the app's pickers — no accent tint */
+#palette-list li.sel { background: var(--surface-alt); }
 #palette-list li.empty { color: var(--subtle); cursor: default; }
 
-/* cheatsheet — 3 columns, like the app's */
-.cheat-panel { max-width: 640px; padding: 22px 26px 18px; }
+/* cheatsheet — grouped 3-column layout, like the app's (app.rs shortcut overlay) */
+#cheat { align-items: center; padding: 40px 20px; }
+.cheat-panel {
+  max-width: 760px;
+  padding: 34px 40px 26px;
+  border-radius: 16px;
+  box-shadow: 0 18px 60px rgba(0, 0, 0, 0.35);
+}
 .cheat-panel:focus, .cheat-panel:focus-visible { outline: none; }
 .cheat-panel h3 { margin: 0 0 4px; font-size: 16px; }
-.cheat-grid { margin-top: 14px; grid-template-columns: repeat(3, 1fr); gap: 6px 18px; }
-.cheat-panel .fine { margin: 16px 0 2px; }
+.cheat-cols {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 0 28px;
+  margin-top: 10px;
+}
+.cheat-h {
+  margin: 18px 0 5px;
+  font-size: 11px; font-weight: 600;
+  color: var(--muted);
+}
+.cheat-col .cheat-h:first-child { margin-top: 8px; }
+.cheat-cols .cap { min-width: 88px; }
+.cheat-cols .keyrow span:last-child { white-space: nowrap; }
+.cheat-panel .fine { margin: 18px 0 2px; }
 
 /* ── responsive ──────────────────────────────── */
 @media (max-width: 640px) {
@@ -555,8 +583,9 @@ footer a { text-decoration: underline; }
   .hero { padding-top: 56px; }
   .cta { flex-wrap: wrap; }
   .hint { display: none; }
-  .cheat-grid { grid-template-columns: repeat(2, 1fr); }
+  .cheat-panel { padding: 22px 24px 16px; }
+  .cheat-cols { grid-template-columns: repeat(2, 1fr); gap: 0 20px; }
 }
 @media (max-width: 420px) {
-  .cheat-grid { grid-template-columns: 1fr; }
+  .cheat-cols { grid-template-columns: 1fr; }
 }

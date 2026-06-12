@@ -9,10 +9,10 @@
 <meta property="og:description" content="Native Rust markdown viewer. No Electron. ~150ms cold start, keyboard-first, agent-controllable.">
 <meta property="og:url" content="https://mdv.mclee.dev">
 <meta property="og:type" content="website">
-<link rel="icon" href="assets/icon.png">
+<link rel="icon" href="assets/favicon-32.png" sizes="32x32" type="image/png">
+<link rel="preconnect" href="https://api.github.com" crossorigin>
+<link rel="apple-touch-icon" href="assets/icon-180.png">
 <link rel="preload" href="assets/fonts/inter-400.woff2" as="font" type="font/woff2" crossorigin>
-<link rel="preload" href="assets/fonts/inter-600.woff2" as="font" type="font/woff2" crossorigin>
-<link rel="preload" href="assets/fonts/inter-700.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="preload" href="assets/fonts/jbmono-400.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="stylesheet" href="style.css">
 <script>
@@ -30,7 +30,7 @@
 <header class="top">
   <div class="top-inner">
     <a class="brand" href="#">
-      <img src="assets/icon.png" alt="" width="22" height="22">
+      <img src="assets/icon-64.png" alt="" width="22" height="22">
       <span>mdv</span>
     </a>
     <nav class="top-nav">
@@ -70,8 +70,16 @@
 
     <figure class="shot">
       <div class="chrome"><i></i><i></i><i></i><span>README.md — mdv</span></div>
-      <img class="shot-light" src="assets/shot-doc-light.png" alt="mdv rendering its own README: sidebar file tree, rendered markdown with syntax-highlighted code" width="1024" height="768">
-      <img class="shot-dark" src="assets/shot-doc-dark.png" alt="mdv rendering its own README: sidebar file tree, rendered markdown with syntax-highlighted code" width="1024" height="768" loading="lazy">
+      <img id="shot-img" alt="mdv rendering its own README: sidebar file tree, rendered markdown with syntax-highlighted code" width="1024" height="768" fetchpriority="high"
+           data-light="assets/shot-doc-light.png" data-dark="assets/shot-doc-dark.png">
+      <script>
+      // Only the active theme's screenshot downloads (display:none would still fetch both).
+      (function () {
+        var img = document.getElementById('shot-img');
+        img.src = img.dataset[document.documentElement.dataset.theme === 'dark' ? 'dark' : 'light'];
+      })();
+      </script>
+      <noscript><img src="assets/shot-doc-light.png" alt="mdv rendering its own README" width="1024" height="768"></noscript>
     </figure>
   </section>
 
@@ -88,13 +96,13 @@
           <tr><th></th><th>mdv</th><th>Marky</th><th>Marked&nbsp;2</th><th>Glow</th><th>Obsidian</th><th>Typora</th></tr>
         </thead>
         <tbody>
-          <tr><td>Free</td><td class="y">✓</td><td class="y">✓</td><td class="n">$14</td><td class="y">✓</td><td class="m">freemium</td><td class="n">$15</td></tr>
-          <tr><td>Open source</td><td class="y">✓</td><td class="y">✓</td><td class="n">—</td><td class="y">✓</td><td class="n">—</td><td class="n">—</td></tr>
-          <tr><td>Native, no webview</td><td class="y">✓</td><td class="m">Tauri</td><td class="y">✓</td><td class="y">✓</td><td class="n">—</td><td class="m">partial</td></tr>
-          <tr><td>Windows</td><td class="y">✓</td><td class="n">—</td><td class="n">—</td><td class="y">✓</td><td class="y">✓</td><td class="y">✓</td></tr>
-          <tr><td>Folder workspace</td><td class="y">✓</td><td class="y">✓</td><td class="n">—</td><td class="n">—</td><td class="y">✓</td><td class="n">—</td></tr>
-          <tr><td>Read-only focus</td><td class="y">✓</td><td class="y">✓</td><td class="y">✓</td><td class="y">✓</td><td class="n">—</td><td class="n">—</td></tr>
-          <tr><td>Agent-controllable (IPC)</td><td class="y">✓</td><td class="n">—</td><td class="n">—</td><td class="n">—</td><td class="n">—</td><td class="n">—</td></tr>
+          <tr><th scope="row">Free</th><td class="y">✓</td><td class="y">✓</td><td class="n">$14</td><td class="y">✓</td><td class="m">freemium</td><td class="n">$15</td></tr>
+          <tr><th scope="row">Open source</th><td class="y">✓</td><td class="y">✓</td><td class="n">—</td><td class="y">✓</td><td class="n">—</td><td class="n">—</td></tr>
+          <tr><th scope="row">Native, no webview</th><td class="y">✓</td><td class="m">Tauri</td><td class="y">✓</td><td class="y">✓</td><td class="n">—</td><td class="m">partial</td></tr>
+          <tr><th scope="row">Windows</th><td class="y">✓</td><td class="n">—</td><td class="n">—</td><td class="y">✓</td><td class="y">✓</td><td class="y">✓</td></tr>
+          <tr><th scope="row">Folder workspace</th><td class="y">✓</td><td class="y">✓</td><td class="n">—</td><td class="n">—</td><td class="y">✓</td><td class="n">—</td></tr>
+          <tr><th scope="row">Read-only focus</th><td class="y">✓</td><td class="y">✓</td><td class="y">✓</td><td class="y">✓</td><td class="n">—</td><td class="n">—</td></tr>
+          <tr><th scope="row">Agent-controllable (IPC)</th><td class="y">✓</td><td class="n">—</td><td class="n">—</td><td class="n">—</td><td class="n">—</td><td class="n">—</td></tr>
         </tbody>
       </table>
     </div>
@@ -238,7 +246,7 @@ cd mdv &amp;&amp; cargo build --release</code></pre>
 <!-- ───────────────────────── command palette -->
 <div class="overlay" id="palette" hidden>
   <div class="panel" role="dialog" aria-modal="true" aria-label="Command palette">
-    <input id="palette-input" type="text" placeholder="Type a command…" autocomplete="off" spellcheck="false"
+    <input id="palette-input" type="text" placeholder="Run a command…" autocomplete="off" spellcheck="false"
            role="combobox" aria-expanded="true" aria-controls="palette-list" aria-autocomplete="list">
     <ul id="palette-list" role="listbox" aria-label="Commands"></ul>
   </div>
@@ -248,17 +256,27 @@ cd mdv &amp;&amp; cargo build --release</code></pre>
 <div class="overlay" id="cheat" hidden>
   <div class="panel cheat-panel" role="dialog" aria-modal="true" aria-label="Keyboard shortcuts" tabindex="-1">
     <h3>Keyboard shortcuts — this page</h3>
-    <div class="cheat-grid">
-      <div class="keyrow"><span class="cap"><kbd data-key="j">j</kbd></span><span>scroll down</span></div>
-      <div class="keyrow"><span class="cap"><kbd data-key="k">k</kbd></span><span>scroll up</span></div>
-      <div class="keyrow"><span class="cap"><kbd data-key="g">g</kbd></span><span>go to top</span></div>
-      <div class="keyrow"><span class="cap"><kbd data-key="G">G</kbd></span><span>go to bottom</span></div>
-      <div class="keyrow"><span class="cap"><kbd>Space</kbd></span><span>page down</span></div>
-      <div class="keyrow"><span class="cap"><kbd>⇧</kbd><kbd>Space</kbd></span><span>page up</span></div>
-      <div class="keyrow"><span class="cap"><kbd data-mod>⌘</kbd><kbd>⇧</kbd><kbd>P</kbd></span><span>palette</span></div>
-      <div class="keyrow"><span class="cap"><kbd data-key="t">t</kbd></span><span>toggle theme</span></div>
-      <div class="keyrow"><span class="cap"><kbd data-key="?">?</kbd></span><span>cheatsheet</span></div>
-      <div class="keyrow"><span class="cap"><kbd>Esc</kbd></span><span>close overlay</span></div>
+    <div class="cheat-cols">
+      <div class="cheat-col">
+        <h4 class="cheat-h">Scroll</h4>
+        <div class="keyrow"><span class="cap"><kbd data-key="j">j</kbd></span><span>scroll down</span></div>
+        <div class="keyrow"><span class="cap"><kbd data-key="k">k</kbd></span><span>scroll up</span></div>
+        <div class="keyrow"><span class="cap"><kbd>Space</kbd></span><span>page down</span></div>
+        <div class="keyrow"><span class="cap"><kbd>⇧</kbd><kbd>Space</kbd></span><span>page up</span></div>
+      </div>
+      <div class="cheat-col">
+        <h4 class="cheat-h">Navigate</h4>
+        <div class="keyrow"><span class="cap"><kbd data-key="g">g</kbd></span><span>go to top</span></div>
+        <div class="keyrow"><span class="cap"><kbd data-key="G">G</kbd></span><span>go to bottom</span></div>
+        <h4 class="cheat-h">View</h4>
+        <div class="keyrow"><span class="cap"><kbd data-key="t">t</kbd></span><span>toggle theme</span></div>
+      </div>
+      <div class="cheat-col">
+        <h4 class="cheat-h">Help</h4>
+        <div class="keyrow"><span class="cap"><kbd data-mod>⌘</kbd><kbd>⇧</kbd><kbd>P</kbd></span><span>palette</span></div>
+        <div class="keyrow"><span class="cap"><kbd data-key="?">?</kbd></span><span>cheatsheet</span></div>
+        <div class="keyrow"><span class="cap"><kbd>Esc</kbd></span><span>close overlay</span></div>
+      </div>
     </div>
     <p class="fine">The app itself has many more — press <kbd data-mod>⌘</kbd><kbd>/</kbd> inside mdv.</p>
   </div>
