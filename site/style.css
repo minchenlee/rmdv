@@ -101,8 +101,10 @@
 /* theme swap rides the View Transition API — a fast crossfade, no slow lerp */
 ::view-transition-old(root), ::view-transition-new(root) { animation-duration: .18s; }
 
-/* j/k must scroll INSTANTLY, like the app. Smooth only where JS asks for it. */
-html { scroll-behavior: auto; }
+/* j/k must scroll INSTANTLY, like the app. Smooth only where JS asks for it.
+   overflow-x:clip kills any stray horizontal scroll from decorative overflow
+   (the hero glow) without breaking the sticky top bar like overflow:hidden would. */
+html { scroll-behavior: auto; overflow-x: clip; }
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { transition: none !important; animation: none !important; }
@@ -231,11 +233,14 @@ kbd.hit {
   padding: 76px 0 30px;
   text-align: center;
 }
+/* the decorative glow is 720px wide; clip it so it can't widen the page on
+   narrow viewports (was pushing document scrollWidth past the viewport → CLS-free
+   but horizontally-scrolling, content shoved off-screen on mobile) */
 .hero::before {
   content: '';
   position: absolute;
   top: -80px; left: 50%;
-  width: 720px; height: 420px;
+  width: min(720px, 100vw); height: 420px;
   transform: translateX(-50%);
   background: radial-gradient(closest-side, var(--glow), transparent 72%);
   pointer-events: none;
