@@ -323,7 +323,9 @@ kbd.hit {
   font-family: var(--mono);
   margin-right: 47px; /* balance the three dots */
 }
-.shot img { display: block; width: 100%; height: auto; }
+/* aspect-ratio reserves the box while #shot-img has no src yet (JS sets it
+   per theme) — without it the empty img collapses and the swap shifts layout */
+.shot img { display: block; width: 100%; height: auto; aspect-ratio: 1024 / 768; }
 
 /* ── sections ────────────────────────────────── */
 section { padding: 58px 0 6px; }
