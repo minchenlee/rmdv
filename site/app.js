@@ -252,4 +252,108 @@
 
   const paletteHint = $('#palette-hint');
   if (paletteHint) paletteHint.addEventListener('click', () => openOverlay(palette));
+
+  // ── feature carousels — snap track + buttons + dots ────
+  document.querySelectorAll('[data-carousel]').forEach((root) => {
+    const track = root.querySelector('[data-track]');
+    const slides = Array.from(track.children);
+    const prev = root.querySelector('[data-prev]');
+    const next = root.querySelector('[data-next]');
+    const dotsWrap = root.querySelector('[data-dots]');
+    if (!track || slides.length < 2) return;
+
+    let index = 0;
+
+    const dots = slides.map((_, i) => {
+      const d = document.createElement('button');
+      d.type = 'button';
+      d.setAttribute('aria-label', 'Show feature ' + (i + 1));
+      d.addEventListener('click', () => go(i));
+      dotsWrap.appendChild(d);
+      return d;
+    });
+
+    function go(i) {
+      index = Math.max(0, Math.min(slides.length - 1, i));
+      track.scrollTo({ left: slides[index].offsetLeft, behavior: reduced ? 'auto' : 'smooth' });
+      sync();
+    }
+
+    function sync() {
+      prev.disabled = index === 0;
+      next.disabled = index === slides.length - 1;
+      dots.forEach((d, i) => d.setAttribute('aria-current', i === index ? 'true' : 'false'));
+    }
+
+    prev.addEventListener('click', () => go(index - 1));
+    next.addEventListener('click', () => go(index + 1));
+
+    // keep dots/buttons in sync when the user swipes the track directly
+    let raf = 0;
+    track.addEventListener('scroll', () => {
+      if (raf) return;
+      raf = requestAnimationFrame(() => {
+        raf = 0;
+        const mid = track.scrollLeft + track.clientWidth / 2;
+        let nearest = 0, best = Infinity;
+        slides.forEach((s, i) => {
+          const c = s.offsetLeft + s.offsetWidth / 2;
+          const dist = Math.abs(c - mid);
+          if (dist < best) { best = dist; nearest = i; }
+        });
+        if (nearest !== index) { index = nearest; sync(); }
+      });
+    });
+
+    sync();
+  });
+
+  // ── image lightbox — click a slide shot to view full-size ──
+  const lightbox = $('#lightbox');
+  if (lightbox) {
+    const lbImg = $('#lightbox-img');
+    const stage = $('#lightbox-stage');
+    const closeBtn = $('#lightbox-close');
+    let lastFocus = null;
+
+    function openLightbox(src, alt) {
+      lastFocus = document.activeElement;
+      lbImg.src = src;
+      lbImg.alt = alt || '';
+      stage.classList.remove('zoomed');
+      lightbox.hidden = false;
+      requestAnimationFrame(() => lightbox.classList.add('in'));
+      closeBtn.focus();
+    }
+
+    function closeLightbox() {
+      lightbox.classList.remove('in');
+      const finish = () => {
+        lightbox.hidden = true;
+        lbImg.src = '';
+        stage.classList.remove('zoomed');
+        if (lastFocus && lastFocus.focus) lastFocus.focus();
+      };
+      // Wait for the fade-out, then hide. Fixed timeout (not transitionend)
+      // so an interrupted/absent transition can't leave it stuck open.
+      if (reduced) finish();
+      else setTimeout(finish, 180);
+    }
+
+    document.querySelectorAll('.slide-shot img').forEach((img) => {
+      img.addEventListener('click', () => openLightbox(img.currentSrc || img.src, img.alt));
+    });
+
+    // Click the image toggles native-size zoom; the stage scrolls when zoomed.
+    lbImg.addEventListener('click', (e) => {
+      e.stopPropagation();
+      stage.classList.toggle('zoomed');
+    });
+    // Click anywhere off the image (backdrop / stage padding) closes.
+    stage.addEventListener('click', closeLightbox);
+    closeBtn.addEventListener('click', closeLightbox);
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && !lightbox.hidden) { e.preventDefault(); closeLightbox(); }
+    });
+  }
 })();

@@ -212,10 +212,9 @@ kbd {
               background var(--t-fast) var(--ease);
 }
 /* adjacent inline keycaps in prose (e.g. ⌘P in a card) must not touch.
-   .cap / .hint rows space their own caps (flex gap / explicit margin), so
-   reset there to avoid double spacing. */
+   .cap rows space their own caps (flex gap), so reset there. */
 kbd + kbd { margin-left: 4px; }
-.cap kbd + kbd, .hint kbd + kbd { margin-left: 0; }
+.cap kbd + kbd { margin-left: 0; }
 /* in cap rows: 24×24 squares like the app cheatsheet */
 .cap kbd {
   display: inline-flex; align-items: center; justify-content: center;
@@ -314,8 +313,6 @@ kbd.hit {
 .btn.primary { background: var(--accent); color: var(--accent-fg); border-color: transparent; }
 .btn.primary:hover { filter: brightness(1.06); }
 .btn.small { padding: 7px 14px; font-size: 13.5px; }
-.hint { font-size: 13.5px; color: var(--subtle); text-wrap: balance; }
-.hint kbd { margin: 0 1px; }
 
 /* screenshot frame */
 .shot {
@@ -326,25 +323,8 @@ kbd.hit {
   background: var(--surface);
   box-shadow: var(--shadow);
 }
-.chrome {
-  display: flex; align-items: center; gap: 7px;
-  padding: 10px 14px;
-  border-bottom: 1px solid var(--rule);
-  background: var(--sidebar);
-}
-.chrome i {
-  width: 11px; height: 11px; border-radius: 50%;
-  background: var(--subtle); opacity: .55;
-}
-.chrome span {
-  flex: 1; text-align: center;
-  font-size: 12px; color: var(--subtle);
-  font-family: var(--mono);
-  margin-right: 47px; /* balance the three dots */
-}
-/* aspect-ratio reserves the box while #shot-img has no src yet (JS sets it
-   per theme) — without it the empty img collapses and the swap shifts layout */
-.shot img { display: block; width: 100%; height: auto; aspect-ratio: 1024 / 768; }
+/* aspect-ratio reserves the box so the image swap can't shift layout. */
+.shot img { display: block; width: 100%; height: auto; aspect-ratio: 2940 / 1758; }
 
 /* ── sections ────────────────────────────────── */
 section { padding: 58px 0 6px; }
@@ -454,6 +434,138 @@ td.n, td.m { color: var(--subtle); }
 }
 .card h3 { margin: 0 0 6px; font-size: 15.5px; font-weight: 600; }
 .card p { margin: 0; font-size: 13.5px; color: var(--muted); line-height: 1.55; }
+
+/* feature carousels — scroll-snap track, JS drives the active slide */
+.carousel { margin-top: 28px; }
+.carousel + .carousel { margin-top: 36px; }
+.carousel-label {
+  margin: 0 0 12px; font-size: 12px; font-weight: 600;
+  letter-spacing: .04em; text-transform: uppercase; color: var(--accent);
+}
+.carousel-viewport { position: relative; overflow: hidden; border-radius: 12px; }
+.carousel-track {
+  display: flex; margin: 0; padding: 0; list-style: none;
+  scroll-snap-type: x mandatory;
+  overflow-x: auto;
+  scrollbar-width: none;
+  -webkit-overflow-scrolling: touch;
+}
+.carousel-track::-webkit-scrollbar { display: none; }
+.slide {
+  flex: 0 0 100%; min-width: 0;
+  scroll-snap-align: start;
+  display: flex; flex-direction: column;
+  background: var(--surface);
+  border: 1px solid var(--rule);
+  border-radius: 12px;
+  overflow: hidden;
+}
+.slide-shot {
+  margin: 0; background: var(--bg);
+  border-bottom: 1px solid var(--rule);
+  aspect-ratio: 3 / 2;
+  display: flex; align-items: center; justify-content: center;
+}
+.slide-shot img {
+  display: block; width: 100%; height: 100%;
+  object-fit: cover; object-position: top left;
+  cursor: zoom-in;
+}
+.slide-copy { padding: 22px 26px; }
+.slide-copy h3 { margin: 0 0 8px; font-size: 17px; font-weight: 600; }
+.slide-copy p { margin: 0; font-size: 14px; color: var(--muted); line-height: 1.6; }
+
+/* floating prev/next over the image */
+.carousel-btn {
+  position: absolute; top: calc((100% - 110px) / 2); transform: translateY(-50%);
+  z-index: 2;
+  width: 38px; height: 38px; padding: 0;
+  display: grid; place-items: center;
+  font-size: 22px; line-height: 1; color: var(--fg);
+  background: color-mix(in srgb, var(--surface) 80%, transparent);
+  backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px);
+  border: 1px solid var(--rule); border-radius: 50%;
+  box-shadow: var(--shadow-sm);
+  cursor: pointer;
+  transition: border-color var(--t-fast) var(--ease), color var(--t-fast) var(--ease),
+              background var(--t-fast) var(--ease), opacity var(--t-fast) var(--ease);
+}
+.carousel-btn svg { display: block; }
+.carousel-btn--prev { left: 14px; }
+.carousel-btn--next { right: 14px; }
+.carousel-btn:hover { border-color: var(--accent); color: var(--accent); }
+.carousel-btn:disabled { opacity: 0; pointer-events: none; }
+
+.carousel-nav {
+  display: flex; align-items: center; justify-content: center;
+  margin-top: 16px;
+}
+.carousel-dots { display: flex; gap: 8px; }
+.carousel-dots button {
+  width: 8px; height: 8px; padding: 0;
+  border: 0; border-radius: 50%;
+  background: color-mix(in srgb, var(--fg) 28%, transparent);
+  cursor: pointer;
+  transition: background var(--t-fast) var(--ease), transform var(--t-fast) var(--ease);
+}
+.carousel-dots button:hover { background: color-mix(in srgb, var(--fg) 50%, transparent); }
+.carousel-dots button[aria-current="true"] {
+  background: var(--accent); transform: scale(1.25);
+}
+@media (max-width: 720px) {
+  .slide-copy { padding: 18px 20px; }
+  /* On touch, swipe + dots drive the carousel — hide the floating arrows. */
+  .carousel-btn { display: none; }
+}
+
+/* image lightbox — click a slide shot to view it full-size */
+.lightbox {
+  position: fixed; inset: 0; z-index: 100;
+  display: flex; flex-direction: column;
+  background: color-mix(in srgb, #000 82%, transparent);
+  backdrop-filter: blur(4px); -webkit-backdrop-filter: blur(4px);
+  opacity: 0; transition: opacity var(--t-fast) var(--ease);
+}
+.lightbox[hidden] { display: none; }
+.lightbox.in { opacity: 1; }
+.lightbox-stage {
+  flex: 1; min-height: 0;
+  display: flex; align-items: center; justify-content: center;
+  overflow: auto; padding: 5vmin;
+}
+.lightbox-stage img {
+  display: block;
+  max-width: 100%; max-height: 100%;
+  object-fit: contain;
+  border-radius: 8px;
+  box-shadow: 0 24px 60px rgba(0, 0, 0, .5);
+  cursor: zoom-in;
+}
+/* zoomed: show at natural width, stage scrolls */
+.lightbox-stage.zoomed { align-items: flex-start; justify-content: flex-start; }
+.lightbox-stage.zoomed img {
+  max-width: none; max-height: none;
+  width: auto; height: auto;
+  cursor: zoom-out;
+}
+.lightbox-close {
+  position: absolute; top: 16px; right: 20px; z-index: 1;
+  width: 40px; height: 40px; padding: 0;
+  display: grid; place-items: center;
+  font-size: 26px; line-height: 1; color: #fff;
+  background: rgba(255, 255, 255, .12);
+  border: 1px solid rgba(255, 255, 255, .2); border-radius: 50%;
+  cursor: pointer;
+  transition: background var(--t-fast) var(--ease);
+}
+.lightbox-close:hover { background: rgba(255, 255, 255, .24); }
+.lightbox-hint {
+  margin: 0; padding: 12px; text-align: center;
+  font-size: 12px; color: rgba(255, 255, 255, .6);
+}
+@media (max-width: 720px) {
+  .lightbox-hint { font-size: 11px; }
+}
 
 /* keyboard rows — caps left in a fixed column, fg labels, like the app */
 .keys {
@@ -603,7 +715,6 @@ footer a { text-decoration: underline; }
   .top-nav a:not(.gh) { display: none; }
   .hero { padding-top: 56px; }
   .cta { flex-wrap: wrap; }
-  .hint { display: none; }
   .cheat-panel { padding: 22px 24px 16px; }
   .cheat-cols { grid-template-columns: repeat(2, 1fr); gap: 0 20px; }
 }

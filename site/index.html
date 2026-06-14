@@ -16,6 +16,7 @@
 <link rel="preload" href="assets/fonts/inter-600.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="preload" href="assets/fonts/inter-700.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="preload" href="assets/fonts/jbmono-400.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="assets/shot-hero.webp" as="image" fetchpriority="high">
 <link rel="stylesheet" href="style.css">
 <script>
 // Set theme before first paint — no flash. Mark JS-on so motion styles apply.
@@ -24,12 +25,6 @@
   if (!t) t = matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
   document.documentElement.dataset.theme = t;
   document.documentElement.classList.add('js');
-  // The hero screenshot's src is JS-set per theme; preload it from the head
-  // so the fetch starts now, not when the parser reaches the <img>.
-  var l = document.createElement('link');
-  l.rel = 'preload'; l.as = 'image'; l.fetchPriority = 'high';
-  l.href = 'assets/shot-doc-' + t + '.png';
-  document.head.appendChild(l);
 })();
 </script>
 </head>
@@ -66,25 +61,8 @@
       <a class="btn primary" id="dl-primary" href="#install">Download</a>
       <a class="btn" href="https://github.com/minchenlee/rmdv">Source on GitHub</a>
     </div>
-    <p class="hint">
-      This page speaks rmdv: <kbd data-key="j">j</kbd><kbd data-key="k">k</kbd> scroll ·
-      <kbd data-key="g">g</kbd><kbd data-key="G">G</kbd> top/bottom ·
-      <kbd data-key="t">t</kbd> theme · <kbd data-mod>⌘</kbd><kbd>⇧</kbd><kbd>P</kbd> palette ·
-      <kbd data-key="?">?</kbd> all keys
-    </p>
-
     <figure class="shot">
-      <div class="chrome"><i></i><i></i><i></i><span>README.md — rmdv</span></div>
-      <img id="shot-img" alt="rmdv rendering its own README: sidebar file tree, rendered markdown with syntax-highlighted code" width="1024" height="768" fetchpriority="high"
-           data-light="assets/shot-doc-light.png" data-dark="assets/shot-doc-dark.png">
-      <script>
-      // Only the active theme's screenshot downloads (display:none would still fetch both).
-      (function () {
-        var img = document.getElementById('shot-img');
-        img.src = img.dataset[document.documentElement.dataset.theme === 'dark' ? 'dark' : 'light'];
-      })();
-      </script>
-      <noscript><img src="assets/shot-doc-light.png" alt="rmdv rendering its own README" width="1024" height="768"></noscript>
+      <img id="shot-img" src="assets/shot-hero.webp" alt="rmdv rendering its own README: sidebar file tree, rendered markdown with syntax-highlighted code" width="2940" height="1758" fetchpriority="high">
     </figure>
   </section>
 
@@ -132,38 +110,112 @@
   <!-- ───────────────────────── features -->
   <section id="features" class="reveal">
     <h2><span class="h-mark">##</span> Features</h2>
-    <div class="grid">
-      <div class="card">
-        <h3>Workspace browser</h3>
-        <p>Open a folder, get a file tree. Fuzzy-jump to any file with <kbd data-mod>⌘</kbd><kbd>P</kbd>.</p>
+
+    <!-- Carousel 1 — reading & rendering -->
+    <div class="carousel" data-carousel aria-roledescription="carousel" aria-label="Reading and rendering">
+      <p class="carousel-label">Reading &amp; rendering</p>
+      <div class="carousel-viewport">
+        <ul class="carousel-track" data-track>
+          <li class="slide" role="group" aria-roledescription="slide" aria-label="Workspace browser (1 of 4)">
+            <figure class="slide-shot">
+              <img src="assets/shot-workspace.webp" alt="rmdv showing a folder file tree beside a rendered document" loading="lazy" decoding="async" width="2940" height="1846">
+            </figure>
+            <div class="slide-copy">
+              <h3>Workspace browser</h3>
+              <p>Open a folder, get a file tree. Fuzzy-jump to any file with <kbd data-mod>⌘</kbd><kbd>P</kbd>.</p>
+            </div>
+          </li>
+          <li class="slide" role="group" aria-roledescription="slide" aria-label="Diagrams and math (2 of 4)">
+            <figure class="slide-shot">
+              <img src="assets/shot-diagrams.webp" alt="A Mermaid flowchart rendered natively in rmdv" loading="lazy" decoding="async" width="2940" height="1846">
+            </figure>
+            <div class="slide-copy">
+              <h3>Diagrams &amp; math</h3>
+              <p>Mermaid and Graphviz DOT render natively. Block LaTeX via a pure-Rust layout engine — zero JS, zero webview.</p>
+            </div>
+          </li>
+          <li class="slide" role="group" aria-roledescription="slide" aria-label="Tree-sitter highlighting (3 of 4)">
+            <figure class="slide-shot">
+              <img src="assets/shot-treesitter.webp" alt="Syntax-highlighted Rust and Java code blocks" loading="lazy" decoding="async" width="2940" height="1846">
+            </figure>
+            <div class="slide-copy">
+              <h3>Tree-sitter highlighting</h3>
+              <p>Rust, Python, TS, Go, C/C++, Java, SQL, Bash and more — real parsers, not regex.</p>
+            </div>
+          </li>
+          <li class="slide" role="group" aria-roledescription="slide" aria-label="Light and dark themes (4 of 4)">
+            <figure class="slide-shot">
+              <img src="assets/shot-themes.webp" alt="The demo vault shown in a light theme" loading="lazy" decoding="async" width="2940" height="1846">
+            </figure>
+            <div class="slide-copy">
+              <h3>Light / dark themes</h3>
+              <p>One Dark, GitHub, Solarized, Gruvbox, Nord, Dracula, Tokyo Night… follows the system, or press <kbd data-mod>⌘</kbd><kbd>T</kbd>.</p>
+            </div>
+          </li>
+        </ul>
+        <button type="button" class="carousel-btn carousel-btn--prev" data-prev aria-label="Previous feature">
+          <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" focusable="false"><path d="M15 5l-7 7 7 7" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
+        <button type="button" class="carousel-btn carousel-btn--next" data-next aria-label="Next feature">
+          <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" focusable="false"><path d="M9 5l7 7-7 7" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
       </div>
-      <div class="card">
-        <h3>Mindmap view</h3>
-        <p>Any document as a collapsible mindmap with <kbd data-mod>⌘</kbd><kbd>M</kbd>. Arrow keys walk the tree, preview panel follows.</p>
+      <div class="carousel-nav">
+        <div class="carousel-dots" data-dots aria-hidden="true"></div>
       </div>
-      <div class="card">
-        <h3>Diagrams &amp; math</h3>
-        <p>Mermaid and Graphviz DOT render natively. Block LaTeX via a pure-Rust layout engine — zero JS, zero webview.</p>
+    </div>
+
+    <!-- Carousel 2 — navigation & ops -->
+    <div class="carousel" data-carousel aria-roledescription="carousel" aria-label="Navigation and operations">
+      <p class="carousel-label">Navigation &amp; ops</p>
+      <div class="carousel-viewport">
+        <ul class="carousel-track" data-track>
+          <li class="slide" role="group" aria-roledescription="slide" aria-label="Mindmap view (1 of 4)">
+            <figure class="slide-shot">
+              <img src="assets/shot-mindmap.webp" alt="A JSON config file shown as a collapsible data mind map" loading="lazy" decoding="async" width="2940" height="1846">
+            </figure>
+            <div class="slide-copy">
+              <h3>Mindmap view</h3>
+              <p>Any document as a collapsible mindmap with <kbd data-mod>⌘</kbd><kbd>M</kbd>. Arrow keys walk the tree, preview panel follows.</p>
+            </div>
+          </li>
+          <li class="slide" role="group" aria-roledescription="slide" aria-label="Vault-wide search (2 of 4)">
+            <figure class="slide-shot">
+              <img src="assets/shot-search.webp" alt="A deeply nested document with outline and breadcrumb navigation" loading="lazy" decoding="async" width="2940" height="1846">
+            </figure>
+            <div class="slide-copy">
+              <h3>Vault-wide search</h3>
+              <p><kbd data-mod>⌘</kbd><kbd>⇧</kbd><kbd>F</kbd> searches every file in the workspace, Zed-style full-page results.</p>
+            </div>
+          </li>
+          <li class="slide" role="group" aria-roledescription="slide" aria-label="Live reload (3 of 4)">
+            <figure class="slide-shot">
+              <img src="assets/shot-livereload.webp" alt="A notes document with task lists and tables, updated live" loading="lazy" decoding="async" width="2940" height="1846">
+            </figure>
+            <div class="slide-copy">
+              <h3>Live reload</h3>
+              <p>Edits from your editor appear instantly. Only changed code blocks re-highlight.</p>
+            </div>
+          </li>
+          <li class="slide" role="group" aria-roledescription="slide" aria-label="Auto-update (4 of 4)">
+            <figure class="slide-shot">
+              <img src="assets/shot-autoupdate.webp" alt="The rmdv demo vault README, with the app ready to auto-update" loading="lazy" decoding="async" width="2940" height="1846">
+            </figure>
+            <div class="slide-copy">
+              <h3>Auto-update</h3>
+              <p>Checks GitHub releases, verifies SHA-256, swaps itself in place. Signed + notarized on macOS.</p>
+            </div>
+          </li>
+        </ul>
+        <button type="button" class="carousel-btn carousel-btn--prev" data-prev aria-label="Previous feature">
+          <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" focusable="false"><path d="M15 5l-7 7 7 7" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
+        <button type="button" class="carousel-btn carousel-btn--next" data-next aria-label="Next feature">
+          <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" focusable="false"><path d="M9 5l7 7-7 7" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
       </div>
-      <div class="card">
-        <h3>Tree-sitter highlighting</h3>
-        <p>Rust, Python, TS, Go, C/C++, Java, SQL, Bash and more — real parsers, not regex.</p>
-      </div>
-      <div class="card">
-        <h3>Vault-wide search</h3>
-        <p><kbd data-mod>⌘</kbd><kbd>⇧</kbd><kbd>F</kbd> searches every file in the workspace, Zed-style full-page results.</p>
-      </div>
-      <div class="card">
-        <h3>Live reload</h3>
-        <p>Edits from your editor appear instantly. Only changed code blocks re-highlight.</p>
-      </div>
-      <div class="card">
-        <h3>Light / dark themes</h3>
-        <p>One Dark, GitHub, Solarized, Gruvbox, Nord, Dracula, Tokyo Night… follows the system, or press <kbd data-mod>⌘</kbd><kbd>T</kbd>.</p>
-      </div>
-      <div class="card">
-        <h3>Auto-update</h3>
-        <p>Checks GitHub releases, verifies SHA-256, swaps itself in place. Signed + notarized on macOS.</p>
+      <div class="carousel-nav">
+        <div class="carousel-dots" data-dots aria-hidden="true"></div>
       </div>
     </div>
   </section>
@@ -240,10 +292,10 @@ cd rmdv &amp;&amp; cargo build --release</code></pre>
   <footer>
     <p>
       MIT licensed · <a href="https://github.com/minchenlee/rmdv">github.com/minchenlee/rmdv</a>
-      · <a href="https://github.com/minchenlee/rmdv/releases">releases</a>
+      · <a href="https://github.com/minchenlee/rmdv/releases">changelog</a>
       · built with <a href="https://iced.rs">Iced</a>
     </p>
-    <p class="fine">This page is hand-written HTML + CSS + 7 KB of JS. No framework. It loads the way rmdv starts.</p>
+    <p class="fine">Plain HTML + CSS + a few KB of JS. No framework. It loads the way rmdv starts.</p>
   </footer>
 
 </main>
@@ -288,6 +340,15 @@ cd rmdv &amp;&amp; cargo build --release</code></pre>
 </div>
 
 <div id="sr-status" class="sr-only" aria-live="polite"></div>
+
+<!-- ───────────────────────── image lightbox -->
+<div class="lightbox" id="lightbox" hidden>
+  <button type="button" class="lightbox-close" id="lightbox-close" aria-label="Close image">×</button>
+  <div class="lightbox-stage" id="lightbox-stage">
+    <img id="lightbox-img" alt="">
+  </div>
+  <p class="lightbox-hint">Click image to zoom · Esc to close</p>
+</div>
 
 <script src="app.js" defer></script>
 </body>

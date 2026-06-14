@@ -12,6 +12,7 @@ CLAUDE.md
 .claude/rules/
 .claude/skills/mdv-cli/
 .claude/skills/mdv-cli-workspace/
+.claude/skills/rmdv-cli/
 .agents/
 .codex/
 .gstack/
