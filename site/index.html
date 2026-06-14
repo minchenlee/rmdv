@@ -5,12 +5,32 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>rmdv — fast, beautiful markdown viewer</title>
 <meta name="description" content="Free, open-source, native markdown viewer in Rust. No Electron. Cold start in ~150ms, 10k-line docs parse in 8ms. Keyboard-first, built for humans and coding agents.">
+<meta name="author" content="Min-Chen Lee">
+<meta name="keywords" content="markdown viewer, markdown reader, rust, native app, no electron, obsidian alternative, typora alternative, glow alternative, mermaid, tree-sitter, coding agents">
+<link rel="canonical" href="https://rmdv.mclee.dev/">
+<meta name="theme-color" content="#fafafa" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#282c34" media="(prefers-color-scheme: dark)">
+<meta name="color-scheme" content="light dark">
+<!-- Open Graph -->
 <meta property="og:title" content="rmdv — fast, beautiful markdown viewer">
 <meta property="og:description" content="Native Rust markdown viewer. No Electron. ~150ms cold start, keyboard-first, agent-controllable.">
-<meta property="og:url" content="https://rmdv.mclee.dev">
+<meta property="og:url" content="https://rmdv.mclee.dev/">
 <meta property="og:type" content="website">
+<meta property="og:site_name" content="rmdv">
+<meta property="og:locale" content="en_US">
+<meta property="og:image" content="https://rmdv.mclee.dev/assets/og-cover.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:type" content="image/png">
+<meta property="og:image:alt" content="rmdv — Markdown, rendered at native speed. A native Rust markdown viewer.">
+<!-- Twitter -->
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="rmdv — fast, beautiful markdown viewer">
+<meta name="twitter:description" content="Native Rust markdown viewer. No Electron. ~150ms cold start, keyboard-first, agent-controllable.">
+<meta name="twitter:image" content="https://rmdv.mclee.dev/assets/og-cover.png">
+<meta name="twitter:image:alt" content="rmdv — Markdown, rendered at native speed.">
 <link rel="icon" href="assets/favicon-32.png" sizes="32x32" type="image/png">
-<link rel="preconnect" href="https://api.github.com" crossorigin>
+<link rel="icon" href="assets/icon-64.png" sizes="64x64" type="image/png">
 <link rel="apple-touch-icon" href="assets/icon-180.png">
 <link rel="preload" href="assets/fonts/inter-400.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="preload" href="assets/fonts/inter-600.woff2" as="font" type="font/woff2" crossorigin>
@@ -26,6 +46,34 @@
   document.documentElement.dataset.theme = t;
   document.documentElement.classList.add('js');
 })();
+</script>
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "SoftwareApplication",
+  "name": "rmdv",
+  "description": "Free, open-source, native markdown viewer written in Rust. No Electron, no webview — a ~30 MB binary that paints before fonts finish loading. Keyboard-first, agent-controllable, with tree-sitter highlighting, Mermaid/Graphviz diagrams, and a mindmap view.",
+  "url": "https://rmdv.mclee.dev/",
+  "applicationCategory": "DeveloperApplication",
+  "applicationSubCategory": "Markdown Viewer",
+  "operatingSystem": "macOS, Windows, Linux",
+  "downloadUrl": "https://github.com/minchenlee/rmdv/releases",
+  "softwareHelp": "https://github.com/minchenlee/rmdv",
+  "license": "https://opensource.org/licenses/MIT",
+  "isAccessibleForFree": true,
+  "offers": {
+    "@type": "Offer",
+    "price": "0",
+    "priceCurrency": "USD"
+  },
+  "author": {
+    "@type": "Person",
+    "name": "Min-Chen Lee",
+    "url": "https://github.com/minchenlee"
+  },
+  "image": "https://rmdv.mclee.dev/assets/og-cover.png",
+  "screenshot": "https://rmdv.mclee.dev/assets/shot-hero.webp"
+}
 </script>
 </head>
 <body>
@@ -116,7 +164,7 @@
       <p class="carousel-label">Reading &amp; rendering</p>
       <div class="carousel-viewport">
         <ul class="carousel-track" data-track>
-          <li class="slide" role="group" aria-roledescription="slide" aria-label="Workspace browser (1 of 4)">
+          <li class="slide" aria-roledescription="slide" aria-label="Workspace browser (1 of 4)">
             <figure class="slide-shot">
               <img src="assets/shot-workspace.webp" alt="rmdv showing a folder file tree beside a rendered document" loading="lazy" decoding="async" width="2940" height="1846">
             </figure>
@@ -125,7 +173,7 @@
               <p>Open a folder, get a file tree. Fuzzy-jump to any file with <kbd data-mod>⌘</kbd><kbd>P</kbd>.</p>
             </div>
           </li>
-          <li class="slide" role="group" aria-roledescription="slide" aria-label="Diagrams and math (2 of 4)">
+          <li class="slide" aria-roledescription="slide" aria-label="Diagrams and math (2 of 4)">
             <figure class="slide-shot">
               <img src="assets/shot-diagrams.webp" alt="A Mermaid flowchart rendered natively in rmdv" loading="lazy" decoding="async" width="2940" height="1846">
             </figure>
@@ -134,7 +182,7 @@
               <p>Mermaid and Graphviz DOT render natively. Block LaTeX via a pure-Rust layout engine — zero JS, zero webview.</p>
             </div>
           </li>
-          <li class="slide" role="group" aria-roledescription="slide" aria-label="Tree-sitter highlighting (3 of 4)">
+          <li class="slide" aria-roledescription="slide" aria-label="Tree-sitter highlighting (3 of 4)">
             <figure class="slide-shot">
               <img src="assets/shot-treesitter.webp" alt="Syntax-highlighted Rust and Java code blocks" loading="lazy" decoding="async" width="2940" height="1846">
             </figure>
@@ -143,7 +191,7 @@
               <p>Rust, Python, TS, Go, C/C++, Java, SQL, Bash and more — real parsers, not regex.</p>
             </div>
           </li>
-          <li class="slide" role="group" aria-roledescription="slide" aria-label="Light and dark themes (4 of 4)">
+          <li class="slide" aria-roledescription="slide" aria-label="Light and dark themes (4 of 4)">
             <figure class="slide-shot">
               <img src="assets/shot-themes.webp" alt="The demo vault shown in a light theme" loading="lazy" decoding="async" width="2940" height="1846">
             </figure>
@@ -170,7 +218,7 @@
       <p class="carousel-label">Navigation &amp; ops</p>
       <div class="carousel-viewport">
         <ul class="carousel-track" data-track>
-          <li class="slide" role="group" aria-roledescription="slide" aria-label="Mindmap view (1 of 4)">
+          <li class="slide" aria-roledescription="slide" aria-label="Mindmap view (1 of 4)">
             <figure class="slide-shot">
               <img src="assets/shot-mindmap.webp" alt="A JSON config file shown as a collapsible data mind map" loading="lazy" decoding="async" width="2940" height="1846">
             </figure>
@@ -179,7 +227,7 @@
               <p>Any document as a collapsible mindmap with <kbd data-mod>⌘</kbd><kbd>M</kbd>. Arrow keys walk the tree, preview panel follows.</p>
             </div>
           </li>
-          <li class="slide" role="group" aria-roledescription="slide" aria-label="Vault-wide search (2 of 4)">
+          <li class="slide" aria-roledescription="slide" aria-label="Vault-wide search (2 of 4)">
             <figure class="slide-shot">
               <img src="assets/shot-search.webp" alt="A deeply nested document with outline and breadcrumb navigation" loading="lazy" decoding="async" width="2940" height="1846">
             </figure>
@@ -188,7 +236,7 @@
               <p><kbd data-mod>⌘</kbd><kbd>⇧</kbd><kbd>F</kbd> searches every file in the workspace, Zed-style full-page results.</p>
             </div>
           </li>
-          <li class="slide" role="group" aria-roledescription="slide" aria-label="Live reload (3 of 4)">
+          <li class="slide" aria-roledescription="slide" aria-label="Live reload (3 of 4)">
             <figure class="slide-shot">
               <img src="assets/shot-livereload.webp" alt="A notes document with task lists and tables, updated live" loading="lazy" decoding="async" width="2940" height="1846">
             </figure>
@@ -197,7 +245,7 @@
               <p>Edits from your editor appear instantly. Only changed code blocks re-highlight.</p>
             </div>
           </li>
-          <li class="slide" role="group" aria-roledescription="slide" aria-label="Auto-update (4 of 4)">
+          <li class="slide" aria-roledescription="slide" aria-label="Auto-update (4 of 4)">
             <figure class="slide-shot">
               <img src="assets/shot-autoupdate.webp" alt="The rmdv demo vault README, with the app ready to auto-update" loading="lazy" decoding="async" width="2940" height="1846">
             </figure>

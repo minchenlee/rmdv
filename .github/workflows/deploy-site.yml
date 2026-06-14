@@ -1,0 +1,28 @@
+name: Deploy site
+
+# Ships the landing site (site/) to Cloudflare on every push to main that
+# touches it. One-time setup: add repo secrets CLOUDFLARE_API_TOKEN (a token
+# with Workers Scripts:Edit + the rmdv.mclee.dev zone's DNS edit) and
+# CLOUDFLARE_ACCOUNT_ID. Can also be run on demand from the Actions tab.
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'site/**'
+      - 'wrangler.jsonc'
+      - '.github/workflows/deploy-site.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: deploy

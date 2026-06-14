@@ -79,23 +79,44 @@
   );
 
   // ── resolve real download URLs from the latest release ─
-  // Progressive enhancement: buttons already link to the releases page.
-  fetch('https://api.github.com/repos/minchenlee/rmdv/releases/latest',
-    typeof AbortSignal.timeout === 'function' ? { signal: AbortSignal.timeout(5000) } : {})
-    .then((r) => (r.ok ? r.json() : null))
-    .then((rel) => {
-      if (!rel || !rel.assets) return;
-      document.querySelectorAll('[data-asset]').forEach((a) => {
-        const suffix = a.dataset.asset;
-        const hit = rel.assets.find((as) => as.name.endsWith(suffix));
-        if (hit) a.href = hit.browser_download_url;
-      });
-      // Primary button stays OS-agnostic: it just scrolls to the Install
-      // section (href="#install"). Only stamp the version into its label.
-      const primary = $('#dl-primary');
-      if (rel.tag_name) primary.textContent = 'Download ' + rel.tag_name;
-    })
-    .catch(() => {});
+  // Progressive enhancement: buttons already link to the releases page, so
+  // this is deferred until the visitor scrolls to Install or interacts. The
+  // GitHub API rate-limits unauthenticated callers (a 403 the browser logs as
+  // a console error); firing lazily keeps it off the initial page load.
+  let releasesResolved = false;
+  function resolveReleases() {
+    if (releasesResolved) return;
+    releasesResolved = true;
+    fetch('https://api.github.com/repos/minchenlee/rmdv/releases/latest',
+      typeof AbortSignal.timeout === 'function' ? { signal: AbortSignal.timeout(5000) } : {})
+      .then((r) => (r.ok ? r.json() : null))
+      .then((rel) => {
+        if (!rel || !rel.assets) return;
+        document.querySelectorAll('[data-asset]').forEach((a) => {
+          const suffix = a.dataset.asset;
+          const hit = rel.assets.find((as) => as.name.endsWith(suffix));
+          if (hit) a.href = hit.browser_download_url;
+        });
+        // Primary button stays OS-agnostic: it just scrolls to the Install
+        // section (href="#install"). Only stamp the version into its label.
+        const primary = $('#dl-primary');
+        if (rel.tag_name) primary.textContent = 'Download ' + rel.tag_name;
+      })
+      .catch(() => {});
+  }
+
+  const installSection = document.getElementById('install');
+  if ('IntersectionObserver' in window && installSection) {
+    const ro = new IntersectionObserver((entries) => {
+      if (entries.some((e) => e.isIntersecting)) { resolveReleases(); ro.disconnect(); }
+    });
+    ro.observe(installSection);
+  } else {
+    resolveReleases();
+  }
+  ['pointerdown', 'keydown', 'focusin'].forEach((ev) =>
+    window.addEventListener(ev, resolveReleases, { once: true, passive: true })
+  );
 
   // ── overlays ───────────────────────────────────────────
   const palette = $('#palette');
@@ -267,6 +288,9 @@
     const dots = slides.map((_, i) => {
       const d = document.createElement('button');
       d.type = 'button';
+      // Dots live in an aria-hidden container (prev/next already expose nav to
+      // assistive tech); keep them out of the tab order too.
+      d.tabIndex = -1;
       d.setAttribute('aria-label', 'Show feature ' + (i + 1));
       d.addEventListener('click', () => go(i));
       dotsWrap.appendChild(d);
