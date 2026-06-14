@@ -87,3 +87,18 @@ Screenshot each surface and inspect before claiming done.
 
 - Theme import-from-file picker and new-theme-from-template (the `import_auto` path in
   `theme_import.rs` stays unwired). User chose folder-reveal only.
+
+## Known issues / backlog
+
+- **Fullscreen sidebar gap — exit does not relayout.** The sidebar reserves 22px for
+  the macOS traffic lights when windowed and 10px in fullscreen
+  (`sidebar_titlebar_reserve_for_fullscreen`). Fullscreen state is queried via
+  `iced::window::mode(id)`, polled on Opened/Resized/Focused/Unfocused/Moved/Rescaled
+  events. ENTERING fullscreen collapses the gap correctly. EXITING does not reliably
+  relayout back to 22px — `iced::window::mode()` is async (resolves a frame later) and
+  on exit the winit `windowDidExitFullScreen:` delegate lags the events we poll on, so
+  the re-query can still report `Fullscreen`. Suspected fix: a short periodic re-poll
+  (e.g. a few `window::mode` queries over ~500ms after any window event) or dropping to
+  objc2-app-kit to read `NSWindow.styleMask & NSWindowStyleMaskFullScreen` directly.
+  Current code is harmless (enter works, exit just keeps the smaller margin until the
+  next window event) — left in place.

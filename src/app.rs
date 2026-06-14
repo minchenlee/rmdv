@@ -341,7 +341,9 @@ pub enum Message {
     ToggleMindmapAutocenter,
     ToggleMindmapPanel,
     MindmapCyclePanelWidth,
-    WindowResized(iced::Size),
+    WindowResized(iced::window::Id, iced::Size),
+    RefreshWindowMode(iced::window::Id),
+    WindowModeChanged(iced::window::Mode),
     HintSelection,
     FoldChordStart,
     FoldChordCancel,
@@ -453,6 +455,9 @@ pub struct App {
     /// Latest window size, tracked via `window::resize_events` for ⌘⌥W
     /// fraction-of-window panel sizing. `None` until the first resize event.
     pub window_size: Option<iced::Size>,
+    /// True when the window is in native fullscreen, where macOS hides the
+    /// traffic-light buttons and the sidebar header needs no reserved gap.
+    pub window_fullscreen: bool,
     pub overlay_viewport: Option<iced::widget::scrollable::Viewport>,
     pub body_viewport: Option<iced::widget::scrollable::Viewport>,
     pub last_body_range: std::cell::Cell<(usize, usize)>,
@@ -596,6 +601,7 @@ impl Default for App {
             tree_viewport: None,
             outline_viewport: None,
             window_size: None,
+            window_fullscreen: false,
             overlay_viewport: None,
             body_viewport: None,
             last_body_range: std::cell::Cell::new((0, 0)),
@@ -1383,12 +1389,18 @@ impl App {
                 background: Some(pal_c.rule.into()),
                 ..Default::default()
             });
-        // Two compact rows so the pills never clip at the panel's minimum width.
-        let hint_row1 = hint_pills(&[("←↑→↓", "move"), ("Space", "fold")], pal_c);
-        let hint_row2 = hint_pills(&[("⌘⌥B", "panel"), ("⌘B", "sidebar")], pal_c);
-        let hint = container(column![hint_row1, hint_row2].spacing(6))
-            .padding(Padding::from([8, 16]))
-            .width(Length::Fill);
+        let hint = container(hint_pills(
+            &[
+                ("←↑→↓", "move"),
+                ("Space", "fold"),
+                ("⌘⌥B", "panel"),
+                ("⌘B", "sidebar"),
+            ],
+            pal_c,
+        ))
+        .padding(Padding::from([8, 16]))
+        .width(Length::Fill)
+        .clip(true);
         container(column![body, hint_divider, hint])
             .width(Length::Fixed(panel_width))
             .height(Length::Fill)
@@ -2050,8 +2062,13 @@ impl App {
                 }
                 Task::none()
             }
-            Message::WindowResized(size) => {
+            Message::WindowResized(id, size) => {
                 self.window_size = Some(size);
+                refresh_window_mode(id)
+            }
+            Message::RefreshWindowMode(id) => refresh_window_mode(id),
+            Message::WindowModeChanged(mode) => {
+                self.window_fullscreen = matches!(mode, iced::window::Mode::Fullscreen);
                 Task::none()
             }
             Message::MindmapCyclePanelWidth => {
@@ -3412,7 +3429,15 @@ impl App {
             iced::Subscription::none()
         };
         let ipc = iced::Subscription::run(ipc_subscription_stream);
-        let resize = iced::window::resize_events().map(|(_, size)| Message::WindowResized(size));
+        let window_events = iced::window::events().filter_map(|(id, event)| match event {
+            iced::window::Event::Opened { .. }
+            | iced::window::Event::Focused
+            | iced::window::Event::Unfocused
+            | iced::window::Event::Moved(_)
+            | iced::window::Event::Rescaled(_) => Some(Message::RefreshWindowMode(id)),
+            iced::window::Event::Resized(size) => Some(Message::WindowResized(id, size)),
+            _ => None,
+        });
         iced::Subscription::batch([
             dnd,
             watcher,
@@ -3421,7 +3446,7 @@ impl App {
             scroller,
             drag,
             mind_drag,
-            resize,
+            window_events,
             ipc,
         ])
     }
@@ -4403,6 +4428,10 @@ fn search_bar_view<'a>(
     .into()
 }
 
+fn refresh_window_mode(id: iced::window::Id) -> Task<Message> {
+    iced::window::mode(id).map(Message::WindowModeChanged)
+}
+
 fn sidebar_view<'a>(app: &'a App, pal: Palette) -> Element<'a, Message> {
     let recently_scrolled = app
         .last_scroll_at
@@ -4412,66 +4441,70 @@ fn sidebar_view<'a>(app: &'a App, pal: Palette) -> Element<'a, Message> {
         .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or("workspace");
+    // Title row: workspace name on the left; the Files/Outline tabs, command-palette
+    // button, and sidebar-collapse button pinned to the right beside each other.
+    let kbd_pill = |label: &'static str, pal: Palette| {
+        container(
+            text(label)
+                .size(11)
+                .color(pal.fg)
+                .shaping(iced::widget::text::Shaping::Advanced),
+        )
+        .padding(Padding::from([4, 8]))
+        .style(move |_| container::Style {
+            background: Some(pal.surface_alt.into()),
+            border: Border {
+                color: pal.rule,
+                width: 1.0,
+                radius: 5.0.into(),
+            },
+            ..Default::default()
+        })
+    };
+    let switch_tip = |inner: Element<'a, Message>| {
+        iced::widget::tooltip(
+            inner,
+            kbd_pill("← → switch", pal),
+            iced::widget::tooltip::Position::Bottom,
+        )
+    };
     let title_row = irow![
         text(ws_name.to_string().to_uppercase())
             .size(11)
             .color(pal.muted),
         Space::new().width(Length::Fill),
-        iced::widget::tooltip(
-            ghost_lu(ic::COMMAND, pal).on_press(Message::OpenCommandPalette),
-            container(
-                text("⌘⇧P")
-                    .size(11)
-                    .color(pal.fg)
-                    .shaping(iced::widget::text::Shaping::Advanced)
-            )
-            .padding(Padding::from([4, 8]))
-            .style(move |_| container::Style {
-                background: Some(pal.surface_alt.into()),
-                border: Border {
-                    color: pal.rule,
-                    width: 1.0,
-                    radius: 5.0.into(),
-                },
-                ..Default::default()
-            }),
-            iced::widget::tooltip::Position::Bottom,
-        ),
-    ]
-    .spacing(6)
-    .align_y(iced::Alignment::Center);
-
-    let tab_row = irow![
-        sidebar_tab_button(
+        switch_tip(sidebar_tab_button(
             "Files",
             app.sidebar_tab == SidebarTab::Files,
             SidebarTab::Files,
             pal
-        ),
-        sidebar_tab_button(
+        )),
+        switch_tip(sidebar_tab_button(
             "Outline",
             app.sidebar_tab == SidebarTab::Outline,
             SidebarTab::Outline,
             pal
+        )),
+        iced::widget::tooltip(
+            ghost_lu(ic::COMMAND, pal).on_press(Message::OpenCommandPalette),
+            kbd_pill("⌘⇧P", pal),
+            iced::widget::tooltip::Position::Bottom,
         ),
-        Space::new().width(Length::Fill),
-        hint_pills(&[("↑↓", "move"), ("↵", "open")], pal),
+        iced::widget::tooltip(
+            ghost_lu(ic::PANEL_LEFT_CLOSE, pal).on_press(Message::ToggleSidebar),
+            kbd_pill("⌘B", pal),
+            iced::widget::tooltip::Position::Bottom,
+        ),
     ]
     .spacing(6)
     .clip(true)
     .align_y(iced::Alignment::Center);
 
     let header = container(column![
-        Space::new().height(Length::Fixed(sidebar_titlebar_reserve())),
+        Space::new().height(Length::Fixed(sidebar_titlebar_reserve_for_fullscreen(
+            app.window_fullscreen,
+        ))),
         container(title_row)
-            .padding(Padding {
-                top: 0.0,
-                right: 14.0,
-                bottom: 8.0,
-                left: 14.0,
-            })
-            .width(Length::Fill),
-        container(tab_row)
             .padding(Padding {
                 top: 0.0,
                 right: 14.0,
@@ -6028,16 +6061,20 @@ fn slim_scroll_direction_horizontal() -> scrollable::Direction {
 
 /// Sidebar header padding. On macOS we use `fullsize_content_view`, so the
 /// traffic-light buttons overlay the top-left of the client area whenever the
-/// window is not fullscreen. Iced 0.14 exposes no way to query the current
-/// window mode, so we always reserve room for the buttons here — when truly
-/// fullscreen the extra ~22px of leading space is unused but harmless.
-fn sidebar_titlebar_reserve() -> f32 {
+/// window is not fullscreen. In fullscreen the buttons are hidden, so the large
+/// reserve collapses to a small top margin for breathing room.
+fn sidebar_titlebar_reserve_for_fullscreen(fullscreen: bool) -> f32 {
     #[cfg(target_os = "macos")]
     {
-        22.0
+        if fullscreen {
+            10.0
+        } else {
+            22.0
+        }
     }
     #[cfg(not(target_os = "macos"))]
     {
+        let _ = fullscreen;
         0.0
     }
 }
@@ -6369,6 +6406,27 @@ mod tests {
         )];
 
         assert!(diagram_hash_present(&blocks, 42));
+    }
+
+    #[test]
+    fn sidebar_titlebar_reserve_collapses_only_for_fullscreen() {
+        #[cfg(target_os = "macos")]
+        {
+            // Fullscreen keeps a small top margin but less than the windowed
+            // traffic-light reserve.
+            assert_eq!(sidebar_titlebar_reserve_for_fullscreen(true), 10.0);
+            assert_eq!(sidebar_titlebar_reserve_for_fullscreen(false), 22.0);
+            assert!(
+                sidebar_titlebar_reserve_for_fullscreen(true)
+                    < sidebar_titlebar_reserve_for_fullscreen(false)
+            );
+        }
+
+        #[cfg(not(target_os = "macos"))]
+        {
+            assert_eq!(sidebar_titlebar_reserve_for_fullscreen(true), 0.0);
+            assert_eq!(sidebar_titlebar_reserve_for_fullscreen(false), 0.0);
+        }
     }
 
     fn loaded_image(bytes: usize) -> ImageState {

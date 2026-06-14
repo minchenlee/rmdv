@@ -30,6 +30,8 @@ pub mod ic {
     pub const SUN: char = '\u{e178}';
     pub const COMMAND: char = '\u{e09a}';
     pub const PANEL_LEFT: char = '\u{e12a}';
+    /// Lucide "panel-left-close" — collapse the left sidebar.
+    pub const PANEL_LEFT_CLOSE: char = '\u{e21c}';
     pub const COPY: char = '\u{e09e}';
     /// Lucide "maximize" — used for diagram hover-zoom affordance.
     pub const ZOOM: char = '\u{e1a1}';
