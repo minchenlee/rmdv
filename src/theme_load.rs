@@ -1,4 +1,4 @@
-//! Custom theme files. Schema lives at `~/.config/mdv/themes/*.toml`
+//! Custom theme files. Schema lives at `~/.config/rmdv/themes/*.toml`
 //! (XDG-respecting via `dirs::config_dir()`).
 //!
 //! ```toml
@@ -104,7 +104,7 @@ struct TypographySection {
 /// Returns the canonical themes directory. Created lazily on first write — read
 /// paths just probe existence.
 pub fn themes_dir() -> Option<PathBuf> {
-    dirs::config_dir().map(|d| d.join("mdv").join("themes"))
+    dirs::config_dir().map(|d| d.join("rmdv").join("themes"))
 }
 
 pub fn ensure_themes_dir() -> std::io::Result<PathBuf> {
@@ -482,7 +482,7 @@ mod tests {
     fn round_trip_palette() {
         let pal = palette_for(ThemePreset::Dracula);
         let txt = write_theme_toml("Dracula Clone", true, Some("dracula"), &pal, None);
-        let dir = std::env::temp_dir().join(format!("mdv-theme-test-{}.toml", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("rmdv-theme-test-{}.toml", std::process::id()));
         std::fs::write(&dir, &txt).unwrap();
         let loaded = load_file(&dir).unwrap();
         assert_eq!(loaded.name, "Dracula Clone");

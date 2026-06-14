@@ -1,4 +1,4 @@
-# mdv
+# rmdv
 
 **Free, open-source, native, cross-platform markdown viewer.**
 
@@ -6,9 +6,9 @@ A fast, beautiful markdown reader for browsing folders of `.md` files — withou
 
 Built in Rust with [Iced](https://iced.rs/). ~16 MB binary, no Electron, no Chromium tax.
 
-## Why mdv
+## Why rmdv
 
-| | mdv | [Marky] | Marked 2 | Glow | Obsidian | Typora |
+| | rmdv | [Marky] | Marked 2 | Glow | Obsidian | Typora |
 |---|:-:|:-:|:-:|:-:|:-:|:-:|
 | Free | ✅ | ✅ | ❌ ($14) | ✅ | freemium | ❌ ($15) |
 | Open source | ✅ | ✅ | ❌ | ✅ | ❌ | ❌ |
@@ -20,7 +20,7 @@ Built in Rust with [Iced](https://iced.rs/). ~16 MB binary, no Electron, no Chro
 
 [Marky]: https://github.com/GRVYDEV/marky
 
-**[Marky](https://github.com/GRVYDEV/marky)** is the closest peer — Tauri+Rust, same viewer-only pitch, actively maintained. mdv's edges: **Windows support** (Marky is mac+Linux only) and a **pure-Rust GUI via [Iced](https://iced.rs/)** — no embedded WebView, no Chromium, no JS runtime. The whole thing renders in native widgets.
+**[Marky](https://github.com/GRVYDEV/marky)** is the closest peer — Tauri+Rust, same viewer-only pitch, actively maintained. rmdv's edges: **Windows support** (Marky is mac+Linux only) and a **pure-Rust GUI via [Iced](https://iced.rs/)** — no embedded WebView, no Chromium, no JS runtime. The whole thing renders in native widgets.
 
 ## Features
 
@@ -38,18 +38,18 @@ Built in Rust with [Iced](https://iced.rs/). ~16 MB binary, no Electron, no Chro
 
 ### macOS / Windows
 
-Download the latest installer from [Releases](https://github.com/minchenlee/mdv/releases):
+Download the latest installer from [Releases](https://github.com/minchenlee/rmdv/releases):
 
-- **macOS Apple Silicon** — `mdv_*_aarch64.dmg`
-- **macOS Intel** — `mdv_*_x64.dmg`
-- **Windows** — `mdv_*_x64-setup.exe`
+- **macOS Apple Silicon** — `rmdv_*_aarch64.dmg`
+- **macOS Intel** — `rmdv_*_x64.dmg`
+- **Windows** — `rmdv_*_x64-setup.exe`
 
 > Builds are unsigned. On macOS, right-click → Open the first time. On Windows, click "More info" → "Run anyway" past SmartScreen.
 
 ### From source
 
     cargo build --release
-    ./target/release/mdv path/to/file.md
+    ./target/release/rmdv path/to/file.md
 
 Requires Rust 1.80+.
 
@@ -70,24 +70,24 @@ Requires Rust 1.80+.
 
 ## CLI / agent control
 
-mdv is single-instance. The first invocation opens a window and an IPC
+rmdv is single-instance. The first invocation opens a window and an IPC
 listener; subsequent invocations talk to it.
 
 ```bash
 # open a file at a specific line
-mdv path/to/foo.md --line 42
+rmdv path/to/foo.md --line 42
 
 # navigate the running instance
-mdv goto --section "Install/Setup"
-mdv mode mindmap
-mdv current                          # prints JSON state
+rmdv goto --section "Install/Setup"
+rmdv mode mindmap
+rmdv current                          # prints JSON state
 
 # stateless (no running instance needed)
-mdv list-sections path/to/foo.md     # JSON array of headings
-mdv --pretty list-sections foo.md
+rmdv list-sections path/to/foo.md     # JSON array of headings
+rmdv --pretty list-sections foo.md
 ```
 
-Designed for coding agents (Claude Code, Codex) to pull mdv to the relevant
+Designed for coding agents (Claude Code, Codex) to pull rmdv to the relevant
 section of a file without manual navigation.
 
 ## Performance

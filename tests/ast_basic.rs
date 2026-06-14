@@ -1,4 +1,4 @@
-use mdv::ast::{Block, Inline};
+use rmdv::ast::{Block, Inline};
 
 #[test]
 fn paragraph_holds_inlines() {

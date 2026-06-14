@@ -1,4 +1,4 @@
-use mdv::ipc::{Cmd, FocusBehavior, Mode, Request, Response};
+use rmdv::ipc::{Cmd, FocusBehavior, Mode, Request, Response};
 use serde_json::json;
 
 #[test]
@@ -96,7 +96,7 @@ fn response_current_result_serialises() {
     assert_eq!(v["result"]["mode"], "view");
 }
 
-use mdv::ipc::lines::{block_for_line, build_byte_to_line};
+use rmdv::ipc::lines::{block_for_line, build_byte_to_line};
 
 #[test]
 fn byte_to_line_empty_source() {
@@ -156,9 +156,9 @@ fn block_for_line_duplicate_line_values_picks_first_match() {
 #[test]
 fn parser_emits_byte_offsets_aligned_with_blocks() {
     let src = "# H1\n\npara one\n\n## H2\n\npara two\n";
-    let (blocks, offsets) = mdv::parser::parse(src);
+    let (blocks, offsets) = rmdv::parser::parse(src);
     assert_eq!(blocks.len(), offsets.len());
-    let table = mdv::ipc::lines::build_byte_to_line(src);
+    let table = rmdv::ipc::lines::build_byte_to_line(src);
     let lines: Vec<u32> = offsets
         .iter()
         .map(|&b| table.line_for_byte(b as usize))
@@ -169,11 +169,11 @@ fn parser_emits_byte_offsets_aligned_with_blocks() {
     assert_eq!(lines[3], 7, "second paragraph on line 7, got {}", lines[3]);
 }
 
-use mdv::cli::{parse_from, ParsedCli};
+use rmdv::cli::{parse_from, ParsedCli};
 
 #[test]
 fn cli_bare_file_becomes_open_request() {
-    let p = parse_from(["mdv", "/abs/foo.md"]).unwrap();
+    let p = parse_from(["rmdv", "/abs/foo.md"]).unwrap();
     match p {
         ParsedCli::Request(r) => match r.cmd {
             Cmd::Open {
@@ -191,7 +191,7 @@ fn cli_bare_file_becomes_open_request() {
 #[test]
 fn cli_bare_file_with_line_and_section() {
     let p = parse_from([
-        "mdv",
+        "rmdv",
         "/abs/foo.md",
         "--line",
         "42",
@@ -216,7 +216,7 @@ fn cli_bare_file_with_line_and_section() {
 
 #[test]
 fn cli_goto_subcommand() {
-    let p = parse_from(["mdv", "goto", "--line", "10"]).unwrap();
+    let p = parse_from(["rmdv", "goto", "--line", "10"]).unwrap();
     let ParsedCli::Request(r) = p else { panic!() };
     assert!(matches!(
         r.cmd,
@@ -230,7 +230,7 @@ fn cli_goto_subcommand() {
 
 #[test]
 fn cli_mode_subcommand() {
-    let p = parse_from(["mdv", "mode", "edit"]).unwrap();
+    let p = parse_from(["rmdv", "mode", "edit"]).unwrap();
     let ParsedCli::Request(r) = p else { panic!() };
     assert!(matches!(
         r.cmd,
@@ -243,7 +243,7 @@ fn cli_mode_subcommand() {
 
 #[test]
 fn cli_goto_with_focus_flag_emits_force() {
-    let p = parse_from(["mdv", "goto", "--line", "10", "--focus"]).unwrap();
+    let p = parse_from(["rmdv", "goto", "--line", "10", "--focus"]).unwrap();
     let ParsedCli::Request(r) = p else { panic!() };
     match r.cmd {
         Cmd::Goto { focus, .. } => assert_eq!(focus, FocusBehavior::Force),
@@ -253,7 +253,7 @@ fn cli_goto_with_focus_flag_emits_force() {
 
 #[test]
 fn cli_open_with_no_focus_flag_emits_suppress() {
-    let p = parse_from(["mdv", "open", "/abs/foo.md", "--no-focus"]).unwrap();
+    let p = parse_from(["rmdv", "open", "/abs/foo.md", "--no-focus"]).unwrap();
     let ParsedCli::Request(r) = p else { panic!() };
     match r.cmd {
         Cmd::Open { focus, .. } => assert_eq!(focus, FocusBehavior::Suppress),
@@ -263,15 +263,15 @@ fn cli_open_with_no_focus_flag_emits_suppress() {
 
 #[test]
 fn cli_current_subcommand() {
-    let p = parse_from(["mdv", "current"]).unwrap();
+    let p = parse_from(["rmdv", "current"]).unwrap();
     let ParsedCli::Request(r) = p else { panic!() };
     assert!(matches!(r.cmd, Cmd::Current));
 }
 
 #[test]
 fn cli_list_sections_is_stateless() {
-    use mdv::cli::Stateless;
-    let p = parse_from(["mdv", "list-sections", "tests/fixtures/sections.md"]).unwrap();
+    use rmdv::cli::Stateless;
+    let p = parse_from(["rmdv", "list-sections", "tests/fixtures/sections.md"]).unwrap();
     match p {
         ParsedCli::Stateless(Stateless::ListSections {
             file,
@@ -285,11 +285,11 @@ fn cli_list_sections_is_stateless() {
 
 #[test]
 fn cli_no_args_is_empty() {
-    let p = parse_from(["mdv"]).unwrap();
+    let p = parse_from(["rmdv"]).unwrap();
     assert!(matches!(p, ParsedCli::Empty));
 }
 
-use mdv::ipc::sections::{list_sections, resolve_section_path, Section};
+use rmdv::ipc::sections::{list_sections, resolve_section_path, Section};
 
 #[test]
 fn list_sections_builds_paths_and_lines() {
@@ -343,7 +343,7 @@ fn resolve_section_missing_returns_none() {
     assert!(resolve_section_path("Nope", &sections).is_none());
 }
 
-use mdv::app::{is_external_link, line_for_fragment, slugify};
+use rmdv::app::{is_external_link, line_for_fragment, slugify};
 
 #[test]
 fn slugify_matches_github_style() {
@@ -380,13 +380,13 @@ fn fragment_resolves_to_heading_line() {
 
 #[test]
 fn socket_path_is_user_scoped() {
-    let p = mdv::ipc::socket::default_path();
+    let p = rmdv::ipc::socket::default_path();
     let s = p.to_string_lossy();
     #[cfg(unix)]
     assert!(
-        s.contains(&format!("mdv-{}", unsafe { libc::getuid() })),
+        s.contains(&format!("rmdv-{}", unsafe { libc::getuid() })),
         "got {s}"
     );
     #[cfg(windows)]
-    assert!(s.to_lowercase().contains("mdv"), "got {s}");
+    assert!(s.to_lowercase().contains("rmdv"), "got {s}");
 }

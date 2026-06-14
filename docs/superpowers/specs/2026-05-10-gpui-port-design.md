@@ -28,7 +28,7 @@ The Iced version on `main` is left untouched during the port; no dual-build conf
 - Drag-and-drop files or folders onto the window
 - All current keyboard shortcuts from the README
 - macOS transparent titlebar / fullsize content view
-- `MDV_BENCH_STARTUP` first-frame timing instrumentation
+- `RMDV_BENCH_STARTUP` first-frame timing instrumentation
 
 **Out of scope:** new features, redesigned UX, changes to parsing or highlighting behavior.
 
@@ -167,7 +167,7 @@ Per-block dispatch:
 - macOS: `WindowOptions { titlebar: Some(TitlebarOptions { appears_transparent: true, traffic_light_position: Some(point(px(12.), px(12.))), ..default() }), ..default() }` — preserves the current Iced `title_hidden` + `titlebar_transparent` + `fullsize_content_view` behavior.
 - Other platforms: standard titlebar.
 
-**Initial CLI argument:** parsed before `App::run`, dispatched as `Open(path)` after the first frame. The `--benchmark-startup` flag continues to set `MDV_BENCH_STARTUP=1` early, before any GPUI threads spawn.
+**Initial CLI argument:** parsed before `App::run`, dispatched as `Open(path)` after the first frame. The `--benchmark-startup` flag continues to set `RMDV_BENCH_STARTUP=1` early, before any GPUI threads spawn.
 
 **Fonts:** Inter, JetBrains Mono, and Lucide are registered via `cx.text_system().add_fonts(...)` in `main.rs`. Default font is `Inter`. Code blocks use `JetBrainsMono`. Icons use `lucide`. CJK fallback comes from the platform font system through GPUI's text system.
 
@@ -215,7 +215,7 @@ Each milestone is buildable and visually testable; each ends in one or more comm
 8. **M8 — Search-in-doc.** `cmd-f` bar, `MatchPos` highlight runs, next/prev navigation.
 9. **M9 — Live reload.** `watch.rs` refactored to push through a gpui channel; debounce preserved.
 10. **M10 — Drag and drop + links.** File drop dispatches `Open` or `OpenWorkspace`; link clicks call the `open` crate.
-11. **M11 — Polish.** Scroll position persistence, recents, packaging metadata sanity, README updates, `MDV_BENCH_STARTUP` first-frame timing wired in workspace view.
+11. **M11 — Polish.** Scroll position persistence, recents, packaging metadata sanity, README updates, `RMDV_BENCH_STARTUP` first-frame timing wired in workspace view.
 
 ## Testing
 

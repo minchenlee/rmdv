@@ -1,6 +1,6 @@
 //! Measures cold-start cost of the heavy initialization functions we control.
 //! Iced window creation isn't included (would require a real event loop); this
-//! captures the parts mdv can actually optimize: font loading, parser warmup,
+//! captures the parts rmdv can actually optimize: font loading, parser warmup,
 //! and the first markdown render path.
 
 use criterion::{criterion_group, criterion_main, Criterion};
@@ -21,7 +21,7 @@ fn parse_1mb(c: &mut Criterion) {
     let src = generate_doc(10_000);
     c.bench_function("parse_10k_lines", |b| {
         b.iter(|| {
-            let (blocks, offsets) = mdv::parser::parse(black_box(&src));
+            let (blocks, offsets) = rmdv::parser::parse(black_box(&src));
             black_box((blocks, offsets));
         });
     });

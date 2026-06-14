@@ -1,4 +1,4 @@
-//! Hand-rolled common-subset LaTeX-document parser that emits mdv's AST.
+//! Hand-rolled common-subset LaTeX-document parser that emits rmdv's AST.
 //!
 //! Covers the academic-paper subset: sectioning, inline formatting, display
 //! math (routed to `DiagramKind::Math`), lists, tabular, figures, verbatim,

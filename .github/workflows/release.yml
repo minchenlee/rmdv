@@ -85,7 +85,7 @@ jobs:
         run: |
           set -euo pipefail
           OUT="target/${{ matrix.target }}/release"
-          APP="$OUT/mdv.app"
+          APP="$OUT/rmdv.app"
           mkdir -p dist
 
           # cargo-packager produces an ad-hoc signed .app. Re-sign with the
@@ -96,8 +96,8 @@ jobs:
             codesign --force --deep --options runtime \
               --sign "$APPLE_SIGNING_IDENTITY" "$APP"
             # Notarize the .app (zipped for submission), then staple the bundle.
-            ditto -c -k --keepParent "$APP" "$RUNNER_TEMP/mdv-notarize.zip"
-            xcrun notarytool submit "$RUNNER_TEMP/mdv-notarize.zip" \
+            ditto -c -k --keepParent "$APP" "$RUNNER_TEMP/rmdv-notarize.zip"
+            xcrun notarytool submit "$RUNNER_TEMP/rmdv-notarize.zip" \
               --apple-id "$APPLE_ID" \
               --password "$APPLE_PASSWORD" \
               --team-id "$APPLE_TEAM_ID" \
@@ -109,7 +109,7 @@ jobs:
           fi
 
           # The updater payload: a tarball of the signed (+ stapled) .app.
-          tar -C "$OUT" -czf "dist/mdv_${TAG}_${ARCH}.app.tar.gz" mdv.app
+          tar -C "$OUT" -czf "dist/rmdv_${TAG}_${ARCH}.app.tar.gz" rmdv.app
 
           # Build the dmg by hand from the signed app (hdiutil preserves the
           # signature; cargo-packager's dmg path would not).
@@ -117,16 +117,16 @@ jobs:
           rm -rf "$STAGE"; mkdir -p "$STAGE"
           cp -R "$APP" "$STAGE/"
           ln -s /Applications "$STAGE/Applications"
-          hdiutil create -volname mdv -srcfolder "$STAGE" -ov -format UDZO \
-            "dist/mdv_${TAG}_${ARCH}.dmg"
+          hdiutil create -volname rmdv -srcfolder "$STAGE" -ov -format UDZO \
+            "dist/rmdv_${TAG}_${ARCH}.dmg"
           # Notarize + staple the dmg too, so the downloaded installer is clean.
           if [ -n "${APPLE_SIGNING_IDENTITY:-}" ]; then
-            xcrun notarytool submit "dist/mdv_${TAG}_${ARCH}.dmg" \
+            xcrun notarytool submit "dist/rmdv_${TAG}_${ARCH}.dmg" \
               --apple-id "$APPLE_ID" \
               --password "$APPLE_PASSWORD" \
               --team-id "$APPLE_TEAM_ID" \
               --wait
-            xcrun stapler staple "dist/mdv_${TAG}_${ARCH}.dmg" || true
+            xcrun stapler staple "dist/rmdv_${TAG}_${ARCH}.dmg" || true
           fi
 
       - name: Upload macOS artifacts
@@ -166,24 +166,24 @@ jobs:
           TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
         run: |
           set -euo pipefail
-          BIN=target/x86_64-unknown-linux-gnu/release/mdv
-          APPDIR=mdv.AppDir
+          BIN=target/x86_64-unknown-linux-gnu/release/rmdv
+          APPDIR=rmdv.AppDir
           rm -rf "$APPDIR"
           mkdir -p "$APPDIR/usr/bin"
-          cp "$BIN" "$APPDIR/usr/bin/mdv"
-          cp assets/icon.png "$APPDIR/mdv.png"
-          cat > "$APPDIR/mdv.desktop" <<'DESKTOP'
+          cp "$BIN" "$APPDIR/usr/bin/rmdv"
+          cp assets/icon.png "$APPDIR/rmdv.png"
+          cat > "$APPDIR/rmdv.desktop" <<'DESKTOP'
           [Desktop Entry]
-          Name=mdv
-          Exec=mdv
-          Icon=mdv
+          Name=rmdv
+          Exec=rmdv
+          Icon=rmdv
           Type=Application
           Categories=Utility;
           DESKTOP
           cat > "$APPDIR/AppRun" <<'APPRUN'
           #!/bin/sh
           HERE="$(dirname "$(readlink -f "$0")")"
-          exec "$HERE/usr/bin/mdv" "$@"
+          exec "$HERE/usr/bin/rmdv" "$@"
           APPRUN
           chmod +x "$APPDIR/AppRun"
 
@@ -194,7 +194,7 @@ jobs:
           chmod +x appimagetool-x86_64.AppImage
           ./appimagetool-x86_64.AppImage --appimage-extract >/dev/null
           mkdir -p dist
-          ARCH=x86_64 ./squashfs-root/AppRun "$APPDIR" "dist/mdv-${TAG}-x86_64.AppImage"
+          ARCH=x86_64 ./squashfs-root/AppRun "$APPDIR" "dist/rmdv-${TAG}-x86_64.AppImage"
 
       - name: Upload Linux artifact
         uses: actions/upload-artifact@v4
@@ -272,9 +272,9 @@ jobs:
 
           # Per-platform sha for the updater manifest.
           sha_of() { sha256sum "$1" | cut -d' ' -f1; }
-          AARCH64="mdv_${TAG}_aarch64.app.tar.gz"
-          X86_64="mdv_${TAG}_x86_64.app.tar.gz"
-          LINUX="mdv-${TAG}-x86_64.AppImage"
+          AARCH64="rmdv_${TAG}_aarch64.app.tar.gz"
+          X86_64="rmdv_${TAG}_x86_64.app.tar.gz"
+          LINUX="rmdv-${TAG}-x86_64.AppImage"
           BASE="https://github.com/${{ github.repository }}/releases/download/${TAG}"
           NOTES="https://github.com/${{ github.repository }}/releases/tag/${TAG}"
 

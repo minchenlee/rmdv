@@ -1,12 +1,12 @@
 # iced_math — Native LaTeX Math Widget for Iced
 
 **Status:** Design approved 2026-05-23
-**Scope:** New standalone crate (separate repo from mdv)
-**Consumer:** mdv (initial), any Iced 0.14 app (future)
+**Scope:** New standalone crate (separate repo from rmdv)
+**Consumer:** rmdv (initial), any Iced 0.14 app (future)
 
 ## 1. Purpose
 
-mdv needs LaTeX math rendering in markdown (`$..$`, `$$..$$`). No existing Rust crate renders LaTeX to a native Iced widget without a JavaScript runtime. Existing options either require V8 (`mathjax_svg`, `katex` bindings, `charming`) or emit MathML with no widget consumer (`pulldown-latex`, `latex2mathml`).
+rmdv needs LaTeX math rendering in markdown (`$..$`, `$$..$$`). No existing Rust crate renders LaTeX to a native Iced widget without a JavaScript runtime. Existing options either require V8 (`mathjax_svg`, `katex` bindings, `charming`) or emit MathML with no widget consumer (`pulldown-latex`, `latex2mathml`).
 
 `iced_math` fills the gap: pure-Rust, zero-JS, native Iced 0.14 widget rendering LaTeX math via TeX-style box layout on Iced Canvas primitives.
 
@@ -17,7 +17,7 @@ mdv needs LaTeX math rendering in markdown (`$..$`, `$$..$$`). No existing Rust 
 - Native Iced 0.14 widget. Crisp at any zoom. Theme-aware text color.
 - KaTeX-equivalent coverage (~300 LaTeX commands) at v1.0.
 - Minimal public API: two free functions.
-- Reusable by any Iced app, not coupled to mdv.
+- Reusable by any Iced app, not coupled to rmdv.
 
 **Non-Goals**
 - LaTeX prose typesetting (paragraphs, sections, page layout).
@@ -256,7 +256,7 @@ The exact palette accessor (`theme.base().text`, `theme.palette().text`, or simi
 
 **Why bundled**: math requires OpenType MATH table. System probing adds platform variability; many systems lack any MATH font. Bundling guarantees consistent rendering. ~900KB binary growth acceptable.
 
-**Loader**: `ttf-parser` reads OTF, exposes MATH table constants and MathVariants/GlyphAssembly tables. Pure Rust, no native deps. Already in mdv tree transitively via `mermaid-rs-renderer`.
+**Loader**: `ttf-parser` reads OTF, exposes MATH table constants and MathVariants/GlyphAssembly tables. Pure Rust, no native deps. Already in rmdv tree transitively via `mermaid-rs-renderer`.
 
 ## 8. Error Handling
 
@@ -326,7 +326,7 @@ iced_math/
 | v0.5.0 | `Math::parse` cached handle, themed color override | +1 week |
 | v1.0.0 | Stable API, full Tier 2, docs done | ~12 weeks total |
 
-mdv integrates at v0.2.0+ (matrices needed). mdv-side integration spec to follow in separate document.
+rmdv integrates at v0.2.0+ (matrices needed). rmdv-side integration spec to follow in separate document.
 
 ## 13. Performance Targets
 
@@ -341,7 +341,7 @@ Measured on M1, release build. Three pipeline stages benched separately + end-to
 
 Criterion bench gate in CI; regression > 20% on any tracked metric fails PR. `iced::widget::svg::Handle::from_memory` is content-hashed by Iced — identical SVG bytes produce a cache hit on subsequent renders, which is why steady-state is much cheaper than first render.
 
-Before mdv integrates (v0.2.0), end-to-end + steady-state numbers are validated against a representative mdv corpus (~30 equations from real markdown documents) to confirm scroll/zoom remains smooth.
+Before rmdv integrates (v0.2.0), end-to-end + steady-state numbers are validated against a representative rmdv corpus (~30 equations from real markdown documents) to confirm scroll/zoom remains smooth.
 
 ## 14. Open Questions Resolved
 
@@ -351,7 +351,7 @@ Before mdv integrates (v0.2.0), end-to-end + steady-state numbers are validated 
 - ✅ API: two widget functions `inline` / `block`, returning `Element<'static, _>` (widget owns its SVG bytes). No `init()` function.
 - ✅ Errors: raw source in red monospace.
 - ✅ Architecture: pulldown-latex events → IR → Boxer → SVG → `iced::widget::svg`.
-- ✅ Repo: separate from mdv.
+- ✅ Repo: separate from rmdv.
 
 ### Codex review issues addressed (2026-05-23 revision 4)
 
@@ -370,7 +370,7 @@ Before mdv integrates (v0.2.0), end-to-end + steady-state numbers are validated 
 - **Font-outline coordinate conversion (high)**: §6 SVG emission now specifies the exact transform `matrix(s 0 0 -s ox oy)` where `s = font_size / units_per_em`. Documents the y-up font space vs y-down SVG space and locates the single conversion site (glyph emit). Boxer works in SVG-space throughout.
 - **`svg::Style { color }` semantics (medium)**: §6 corrected — Iced's color field is a whole-SVG recolor filter, not CSS `currentColor`. Math is single-color so the filter is correct; spec no longer claims `currentColor` behavior.
 - **Theme/Renderer generics (medium)**: §3 + §6 widget wrapper now generic over `Theme: svg::Catalog` and `Renderer: svg::Renderer`. Crate works with any Iced 0.14 app, not just `iced::Theme`/default renderer.
-- **Perf targets coverage (medium)**: §13 expanded to four metrics (parse+layout, +emit, end-to-end first render, steady-state cached). mdv-corpus validation gate before v0.2 release.
+- **Perf targets coverage (medium)**: §13 expanded to four metrics (parse+layout, +emit, end-to-end first render, steady-state cached). rmdv-corpus validation gate before v0.2 release.
 - **Repo layout missing .snap (low)**: §11 lists both `.snap` and `.png` snapshot artifacts.
 
 ### Codex review issues addressed (2026-05-23 revision 1)

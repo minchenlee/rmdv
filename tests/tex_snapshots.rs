@@ -1,5 +1,5 @@
-use mdv::ast::Block;
-use mdv::tex::parse;
+use rmdv::ast::Block;
+use rmdv::tex::parse;
 
 #[test]
 fn parses_academic_paper_subset() {

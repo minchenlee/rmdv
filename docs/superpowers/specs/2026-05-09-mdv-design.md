@@ -1,4 +1,4 @@
-# mdv — Lightweight Beautiful Markdown Viewer
+# rmdv — Lightweight Beautiful Markdown Viewer
 
 **Status:** Design approved
 **Date:** 2026-05-09
@@ -58,7 +58,7 @@ Bundled tree-sitter grammars: Rust, Python, JavaScript, TypeScript, Go, C, Bash,
 ## Architecture
 
 ```
-mdv/
+rmdv/
 ├── Cargo.toml
 ├── src/
 │   ├── main.rs          // CLI parse, iced::application entry
@@ -73,7 +73,7 @@ mdv/
 │       ├── fonts/       // Inter, Charter (or Iowan), JetBrains Mono
 │       └── icons/
 └── docs/
-    └── superpowers/specs/2026-05-09-mdv-design.md
+    └── superpowers/specs/2026-05-09-rmdv-design.md
 ```
 
 ## Data Flow
@@ -163,10 +163,10 @@ struct HlSpan  { range: Range<usize>, style: HlStyle }
 ## Features
 
 ### File Loading
-- CLI: `mdv path/to/file.md`
+- CLI: `rmdv path/to/file.md`
 - File menu → Open… (Cmd/Ctrl+O) → `rfd` native dialog
 - Drag-drop onto window
-- Recent files: last 5 in `dirs::config_dir()/mdv/recent.json`, surfaced in menu
+- Recent files: last 5 in `dirs::config_dir()/rmdv/recent.json`, surfaced in menu
 
 ### Hot Reload
 - `notify` watches active file

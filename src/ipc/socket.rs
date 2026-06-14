@@ -6,11 +6,11 @@ pub fn default_path() -> PathBuf {
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("/tmp"));
     let uid = unsafe { libc::getuid() };
-    tmp.join(format!("mdv-{uid}.sock"))
+    tmp.join(format!("rmdv-{uid}.sock"))
 }
 
 #[cfg(windows)]
 pub fn default_path() -> PathBuf {
     let user = std::env::var("USERNAME").unwrap_or_else(|_| "default".to_string());
-    PathBuf::from(format!(r"\\.\pipe\mdv-{user}"))
+    PathBuf::from(format!(r"\\.\pipe\rmdv-{user}"))
 }

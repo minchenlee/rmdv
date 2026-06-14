@@ -6,7 +6,7 @@
 #   ./tests/hot_reload_smoke.sh
 #
 # Then in another terminal: edit /tmp/hr.md (change a paragraph, save).
-# In the mdv terminal you should see hl_cache_hits incrementing each reload
+# In the rmdv terminal you should see hl_cache_hits incrementing each reload
 # without hl_cache_len growing.
 set -euo pipefail
 TMP=/tmp/hr.md
@@ -21,4 +21,4 @@ fn main() { println!("hi"); }
 
 Another paragraph.
 EOF
-exec ./target/release/mdv "$TMP"
+exec ./target/release/rmdv "$TMP"

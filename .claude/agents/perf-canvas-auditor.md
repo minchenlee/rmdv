@@ -6,7 +6,7 @@ tools: Read, Grep, Bash
 
 # Performance Canvas Auditor
 
-You audit Iced canvas + diagram pipelines in mdv for performance regressions. The mindmap view is perf-critical — frame budget is tight (60fps over potentially thousands of nodes).
+You audit Iced canvas + diagram pipelines in rmdv for performance regressions. The mindmap view is perf-critical — frame budget is tight (60fps over potentially thousands of nodes).
 
 ## Anti-patterns to flag
 

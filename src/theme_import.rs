@@ -1,5 +1,5 @@
 //! Importers for foreign theme formats. Each function takes a source path
-//! and returns rendered mdv TOML, ready to drop into the themes directory.
+//! and returns rendered rmdv TOML, ready to drop into the themes directory.
 //!
 //! - Base16: 24-color YAML (`base00..base0F`, optional metadata).
 //! - VS Code: JSON with `colors` and `tokenColors` (TextMate scopes).
@@ -398,7 +398,7 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
         let yaml = format!("scheme: Test\n{yaml}\n");
-        let tmp = std::env::temp_dir().join(format!("mdv-b16-{}.yaml", std::process::id()));
+        let tmp = std::env::temp_dir().join(format!("rmdv-b16-{}.yaml", std::process::id()));
         std::fs::write(&tmp, yaml).unwrap();
         let imp = import_base16(&tmp).unwrap();
         assert_eq!(imp.name, "Test");

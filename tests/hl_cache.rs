@@ -1,4 +1,4 @@
-use mdv::highlight::HlCache;
+use rmdv::highlight::HlCache;
 
 #[test]
 fn second_call_returns_same_spans_without_recomputing() {

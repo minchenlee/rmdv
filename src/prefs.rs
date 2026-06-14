@@ -25,7 +25,7 @@ impl Default for Prefs {
 }
 
 fn store_path() -> Option<PathBuf> {
-    dirs::config_dir().map(|d| d.join("mdv").join(FILE_NAME))
+    dirs::config_dir().map(|d| d.join("rmdv").join(FILE_NAME))
 }
 
 pub fn load() -> Prefs {

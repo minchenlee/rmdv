@@ -2875,55 +2875,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "mdv"
-version = "0.2.2"
-dependencies = [
- "anyhow",
- "arboard",
- "clap",
- "criterion",
- "dark-light",
- "dirs 5.0.1",
- "futures",
- "iced",
- "iced_math",
- "image",
- "insta",
- "interprocess",
- "layout-rs",
- "libc",
- "lru 0.12.5",
- "mermaid-rs-renderer",
- "notify",
- "open",
- "pulldown-cmark",
- "reqwest",
- "resvg 0.45.1",
- "serde",
- "serde_json",
- "serde_yaml",
- "streaming-iterator",
- "tokio",
- "toml",
- "tree-sitter",
- "tree-sitter-bash",
- "tree-sitter-c",
- "tree-sitter-cpp",
- "tree-sitter-go",
- "tree-sitter-html",
- "tree-sitter-java",
- "tree-sitter-javascript",
- "tree-sitter-json",
- "tree-sitter-md",
- "tree-sitter-python",
- "tree-sitter-rust",
- "tree-sitter-sequel",
- "tree-sitter-toml-ng",
- "tree-sitter-typescript",
- "tree-sitter-yaml",
-]
-
-[[package]]
 name = "memchr"
 version = "2.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4445,6 +4396,55 @@ dependencies = [
  "libc",
  "untrusted",
  "windows-sys 0.52.0",
+]
+
+[[package]]
+name = "rmdv"
+version = "0.2.2"
+dependencies = [
+ "anyhow",
+ "arboard",
+ "clap",
+ "criterion",
+ "dark-light",
+ "dirs 5.0.1",
+ "futures",
+ "iced",
+ "iced_math",
+ "image",
+ "insta",
+ "interprocess",
+ "layout-rs",
+ "libc",
+ "lru 0.12.5",
+ "mermaid-rs-renderer",
+ "notify",
+ "open",
+ "pulldown-cmark",
+ "reqwest",
+ "resvg 0.45.1",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "streaming-iterator",
+ "tokio",
+ "toml",
+ "tree-sitter",
+ "tree-sitter-bash",
+ "tree-sitter-c",
+ "tree-sitter-cpp",
+ "tree-sitter-go",
+ "tree-sitter-html",
+ "tree-sitter-java",
+ "tree-sitter-javascript",
+ "tree-sitter-json",
+ "tree-sitter-md",
+ "tree-sitter-python",
+ "tree-sitter-rust",
+ "tree-sitter-sequel",
+ "tree-sitter-toml-ng",
+ "tree-sitter-typescript",
+ "tree-sitter-yaml",
 ]
 
 [[package]]

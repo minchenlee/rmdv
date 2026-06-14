@@ -1,12 +1,12 @@
-use mdv::app::App;
-use mdv::cli::{parse_from, ParsedCli, Stateless};
-use mdv::ipc;
+use rmdv::app::App;
+use rmdv::cli::{parse_from, ParsedCli, Stateless};
+use rmdv::ipc;
 use std::path::PathBuf;
 use std::time::Instant;
 
 fn main() -> iced::Result {
     let t0 = Instant::now();
-    mdv::bench::set_process_start(t0);
+    rmdv::bench::set_process_start(t0);
 
     let parsed = match parse_from(std::env::args_os()) {
         Ok(p) => p,
@@ -73,7 +73,7 @@ fn launch_instance(initial: Option<ipc::Request>) -> iced::Result {
                 .env("MallocLargeCache", "0")
                 .exec();
             // exec only returns on failure; run without the knob.
-            eprintln!("mdv: malloc-tuning re-exec failed: {err}");
+            eprintln!("rmdv: malloc-tuning re-exec failed: {err}");
         }
     }
 
@@ -87,7 +87,7 @@ fn launch_instance(initial: Option<ipc::Request>) -> iced::Result {
     };
     let pending_nav = match &initial {
         Some(req) => match &req.cmd {
-            ipc::Cmd::Open { line, section, .. } => Some(mdv::app::PendingNav {
+            ipc::Cmd::Open { line, section, .. } => Some(rmdv::app::PendingNav {
                 line: *line,
                 section: section.clone(),
                 ..Default::default()
@@ -172,20 +172,20 @@ fn run_theme_cmd(args: &[String]) -> i32 {
     let sub = match args.first().map(String::as_str) {
         Some(s) => s,
         None => {
-            eprintln!("usage: mdv theme <list|dir|import>");
+            eprintln!("usage: rmdv theme <list|dir|import>");
             return 2;
         }
     };
     match sub {
         "list" => {
-            for p in mdv::theme::ThemePreset::ALL {
+            for p in rmdv::theme::ThemePreset::ALL {
                 println!(
                     "{:24} {:6} builtin",
-                    mdv::theme::preset_slug(p),
+                    rmdv::theme::preset_slug(p),
                     if p.is_dark() { "dark" } else { "light" }
                 );
             }
-            for t in mdv::theme_load::bundled() {
+            for t in rmdv::theme_load::bundled() {
                 println!(
                     "{:24} {:6} bundled",
                     t.slug,
@@ -193,7 +193,7 @@ fn run_theme_cmd(args: &[String]) -> i32 {
                 );
             }
             let mut errs = Vec::new();
-            for t in mdv::theme_load::discover(&mut errs) {
+            for t in rmdv::theme_load::discover(&mut errs) {
                 println!(
                     "{:24} {:6} custom ({})",
                     t.slug,
@@ -206,7 +206,7 @@ fn run_theme_cmd(args: &[String]) -> i32 {
             }
             0
         }
-        "dir" => match mdv::theme_load::themes_dir() {
+        "dir" => match rmdv::theme_load::themes_dir() {
             Some(d) => {
                 println!("{}", d.display());
                 0
@@ -226,7 +226,7 @@ fn run_theme_cmd(args: &[String]) -> i32 {
 
 fn run_theme_import(args: &[String]) -> i32 {
     if args.is_empty() {
-        eprintln!("usage: mdv theme import [--base16|--vscode] <path>");
+        eprintln!("usage: rmdv theme import [--base16|--vscode] <path>");
         return 2;
     }
     let (kind, path_str) = match args[0].as_str() {
@@ -240,9 +240,9 @@ fn run_theme_import(args: &[String]) -> i32 {
     };
     let path = PathBuf::from(p);
     let imp = match kind {
-        "base16" => mdv::theme_import::import_base16(&path),
-        "vscode" => mdv::theme_import::import_vscode(&path),
-        _ => mdv::theme_import::import_auto(&path),
+        "base16" => rmdv::theme_import::import_base16(&path),
+        "vscode" => rmdv::theme_import::import_vscode(&path),
+        _ => rmdv::theme_import::import_auto(&path),
     };
     let imp = match imp {
         Ok(v) => v,
@@ -251,7 +251,7 @@ fn run_theme_import(args: &[String]) -> i32 {
             return 1;
         }
     };
-    let dir = match mdv::theme_load::ensure_themes_dir() {
+    let dir = match rmdv::theme_load::ensure_themes_dir() {
         Ok(d) => d,
         Err(e) => {
             eprintln!("could not create themes dir: {e}");

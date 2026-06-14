@@ -27,7 +27,7 @@ pub const VIRT_MIN_BLOCKS: usize = 256;
 pub fn estimate_height(b: &Block) -> f32 {
     match b {
         Block::Heading { level, .. } => {
-            // Headings are single-line in mdv; ignore inline length.
+            // Headings are single-line in rmdv; ignore inline length.
             HEADING_PX[((*level as usize).saturating_sub(1)).min(5)]
         }
         Block::Paragraph(inlines) => paragraph_lines(inlines) * LINE_PX,

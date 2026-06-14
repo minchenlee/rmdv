@@ -1,4 +1,4 @@
-# mdv benchmarks
+# rmdv benchmarks
 
 Hardware: MacBook Pro (Apple M2), macOS 26.1
 Build: `cargo build --release` at v0.2.0
@@ -6,7 +6,7 @@ Date: 2026-05-10
 
 ## Cold start
 
-Measured by `mdv --benchmark-startup`. Median of 5 runs. All deltas are from process entry.
+Measured by `rmdv --benchmark-startup`. Median of 5 runs. All deltas are from process entry.
 
 | Checkpoint | Time |
 |---|---|
@@ -36,4 +36,4 @@ Block heights use a cheap estimator (line-count × line-height with a per-block-
 ## Reproducing
 
     cargo bench --bench cold_start
-    ./target/release/mdv --benchmark-startup
+    ./target/release/rmdv --benchmark-startup

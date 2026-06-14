@@ -1,16 +1,16 @@
-# mdv CLI / Agent Control Surface Implementation Plan
+# rmdv CLI / Agent Control Surface Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Add a CLI / IPC control surface so coding agents (Claude Code, Codex, scripts) can open files/folders, switch modes, scroll to lines or section paths, reveal files, and query state in a running mdv window.
+**Goal:** Add a CLI / IPC control surface so coding agents (Claude Code, Codex, scripts) can open files/folders, switch modes, scroll to lines or section paths, reveal files, and query state in a running rmdv window.
 
-**Architecture:** Single-instance daemon model — first `mdv` invocation spawns the Iced window and an IPC listener (`interprocess` crate, Unix socket / named pipe). Subsequent invocations try-connect: success → serialize args as one JSON request, write, read response, exit (client mode); failure → unlink stale socket, become the new instance, apply parsed args as an initial command on first frame. The IPC listener lives inside an `iced::Subscription` and hands requests to the update loop via `Message::Ipc(Request, oneshot::Sender<Response>)`.
+**Architecture:** Single-instance daemon model — first `rmdv` invocation spawns the Iced window and an IPC listener (`interprocess` crate, Unix socket / named pipe). Subsequent invocations try-connect: success → serialize args as one JSON request, write, read response, exit (client mode); failure → unlink stale socket, become the new instance, apply parsed args as an initial command on first frame. The IPC listener lives inside an `iced::Subscription` and hands requests to the update loop via `Message::Ipc(Request, oneshot::Sender<Response>)`.
 
 **Tech Stack:** Rust, Iced 0.14, `clap` v4 (derive), `interprocess` v2 (tokio feature), `serde` / `serde_json` (already present), `tokio` (already present), `pulldown-cmark` `OffsetIter` for source-line tracking.
 
 **Spec:** `docs/superpowers/specs/2026-05-17-cli-agent-control-design.md` (commit `4349bfc`).
 
-**Branch note:** Work targets the Iced `main` branch (per `memory/mdv_stack.md`). Mode mapping: spec uses `view|edit|mindmap`; app enum is `ViewMode::Rendered | Raw | Mindmap`. CLI strings map view→Rendered, edit→Raw, mindmap→Mindmap.
+**Branch note:** Work targets the Iced `main` branch (per `memory/rmdv_stack.md`). Mode mapping: spec uses `view|edit|mindmap`; app enum is `ViewMode::Rendered | Raw | Mindmap`. CLI strings map view→Rendered, edit→Raw, mindmap→Mindmap.
 
 ---
 
@@ -118,7 +118,7 @@ pub mod ipc;
 Create `tests/ipc_protocol.rs`:
 
 ```rust
-use mdv::ipc::{Cmd, Mode, Request, Response};
+use rmdv::ipc::{Cmd, Mode, Request, Response};
 use serde_json::json;
 
 #[test]
@@ -304,7 +304,7 @@ git commit -m "feat(ipc): request/response types with serde tag/content shape"
 Append to `tests/ipc_protocol.rs`:
 
 ```rust
-use mdv::ipc::lines::{block_for_line, build_byte_to_line};
+use rmdv::ipc::lines::{block_for_line, build_byte_to_line};
 
 #[test]
 fn byte_to_line_empty_source() {
@@ -365,7 +365,7 @@ fn block_for_line_duplicate_line_values_picks_first_match() {
 - [ ] **Step 2: Run, verify fail**
 
 Run: `cargo test --test ipc_protocol`
-Expected: FAIL (unresolved module `mdv::ipc::lines`).
+Expected: FAIL (unresolved module `rmdv::ipc::lines`).
 
 - [ ] **Step 3: Implement**
 
@@ -459,10 +459,10 @@ Append to `tests/ipc_protocol.rs`:
 #[test]
 fn parser_emits_byte_offsets_aligned_with_blocks() {
     let src = "# H1\n\npara one\n\n## H2\n\npara two\n";
-    let (blocks, offsets) = mdv::parser::parse(src);
+    let (blocks, offsets) = rmdv::parser::parse(src);
     assert_eq!(blocks.len(), offsets.len());
     // First heading should map to byte 0 (line 1).
-    let table = mdv::ipc::lines::build_byte_to_line(src);
+    let table = rmdv::ipc::lines::build_byte_to_line(src);
     let lines: Vec<u32> = offsets.iter().map(|&b| table.line_for_byte(b as usize)).collect();
     assert_eq!(lines[0], 1, "H1 on line 1, got {}", lines[0]);
     assert_eq!(lines[1], 3, "first paragraph on line 3, got {}", lines[1]);
@@ -597,7 +597,7 @@ A second "Setup" heading nested under Usage.
 Append to `tests/ipc_protocol.rs`:
 
 ```rust
-use mdv::ipc::sections::{list_sections, resolve_section_path, Section};
+use rmdv::ipc::sections::{list_sections, resolve_section_path, Section};
 
 #[test]
 fn list_sections_builds_paths_and_lines() {
@@ -819,11 +819,11 @@ pub mod cli;
 Append to `tests/ipc_protocol.rs`:
 
 ```rust
-use mdv::cli::{parse_from, ParsedCli};
+use rmdv::cli::{parse_from, ParsedCli};
 
 #[test]
 fn cli_bare_file_becomes_open_request() {
-    let p = parse_from(["mdv", "/abs/foo.md"]).unwrap();
+    let p = parse_from(["rmdv", "/abs/foo.md"]).unwrap();
     match p {
         ParsedCli::Request(r) => match r.cmd {
             Cmd::Open { file, line: None, section: None } => assert_eq!(file, "/abs/foo.md"),
@@ -835,7 +835,7 @@ fn cli_bare_file_becomes_open_request() {
 
 #[test]
 fn cli_bare_file_with_line_and_section() {
-    let p = parse_from(["mdv", "/abs/foo.md", "--line", "42", "--section", "Install/Setup"])
+    let p = parse_from(["rmdv", "/abs/foo.md", "--line", "42", "--section", "Install/Setup"])
         .unwrap();
     let ParsedCli::Request(r) = p else { panic!() };
     match r.cmd {
@@ -849,28 +849,28 @@ fn cli_bare_file_with_line_and_section() {
 
 #[test]
 fn cli_goto_subcommand() {
-    let p = parse_from(["mdv", "goto", "--line", "10"]).unwrap();
+    let p = parse_from(["rmdv", "goto", "--line", "10"]).unwrap();
     let ParsedCli::Request(r) = p else { panic!() };
     assert!(matches!(r.cmd, Cmd::Goto { line: Some(10), section: None }));
 }
 
 #[test]
 fn cli_mode_subcommand() {
-    let p = parse_from(["mdv", "mode", "edit"]).unwrap();
+    let p = parse_from(["rmdv", "mode", "edit"]).unwrap();
     let ParsedCli::Request(r) = p else { panic!() };
     assert!(matches!(r.cmd, Cmd::Mode { mode: Mode::Edit }));
 }
 
 #[test]
 fn cli_current_subcommand() {
-    let p = parse_from(["mdv", "current"]).unwrap();
+    let p = parse_from(["rmdv", "current"]).unwrap();
     let ParsedCli::Request(r) = p else { panic!() };
     assert!(matches!(r.cmd, Cmd::Current));
 }
 
 #[test]
 fn cli_list_sections_is_stateless() {
-    let p = parse_from(["mdv", "list-sections", "tests/fixtures/sections.md"]).unwrap();
+    let p = parse_from(["rmdv", "list-sections", "tests/fixtures/sections.md"]).unwrap();
     match p {
         ParsedCli::Stateless(crate::cli_test::Stateless::ListSections(path)) => {
             assert_eq!(path, std::path::PathBuf::from("tests/fixtures/sections.md"))
@@ -881,22 +881,22 @@ fn cli_list_sections_is_stateless() {
 
 #[test]
 fn cli_no_args_is_no_op_request() {
-    // Bare `mdv` with no args means: launch instance with no initial command,
+    // Bare `rmdv` with no args means: launch instance with no initial command,
     // or — if already running — focus the window (round-trip just queries state).
-    let p = parse_from(["mdv"]).unwrap();
+    let p = parse_from(["rmdv"]).unwrap();
     assert!(matches!(p, ParsedCli::Empty));
 }
 ```
 
-(The `cli_list_sections_is_stateless` test references a `Stateless` enum we'll define. To avoid coupling the test to an internal path, simplify Step 2 by using a public re-export — adjust the test to use `mdv::cli::Stateless`.)
+(The `cli_list_sections_is_stateless` test references a `Stateless` enum we'll define. To avoid coupling the test to an internal path, simplify Step 2 by using a public re-export — adjust the test to use `rmdv::cli::Stateless`.)
 
 Replace the `cli_list_sections_is_stateless` test with:
 
 ```rust
 #[test]
 fn cli_list_sections_is_stateless() {
-    use mdv::cli::Stateless;
-    let p = parse_from(["mdv", "list-sections", "tests/fixtures/sections.md"]).unwrap();
+    use rmdv::cli::Stateless;
+    let p = parse_from(["rmdv", "list-sections", "tests/fixtures/sections.md"]).unwrap();
     match p {
         ParsedCli::Stateless(Stateless::ListSections { file, pretty: false }) => {
             assert_eq!(file, std::path::PathBuf::from("tests/fixtures/sections.md"));
@@ -921,7 +921,7 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 use std::path::PathBuf;
 
 #[derive(Debug, Parser)]
-#[command(name = "mdv", version, about = "Lightweight beautiful markdown viewer")]
+#[command(name = "rmdv", version, about = "Lightweight beautiful markdown viewer")]
 pub struct Cli {
     /// File or directory to open (bare form).
     pub target: Option<PathBuf>,
@@ -970,14 +970,14 @@ pub enum Command {
     Mode { mode: CliMode },
     /// Reveal a file in the sidebar tree.
     Reveal { file: PathBuf },
-    /// Raise the mdv window.
+    /// Raise the rmdv window.
     Focus,
-    /// Close the mdv window (quit).
+    /// Close the rmdv window (quit).
     Close,
     /// Print current state as JSON.
     Current,
     /// List headings of a markdown file as JSON. Stateless — does not require a
-    /// running mdv instance.
+    /// running rmdv instance.
     ListSections { file: PathBuf },
     /// Theme subcommand (existing).
     Theme {
@@ -1005,7 +1005,7 @@ pub struct GotoArgs {
 
 #[derive(Debug)]
 pub enum ParsedCli {
-    /// Bare `mdv` invocation, no args. Launch instance idle, or focus running one.
+    /// Bare `rmdv` invocation, no args. Launch instance idle, or focus running one.
     Empty,
     /// Stateless subcommand — runs without an instance and exits.
     Stateless(Stateless),
@@ -1110,13 +1110,13 @@ Append to `tests/ipc_protocol.rs`:
 ```rust
 #[test]
 fn socket_path_is_user_scoped() {
-    let p = mdv::ipc::socket::default_path();
+    let p = rmdv::ipc::socket::default_path();
     let s = p.to_string_lossy();
     // Either platform variant must include a per-user discriminator.
     #[cfg(unix)]
-    assert!(s.contains(&format!("mdv-{}", unsafe { libc::getuid() })), "got {s}");
+    assert!(s.contains(&format!("rmdv-{}", unsafe { libc::getuid() })), "got {s}");
     #[cfg(windows)]
-    assert!(s.to_lowercase().contains("mdv"), "got {s}");
+    assert!(s.to_lowercase().contains("rmdv"), "got {s}");
 }
 ```
 
@@ -1140,13 +1140,13 @@ pub fn default_path() -> PathBuf {
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("/tmp"));
     let uid = unsafe { libc::getuid() };
-    tmp.join(format!("mdv-{uid}.sock"))
+    tmp.join(format!("rmdv-{uid}.sock"))
 }
 
 #[cfg(windows)]
 pub fn default_path() -> PathBuf {
     let user = std::env::var("USERNAME").unwrap_or_else(|_| "default".to_string());
-    PathBuf::from(format!(r"\\.\pipe\mdv-{user}"))
+    PathBuf::from(format!(r"\\.\pipe\rmdv-{user}"))
 }
 ```
 
@@ -1722,15 +1722,15 @@ git commit -m "feat(app): Message::Ipc + handlers (open/goto/mode/current/...)"
 Overwrite `src/main.rs` with:
 
 ```rust
-use mdv::app::App;
-use mdv::cli::{parse_from, ParsedCli, Stateless};
-use mdv::ipc;
+use rmdv::app::App;
+use rmdv::cli::{parse_from, ParsedCli, Stateless};
+use rmdv::ipc;
 use std::path::PathBuf;
 use std::time::Instant;
 
 fn main() -> iced::Result {
     let t0 = Instant::now();
-    mdv::bench::set_process_start(t0);
+    rmdv::bench::set_process_start(t0);
 
     let parsed = match parse_from(std::env::args_os()) {
         Ok(p) => p,
@@ -1746,7 +1746,7 @@ fn main() -> iced::Result {
             std::process::exit(run_list_sections(&file, pretty));
         }
         ParsedCli::Empty => {
-            // Bare `mdv` — if an instance is running, just focus; otherwise launch idle.
+            // Bare `rmdv` — if an instance is running, just focus; otherwise launch idle.
             let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
             let already = rt.block_on(async {
                 ipc::client::try_send(&ipc::Request {
@@ -1801,7 +1801,7 @@ fn launch_instance(initial: Option<ipc::Request>) -> iced::Result {
     // the app after construction.
     let pending_nav = match &initial {
         Some(req) => match &req.cmd {
-            ipc::Cmd::Open { line, section, .. } => Some(mdv::app::PendingNav {
+            ipc::Cmd::Open { line, section, .. } => Some(rmdv::app::PendingNav {
                 line: *line,
                 section: section.clone(),
             }),
@@ -1887,20 +1887,20 @@ fn run_theme_cmd(args: &[String]) -> i32 {
     let sub = match args.first().map(String::as_str) {
         Some(s) => s,
         None => {
-            eprintln!("usage: mdv theme <list|dir|import>");
+            eprintln!("usage: rmdv theme <list|dir|import>");
             return 2;
         }
     };
     match sub {
         "list" => {
-            for p in mdv::theme::ThemePreset::ALL {
+            for p in rmdv::theme::ThemePreset::ALL {
                 println!(
                     "{:24} {:6} builtin",
-                    mdv::theme::preset_slug(p),
+                    rmdv::theme::preset_slug(p),
                     if p.is_dark() { "dark" } else { "light" }
                 );
             }
-            for t in mdv::theme_load::bundled() {
+            for t in rmdv::theme_load::bundled() {
                 println!(
                     "{:24} {:6} bundled",
                     t.slug,
@@ -1908,7 +1908,7 @@ fn run_theme_cmd(args: &[String]) -> i32 {
                 );
             }
             let mut errs = Vec::new();
-            for t in mdv::theme_load::discover(&mut errs) {
+            for t in rmdv::theme_load::discover(&mut errs) {
                 println!(
                     "{:24} {:6} custom ({})",
                     t.slug,
@@ -1921,7 +1921,7 @@ fn run_theme_cmd(args: &[String]) -> i32 {
             }
             0
         }
-        "dir" => match mdv::theme_load::themes_dir() {
+        "dir" => match rmdv::theme_load::themes_dir() {
             Some(d) => {
                 println!("{}", d.display());
                 0
@@ -1941,7 +1941,7 @@ fn run_theme_cmd(args: &[String]) -> i32 {
 
 fn run_theme_import(args: &[String]) -> i32 {
     if args.is_empty() {
-        eprintln!("usage: mdv theme import [--base16|--vscode] <path>");
+        eprintln!("usage: rmdv theme import [--base16|--vscode] <path>");
         return 2;
     }
     let (kind, path_str) = match args[0].as_str() {
@@ -1955,9 +1955,9 @@ fn run_theme_import(args: &[String]) -> i32 {
     };
     let path = PathBuf::from(p);
     let imp = match kind {
-        "base16" => mdv::theme_import::import_base16(&path),
-        "vscode" => mdv::theme_import::import_vscode(&path),
-        _ => mdv::theme_import::import_auto(&path),
+        "base16" => rmdv::theme_import::import_base16(&path),
+        "vscode" => rmdv::theme_import::import_vscode(&path),
+        _ => rmdv::theme_import::import_auto(&path),
     };
     let imp = match imp {
         Ok(v) => v,
@@ -1966,7 +1966,7 @@ fn run_theme_import(args: &[String]) -> i32 {
             return 1;
         }
     };
-    let dir = match mdv::theme_load::ensure_themes_dir() {
+    let dir = match rmdv::theme_load::ensure_themes_dir() {
         Ok(d) => d,
         Err(e) => {
             eprintln!("could not create themes dir: {e}");
@@ -2018,11 +2018,11 @@ use std::process::Command;
 
 #[test]
 fn list_sections_subprocess_emits_json_array() {
-    let exe = env!("CARGO_BIN_EXE_mdv");
+    let exe = env!("CARGO_BIN_EXE_rmdv");
     let out = Command::new(exe)
         .args(["list-sections", "tests/fixtures/sections.md"])
         .output()
-        .expect("spawn mdv");
+        .expect("spawn rmdv");
     assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
     let stdout = String::from_utf8(out.stdout).unwrap();
     let v: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
@@ -2033,11 +2033,11 @@ fn list_sections_subprocess_emits_json_array() {
 
 #[test]
 fn list_sections_pretty_flag() {
-    let exe = env!("CARGO_BIN_EXE_mdv");
+    let exe = env!("CARGO_BIN_EXE_rmdv");
     let out = Command::new(exe)
         .args(["--pretty", "list-sections", "tests/fixtures/sections.md"])
         .output()
-        .expect("spawn mdv");
+        .expect("spawn rmdv");
     assert!(out.status.success());
     let stdout = String::from_utf8(out.stdout).unwrap();
     assert!(stdout.contains('\n'), "pretty output should be multiline");
@@ -2071,7 +2071,7 @@ Expected: clap-generated help listing subcommands (open, open-folder, goto, mode
 - [ ] **Step 2: Verify `--version`**
 
 Run: `cargo run -- --version`
-Expected: `mdv 0.2.0` (or whatever Cargo.toml says).
+Expected: `rmdv 0.2.0` (or whatever Cargo.toml says).
 
 - [ ] **Step 3: Verify theme passthrough**
 
@@ -2100,13 +2100,13 @@ Run in shell A:
 ```bash
 cargo run --release -- README.md
 ```
-Expected: mdv window opens with README.
+Expected: rmdv window opens with README.
 
 - [x] **Step 2: Open another file from shell B**
 
 Run in shell B:
 ```bash
-target/release/mdv open tests/fixtures/sections.md --line 9
+target/release/rmdv open tests/fixtures/sections.md --line 9
 ```
 Expected: shell B prints `{"id":1,"ok":true}` and exits 0. Window in shell A scrolls to "Setup" (line 9 in the fixture).
 
@@ -2114,40 +2114,40 @@ Expected: shell B prints `{"id":1,"ok":true}` and exits 0. Window in shell A scr
 
 Run in shell B:
 ```bash
-target/release/mdv current
+target/release/rmdv current
 ```
 Expected: JSON like `{"id":1,"ok":true,"result":{"file":".../sections.md","line":<n>,"mode":"view","folder":null}}`.
 
 - [x] **Step 4: Switch mode**
 
 ```bash
-target/release/mdv mode mindmap
+target/release/rmdv mode mindmap
 ```
 Expected: window switches to mindmap view; `{"id":1,"ok":true}`.
 
 - [x] **Step 5: Section navigation**
 
 ```bash
-target/release/mdv mode view
-target/release/mdv goto --section "Usage/Setup"
+target/release/rmdv mode view
+target/release/rmdv goto --section "Usage/Setup"
 ```
 Expected: window scrolls to the second "Setup" (line 17).
 
 - [x] **Step 6: Stale socket recovery**
 
-In shell A: kill the mdv process (Ctrl+C / Cmd+Q).
+In shell A: kill the rmdv process (Ctrl+C / Cmd+Q).
 Run:
 ```bash
-ls "$TMPDIR/mdv-$(id -u).sock" 2>/dev/null && echo STALE || echo CLEAN
+ls "$TMPDIR/rmdv-$(id -u).sock" 2>/dev/null && echo STALE || echo CLEAN
 cargo run --release -- README.md
 ```
 Expected: stale file (if any) gets unlinked and a fresh instance starts cleanly.
 
 - [x] **Step 7: list-sections standalone (no instance)**
 
-Quit mdv. Run:
+Quit rmdv. Run:
 ```bash
-target/release/mdv list-sections README.md
+target/release/rmdv list-sections README.md
 ```
 Expected: JSON array of headings, exit 0. No window opens.
 
@@ -2171,24 +2171,24 @@ Add a section to `README.md`:
 ```markdown
 ## CLI / agent control
 
-mdv is single-instance. The first invocation opens a window and an IPC
+rmdv is single-instance. The first invocation opens a window and an IPC
 listener; subsequent invocations talk to it.
 
 ```bash
 # open a file at a specific line
-mdv path/to/foo.md --line 42
+rmdv path/to/foo.md --line 42
 
 # navigate the running instance
-mdv goto --section "Install/Setup"
-mdv mode mindmap
-mdv current                          # prints JSON state
+rmdv goto --section "Install/Setup"
+rmdv mode mindmap
+rmdv current                          # prints JSON state
 
 # stateless (no running instance needed)
-mdv list-sections path/to/foo.md     # JSON array of headings
-mdv --pretty list-sections foo.md
+rmdv list-sections path/to/foo.md     # JSON array of headings
+rmdv --pretty list-sections foo.md
 ```
 
-Designed for coding agents (Claude Code, Codex) to pull mdv to the relevant
+Designed for coding agents (Claude Code, Codex) to pull rmdv to the relevant
 section of a file without manual navigation.
 ```
 

@@ -1,4 +1,4 @@
-# mdv performance log
+# rmdv performance log
 
 Every performance optimization shipped, newest first, with measured numbers and
 commit refs. Point-in-time baselines live in [benchmarks.md](benchmarks.md).
@@ -115,7 +115,7 @@ frame. `--benchmark-startup` flag records checkpoint timings (`pre_run`
 
 ```
 cargo bench --bench cold_start          # parse + font-load microbenches
-./target/release/mdv --benchmark-startup
+./target/release/rmdv --benchmark-startup
 vmmap --summary <pid> | grep "Physical footprint"
 ```
 

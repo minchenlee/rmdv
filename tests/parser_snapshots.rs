@@ -1,4 +1,4 @@
-use mdv::parser::parse;
+use rmdv::parser::parse;
 
 #[test]
 fn parses_basic_headings_and_paragraph() {
@@ -10,6 +10,6 @@ fn parses_basic_headings_and_paragraph() {
 #[test]
 fn parses_gfm_constructs() {
     let src = std::fs::read_to_string("tests/fixtures/gfm.md").unwrap();
-    let (blocks, _offsets) = mdv::parser::parse(&src);
+    let (blocks, _offsets) = rmdv::parser::parse(&src);
     insta::assert_yaml_snapshot!("gfm", blocks);
 }

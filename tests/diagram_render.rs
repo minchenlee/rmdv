@@ -1,7 +1,7 @@
 //! T2 — renderer-core integration tests.
 
-use mdv::diagram::{render_blocking, DiagramKind, MAX_SOURCE_BYTES};
-use mdv::theme::Palette;
+use rmdv::diagram::{render_blocking, DiagramKind, MAX_SOURCE_BYTES};
+use rmdv::theme::Palette;
 
 fn palette() -> Palette {
     Palette::ONE_DARK
@@ -67,9 +67,9 @@ fn inject_skipped_when_user_has_init() {
 
 #[test]
 fn cup_handle_math_renders_via_pipeline() {
-    use mdv::ast::DiagramKind;
-    use mdv::diagram::render_blocking;
-    use mdv::theme::Palette;
+    use rmdv::ast::DiagramKind;
+    use rmdv::diagram::render_blocking;
+    use rmdv::theme::Palette;
     let srcs = [
         r"P_{buy}=P_{handle\_max}\times(1+\delta),\qquad \delta\approx0.1\%-0.5\%",
         r"SL=\min\left\{P_{handle\_min}-1\times ATR_{20},\, P_{handle\_min}(1-\epsilon)\right\},\quad \epsilon\approx3\%",

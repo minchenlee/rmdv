@@ -344,7 +344,7 @@ mod tests {
         // report `truncated` even though the merge sees only one (full) bucket.
         // Regression for the false-negative where scan_text's capped return was
         // discarded by the per-file-bucket refactor.
-        let dir = std::env::temp_dir().join(format!("mdv_vault_run_test_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("rmdv_vault_run_test_{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let file = dir.join("big.md");
         std::fs::write(&file, "needle\n".repeat(MAX_HITS + 50)).unwrap();
@@ -366,7 +366,7 @@ mod tests {
         // Exactly MAX_HITS matches across the corpus with nothing left over must
         // NOT be flagged truncated (guards against an over-eager exact-fill flag).
         let dir =
-            std::env::temp_dir().join(format!("mdv_vault_exact_test_{}", std::process::id()));
+            std::env::temp_dir().join(format!("rmdv_vault_exact_test_{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let file = dir.join("exact.md");
         std::fs::write(&file, "needle\n".repeat(MAX_HITS)).unwrap();

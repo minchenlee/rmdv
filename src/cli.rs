@@ -3,7 +3,7 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 use std::path::PathBuf;
 
 #[derive(Debug, Parser)]
-#[command(name = "mdv", version, about = "Lightweight beautiful markdown viewer")]
+#[command(name = "rmdv", version, about = "Lightweight beautiful markdown viewer")]
 pub struct Cli {
     /// File or directory to open (bare form).
     pub target: Option<PathBuf>,
@@ -58,14 +58,14 @@ pub enum Command {
     Mode(ModeArgs),
     /// Reveal a file in the sidebar tree.
     Reveal(RevealArgs),
-    /// Raise the mdv window.
+    /// Raise the rmdv window.
     Focus,
-    /// Close the mdv window (quit).
+    /// Close the rmdv window (quit).
     Close,
     /// Print current state as JSON.
     Current,
     /// List headings of a markdown file as JSON. Stateless — does not require a
-    /// running mdv instance.
+    /// running rmdv instance.
     ListSections { file: PathBuf },
     /// Theme subcommand (existing).
     Theme {
@@ -120,7 +120,7 @@ pub struct RevealArgs {
 
 #[derive(Debug)]
 pub enum ParsedCli {
-    /// Bare `mdv` invocation, no args. Launch instance idle, or focus running one.
+    /// Bare `rmdv` invocation, no args. Launch instance idle, or focus running one.
     Empty,
     /// Stateless subcommand — runs without an instance and exits.
     Stateless(Stateless),

@@ -1,4 +1,4 @@
-name: mdv
+name: rmdv
 version: 0.2.0
 features:
   - markdown
