@@ -87,7 +87,7 @@ pub fn render<'a>(
         col = col.push(Space::new().height(h));
     }
 
-    // Reading column cap: 780px (mdv design system READING_MAX, render.rs).
+    // Reading column cap: 780px (rmdv design system READING_MAX, render.rs).
     let _ = typ.measure_ch;
     container(KeyedBody::new(keys, col)).max_width(780.0).into()
 }

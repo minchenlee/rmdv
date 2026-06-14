@@ -1,18 +1,18 @@
 #[test]
 fn finds_all_case_insensitive() {
-    let m = mdv::search::find_all("Hello hello HELLO", "hello");
+    let m = rmdv::search::find_all("Hello hello HELLO", "hello");
     assert_eq!(m, vec![0, 6, 12]);
 }
 
 #[test]
 fn empty_needle_returns_no_matches() {
-    let m = mdv::search::find_all("abc", "");
+    let m = rmdv::search::find_all("abc", "");
     assert!(m.is_empty());
 }
 
 #[test]
 fn no_match_returns_empty() {
-    let m = mdv::search::find_all("abc", "xyz");
+    let m = rmdv::search::find_all("abc", "xyz");
     assert!(m.is_empty());
 }
 
@@ -32,8 +32,8 @@ fn count_all_lowered_matches_find_all_len() {
     ];
     for (h, n) in cases {
         assert_eq!(
-            mdv::search::count_all_lowered(h, &n.to_lowercase()),
-            mdv::search::find_all(h, n).len(),
+            rmdv::search::count_all_lowered(h, &n.to_lowercase()),
+            rmdv::search::find_all(h, n).len(),
             "haystack={h:?} needle={n:?}"
         );
     }

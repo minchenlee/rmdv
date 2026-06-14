@@ -16,7 +16,7 @@ A `⌘⇧F` overlay that searches all files in `workspace_files` for a query str
 
 | Decision | Choice | Why |
 |----------|--------|-----|
-| Corpus read | **On-demand** (no index) | Zero persistent memory (mdv is memory-conscious — see mem-reduce history), always current, no staleness/invalidation logic. Fine for hundreds of files. |
+| Corpus read | **On-demand** (no index) | Zero persistent memory (rmdv is memory-conscious — see mem-reduce history), always current, no staleness/invalidation logic. Fine for hundreds of files. |
 | Per-file scan | **Raw text grep** (`find_all`) | No parse cost. Byte offset → line number via existing `build_byte_to_line`. Standard ripgrep/PKM model. |
 | Result granularity | **Row per match-line** | `path:line` + snippet, lands on exact line. Reuses `PendingNav.line` → `Cmd::Goto`. VSCode/ripgrep UX. |
 | Trigger | **`⌘⇧F`** (and capital `F`) | Free slot. Natural pair with `⌘F`. Must be ordered before plain `"f" if cmd` (mirrors existing `p`/`P`). |

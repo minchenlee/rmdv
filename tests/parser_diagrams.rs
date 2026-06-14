@@ -1,13 +1,13 @@
-use mdv::ast::{Block, DiagramKind, Inline};
-use mdv::parser::parse;
+use rmdv::ast::{Block, DiagramKind, Inline};
+use rmdv::parser::parse;
 
-fn load() -> Vec<(mdv::ast::BlockId, Block)> {
+fn load() -> Vec<(rmdv::ast::BlockId, Block)> {
     let src = std::fs::read_to_string("tests/fixtures/diagrams.md").unwrap();
     let (blocks, _offsets) = parse(&src);
     blocks
 }
 
-fn diagrams_of(blocks: &[(mdv::ast::BlockId, Block)], want: DiagramKind) -> Vec<(&String, u64)> {
+fn diagrams_of(blocks: &[(rmdv::ast::BlockId, Block)], want: DiagramKind) -> Vec<(&String, u64)> {
     blocks
         .iter()
         .filter_map(|(_, b)| match b {
@@ -178,7 +178,7 @@ fn display_math_preserves_paragraph_order() {
 fn display_math_split_blocks_keep_source_offsets() {
     let src = "A\n$$x$$\nB";
     let (blocks, offsets) = parse(src);
-    let table = mdv::ipc::lines::build_byte_to_line(src);
+    let table = rmdv::ipc::lines::build_byte_to_line(src);
     let lines: Vec<u32> = offsets
         .iter()
         .map(|&offset| table.line_for_byte(offset as usize))
@@ -234,14 +234,14 @@ fn display_math_stays_inside_list_items_and_blockquotes() {
 #[test]
 fn cup_handle_block_math_detected() {
     let src = "intro\n\n$$P_{buy}=P_{handle\\_max}\\times(1+\\delta),\\qquad \\delta\\approx0.1\\%-0.5\\%$$\n\nafter\n";
-    let (blocks, _) = mdv::parser::parse(src);
+    let (blocks, _) = rmdv::parser::parse(src);
     let math = blocks
         .iter()
         .filter(|(_, b)| {
             matches!(
                 b,
-                mdv::ast::Block::Diagram {
-                    kind: mdv::ast::DiagramKind::Math,
+                rmdv::ast::Block::Diagram {
+                    kind: rmdv::ast::DiagramKind::Math,
                     ..
                 }
             )
@@ -260,11 +260,11 @@ fn cup_handle_block_math_detected() {
 
 #[test]
 fn math_nested_in_list_items_is_parsed() {
-    use mdv::ast::{Block, DiagramKind};
+    use rmdv::ast::{Block, DiagramKind};
     // $$…$$ butted against list-item text (no blank line) lands inside the
     // ListItem's blocks, not at top level — regression guard for priming.
     let src = "1. **Entry**\n$$P_{buy}=x$$\ntext\n\n2. **Stop**\n$$SL=y$$\n";
-    let (blocks, _) = mdv::parser::parse(src);
+    let (blocks, _) = rmdv::parser::parse(src);
     let mut math = 0;
     fn count(b: &Block, n: &mut usize) {
         match b {

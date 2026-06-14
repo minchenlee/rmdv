@@ -6,7 +6,7 @@ tools: Read, Grep, Bash, WebFetch
 
 # Iced Upgrade Reviewer
 
-You audit Rust code in this mdv project (Iced 0.14) for stale Iced API patterns.
+You audit Rust code in this rmdv project (Iced 0.14) for stale Iced API patterns.
 
 ## Known breaking changes since 0.10
 
@@ -24,7 +24,7 @@ When reviewing diffs:
 4. Verify `Task::perform`, `Task::done`, `Task::batch`, `Task::none()` usage (not `Command::*`).
 5. Check `Element<'_, Message>` lifetimes — 0.14 may need `'a` not `'static`.
 6. Confirm `iced::clipboard::write::<Message>(...)` form (turbofish required).
-7. Watch for `text_editor` — undo/redo NOT built in (per memory `mdv_iced_gotchas`); ensure custom impl preserved.
+7. Watch for `text_editor` — undo/redo NOT built in (per memory `rmdv_iced_gotchas`); ensure custom impl preserved.
 8. Watch for `event::listen_with` capture filter — must ignore `Status::Captured` for global shortcuts (per memory).
 
 ## Reporting

@@ -1,8 +1,8 @@
-//! In-app auto-update for mdv.
+//! In-app auto-update for rmdv.
 //!
 //! Flow (mac + linux only):
 //!  1. On launch, [`check`] queries the GitHub Releases `latest.json` manifest.
-//!  2. If a newer version exists, mdv downloads the matching artifact in the
+//!  2. If a newer version exists, rmdv downloads the matching artifact in the
 //!     background and verifies its SHA-256 against the manifest.
 //!  3. A toast/banner invites the user to install. On confirm, [`apply`]
 //!     self-replaces the running app bundle/binary and relaunches.
@@ -46,11 +46,11 @@ pub struct ReadyUpdate {
 /// Manifest URL. Points at the `latest.json` asset on the newest GitHub
 /// release. The `latest` redirect resolves to whatever tag is most recent.
 const MANIFEST_URL: &str =
-    "https://github.com/minchenlee/mdv/releases/latest/download/latest.json";
+    "https://github.com/minchenlee/rmdv/releases/latest/download/latest.json";
 
 /// Artifact URLs from the manifest must live under this repo's release
 /// downloads — a tampered manifest must not be able to point elsewhere.
-const ARTIFACT_URL_PREFIX: &str = "https://github.com/minchenlee/mdv/releases/download/";
+const ARTIFACT_URL_PREFIX: &str = "https://github.com/minchenlee/rmdv/releases/download/";
 
 /// Refuse artifacts larger than this; release bundles are tens of MB.
 const MAX_ARTIFACT_BYTES: u64 = 200 * 1024 * 1024;
@@ -98,7 +98,7 @@ pub async fn check_and_download() -> Result<Option<ReadyUpdate>> {
     let current = env!("CARGO_PKG_VERSION");
 
     let client = reqwest::Client::builder()
-        .user_agent(concat!("mdv/", env!("CARGO_PKG_VERSION")))
+        .user_agent(concat!("rmdv/", env!("CARGO_PKG_VERSION")))
         .connect_timeout(Duration::from_secs(10))
         .build()?;
 
@@ -262,8 +262,8 @@ fn staged_path(url: &str, version: &str) -> Result<PathBuf> {
         .next()
         .map(sanitize)
         .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| "mdv-update".into());
-    Ok(std::env::temp_dir().join(format!("mdv-{}-{name}", sanitize(version))))
+        .unwrap_or_else(|| "rmdv-update".into());
+    Ok(std::env::temp_dir().join(format!("rmdv-{}-{name}", sanitize(version))))
 }
 
 /// Apply a downloaded update in place, then relaunch the new build.
@@ -291,10 +291,10 @@ pub fn apply(ready: &ReadyUpdate) -> Result<()> {
 }
 
 /// Locate the `.app` bundle that contains the running executable, e.g.
-/// `/Applications/mdv.app` from `/Applications/mdv.app/Contents/MacOS/mdv`.
+/// `/Applications/rmdv.app` from `/Applications/rmdv.app/Contents/MacOS/rmdv`.
 fn current_app_bundle() -> Result<PathBuf> {
     let exe = std::env::current_exe().context("current_exe")?;
-    // …/mdv.app/Contents/MacOS/mdv → ascend to the `.app`.
+    // …/rmdv.app/Contents/MacOS/rmdv → ascend to the `.app`.
     let bundle = exe
         .ancestors()
         .find(|p| p.extension().and_then(|e| e.to_str()) == Some("app"))
@@ -304,7 +304,7 @@ fn current_app_bundle() -> Result<PathBuf> {
 
 fn apply_macos(tarball: &Path) -> Result<()> {
     let target = current_app_bundle()?;
-    let staging = std::env::temp_dir().join("mdv-update-extract");
+    let staging = std::env::temp_dir().join("rmdv-update-extract");
     let _ = std::fs::remove_dir_all(&staging);
     std::fs::create_dir_all(&staging).context("create extract dir")?;
 

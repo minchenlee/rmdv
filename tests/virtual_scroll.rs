@@ -1,5 +1,5 @@
-use mdv::ast::{Block, BlockId, Inline};
-use mdv::virt::{HeightCache, VirtWindow, BLOCK_GAP_PX, VIRT_MIN_BLOCKS};
+use rmdv::ast::{Block, BlockId, Inline};
+use rmdv::virt::{HeightCache, VirtWindow, BLOCK_GAP_PX, VIRT_MIN_BLOCKS};
 use std::collections::HashSet;
 
 fn make_blocks(n: usize) -> Vec<(BlockId, Block)> {

@@ -1,11 +1,11 @@
 [package]
-name = "mdv"
+name = "rmdv"
 version = "0.2.2"
 edition = "2021"
 rust-version = "1.80"
 description = "Lightweight beautiful markdown viewer"
 license = "MIT"
-repository = "https://github.com/minchenlee/mdv"
+repository = "https://github.com/minchenlee/rmdv"
 build = "build.rs"
 
 [dependencies]
@@ -52,11 +52,11 @@ futures = "0.3"
 libc = "0.2"
 
 [lib]
-name = "mdv"
+name = "rmdv"
 path = "src/lib.rs"
 
 [[bin]]
-name = "mdv"
+name = "rmdv"
 path = "src/main.rs"
 
 [dev-dependencies]
@@ -68,13 +68,13 @@ name = "cold_start"
 harness = false
 
 [package.metadata.packager]
-product-name = "mdv"
-identifier = "com.minchenlee.mdv"
+product-name = "rmdv"
+identifier = "com.minchenlee.rmdv"
 description = "Lightweight beautiful markdown viewer"
 authors = ["minchenlee"]
 icons = ["assets/icon.icns", "assets/icon.ico", "assets/icon.png"]
 category = "Utility"
-homepage = "https://github.com/minchenlee/mdv"
+homepage = "https://github.com/minchenlee/rmdv"
 
 [package.metadata.packager.macos]
 minimum-system-version = "10.13"

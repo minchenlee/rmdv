@@ -534,7 +534,7 @@ pub struct App {
     /// so the estimate snap can't evict the block the precise scroll op needs.
     /// Cleared on the first scroll event after the jump.
     pub(crate) nav_anchor: Option<usize>,
-    /// User preferences (persisted to `~/.config/mdv/prefs.json`).
+    /// User preferences (persisted to `~/.config/rmdv/prefs.json`).
     pub prefs: crate::prefs::Prefs,
     /// A downloaded + verified update awaiting user-initiated install. Drives
     /// the update banner. `None` until the background check finds a newer build.
@@ -551,6 +551,8 @@ impl Default for App {
     fn default() -> Self {
         let mode = ThemeMode::System;
         let preset = theme::resolve_mode(mode);
+        // Migrate legacy `mdv` config into `rmdv` before the first read.
+        crate::config_migrate::run();
         let prefs = crate::prefs::load();
         Self {
             file: None,
@@ -882,10 +884,10 @@ impl App {
     pub fn title(&self) -> String {
         match &self.file {
             Some(p) => format!(
-                "mdv — {}",
+                "rmdv — {}",
                 p.file_name().and_then(|n| n.to_str()).unwrap_or("?")
             ),
-            None => "mdv".into(),
+            None => "rmdv".into(),
         }
     }
 
@@ -3402,7 +3404,7 @@ impl App {
             // Print first_view BEFORE the font-load block so the timing reflects
             // when the window can actually paint (font load runs lazily after).
             static BENCH: OnceLock<bool> = OnceLock::new();
-            if *BENCH.get_or_init(|| std::env::var_os("MDV_BENCH_STARTUP").is_some()) {
+            if *BENCH.get_or_init(|| std::env::var_os("RMDV_BENCH_STARTUP").is_some()) {
                 static FIRST: OnceLock<()> = OnceLock::new();
                 FIRST.get_or_init(|| {
                     if let Some(d) = crate::bench::since_process_start() {
@@ -3417,7 +3419,7 @@ impl App {
                 if let Ok(mut guard) = fs.write() {
                     guard.raw().db_mut().load_system_fonts();
                 }
-                if std::env::var_os("MDV_BENCH_STARTUP").is_some() {
+                if std::env::var_os("RMDV_BENCH_STARTUP").is_some() {
                     if let Some(d) = crate::bench::since_process_start() {
                         eprintln!("startup: fonts_loaded={:?}", d);
                     }
@@ -3724,7 +3726,7 @@ impl App {
 /// Bottom-center banner inviting the user to install a downloaded update.
 fn update_banner<'a>(version: &str, pal: Palette) -> Element<'a, Message> {
     use iced::widget::{button, container, row, text as text_w};
-    let label = text_w(format!("mdv {version} ready to install"))
+    let label = text_w(format!("rmdv {version} ready to install"))
         .size(13.5)
         .color(pal.fg);
     let install = button(text_w("Install & Restart").size(13.0))
@@ -4250,7 +4252,7 @@ fn welcome_view<'a>(pal: Palette) -> Element<'a, Message> {
     };
     centered_card(
         column![
-            text("mdv").size(40).color(pal.fg),
+            text("rmdv").size(40).color(pal.fg),
             text("Lightweight, beautiful, native markdown viewer")
                 .size(14)
                 .color(pal.muted),
@@ -5142,7 +5144,7 @@ fn vault_search_page<'a>(
 
         // Viewport window in content coordinates (fall back to "render all" until
         // the first scroll event lands a viewport).
-        let virtualize = std::env::var("MDV_NO_VIRT").is_err();
+        let virtualize = std::env::var("RMDV_NO_VIRT").is_err();
         let (win_top, win_bot) = match (virtualize, viewport) {
             (true, Some(vp)) => {
                 let off = vp.absolute_offset().y;
@@ -6019,7 +6021,7 @@ async fn fetch_image(url: String) -> (String, Result<Vec<u8>, String>) {
     let res = async {
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(15))
-            .user_agent("mdv/0.2")
+            .user_agent("rmdv/0.2")
             .build()
             .map_err(|e| e.to_string())?;
         let resp = client.get(&url).send().await.map_err(|e| e.to_string())?;

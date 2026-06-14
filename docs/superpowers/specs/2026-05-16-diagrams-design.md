@@ -1,11 +1,11 @@
 # Diagram Rendering (Mermaid + Graphviz/DOT) — Design
 
 **Status**: Approved 2026-05-16
-**Scope**: Render ` ```mermaid ` and ` ```dot ` / ` ```graphviz ` fenced blocks as inline SVG diagrams in mdv. Pure-Rust pipeline, no JS runtime, no external CLIs.
+**Scope**: Render ` ```mermaid ` and ` ```dot ` / ` ```graphviz ` fenced blocks as inline SVG diagrams in rmdv. Pure-Rust pipeline, no JS runtime, no external CLIs.
 
 ## Goals
 
-- Mermaid + Graphviz/DOT render inline matching mdv's current theme.
+- Mermaid + Graphviz/DOT render inline matching rmdv's current theme.
 - Zero external runtime dependencies (no Node, no Chromium, no Java).
 - Lazy rendering — only visible diagrams cost CPU.
 - Click-to-zoom and copy-source UX consistent with existing code-block and image affordances.
@@ -164,7 +164,7 @@ Two-stage:
 
 ### Zoom modal
 
-Reuses the inline-image viewer (per `mdv_images` memory). Extend the viewer source enum with a `Diagram(Bytes)` variant. Pan/zoom/⌘0/Esc behave identically. `⌘C` in the modal copies the source.
+Reuses the inline-image viewer (per `rmdv_images` memory). Extend the viewer source enum with a `Diagram(Bytes)` variant. Pan/zoom/⌘0/Esc behave identically. `⌘C` in the modal copies the source.
 
 ### Pending fallback
 

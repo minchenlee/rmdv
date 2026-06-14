@@ -1,12 +1,12 @@
-# mdv CLI / Agent Control Surface — Design
+# rmdv CLI / Agent Control Surface — Design
 
 **Date:** 2026-05-17
 **Status:** Approved for implementation planning
-**Branch context:** `gpui-port` (work targets Iced `main`; see memory `mdv_stack.md`)
+**Branch context:** `gpui-port` (work targets Iced `main`; see memory `rmdv_stack.md`)
 
 ## Goal
 
-Expose a command-line / IPC control surface so coding agents (Claude Code, Codex, scripts) can drive a running mdv window:
+Expose a command-line / IPC control surface so coding agents (Claude Code, Codex, scripts) can drive a running rmdv window:
 
 - Open a file or folder.
 - Switch view mode (view / edit / mindmap).
@@ -15,11 +15,11 @@ Expose a command-line / IPC control surface so coding agents (Claude Code, Codex
 - Query current state (active file, line, mode, folder) as JSON.
 - Enumerate headings of any markdown file (stateless) as JSON.
 
-Primary use case: an agent locates a relevant passage in a markdown file the user owns and pulls mdv directly to that passage — no manual navigation by the user.
+Primary use case: an agent locates a relevant passage in a markdown file the user owns and pulls rmdv directly to that passage — no manual navigation by the user.
 
 ## Non-goals (v1)
 
-- Editing / saving / writing files via the CLI (agents already edit files directly; mdv's file watcher reloads).
+- Editing / saving / writing files via the CLI (agents already edit files directly; rmdv's file watcher reloads).
 - Multi-instance or per-folder windows (current app is single-window).
 - Fuzzy section matching, nth-match selection.
 - Auth tokens (same-user trust boundary).
@@ -30,17 +30,17 @@ Primary use case: an agent locates a relevant passage in a markdown file the use
 
 ### Single-instance daemon model
 
-The first `mdv` invocation spawns the window and an IPC listener. Subsequent invocations attempt to connect to the listener:
+The first `rmdv` invocation spawns the window and an IPC listener. Subsequent invocations attempt to connect to the listener:
 
 - **Connect succeeds** → process runs in **client mode**: serialize the parsed args as one JSON request, write to socket, read one JSON response, print to stdout, exit. No new window.
 - **Connect fails (refused / socket missing)** → unlink any stale socket file, process becomes the new instance, applies the parsed args as an initial command on the first frame.
 
-This is the "C-smart" hybrid: one-shot `mdv foo.md --line 42` works whether mdv is running or not, and there is never a duplicate window.
+This is the "C-smart" hybrid: one-shot `rmdv foo.md --line 42` works whether rmdv is running or not, and there is never a duplicate window.
 
 ### Data flow
 
 ```
-agent → `mdv goto --line 42`
+agent → `rmdv goto --line 42`
             │
             ▼
         client.rs → socket → server.rs (Iced subscription task)
@@ -64,7 +64,7 @@ agent → `mdv goto --line 42`
 | `src/ipc/mod.rs` | `Request`, `Response` types (serde). Re-exports. |
 | `src/ipc/server.rs` | `interprocess` listener inside `iced::Subscription`. One client at a time. |
 | `src/ipc/client.rs` | Connect, write one line, read one line, exit. |
-| `src/ipc/socket.rs` | Platform path: `$TMPDIR/mdv-$UID.sock` (macOS/Linux), `\\.\pipe\mdv-$user` (Windows). Stale-socket recovery via try-connect. |
+| `src/ipc/socket.rs` | Platform path: `$TMPDIR/rmdv-$UID.sock` (macOS/Linux), `\\.\pipe\rmdv-$user` (Windows). Stale-socket recovery via try-connect. |
 | `src/ipc/sections.rs` | Stateless `list-sections` impl. Reused by IPC server (running instance) and standalone CLI (no instance). |
 | `src/parser.rs` | Emit byte offset for each block (from `pulldown-cmark` `OffsetIter`). |
 | `src/app.rs` | New: `Message::Ipc`, `block_lines: Vec<u32>` field, section-path resolver, IPC subscription wiring. |
@@ -72,23 +72,23 @@ agent → `mdv goto --line 42`
 ## Command surface
 
 ```
-mdv [FILE|DIR] [--line N] [--section "path"] [--mode <view|edit|mindmap>]
-mdv open <file> [--line N] [--section "Install/Setup"]
-mdv open-folder <dir>
-mdv goto (--line N | --section "path")
-mdv mode <view|edit|mindmap>
-mdv reveal <file>
-mdv focus
-mdv close
-mdv current
-mdv list-sections <file>
-mdv theme ...                          # existing, unchanged
-mdv --help | --version                 # existing
+rmdv [FILE|DIR] [--line N] [--section "path"] [--mode <view|edit|mindmap>]
+rmdv open <file> [--line N] [--section "Install/Setup"]
+rmdv open-folder <dir>
+rmdv goto (--line N | --section "path")
+rmdv mode <view|edit|mindmap>
+rmdv reveal <file>
+rmdv focus
+rmdv close
+rmdv current
+rmdv list-sections <file>
+rmdv theme ...                          # existing, unchanged
+rmdv --help | --version                 # existing
 ```
 
 ### Bare-form precedence
 
-`mdv foo.md --line 42 --section "Install/Setup" --mode view` is sugar for an `open` request with the same options. Preserves current positional UX. If the path is a directory, treated as `open-folder`.
+`rmdv foo.md --line 42 --section "Install/Setup" --mode view` is sugar for an `open` request with the same options. Preserves current positional UX. If the path is a directory, treated as `open-folder`.
 
 ### Section path semantics
 
@@ -108,20 +108,20 @@ JSON to stdout, one object per command. `--pretty` emits indented JSON for human
 Examples:
 
 ```json
-// mdv current
+// rmdv current
 {"file":"/abs/path/foo.md","line":42,"mode":"view","folder":"/abs/path"}
 
-// mdv list-sections foo.md
+// rmdv list-sections foo.md
 [
   {"level":1,"title":"Foo","path":"Foo","line":1},
   {"level":2,"title":"Install","path":"Foo/Install","line":5},
   {"level":3,"title":"Setup","path":"Foo/Install/Setup","line":12}
 ]
 
-// mdv goto --line 42  (success)
+// rmdv goto --line 42  (success)
 {"ok":true}
 
-// mdv goto --line 99999  (out of range)
+// rmdv goto --line 99999  (out of range)
 {"ok":false,"error":"line 99999 out of range (file has 320 lines)"}
 ```
 
@@ -259,11 +259,11 @@ main():
 
 | Case | Behaviour |
 |---|---|
-| `mdv goto --line 42` with no file open | `{"ok":false,"error":"no file open"}` |
+| `rmdv goto --line 42` with no file open | `{"ok":false,"error":"no file open"}` |
 | `--line N` where N > line count | `{"ok":false,"error":"line N out of range (file has M lines)"}` |
 | `--section "X"` no match | `{"ok":false,"error":"section \"X\" not found"}` |
-| `mdv open foo.md` with relative path in client mode | Client resolves to absolute against its own cwd before sending. |
-| `mdv list-sections` on non-markdown file | Parse anyway (pulldown-cmark accepts anything); empty array result. |
+| `rmdv open foo.md` with relative path in client mode | Client resolves to absolute against its own cwd before sending. |
+| `rmdv list-sections` on non-markdown file | Parse anyway (pulldown-cmark accepts anything); empty array result. |
 | Two clients connect simultaneously | Second blocks at `accept()` until first finishes. |
 | User has unsaved edits (`self.dirty`), agent sends `open` for a different file | Return `{"ok":false,"error":"unsaved edits in <current file>; save or discard before opening another"}`. Matches existing watcher behaviour (`FileChanged` toast-ignores external changes when dirty, see `app.rs:1525`). Agent can retry after user saves. |
 | Stale socket from crashed instance | `acquire()` unlinks on connect-refused. |
@@ -295,11 +295,11 @@ Already present: `serde`, `serde_json`, `tokio`, `anyhow`.
 
 **Manual smoke:**
 
-- Launch `mdv tests/fixtures/diagrams_stress.md`.
-- From another shell: `mdv goto --line 100` → window scrolls.
-- `mdv current` → JSON matches.
-- Kill mdv, `ls $TMPDIR/mdv-*.sock` → cleanup on next launch.
-- `mdv list-sections README.md` without launching mdv → JSON.
+- Launch `rmdv tests/fixtures/diagrams_stress.md`.
+- From another shell: `rmdv goto --line 100` → window scrolls.
+- `rmdv current` → JSON matches.
+- Kill rmdv, `ls $TMPDIR/rmdv-*.sock` → cleanup on next launch.
+- `rmdv list-sections README.md` without launching rmdv → JSON.
 
 ## Risk register
 
@@ -317,7 +317,7 @@ None blocking. Future considerations (out of scope):
 
 - Per-folder instances if multi-window lands.
 - Streaming events (subscribe to scroll / file open) for richer agent flows.
-- Token auth if mdv ever runs as a shared service.
+- Token auth if rmdv ever runs as a shared service.
 
 ## Out of scope (restated)
 
