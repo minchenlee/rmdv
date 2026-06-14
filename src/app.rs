@@ -496,7 +496,19 @@ pub struct App {
     /// Cached mindmap layout, lazily rebuilt from (ast, file, mindmap_collapsed).
     /// Every mutation of those inputs must call `invalidate_mindmap_layout`.
     /// RefCell so `view(&self)` can populate it on first read.
-    mindmap_layout: std::cell::RefCell<Option<(std::sync::Arc<Vec<crate::mindmap::MNode>>, iced::Size)>>,
+    mindmap_layout: std::cell::RefCell<
+        Option<(
+            std::sync::Arc<Vec<crate::mindmap::MNode>>,
+            iced::Size,
+            std::sync::Arc<
+                std::collections::HashMap<crate::ast::BlockId, Vec<crate::data_mindmap::PathSeg>>,
+            >,
+        )>,
+    >,
+    /// Pretty-printed subtree for the data-doc mindmap leaf panel, keyed by the
+    /// shown node id. Recomputed when `mindmap_panel_shown` changes; cleared by
+    /// `invalidate_mindmap_layout`.
+    mindmap_data_panel: std::cell::RefCell<Option<(crate::ast::BlockId, String)>>,
     /// T3 — diagram render cache. T4 will populate it from a pre-walk +
     /// `iced::Task::perform` of `diagram::render_blocking`.
     pub diagram_cache: crate::diagram::DiagramCache,
@@ -629,6 +641,7 @@ impl Default for App {
             mindmap_panel_drag: None,
             mindmap_autocenter: true,
             mindmap_layout: std::cell::RefCell::new(None),
+            mindmap_data_panel: std::cell::RefCell::new(None),
             diagram_cache: crate::diagram::DiagramCache::new(64),
             diagram_theme_id: 0,
             zoom_diagram: None,
@@ -1056,22 +1069,50 @@ impl App {
     /// Cached `mindmap::build_layout` result, rebuilt on first read after an
     /// invalidation. Pure function of (ast, file, mindmap_collapsed); see the
     /// field doc on `mindmap_layout` for the invalidation contract.
-    fn mindmap_layout(&self) -> (std::sync::Arc<Vec<crate::mindmap::MNode>>, iced::Size) {
+    fn mindmap_layout(
+        &self,
+    ) -> (
+        std::sync::Arc<Vec<crate::mindmap::MNode>>,
+        iced::Size,
+        std::sync::Arc<
+            std::collections::HashMap<crate::ast::BlockId, Vec<crate::data_mindmap::PathSeg>>,
+        >,
+    ) {
         let mut cache = self.mindmap_layout.borrow_mut();
         if cache.is_none() {
-            let (nodes, size) = crate::mindmap::build_layout(
-                &self.ast,
-                self.file.as_deref(),
-                &self.mindmap_collapsed,
-            );
-            *cache = Some((std::sync::Arc::new(nodes), size));
+            let (nodes, size, paths) = if self.is_data_doc {
+                let lang = data_lang_for(self.file.as_deref()).unwrap_or("json");
+                crate::data_mindmap::build_layout(
+                    &self.source,
+                    lang,
+                    self.file.as_deref(),
+                    &self.mindmap_collapsed,
+                )
+            } else {
+                let (nodes, size) = crate::mindmap::build_layout(
+                    &self.ast,
+                    self.file.as_deref(),
+                    &self.mindmap_collapsed,
+                );
+                (nodes, size, std::collections::HashMap::new())
+            };
+            *cache = Some((
+                std::sync::Arc::new(nodes),
+                size,
+                std::sync::Arc::new(paths),
+            ));
         }
-        let (nodes, size) = cache.as_ref().unwrap();
-        (std::sync::Arc::clone(nodes), *size)
+        let (nodes, size, paths) = cache.as_ref().unwrap();
+        (
+            std::sync::Arc::clone(nodes),
+            *size,
+            std::sync::Arc::clone(paths),
+        )
     }
 
     fn invalidate_mindmap_layout(&self) {
         *self.mindmap_layout.borrow_mut() = None;
+        *self.mindmap_data_panel.borrow_mut() = None;
     }
 
     /// Select root's first child if nothing is selected, opening the preview
@@ -1081,7 +1122,7 @@ impl App {
         if self.view_mode != ViewMode::Mindmap || self.mindmap_selected.is_some() {
             return;
         }
-        let (nodes, _) = self.mindmap_layout();
+        let (nodes, _, _) = self.mindmap_layout();
         if let Some(id) = nodes
             .first()
             .and_then(|root| root.children.first().copied())
@@ -1312,6 +1353,68 @@ impl App {
         Some((start, end, end < natural_end))
     }
 
+    /// Leaf panel for data-doc mindmaps: pretty-print the selected node's
+    /// subtree and render it through the shared data code-block view. The pretty
+    /// string is cached in `mindmap_data_panel` so it is computed at most once
+    /// per selection change (mirrors the markdown panel's settle behavior).
+    fn mindmap_data_panel_view(
+        &self,
+        pal: &Palette,
+        recently_scrolled: bool,
+        panel_width: f32,
+    ) -> Element<'_, Message> {
+        let pal_c = *pal;
+        // Refresh the cached pretty string if the shown node changed.
+        if let Some(target) = self.mindmap_panel_shown {
+            let needs = self
+                .mindmap_data_panel
+                .borrow()
+                .as_ref()
+                .map(|(id, _)| *id != target)
+                .unwrap_or(true);
+            if needs {
+                let (_, _, paths) = self.mindmap_layout();
+                let lang = data_lang_for(self.file.as_deref()).unwrap_or("json");
+                let pretty = paths
+                    .get(&target)
+                    .and_then(|p| crate::data_mindmap::subtree_pretty(&self.source, lang, p))
+                    .unwrap_or_default();
+                *self.mindmap_data_panel.borrow_mut() = Some((target, pretty));
+            }
+        }
+
+        let pretty_owned: Option<String> = self
+            .mindmap_data_panel
+            .borrow()
+            .as_ref()
+            .filter(|(_, p)| !p.is_empty())
+            .map(|(_, p)| p.clone());
+        let content: Element<'_, Message> = match pretty_owned {
+            Some(pretty) => crate::render::data_view_owned(pretty, pal, &self.typography),
+            None => container(
+                text("Select a node to see its value")
+                    .color(pal.muted)
+                    .size(13),
+            )
+            .padding(24)
+            .into(),
+        };
+
+        let scrolled = scrollable(container(content).padding(Padding::from([24, 24])))
+            .height(Length::Shrink)
+            .direction(slim_scroll_direction())
+            .style(move |_, status| sleek_scrollable_style(status, pal_c, recently_scrolled));
+        container(scrolled)
+            .width(Length::Fixed(panel_width))
+            .height(Length::Fill)
+            .center_y(Length::Fill)
+            .style(move |_| container::Style {
+                background: Some(pal_c.surface.into()),
+                ..Default::default()
+            })
+            .into()
+    }
+
     /// Right-side panel shown in Mindmap mode. Renders a bounded markdown slice
     /// for the selected heading so panel open/redraw cannot rebuild huge trees.
     fn mindmap_panel_view(
@@ -1321,6 +1424,9 @@ impl App {
         recently_scrolled: bool,
         panel_width: f32,
     ) -> Element<'_, Message> {
+        if self.is_data_doc {
+            return self.mindmap_data_panel_view(pal, recently_scrolled, panel_width);
+        }
         let pal_c = *pal;
         let content: Element<'_, Message> = match self.mindmap_panel_shown {
             None => container(
@@ -1937,7 +2043,7 @@ impl App {
                 Task::none()
             }
             Message::MindmapNavigate(dir) => {
-                let (nodes, _) = self.mindmap_layout();
+                let (nodes, _, _) = self.mindmap_layout();
                 // Build parent index.
                 let mut parents: Vec<Option<usize>> = vec![None; nodes.len()];
                 for (i, n) in nodes.iter().enumerate() {
@@ -3470,7 +3576,7 @@ impl App {
                     .unwrap_or(0),
             };
             let body: Element<'_, Message> = if self.view_mode == ViewMode::Mindmap {
-                let (nodes, content_size) = self.mindmap_layout();
+                let (nodes, content_size, _) = self.mindmap_layout();
                 let program = crate::mindmap::MindmapProgram {
                     nodes,
                     content_size,

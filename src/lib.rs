@@ -2,6 +2,7 @@ pub mod app;
 pub mod ast;
 pub mod bench;
 pub mod cli;
+pub mod data_mindmap;
 pub mod diagram;
 pub mod highlight;
 pub mod history;
