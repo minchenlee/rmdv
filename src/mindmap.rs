@@ -123,7 +123,7 @@ fn fit_label_at(s: &str, max_width: f32, size: f32) -> (String, bool) {
 
 /// Fit `s` into a node's inner width at the unified `FONT_SIZE`. Truncates
 /// with `…` if it overflows.
-fn fit_label_for_node(s: &str) -> (String, bool) {
+pub(crate) fn fit_label_for_node(s: &str) -> (String, bool) {
     let max = (NODE_W - TEXT_INSET_X * 2.0).max(1.0);
     fit_label_at(s, max, FONT_SIZE)
 }
@@ -211,7 +211,7 @@ pub fn build_tree(
     nodes
 }
 
-fn layout(nodes: &mut [MNode], idx: usize, y_cursor: &mut f32) -> f32 {
+pub(crate) fn layout(nodes: &mut [MNode], idx: usize, y_cursor: &mut f32) -> f32 {
     let kids = nodes[idx].children.clone();
     let x = PAD + nodes[idx].level as f32 * (NODE_W + X_GAP);
     nodes[idx].x = x;

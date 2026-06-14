@@ -172,6 +172,29 @@ pub fn data_view<'a>(
         .into()
 }
 
+/// Owned-string variant of `data_view` for callers that compute the code on the
+/// fly (mindmap data-doc leaf panel) and need a `'static` element. Spans own
+/// their text so the returned element borrows nothing.
+pub fn data_view_owned(code: String, pal: &Palette, typ: &Typography) -> Element<'static, Message> {
+    let lang = detect_data_lang(&code);
+    let colored = colorize_data(lang, &code, pal);
+    let mut out: Vec<RtSpan<'static>> = Vec::new();
+    for (range, color) in colored {
+        let slice = code[range].to_string();
+        out.push(
+            span(slice)
+                .color(color)
+                .font(iced::Font::with_name("JetBrains Mono"))
+                .size(typ.code_size)
+                .line_height(iced::widget::text::LineHeight::Relative(1.55)),
+        );
+    }
+    container(rich_text(out))
+        .padding(Padding::from([28, 32]))
+        .width(Length::Fill)
+        .into()
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum DataLang {
     Json,
