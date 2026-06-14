@@ -49,25 +49,35 @@ enum DataValue {
 fn from_json(v: &serde_json::Value) -> DataValue;
 fn from_yaml(v: &serde_yaml::Value) -> DataValue;
 
-// Build the flat arena tree the renderer wants.
+// Path from the document root to a node's value: object keys and array
+// indices. Used by the leaf panel to re-navigate the parsed value on demand.
+pub enum PathSeg { Key(String), Index(usize) }
+
+// Build the flat arena tree the renderer wants, plus a per-node path map so
+// the leaf panel can show each node's subtree.
 pub fn build_tree(
     root: &DataValue,
     doc_title: &str,
     collapsed: &HashSet<BlockId>,
-) -> Vec<MNode>;
+) -> (Vec<MNode>, HashMap<BlockId, Vec<PathSeg>>);
 
-// tree + layout, mirroring mindmap::build_layout's contract.
+// tree + layout + path map, mirroring mindmap::build_layout's contract.
 pub fn build_layout(
     source: &str,
     lang: &str,                     // "json" | "yaml"
     file: Option<&Path>,
     collapsed: &HashSet<BlockId>,
-) -> (Vec<MNode>, Size);
+) -> (Vec<MNode>, Size, HashMap<BlockId, Vec<PathSeg>>);
+
+// Leaf panel: re-parse source, walk `path`, pretty-print that subtree.
+// Returns (pretty_string, lang) for a syntax-highlighted code block.
+pub fn subtree_pretty(source: &str, lang: &str, path: &[PathSeg]) -> Option<String>;
 ```
 
 `build_layout` parses `source` with serde, normalizes to `DataValue`, calls
 `build_tree`, then reuses `mindmap::layout(...)` **unchanged** for x/y assignment
-and canvas `Size`. On parse error it builds the fallback tree (root + ⚠ child).
+and canvas `Size`. On parse error it builds the fallback tree (root + ⚠ child)
+with an empty path map.
 
 ### Tree-build rules
 
@@ -80,8 +90,39 @@ and canvas `Size`. On parse error it builds the fallback tree (root + ⚠ child)
   - element is `Scalar` → child node `label = "[i]: value"`.
   - element is `Object`/`Array` → child node `label = "[i]"`, recurse.
 - `full_label` keeps the untruncated `key: value`; `label` truncated via the same
-  helper markdown uses (`MNode.truncated` flag drives the tooltip). Leaf-detail
-  panel shows `full_label` — free, the panel already keys off the selected node.
+  helper markdown uses (`MNode.truncated` flag drives the tooltip).
+- While walking, record each node's `Vec<PathSeg>` into the path map keyed by its
+  minted `BlockId`.
+
+### Leaf panel — pretty-printed subtree
+
+Clicking a node shows the JSON/YAML **under** that node, pretty-printed and
+syntax-highlighted. The markdown panel renders an AST slice keyed by heading
+BlockId (`mindmap_panel_range` / `mindmap_panel_view`, `app.rs:1287`/`1317`) —
+data docs have no heading AST, so that path returns "Heading not found".
+
+Data-doc panel instead: look up the selected node's `Vec<PathSeg>` in the path
+map, call `subtree_pretty(&self.source, lang, path)` which re-parses, navigates
+the path, and `serde_json::to_string_pretty` / `serde_yaml::to_string` of that
+subtree. Scalars pretty-print to themselves.
+
+The pretty string is rendered through the **existing** `render::data_view(code,
+&[], pal, typ)` (`render.rs:150`) — it ignores the `spans` arg and colorizes
+internally via `detect_data_lang` + `colorize_data`, so no highlight call is
+needed. `data_view` returns `Element<'a>` borrowing `code`, and the pretty string
+is computed fresh, so it must outlive the Element. Store it in a new
+`RefCell<Option<(BlockId, String)>>` field `mindmap_data_panel: RefCell<...>` on
+`App`: `mindmap_panel_view` checks if the cached `(id, _)` matches
+`mindmap_panel_shown`; if not, recompute `subtree_pretty` and replace. The
+borrowed `&str` then lives in the RefCell for the Element's lifetime. This mirrors
+the existing `mindmap_layout: RefCell<...>` cache pattern and the settle-gen lag,
+so `subtree_pretty` runs at most once per selection change. Consistent with
+Option A (no persisted parsed `DataValue`; re-parse on demand, cache only the
+rendered string). Invalidated alongside `invalidate_mindmap_layout` on
+file-load/edit.
+
+`mindmap_panel_view` (`app.rs:1317`) gains a top branch: `if self.is_data_doc`,
+render the subtree code block from the RefCell; else the existing AST-slice path.
 
 ### Stable node identity
 
@@ -93,17 +134,31 @@ is fixed by source key order (objects preserve order) and array index.
 
 ## Wiring (in `app.rs`)
 
-- **`App::mindmap_layout()` (`app.rs:1059`)** — branch at the top:
+- **Layout cache field (`app.rs:499`)** — currently
+  `RefCell<Option<(Arc<Vec<MNode>>, Size)>>`. Add the path map:
+  `RefCell<Option<(Arc<Vec<MNode>>, Size, Arc<HashMap<BlockId, Vec<PathSeg>>>)>>`.
+  Markdown path supplies an empty map. This is the one struct-field change.
+- **`App::mindmap_layout()` (`app.rs:1059`)** — branch at the top, return the map
+  too:
   ```rust
-  if self.is_data_doc {
+  let (nodes, size, paths) = if self.is_data_doc {
       let lang = data_lang_for(self.file.as_deref()).unwrap_or("json");
       data_mindmap::build_layout(&self.source, lang, self.file.as_deref(), &self.mindmap_collapsed)
   } else {
-      mindmap::build_layout(&self.ast, self.file.as_deref(), &self.mindmap_collapsed)
-  }
+      let (n, s) = mindmap::build_layout(&self.ast, self.file.as_deref(), &self.mindmap_collapsed);
+      (n, s, HashMap::new())
+  };
   ```
   Raw file text lives in `App.source: String` (`app.rs:394`), retained for the
-  lifetime of the open doc — verified.
+  lifetime of the open doc — verified. Callers of `mindmap_layout()` that only
+  want `(nodes, size)` get a 2-tuple accessor; a separate `mindmap_paths()`
+  borrows the map (or `mindmap_layout` returns the triple and the two existing
+  callers — `mindmap_focus_first_child` `app.rs:1084`, `view()` `app.rs:3472` —
+  ignore the third element).
+- **`mindmap_panel_view()` (`app.rs:1317`)** — top branch: `if self.is_data_doc`,
+  look up `mindmap_panel_shown` in the path map, call
+  `data_mindmap::subtree_pretty`, render via `render::data_view`; else the existing
+  AST-slice path.
 - **`is_data_doc` / `data_lang_for()`** — already set on file load. No change.
 - **Cache invalidation** (`invalidate_mindmap_layout`) — reused unchanged; toggling
   files or editing already clears it.
@@ -112,20 +167,23 @@ is fixed by source key order (objects preserve order) and array index.
 
 ## Reused untouched
 
-Canvas `draw`, zoom/pan, ←↑→↓ nav, collapse toggle, leaf-detail panel,
-`MNode` / `MindmapState` / `MindmapProgram`, and `mindmap::layout()`.
+Canvas `draw`, zoom/pan, ←↑→↓ nav, collapse toggle, `MNode` / `MindmapState` /
+`MindmapProgram`, `mindmap::layout()`, and `render::data_view` + `hl_cache` for the
+panel code block.
 
 ## Components & boundaries
 
 | Unit | Does | Depends on |
 |---|---|---|
 | `data_mindmap::from_json` / `from_yaml` | parser `Value` → `DataValue` | serde_json, serde_yaml |
-| `data_mindmap::build_tree` | `DataValue` → `Vec<MNode>` + minted BlockIds | mindmap::MNode, BlockId |
-| `data_mindmap::build_layout` | parse + tree + layout + fallback | mindmap::layout |
-| `App::mindmap_layout` (edit) | dispatch md vs data | data_mindmap, is_data_doc |
+| `data_mindmap::build_tree` | `DataValue` → `Vec<MNode>` + minted BlockIds + path map | mindmap::MNode, BlockId |
+| `data_mindmap::build_layout` | parse + tree + layout + fallback + map | mindmap::layout |
+| `data_mindmap::subtree_pretty` | source + path → pretty subtree string | serde_json/yaml |
+| `App::mindmap_layout` (edit) | dispatch md vs data, carry map | data_mindmap, is_data_doc |
+| `App::mindmap_panel_view` (edit) | data branch renders subtree code block | subtree_pretty, render::data_view |
 
-Each unit testable in isolation: `build_tree` is pure (`DataValue` in, `Vec<MNode>`
-out); `build_layout` is pure (`&str` in, tree+size out).
+Each unit testable in isolation: `build_tree` is pure (`DataValue` in, tree+map
+out); `build_layout`/`subtree_pretty` are pure (`&str` in, value out).
 
 ## Error handling
 
@@ -150,17 +208,23 @@ Unit tests on `build_tree` / `build_layout` (pure functions, no GUI):
 6. Malformed JSON and malformed YAML → fallback tree with ⚠ child.
 7. Deep nesting past the depth cap → `…` truncation child present.
 8. BlockId stability → same input twice yields identical id sequence.
+9. Path map → each leaf's `Vec<PathSeg>` round-trips: `subtree_pretty(source, lang,
+   path)` returns that node's value (scalar → scalar text; object key → its object).
+10. `subtree_pretty` on a parent key returns the pretty-printed object/array;
+    on a scalar returns the scalar; on a stale/invalid path returns `None`.
+11. `lang = "toml"` (or any non-json/yaml) → fallback tree, no panic.
 
 Then per the project verify-UI rule (`.claude/rules/ui-verification.md`):
 release build, open a real `.json` and a real `.yaml` over the rmdv IPC/CLI,
 ⌘M, screenshot, and LOOK at it — node labels, no cropping, arrow-nav follows
-focus, leaf panel shows full value.
+focus, and clicking a parent node shows its pretty-printed subtree in the panel.
 
 ## Scope cuts (YAGNI)
 
-- No TOML mind map (request was JSON + YAML; `data_lang_for` returns `"toml"`
-  but the dispatch will treat unknown data langs as JSON-parse-then-fallback, so
-  TOML simply shows the fallback — acceptable, not in scope to render).
+- No TOML mind map (request was JSON + YAML). `.toml` is `is_data_doc`, so it
+  enters the data branch, but `build_layout` only parses `lang ∈ {json, yaml}`;
+  any other lang yields the fallback tree (root + `⚠ <lang> mindmap not supported`).
+  No crash, explicit message. Rendered (non-mindmap) TOML view is unchanged.
 - No "flatten short scalar arrays" (indexed children chosen).
 - No value-type icons / color coding.
 - No serde_yaml → noyalib migration (separate task).
