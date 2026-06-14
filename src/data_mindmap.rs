@@ -281,6 +281,30 @@ pub fn build_layout(
     (nodes, Size::new(width, height), paths)
 }
 
+/// Look up a YAML mapping value by the *stringified* form of its key.
+///
+/// `PathSeg::Key` stores keys as the same string `from_yaml`/`yaml_scalar`
+/// produced for the node label, so a non-string YAML key (`42:`, `true:`) is
+/// recorded as `"42"`/`"true"`. A direct `Value::String` lookup would miss it,
+/// so first try the fast string-key path, then fall back to scanning the
+/// mapping for a key whose scalar text matches.
+fn yaml_get_by_str_key<'a>(
+    cur: &'a serde_yaml::Value,
+    k: &str,
+) -> Option<&'a serde_yaml::Value> {
+    if let Some(v) = cur.get(serde_yaml::Value::String(k.to_string())) {
+        return Some(v);
+    }
+    let map = cur.as_mapping()?;
+    map.iter().find_map(|(key, val)| {
+        let matches = match key {
+            serde_yaml::Value::String(s) => s == k,
+            other => yaml_scalar(other).0 == k,
+        };
+        matches.then_some(val)
+    })
+}
+
 /// Navigate `path` into the parsed source and pretty-print that subtree.
 pub fn subtree_pretty(source: &str, lang: &str, path: &[PathSeg]) -> Option<String> {
     match lang {
@@ -303,7 +327,7 @@ pub fn subtree_pretty(source: &str, lang: &str, path: &[PathSeg]) -> Option<Stri
             let mut cur = &root;
             for seg in path {
                 cur = match seg {
-                    PathSeg::Key(k) => cur.get(serde_yaml::Value::String(k.clone()))?,
+                    PathSeg::Key(k) => yaml_get_by_str_key(cur, k)?,
                     PathSeg::Index(i) => cur.get(*i)?,
                 };
             }
@@ -476,5 +500,17 @@ mod tests {
     fn subtree_pretty_bad_path_is_none() {
         let src = r#"{"a":1}"#;
         assert!(subtree_pretty(src, "json", &[PathSeg::Key("nope".into())]).is_none());
+    }
+
+    #[test]
+    fn subtree_pretty_yaml_non_string_keys() {
+        // Integer and boolean keys must resolve via stringified-key fallback.
+        let src = "42:\n  nested: ok\ntrue: yes\n";
+        let int_path = vec![PathSeg::Key("42".into()), PathSeg::Key("nested".into())];
+        let v = subtree_pretty(src, "yaml", &int_path).unwrap();
+        assert!(v.contains("ok"), "int-keyed subtree should resolve, got {v:?}");
+        let bool_path = vec![PathSeg::Key("true".into())];
+        let b = subtree_pretty(src, "yaml", &bool_path).unwrap();
+        assert!(b.contains("yes"), "bool-keyed subtree should resolve, got {b:?}");
     }
 }
