@@ -68,6 +68,20 @@ pub enum Cmd {
     Focus,
     Close,
     Current,
+    Screenshot {
+        path: String,
+    },
+    Resize {
+        width: u32,
+        height: u32,
+    },
+    Theme {
+        slug: String,
+    },
+    /// Show the update banner with a fake version (for demos/screenshots).
+    DemoBanner {
+        version: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

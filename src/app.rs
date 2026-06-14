@@ -345,6 +345,12 @@ pub enum Message {
     RefreshWindowMode(iced::window::Id),
     RefreshWindowModeSettled(iced::window::Id),
     WindowModeChanged(iced::window::Mode),
+    /// Palette command: capture the window to a timestamped PNG on the Desktop.
+    TakeScreenshot,
+    /// Async result of a `Cmd::Screenshot` / `TakeScreenshot` capture. Encodes
+    /// to PNG, writes the file at `pending_screenshot.0`, and either replies via
+    /// the stashed IPC sender or shows a toast.
+    ScreenshotCaptured(iced::window::Screenshot),
     HintSelection,
     FoldChordStart,
     FoldChordCancel,
@@ -543,6 +549,19 @@ pub struct App {
     /// run a widget operation that centers this block from its real laid-out
     /// bounds (the virt window around it was rebuilt by `apply_goto`).
     pub queued_goto: Option<crate::ast::BlockId>,
+    /// In-flight screenshot: target PNG path + an optional deferred IPC reply
+    /// sender. `Cmd::Screenshot` stashes `Some(tx)` so the client blocks until
+    /// the file is written; the palette command stashes `None` (toast only).
+    /// `Message::ScreenshotCaptured` writes the file and replies if a sender
+    /// is present.
+    pub pending_screenshot: Option<(
+        std::path::PathBuf,
+        Option<
+            std::sync::Arc<
+                std::sync::Mutex<Option<futures::channel::oneshot::Sender<crate::ipc::Response>>>,
+            >,
+        >,
+    )>,
     /// Windowed-rendering state for the body (display list, prefix sums,
     /// rendered range + hysteresis band). Rebuilt only in `update` — on doc
     /// load/reparse, fold changes, font changes, measured-height feedback,
@@ -659,6 +678,7 @@ impl Default for App {
             pending_nav: None,
             queued_snap: None,
             queued_goto: None,
+            pending_screenshot: None,
             virt_window: crate::virt::VirtWindow::default(),
             nav_anchor: None,
             prefs,
@@ -1559,6 +1579,7 @@ impl App {
                 Message::ToggleAutoFocusOnNav,
             ),
             ("Show Keyboard Shortcuts  ⌘/", Message::ToggleShortcuts),
+            ("Take Screenshot", Message::TakeScreenshot),
         ]
     }
 
@@ -2180,6 +2201,68 @@ impl App {
             Message::WindowModeChanged(mode) => {
                 self.window_fullscreen = matches!(mode, iced::window::Mode::Fullscreen);
                 Task::none()
+            }
+            Message::TakeScreenshot => {
+                self.overlay = Overlay::None;
+                let dir = dirs::desktop_dir()
+                    .or_else(dirs::home_dir)
+                    .unwrap_or_else(|| std::path::PathBuf::from("."));
+                let stamp = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0);
+                let path = dir.join(format!("rmdv-screenshot-{stamp}.png"));
+                self.pending_screenshot = Some((path, None));
+                iced::window::latest()
+                    .and_then(iced::window::screenshot)
+                    .map(Message::ScreenshotCaptured)
+            }
+            Message::ScreenshotCaptured(shot) => {
+                if let Some((path, tx)) = self.pending_screenshot.take() {
+                    let saved = image::RgbaImage::from_raw(
+                        shot.size.width,
+                        shot.size.height,
+                        shot.rgba.to_vec(),
+                    )
+                    .ok_or_else(|| "screenshot buffer size mismatch".to_string())
+                    .and_then(|img| {
+                        img.save(&path)
+                            .map_err(|e| format!("write {}: {e}", path.display()))
+                    });
+                    match tx {
+                        // IPC capture: reply over the socket, no toast.
+                        Some(tx) => {
+                            let resp = match &saved {
+                                Ok(()) => crate::ipc::Response::ok_with(
+                                    1,
+                                    serde_json::json!({
+                                        "path": path.to_string_lossy(),
+                                        "width": shot.size.width,
+                                        "height": shot.size.height,
+                                    }),
+                                ),
+                                Err(e) => crate::ipc::Response::err(1, e.clone()),
+                            };
+                            Self::reply(&tx, resp);
+                            Task::none()
+                        }
+                        // Palette capture: surface the result as a toast.
+                        None => {
+                            let msg = match &saved {
+                                Ok(()) => format!(
+                                    "Saved screenshot to {}",
+                                    path.file_name()
+                                        .map(|n| n.to_string_lossy().into_owned())
+                                        .unwrap_or_else(|| path.to_string_lossy().into_owned())
+                                ),
+                                Err(e) => format!("Screenshot failed: {e}"),
+                            };
+                            self.show_toast(msg)
+                        }
+                    }
+                } else {
+                    Task::none()
+                }
             }
             Message::MindmapCyclePanelWidth => {
                 // Open the panel if it was closed so the size change is visible.
@@ -3160,6 +3243,9 @@ impl App {
                 // the response. `Some(true)` = force raise, `Some(false)` =
                 // explicit suppress, `None` = not a nav command.
                 let mut nav_focus: Option<FocusBehavior> = None;
+                // Screenshot replies only after the file is written, so its
+                // handler stashes the sender and suppresses the sync reply.
+                let mut defer_reply = false;
                 let resp = match req.cmd {
                     Cmd::Current => {
                         let mode = match self.view_mode {
@@ -3243,8 +3329,51 @@ impl App {
                         nav_focus = Some(focus);
                         apply_goto(self, id, line, section)
                     }
+                    Cmd::Screenshot { path } => {
+                        // Capture is async: stash the path + sender, fire the
+                        // window screenshot, and reply once the PNG is written.
+                        self.pending_screenshot = Some((
+                            std::path::PathBuf::from(path),
+                            Some(std::sync::Arc::clone(&tx)),
+                        ));
+                        follow_up = iced::window::latest()
+                            .and_then(iced::window::screenshot)
+                            .map(Message::ScreenshotCaptured);
+                        defer_reply = true;
+                        Response::ok(id)
+                    }
+                    Cmd::Resize { width, height } => {
+                        follow_up = iced::window::latest().and_then(move |wid| {
+                            iced::window::resize(
+                                wid,
+                                iced::Size::new(width as f32, height as f32),
+                            )
+                        });
+                        Response::ok(id)
+                    }
+                    Cmd::Theme { slug } => match theme::preset_by_slug(&slug) {
+                        Some(preset) => {
+                            follow_up = Task::done(Message::SetTheme(preset));
+                            Response::ok(id)
+                        }
+                        None => Response::err(id, format!("unknown theme: {slug}")),
+                    },
+                    Cmd::DemoBanner { version } => {
+                        // Fake a ready update purely to render the banner. The
+                        // artifact path is empty, so "Install" would no-op — this
+                        // is for demos/screenshots only.
+                        self.pending_update = Some(crate::update::ReadyUpdate {
+                            version,
+                            notes_url: None,
+                            artifact: std::path::PathBuf::new(),
+                            sha256: String::new(),
+                        });
+                        Response::ok(id)
+                    }
                 };
-                Self::reply(&tx, resp);
+                if !defer_reply {
+                    Self::reply(&tx, resp);
+                }
                 let should_focus = match nav_focus {
                     Some(FocusBehavior::Force) => true,
                     Some(FocusBehavior::Suppress) => false,

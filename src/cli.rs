@@ -64,6 +64,12 @@ pub enum Command {
     Close,
     /// Print current state as JSON.
     Current,
+    /// Capture the window to a PNG file. Blocks until the file is written.
+    Screenshot { path: PathBuf },
+    /// Resize the window to an explicit logical width x height.
+    Resize { width: u32, height: u32 },
+    /// Show the update banner with a fake version (demos/screenshots).
+    DemoBanner { version: String },
     /// List headings of a markdown file as JSON. Stateless — does not require a
     /// running rmdv instance.
     ListSections { file: PathBuf },
@@ -184,11 +190,26 @@ fn to_parsed(cli: Cli) -> ParsedCli {
             Command::Focus => req(Cmd::Focus),
             Command::Close => req(Cmd::Close),
             Command::Current => req(Cmd::Current),
+            Command::Screenshot { path } => req(Cmd::Screenshot {
+                path: path_to_string(path),
+            }),
+            Command::Resize { width, height } => req(Cmd::Resize { width, height }),
+            Command::DemoBanner { version } => req(Cmd::DemoBanner { version }),
             Command::ListSections { file } => ParsedCli::Stateless(Stateless::ListSections {
                 file,
                 pretty: cli.pretty,
             }),
-            Command::Theme { args } => ParsedCli::Theme(args),
+            Command::Theme { args } => {
+                // `theme set <slug>` drives the running instance via IPC; the
+                // rest (list/dir/import) stay stateless passthrough.
+                if args.len() == 2 && args[0] == "set" {
+                    req(Cmd::Theme {
+                        slug: args[1].clone(),
+                    })
+                } else {
+                    ParsedCli::Theme(args)
+                }
+            }
         };
     }
     match cli.target {
