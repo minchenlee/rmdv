@@ -1,0 +1,612 @@
+/* rmdv.mclee.dev — palettes lifted verbatim from src/theme.rs (One Dark / One Light) */
+
+@font-face {
+  font-family: 'Inter';
+  src: url('assets/fonts/inter-400.woff2') format('woff2');
+  font-weight: 400; font-display: swap;
+}
+@font-face {
+  font-family: 'Inter';
+  src: url('assets/fonts/inter-600.woff2') format('woff2');
+  font-weight: 600; font-display: swap;
+}
+@font-face {
+  font-family: 'Inter';
+  src: url('assets/fonts/inter-700.woff2') format('woff2');
+  font-weight: 700; font-display: swap;
+}
+@font-face {
+  font-family: 'JetBrains Mono';
+  src: url('assets/fonts/jbmono-400.woff2') format('woff2');
+  font-weight: 400; font-display: swap;
+}
+/* metric-matched fallback: text lays out at Inter's metrics before the woff2
+   arrives, so the swap doesn't reflow the page (was CLS 0.10 on mobile) */
+@font-face {
+  font-family: 'Inter Fallback';
+  src: local('Arial');
+  size-adjust: 107.4%;
+  ascent-override: 90.2%;
+  descent-override: 22.5%;
+  line-gap-override: 0%;
+}
+@font-face {
+  font-family: 'JetBrains Mono Fallback';
+  src: local('Menlo'), local('Courier New');
+  size-adjust: 99.7%;
+  ascent-override: 102%;
+  descent-override: 30%;
+  line-gap-override: 0%;
+}
+
+:root {
+  /* motion tokens — editor-grade snappiness */
+  --t-fast: 90ms;
+  --t-med: 160ms;
+  --ease: cubic-bezier(.2, .8, .2, 1);
+  --mono: 'JetBrains Mono', 'JetBrains Mono Fallback', ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+:root[data-theme="light"] {
+  --bg: rgb(250, 250, 250);
+  --surface: rgb(255, 255, 255);
+  --surface-alt: rgb(240, 240, 241);
+  --sidebar: rgb(245, 245, 246);
+  --fg: rgb(56, 58, 66);
+  /* muted/subtle darkened from the app values just enough to clear WCAG AA on --bg */
+  --muted: rgb(95, 99, 108);
+  --subtle: rgb(110, 114, 122);
+  --accent: rgb(217, 119, 87);
+  --accent-text: rgb(178, 86, 52);  /* link-text variant of accent, ≥4.5:1 on bg */
+  --accent-fg: rgb(26, 18, 12);
+  --code-bg: rgb(244, 244, 244);
+  --rule: rgba(0, 0, 0, 0.08);
+  --selection: rgba(217, 119, 87, 0.22);
+  --shadow: 0 18px 50px rgba(0, 0, 0, 0.14);
+  --shadow-sm: 0 4px 14px rgba(0, 0, 0, 0.07);
+  --glow: rgba(217, 119, 87, 0.07);
+  /* One Light syntax (comment darkened for AA on code-bg) */
+  --syn-comment: rgb(100, 102, 108);
+  --syn-string: rgb(80, 161, 79);
+  --syn-keyword: rgb(166, 38, 164);
+  --syn-fn: rgb(64, 120, 242);
+}
+:root[data-theme="dark"] {
+  --bg: rgb(40, 44, 52);
+  --surface: rgb(33, 37, 43);
+  --surface-alt: rgb(47, 52, 61);
+  --sidebar: rgb(33, 37, 43);
+  --fg: rgb(220, 223, 228);
+  --muted: rgb(150, 156, 167);
+  --subtle: rgb(142, 148, 160);  /* lightened from the app value to clear WCAG AA on --bg */
+  --accent: rgb(229, 160, 107);
+  --accent-text: rgb(229, 160, 107);
+  --accent-fg: rgb(26, 18, 12);
+  --code-bg: rgb(36, 40, 47);
+  --rule: rgba(255, 255, 255, 0.07);
+  --selection: rgba(229, 160, 107, 0.25);
+  --shadow: 0 18px 50px rgba(0, 0, 0, 0.5);
+  --shadow-sm: 0 4px 14px rgba(0, 0, 0, 0.25);
+  --glow: rgba(229, 160, 107, 0.09);
+  /* One Dark syntax (comment lightened for AA on code-bg) */
+  --syn-comment: rgb(145, 153, 168);
+  --syn-string: rgb(152, 195, 121);
+  --syn-keyword: rgb(198, 120, 221);
+  --syn-fn: rgb(97, 175, 239);
+}
+
+* { box-sizing: border-box; }
+::selection { background: var(--selection); }
+
+/* theme swap rides the View Transition API — a fast crossfade, no slow lerp */
+::view-transition-old(root), ::view-transition-new(root) { animation-duration: .18s; }
+
+/* j/k must scroll INSTANTLY, like the app. Smooth only where JS asks for it.
+   overflow-x:clip kills any stray horizontal scroll from decorative overflow
+   (the hero glow) without breaking the sticky top bar like overflow:hidden would. */
+html { scroll-behavior: auto; overflow-x: clip; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { transition: none !important; animation: none !important; }
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font: 400 16.5px/1.65 'Inter', 'Inter Fallback', system-ui, -apple-system, sans-serif;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+}
+
+main {
+  max-width: 780px;            /* rmdv's own content column width */
+  margin: 0 auto;
+  padding: 0 24px;
+}
+
+a { color: var(--accent-text); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+.sr-only {
+  position: absolute;
+  width: 1px; height: 1px;
+  margin: -1px; padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+code, kbd, pre { font-family: var(--mono); }
+code { font-size: .88em; background: var(--code-bg); padding: .12em .35em; border-radius: 4px; }
+
+/* scrollbar — thin, fades up on hover, like the app's */
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--fg) 16%, transparent);
+  border-radius: 5px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+::-webkit-scrollbar-thumb:hover { background-color: color-mix(in srgb, var(--fg) 32%, transparent); }
+
+/* ── top bar ─────────────────────────────────── */
+.top {
+  position: sticky; top: 0; z-index: 10;
+  background: color-mix(in srgb, var(--bg) 82%, transparent);
+  -webkit-backdrop-filter: blur(12px);
+  backdrop-filter: blur(12px);
+  border-bottom: 1px solid var(--rule);
+}
+.top-inner {
+  max-width: 780px; margin: 0 auto; padding: 10px 24px;
+  display: flex; align-items: center; justify-content: space-between;
+}
+.brand {
+  display: flex; align-items: center; gap: 8px;
+  font-weight: 700; font-size: 17px; color: var(--fg);
+}
+.brand:hover { text-decoration: none; }
+.brand img { border-radius: 5px; }
+.top-nav { display: flex; align-items: center; gap: 18px; font-size: 14px; }
+.top-nav a {
+  color: var(--muted);
+  position: relative;
+  padding: 2px 0;
+  transition: color var(--t-fast) var(--ease);
+}
+.top-nav a::after {
+  content: '';
+  position: absolute; left: 0; right: 0; bottom: -3px;
+  height: 2px; border-radius: 1px;
+  background: var(--accent);
+  transform: scaleX(0);
+  transform-origin: left;
+  transition: transform var(--t-med) var(--ease);
+}
+.top-nav a:hover { color: var(--fg); text-decoration: none; }
+.top-nav a:hover::after, .top-nav a.active::after { transform: scaleX(1); }
+.top-nav a.active { color: var(--fg); }
+.top-nav .gh { color: var(--fg); font-weight: 600; }
+.top-nav .gh::after { display: none; }
+
+/* ── keycaps — flat surface_alt boxes, exactly the app's kbd (app.rs key_caps) ── */
+kbd {
+  display: inline-block;
+  min-width: 24px; padding: 2px 7px;
+  font-size: 12px; font-weight: 400; line-height: 1.5;
+  text-align: center;
+  color: var(--fg);
+  background: var(--surface-alt);
+  border: 1px solid var(--rule);
+  border-radius: 5px;
+  transition: transform var(--t-fast) var(--ease),
+              border-color var(--t-fast) var(--ease),
+              background var(--t-fast) var(--ease);
+}
+/* adjacent inline keycaps in prose (e.g. ⌘P in a card) must not touch.
+   .cap / .hint rows space their own caps (flex gap / explicit margin), so
+   reset there to avoid double spacing. */
+kbd + kbd { margin-left: 4px; }
+.cap kbd + kbd, .hint kbd + kbd { margin-left: 0; }
+/* in cap rows: 24×24 squares like the app cheatsheet */
+.cap kbd {
+  display: inline-flex; align-items: center; justify-content: center;
+  height: 24px; padding: 0 6px;
+}
+/* visual echo when the real key is pressed */
+kbd.hit {
+  transform: translateY(1px);
+  border-color: var(--accent);
+  background: var(--selection);
+}
+
+/* ── hero ────────────────────────────────────── */
+.hero {
+  position: relative;
+  padding: 76px 0 30px;
+  text-align: center;
+}
+/* the decorative glow is 720px wide; clip it so it can't widen the page on
+   narrow viewports (was pushing document scrollWidth past the viewport → CLS-free
+   but horizontally-scrolling, content shoved off-screen on mobile) */
+.hero::before {
+  content: '';
+  position: absolute;
+  top: -80px; left: 50%;
+  width: min(720px, 100vw); height: 420px;
+  transform: translateX(-50%);
+  background: radial-gradient(closest-side, var(--glow), transparent 72%);
+  pointer-events: none;
+}
+.hero > * { position: relative; }
+
+/* staggered load reveal — fast, one orchestrated moment.
+   Desktop only: on mobile the held opacity:0 adds straight onto LCP. */
+@media (min-width: 641px) {
+.js .hero > * { animation: rise .5s var(--ease) both; }
+.js .hero > *:nth-child(2) { animation-delay: .05s; }
+.js .hero > *:nth-child(3) { animation-delay: .1s; }
+.js .hero > *:nth-child(4) { animation-delay: .15s; }
+.js .hero > *:nth-child(5) { animation-delay: .2s; }
+.js .hero > *:nth-child(6) { animation-delay: .25s; }
+}
+@keyframes rise {
+  from { opacity: 0; transform: translateY(10px); }
+}
+
+.invoke {
+  margin: 0 0 18px;
+  font-family: var(--mono);
+  font-size: 13.5px;
+  color: var(--muted);
+}
+.invoke .prompt { color: var(--syn-string); margin-right: .6em; }
+.invoke .caret {
+  display: inline-block;
+  width: .55em; height: 1.05em;
+  margin-left: 2px;
+  vertical-align: text-bottom;
+  background: var(--accent);
+  animation: blink 1.1s steps(1) infinite;
+}
+@keyframes blink { 50% { opacity: 0; } }
+
+.hero h1 {
+  font-size: clamp(38px, 7vw, 58px);
+  font-weight: 700; line-height: 1.1;
+  letter-spacing: -.025em;
+  margin: 0 0 20px;
+}
+.hero h1 .accent { color: var(--accent); }
+.tagline {
+  max-width: 560px; margin: 0 auto 30px;
+  font-size: 18px; color: var(--muted);
+}
+.cta { display: flex; gap: 12px; justify-content: center; margin-bottom: 22px; }
+.btn {
+  display: inline-block;
+  padding: 10px 22px;
+  border: 1px solid var(--rule);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--fg);
+  font-weight: 600; font-size: 15px;
+  transition: transform var(--t-fast) var(--ease),
+              border-color var(--t-fast) var(--ease),
+              box-shadow var(--t-fast) var(--ease),
+              filter var(--t-fast) var(--ease);
+}
+.btn:hover {
+  text-decoration: none;
+  border-color: var(--accent);
+  transform: translateY(-1px);
+  box-shadow: var(--shadow-sm);
+}
+.btn:active { transform: translateY(0) scale(.98); box-shadow: none; }
+.btn.primary { background: var(--accent); color: var(--accent-fg); border-color: transparent; }
+.btn.primary:hover { filter: brightness(1.06); }
+.btn.small { padding: 7px 14px; font-size: 13.5px; }
+.hint { font-size: 13.5px; color: var(--subtle); text-wrap: balance; }
+.hint kbd { margin: 0 1px; }
+
+/* screenshot frame */
+.shot {
+  margin: 44px 0 0;
+  border: 1px solid var(--rule);
+  border-radius: 12px;
+  overflow: hidden;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+.chrome {
+  display: flex; align-items: center; gap: 7px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--rule);
+  background: var(--sidebar);
+}
+.chrome i {
+  width: 11px; height: 11px; border-radius: 50%;
+  background: var(--subtle); opacity: .55;
+}
+.chrome span {
+  flex: 1; text-align: center;
+  font-size: 12px; color: var(--subtle);
+  font-family: var(--mono);
+  margin-right: 47px; /* balance the three dots */
+}
+/* aspect-ratio reserves the box while #shot-img has no src yet (JS sets it
+   per theme) — without it the empty img collapses and the swap shifts layout */
+.shot img { display: block; width: 100%; height: auto; aspect-ratio: 1024 / 768; }
+
+/* ── sections ────────────────────────────────── */
+section { padding: 58px 0 6px; }
+
+/* scroll reveal — subtle, fast, once.
+   Desktop only: holding sections at opacity:0 until JS runs is pure LCP
+   render delay on throttled mobile (PSI measured ~8s on the #why text). */
+@media (min-width: 641px) {
+  .js .reveal {
+    opacity: 0;
+    transform: translateY(14px);
+    transition: opacity .32s var(--ease), transform .32s var(--ease);
+  }
+  .js .reveal.in { opacity: 1; transform: none; }
+}
+
+h2 {
+  font-size: 27px; font-weight: 700; letter-spacing: -.015em;
+  margin: 0 0 14px;
+}
+.h-mark {
+  color: var(--accent);
+  font-family: var(--mono);
+  font-size: .72em; font-weight: 400;
+  margin-right: .45em;
+  vertical-align: .08em;
+  opacity: .85;
+}
+section > p { color: var(--muted); max-width: 640px; }
+.fine { font-size: 13.5px; color: var(--subtle); }
+.fine a { color: var(--muted); text-decoration: underline; }
+
+/* comparison table */
+.table-wrap {
+  overflow-x: auto;
+  margin-top: 22px;
+  border: 1px solid var(--rule);
+  border-radius: 10px;
+  background: var(--surface);
+}
+table {
+  width: 100%; border-collapse: collapse;
+  font-size: 14px;
+}
+th, td {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--rule);
+  text-align: center; white-space: nowrap;
+}
+tbody tr:last-child th, tbody tr:last-child td { border-bottom: 0; }
+th:first-child, td:first-child { text-align: left; color: var(--muted); }
+th { color: var(--subtle); font-weight: 600; }
+tbody th { font-weight: 400; }
+thead th:nth-child(2), tbody td:nth-child(2) {
+  background: var(--selection);
+  font-weight: 600;
+}
+/* the accent-tinted column needs full-contrast header text (PSI: 3.06:1 on subtle) */
+thead th:nth-child(2) { color: var(--fg); }
+td.y { color: var(--accent-text); font-weight: 700; }
+td.n, td.m { color: var(--subtle); }
+
+/* stats */
+.stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 14px;
+  margin: 26px 0 18px;
+}
+.stat {
+  padding: 20px 18px;
+  background: var(--surface);
+  border: 1px solid var(--rule);
+  border-radius: 10px;
+  transition: transform var(--t-fast) var(--ease), border-color var(--t-fast) var(--ease);
+}
+.stat:hover { transform: translateY(-2px); border-color: color-mix(in srgb, var(--accent) 45%, var(--rule)); }
+.stat strong {
+  display: block;
+  font-size: 34px; font-weight: 700; letter-spacing: -.02em;
+  color: var(--accent);
+  font-variant-numeric: tabular-nums;
+}
+.stat em { font-style: normal; font-size: .55em; color: var(--muted); margin-left: 2px; }
+.stat span { font-size: 13px; color: var(--muted); line-height: 1.45; display: block; margin-top: 4px; }
+
+/* feature grid */
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 14px;
+  margin-top: 24px;
+}
+.card {
+  padding: 18px;
+  background: var(--surface);
+  border: 1px solid var(--rule);
+  border-radius: 10px;
+  transition: transform var(--t-fast) var(--ease),
+              border-color var(--t-fast) var(--ease),
+              box-shadow var(--t-fast) var(--ease);
+}
+.card:hover {
+  transform: translateY(-2px);
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--rule));
+  box-shadow: var(--shadow-sm);
+}
+.card h3 { margin: 0 0 6px; font-size: 15.5px; font-weight: 600; }
+.card p { margin: 0; font-size: 13.5px; color: var(--muted); line-height: 1.55; }
+
+/* keyboard rows — caps left in a fixed column, fg labels, like the app */
+.keys {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+  gap: 8px 26px;
+  margin-top: 22px;
+}
+.keyrow {
+  display: flex; align-items: center; gap: 12px;
+  font-size: 13.5px; color: var(--fg);
+  padding: 4px 0;
+}
+.cap { display: flex; gap: 4px; min-width: 104px; justify-content: flex-start; flex-shrink: 0; }
+
+/* code blocks — fences visible, like reading the source */
+pre.code {
+  position: relative;
+  margin: 22px 0;
+  padding: 18px 20px;
+  background: var(--code-bg);
+  border: 1px solid var(--rule);
+  border-radius: 10px;
+  overflow-x: auto;
+  font-size: 13.5px; line-height: 1.7;
+}
+pre.code[data-lang] { padding-top: 30px; }
+pre.code[data-lang]::before {
+  content: '```' attr(data-lang);
+  position: absolute; top: 9px; right: 14px;
+  font-size: 11px;
+  color: var(--subtle);
+  opacity: .8;
+}
+pre.code code { background: none; padding: 0; font-size: inherit; }
+.code .c { color: var(--syn-comment); }
+.code .s { color: var(--syn-string); }
+.code .k { color: var(--syn-keyword); }
+.code .f { color: var(--syn-fn); }
+
+/* install */
+.installs {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 18px;
+  margin-top: 24px;
+}
+/* the source block needs the full column width for the clone URL */
+.inst.wide { grid-column: 1 / -1; }
+.inst h3 { margin: 0 0 10px; font-size: 16px; }
+.inst .btn { margin: 0 6px 8px 0; }
+.inst pre.code { margin: 0 0 10px; }
+
+/* footer — the document ends the way markdown does */
+.md-hr {
+  margin-top: 70px;
+  text-align: center;
+  font-family: var(--mono);
+  font-size: 14px;
+  color: var(--subtle);
+  letter-spacing: .35em;
+  user-select: none;
+}
+footer {
+  padding: 24px 0 48px;
+  text-align: center;
+  font-size: 14px; color: var(--muted);
+}
+footer a { text-decoration: underline; }
+
+/* ── overlays — scrim and frame lifted from the app (18% black, no blur) ── */
+.overlay {
+  position: fixed; inset: 0; z-index: 100;
+  display: flex; align-items: flex-start; justify-content: center;
+  padding: 12vh 20px 0;
+  background: rgba(0, 0, 0, 0.18);
+  animation: fade .12s var(--ease);
+}
+.overlay[hidden] { display: none; }
+@keyframes fade { from { opacity: 0; } }
+.panel {
+  width: 100%; max-width: 560px;
+  background: var(--surface);
+  border: 1px solid var(--rule);
+  border-radius: 14px;
+  box-shadow: 0 14px 50px rgba(0, 0, 0, 0.28);
+  overflow: hidden;
+  animation: pop .14s var(--ease);
+}
+@keyframes pop {
+  from { opacity: .5; transform: scale(.975) translateY(-5px); }
+}
+#palette-input {
+  width: 100%;
+  padding: 12px 16px;
+  border: 0; outline: 0;
+  background: transparent;
+  color: var(--fg);
+  font: 400 15px 'Inter', system-ui, sans-serif;
+  border-bottom: 1px solid var(--rule);
+}
+#palette-input::placeholder { color: var(--subtle); }
+#palette-list {
+  list-style: none; margin: 0; padding: 6px;
+  max-height: 320px; overflow-y: auto;
+}
+#palette-list li {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 7px 12px;
+  border-radius: 6px;
+  font-size: 13.5px;
+  cursor: pointer;
+}
+#palette-list li .pk { color: var(--subtle); font-size: 12px; font-family: var(--mono); }
+/* selection is neutral surface_alt, like the app's pickers — no accent tint */
+#palette-list li.sel { background: var(--surface-alt); }
+#palette-list li.empty { color: var(--subtle); cursor: default; }
+
+/* cheatsheet — grouped 3-column layout, like the app's (app.rs shortcut overlay) */
+#cheat { align-items: center; padding: 40px 20px; }
+.cheat-panel {
+  max-width: 760px;
+  padding: 34px 40px 26px;
+  border-radius: 16px;
+  box-shadow: 0 18px 60px rgba(0, 0, 0, 0.35);
+}
+.cheat-panel:focus, .cheat-panel:focus-visible { outline: none; }
+.cheat-panel h3 { margin: 0 0 4px; font-size: 16px; }
+.cheat-cols {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 0 28px;
+  margin-top: 10px;
+}
+.cheat-h {
+  margin: 18px 0 5px;
+  font-size: 11px; font-weight: 600;
+  color: var(--muted);
+}
+.cheat-col .cheat-h:first-child { margin-top: 8px; }
+.cheat-cols .cap { min-width: 88px; }
+.cheat-cols .keyrow span:last-child { white-space: nowrap; }
+.cheat-panel .fine { margin: 18px 0 2px; }
+
+/* ── responsive ──────────────────────────────── */
+@media (max-width: 640px) {
+  .top-nav a:not(.gh) { display: none; }
+  .hero { padding-top: 56px; }
+  .cta { flex-wrap: wrap; }
+  .hint { display: none; }
+  .cheat-panel { padding: 22px 24px 16px; }
+  .cheat-cols { grid-template-columns: repeat(2, 1fr); gap: 0 20px; }
+}
+@media (max-width: 420px) {
+  .cheat-cols { grid-template-columns: 1fr; }
+}

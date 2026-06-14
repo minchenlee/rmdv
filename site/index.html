@@ -1,0 +1,294 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>rmdv — fast, beautiful markdown viewer</title>
+<meta name="description" content="Free, open-source, native markdown viewer in Rust. No Electron. Cold start in ~150ms, 10k-line docs parse in 8ms. Keyboard-first, built for humans and coding agents.">
+<meta property="og:title" content="rmdv — fast, beautiful markdown viewer">
+<meta property="og:description" content="Native Rust markdown viewer. No Electron. ~150ms cold start, keyboard-first, agent-controllable.">
+<meta property="og:url" content="https://rmdv.mclee.dev">
+<meta property="og:type" content="website">
+<link rel="icon" href="assets/favicon-32.png" sizes="32x32" type="image/png">
+<link rel="preconnect" href="https://api.github.com" crossorigin>
+<link rel="apple-touch-icon" href="assets/icon-180.png">
+<link rel="preload" href="assets/fonts/inter-400.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="assets/fonts/inter-600.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="assets/fonts/inter-700.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="assets/fonts/jbmono-400.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="style.css">
+<script>
+// Set theme before first paint — no flash. Mark JS-on so motion styles apply.
+(function () {
+  var t = localStorage.getItem('rmdv-theme');
+  if (!t) t = matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+  document.documentElement.dataset.theme = t;
+  document.documentElement.classList.add('js');
+  // The hero screenshot's src is JS-set per theme; preload it from the head
+  // so the fetch starts now, not when the parser reaches the <img>.
+  var l = document.createElement('link');
+  l.rel = 'preload'; l.as = 'image'; l.fetchPriority = 'high';
+  l.href = 'assets/shot-doc-' + t + '.png';
+  document.head.appendChild(l);
+})();
+</script>
+</head>
+<body>
+
+<header class="top">
+  <div class="top-inner">
+    <a class="brand" href="#">
+      <img src="assets/icon-64.png" alt="" width="22" height="22">
+      <span>rmdv</span>
+    </a>
+    <nav class="top-nav">
+      <a href="#features">Features</a>
+      <a href="#keyboard">Keyboard</a>
+      <a href="#agents">Agents</a>
+      <a href="#install">Install</a>
+      <a href="https://github.com/minchenlee/rmdv" class="gh">GitHub</a>
+    </nav>
+  </div>
+</header>
+
+<main id="top">
+
+  <!-- ───────────────────────── hero -->
+  <section class="hero">
+    <p class="invoke"><span class="prompt">$</span>rmdv README.md<span class="caret" aria-hidden="true"></span></p>
+    <h1>Markdown, rendered<br>at <span class="accent">native speed</span>.</h1>
+    <p class="tagline">
+      rmdv is a free, open-source markdown viewer written in Rust.
+      No Electron, no webview, no JS runtime — just a ~30&nbsp;MB binary
+      that paints before your fonts finish loading.
+    </p>
+    <div class="cta">
+      <a class="btn primary" id="dl-primary" href="#install">Download</a>
+      <a class="btn" href="https://github.com/minchenlee/rmdv">Source on GitHub</a>
+    </div>
+    <p class="hint">
+      This page speaks rmdv: <kbd data-key="j">j</kbd><kbd data-key="k">k</kbd> scroll ·
+      <kbd data-key="g">g</kbd><kbd data-key="G">G</kbd> top/bottom ·
+      <kbd data-key="t">t</kbd> theme · <kbd data-mod>⌘</kbd><kbd>⇧</kbd><kbd>P</kbd> palette ·
+      <kbd data-key="?">?</kbd> all keys
+    </p>
+
+    <figure class="shot">
+      <div class="chrome"><i></i><i></i><i></i><span>README.md — rmdv</span></div>
+      <img id="shot-img" alt="rmdv rendering its own README: sidebar file tree, rendered markdown with syntax-highlighted code" width="1024" height="768" fetchpriority="high"
+           data-light="assets/shot-doc-light.png" data-dark="assets/shot-doc-dark.png">
+      <script>
+      // Only the active theme's screenshot downloads (display:none would still fetch both).
+      (function () {
+        var img = document.getElementById('shot-img');
+        img.src = img.dataset[document.documentElement.dataset.theme === 'dark' ? 'dark' : 'light'];
+      })();
+      </script>
+      <noscript><img src="assets/shot-doc-light.png" alt="rmdv rendering its own README" width="1024" height="768"></noscript>
+    </figure>
+  </section>
+
+  <!-- ───────────────────────── why -->
+  <section id="why" class="reveal">
+    <h2><span class="h-mark">##</span> Why rmdv</h2>
+    <p>
+      For reading folders of <code>.md</code> files without spinning up Obsidian's vault,
+      Typora's editor weight, or a static-site build. Open a folder. Read.
+    </p>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th></th><th>rmdv</th><th>Marky</th><th>Marked&nbsp;2</th><th>Glow</th><th>Obsidian</th><th>Typora</th></tr>
+        </thead>
+        <tbody>
+          <tr><th scope="row">Free</th><td class="y">✓</td><td class="y">✓</td><td class="n">$14</td><td class="y">✓</td><td class="m">freemium</td><td class="n">$15</td></tr>
+          <tr><th scope="row">Open source</th><td class="y">✓</td><td class="y">✓</td><td class="n">—</td><td class="y">✓</td><td class="n">—</td><td class="n">—</td></tr>
+          <tr><th scope="row">Native, no webview</th><td class="y">✓</td><td class="m">Tauri</td><td class="y">✓</td><td class="y">✓</td><td class="n">—</td><td class="m">partial</td></tr>
+          <tr><th scope="row">Windows</th><td class="y">✓</td><td class="n">—</td><td class="n">—</td><td class="y">✓</td><td class="y">✓</td><td class="y">✓</td></tr>
+          <tr><th scope="row">Folder workspace</th><td class="y">✓</td><td class="y">✓</td><td class="n">—</td><td class="n">—</td><td class="y">✓</td><td class="n">—</td></tr>
+          <tr><th scope="row">Read-only focus</th><td class="y">✓</td><td class="y">✓</td><td class="y">✓</td><td class="y">✓</td><td class="n">—</td><td class="n">—</td></tr>
+          <tr><th scope="row">Agent-controllable (IPC)</th><td class="y">✓</td><td class="n">—</td><td class="n">—</td><td class="n">—</td><td class="n">—</td><td class="n">—</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ───────────────────────── perf -->
+  <section id="fast" class="reveal">
+    <h2><span class="h-mark">##</span> Rust-fast, measurably</h2>
+    <div class="stats">
+      <div class="stat"><strong>~150<em>ms</em></strong><span>cold start to first paint</span></div>
+      <div class="stat"><strong>8.1<em>ms</em></strong><span>to parse a 10k-line document</span></div>
+      <div class="stat"><strong>70<em>MB</em></strong><span>memory on that same document<br>(was 453 MB)</span></div>
+      <div class="stat"><strong>~30<em>MB</em></strong><span>single binary, no runtime</span></div>
+    </div>
+    <p class="fine">
+      Measured on an M2 MacBook Air (16&nbsp;GB), median of 5 runs.
+      Numbers, methodology, and how to reproduce: <a href="https://github.com/minchenlee/rmdv/blob/main/docs/benchmarks.md">docs/benchmarks.md</a>.
+      The renderer is viewport-aware — only visible blocks become widgets, so memory stays flat no matter how long the document grows.
+    </p>
+  </section>
+
+  <!-- ───────────────────────── features -->
+  <section id="features" class="reveal">
+    <h2><span class="h-mark">##</span> Features</h2>
+    <div class="grid">
+      <div class="card">
+        <h3>Workspace browser</h3>
+        <p>Open a folder, get a file tree. Fuzzy-jump to any file with <kbd data-mod>⌘</kbd><kbd>P</kbd>.</p>
+      </div>
+      <div class="card">
+        <h3>Mindmap view</h3>
+        <p>Any document as a collapsible mindmap with <kbd data-mod>⌘</kbd><kbd>M</kbd>. Arrow keys walk the tree, preview panel follows.</p>
+      </div>
+      <div class="card">
+        <h3>Diagrams &amp; math</h3>
+        <p>Mermaid and Graphviz DOT render natively. Block LaTeX via a pure-Rust layout engine — zero JS, zero webview.</p>
+      </div>
+      <div class="card">
+        <h3>Tree-sitter highlighting</h3>
+        <p>Rust, Python, TS, Go, C/C++, Java, SQL, Bash and more — real parsers, not regex.</p>
+      </div>
+      <div class="card">
+        <h3>Vault-wide search</h3>
+        <p><kbd data-mod>⌘</kbd><kbd>⇧</kbd><kbd>F</kbd> searches every file in the workspace, Zed-style full-page results.</p>
+      </div>
+      <div class="card">
+        <h3>Live reload</h3>
+        <p>Edits from your editor appear instantly. Only changed code blocks re-highlight.</p>
+      </div>
+      <div class="card">
+        <h3>Light / dark themes</h3>
+        <p>One Dark, GitHub, Solarized, Gruvbox, Nord, Dracula, Tokyo Night… follows the system, or press <kbd data-mod>⌘</kbd><kbd>T</kbd>.</p>
+      </div>
+      <div class="card">
+        <h3>Auto-update</h3>
+        <p>Checks GitHub releases, verifies SHA-256, swaps itself in place. Signed + notarized on macOS.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ───────────────────────── keyboard -->
+  <section id="keyboard" class="reveal">
+    <h2><span class="h-mark">##</span> Keyboard-first</h2>
+    <p>Everything reachable without the mouse. The scroll keys work on this page — try them.</p>
+    <div class="keys">
+      <div class="keyrow"><span class="cap"><kbd data-mod>⌘</kbd><kbd>P</kbd></span><span>fuzzy file finder</span></div>
+      <div class="keyrow"><span class="cap"><kbd data-mod>⌘</kbd><kbd>⇧</kbd><kbd>P</kbd></span><span>command palette</span></div>
+      <div class="keyrow"><span class="cap"><kbd data-mod>⌘</kbd><kbd>F</kbd></span><span>search in document</span></div>
+      <div class="keyrow"><span class="cap"><kbd data-mod>⌘</kbd><kbd>⇧</kbd><kbd>F</kbd></span><span>search whole vault</span></div>
+      <div class="keyrow"><span class="cap"><kbd data-mod>⌘</kbd><kbd>B</kbd></span><span>toggle sidebar</span></div>
+      <div class="keyrow"><span class="cap"><kbd data-mod>⌘</kbd><kbd>M</kbd></span><span>mindmap view</span></div>
+      <div class="keyrow"><span class="cap"><kbd data-mod>⌘</kbd><kbd>E</kbd></span><span>edit mode</span></div>
+      <div class="keyrow"><span class="cap"><kbd data-mod>⌘</kbd><kbd>K</kbd><kbd>0–6</kbd></span><span>fold headings to level</span></div>
+      <div class="keyrow"><span class="cap"><kbd data-key="j">j</kbd><kbd data-key="k">k</kbd></span><span>scroll down / up</span></div>
+      <div class="keyrow"><span class="cap"><kbd data-key="g">g</kbd><kbd data-key="G">G</kbd></span><span>top / bottom</span></div>
+      <div class="keyrow"><span class="cap"><kbd data-mod>⌘</kbd><kbd>T</kbd></span><span>toggle theme</span></div>
+      <div class="keyrow"><span class="cap"><kbd data-mod>⌘</kbd><kbd>/</kbd></span><span>all shortcuts, in-app</span></div>
+    </div>
+  </section>
+
+  <!-- ───────────────────────── agents -->
+  <section id="agents" class="reveal">
+    <h2><span class="h-mark">##</span> Built for coding agents</h2>
+    <p>
+      rmdv is single-instance with an IPC socket. Claude Code, Codex, or any agent
+      can drive the window the human is reading — open files, jump to sections,
+      switch view modes — without touching the keyboard.
+    </p>
+    <pre class="code" data-lang="bash"><code><span class="c"># open a file at a specific line</span>
+rmdv path/to/spec.md --line 42
+
+<span class="c"># navigate the running instance</span>
+rmdv goto --section <span class="s">"API/Authentication"</span>
+rmdv mode mindmap
+rmdv current                          <span class="c"># prints JSON state</span>
+
+<span class="c"># stateless — no window needed</span>
+rmdv list-sections spec.md | jq -r <span class="s">'.[].path'</span></code></pre>
+    <p class="fine">
+      Every command returns one line of JSON. Your agent writes a doc, opens it at the
+      right heading, and keeps working while you read.
+    </p>
+  </section>
+
+  <!-- ───────────────────────── install -->
+  <section id="install" class="reveal">
+    <h2><span class="h-mark">##</span> Install</h2>
+    <div class="installs">
+      <div class="inst">
+        <h3>macOS</h3>
+        <p><a class="btn small" data-asset="aarch64.dmg" href="https://github.com/minchenlee/rmdv/releases/latest">Apple Silicon .dmg</a>
+           <a class="btn small" data-asset="x86_64.dmg" href="https://github.com/minchenlee/rmdv/releases/latest">Intel .dmg</a></p>
+        <p class="fine">Signed &amp; notarized. Auto-updates from inside the app.</p>
+      </div>
+      <div class="inst">
+        <h3>Linux</h3>
+        <p><a class="btn small" data-asset="x86_64.AppImage" href="https://github.com/minchenlee/rmdv/releases/latest">x86_64 AppImage</a></p>
+        <p class="fine">Single file, self-updating.</p>
+      </div>
+      <div class="inst wide">
+        <h3>From source</h3>
+        <pre class="code" data-lang="bash"><code>git clone https://github.com/minchenlee/rmdv
+cd rmdv &amp;&amp; cargo build --release</code></pre>
+        <p class="fine">Rust 1.80+. Windows builds this way too.</p>
+      </div>
+    </div>
+  </section>
+
+  <div class="md-hr" aria-hidden="true">---</div>
+  <footer>
+    <p>
+      MIT licensed · <a href="https://github.com/minchenlee/rmdv">github.com/minchenlee/rmdv</a>
+      · <a href="https://github.com/minchenlee/rmdv/releases">releases</a>
+      · built with <a href="https://iced.rs">Iced</a>
+    </p>
+    <p class="fine">This page is hand-written HTML + CSS + 7 KB of JS. No framework. It loads the way rmdv starts.</p>
+  </footer>
+
+</main>
+
+<!-- ───────────────────────── command palette -->
+<div class="overlay" id="palette" hidden>
+  <div class="panel" role="dialog" aria-modal="true" aria-label="Command palette">
+    <input id="palette-input" type="text" placeholder="Run a command…" autocomplete="off" spellcheck="false"
+           role="combobox" aria-expanded="true" aria-controls="palette-list" aria-autocomplete="list">
+    <ul id="palette-list" role="listbox" aria-label="Commands"></ul>
+  </div>
+</div>
+
+<!-- ───────────────────────── cheatsheet -->
+<div class="overlay" id="cheat" hidden>
+  <div class="panel cheat-panel" role="dialog" aria-modal="true" aria-label="Keyboard shortcuts" tabindex="-1">
+    <h3>Keyboard shortcuts — this page</h3>
+    <div class="cheat-cols">
+      <div class="cheat-col">
+        <h4 class="cheat-h">Scroll</h4>
+        <div class="keyrow"><span class="cap"><kbd data-key="j">j</kbd></span><span>scroll down</span></div>
+        <div class="keyrow"><span class="cap"><kbd data-key="k">k</kbd></span><span>scroll up</span></div>
+        <div class="keyrow"><span class="cap"><kbd>Space</kbd></span><span>page down</span></div>
+        <div class="keyrow"><span class="cap"><kbd>⇧</kbd><kbd>Space</kbd></span><span>page up</span></div>
+      </div>
+      <div class="cheat-col">
+        <h4 class="cheat-h">Navigate</h4>
+        <div class="keyrow"><span class="cap"><kbd data-key="g">g</kbd></span><span>go to top</span></div>
+        <div class="keyrow"><span class="cap"><kbd data-key="G">G</kbd></span><span>go to bottom</span></div>
+        <h4 class="cheat-h">View</h4>
+        <div class="keyrow"><span class="cap"><kbd data-key="t">t</kbd></span><span>toggle theme</span></div>
+      </div>
+      <div class="cheat-col">
+        <h4 class="cheat-h">Help</h4>
+        <div class="keyrow"><span class="cap"><kbd data-mod>⌘</kbd><kbd>⇧</kbd><kbd>P</kbd></span><span>palette</span></div>
+        <div class="keyrow"><span class="cap"><kbd data-key="?">?</kbd></span><span>cheatsheet</span></div>
+        <div class="keyrow"><span class="cap"><kbd>Esc</kbd></span><span>close overlay</span></div>
+      </div>
+    </div>
+    <p class="fine">The app itself has many more — press <kbd data-mod>⌘</kbd><kbd>/</kbd> inside rmdv.</p>
+  </div>
+</div>
+
+<div id="sr-status" class="sr-only" aria-live="polite"></div>
+
+<script src="app.js" defer></script>
+</body>
+</html>
