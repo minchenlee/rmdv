@@ -33,4 +33,6 @@ pub mod ic {
     pub const COPY: char = '\u{e09e}';
     /// Lucide "maximize" — used for diagram hover-zoom affordance.
     pub const ZOOM: char = '\u{e1a1}';
+    /// Lucide "keyboard" — floating shortcuts-cheatsheet button.
+    pub const KEYBOARD: char = '\u{e284}';
 }

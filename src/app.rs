@@ -271,6 +271,7 @@ pub enum Message {
     SetCustomTheme(String),
     ReloadThemes,
     ThemeFilesChanged,
+    OpenThemesDir,
     ToggleSidebar,
     SetSidebarTab(SidebarTab),
     /// Toggle visibility of dot-prefixed entries in tree + picker.
@@ -1371,10 +1372,26 @@ impl App {
             .height(Length::Shrink)
             .direction(slim_scroll_direction())
             .style(move |_, status| sleek_scrollable_style(status, pal_c, recently_scrolled));
-        container(scrolled)
+        // Scrollable fills the available height (short content stays centered via
+        // center_y; long content scrolls). The hint row pins to the bottom.
+        let body = container(scrolled)
+            .height(Length::Fill)
+            .center_y(Length::Fill);
+        let hint_divider = container(Space::new().height(1.0))
+            .width(Length::Fill)
+            .style(move |_| container::Style {
+                background: Some(pal_c.rule.into()),
+                ..Default::default()
+            });
+        // Two compact rows so the pills never clip at the panel's minimum width.
+        let hint_row1 = hint_pills(&[("←↑→↓", "move"), ("Space", "fold")], pal_c);
+        let hint_row2 = hint_pills(&[("⌘⌥B", "panel"), ("⌘B", "sidebar")], pal_c);
+        let hint = container(column![hint_row1, hint_row2].spacing(6))
+            .padding(Padding::from([8, 16]))
+            .width(Length::Fill);
+        container(column![body, hint_divider, hint])
             .width(Length::Fixed(panel_width))
             .height(Length::Fill)
-            .center_y(Length::Fill)
             .style(move |_| container::Style {
                 background: Some(pal_c.surface.into()),
                 border: Border {
@@ -1413,6 +1430,7 @@ impl App {
             ("Cycle Theme  ⌘T", Message::ToggleTheme),
             ("Pick Theme…", Message::OpenThemePicker),
             ("Reload Custom Themes", Message::ReloadThemes),
+            ("Open Themes Folder", Message::OpenThemesDir),
             ("Scroll to Top  ⌘↑", Message::ScrollToTop),
             ("Scroll to Bottom  ⌘↓", Message::ScrollToBottom),
             (
@@ -2586,6 +2604,18 @@ impl App {
                     toast
                 }
             }
+            Message::OpenThemesDir => {
+                match crate::theme_load::ensure_themes_dir() {
+                    Ok(dir) => {
+                        let _ = open::that_detached(&dir);
+                        self.show_toast("opened themes folder".to_string())
+                    }
+                    Err(e) => {
+                        self.error = Some(format!("themes folder: {e}"));
+                        Task::none()
+                    }
+                }
+            }
             Message::ToastExpire(id) => {
                 if let Some(t) = &self.toast {
                     if t.id == id {
@@ -3701,14 +3731,58 @@ impl App {
         };
         // Status footer floats over the reader (content scrolls behind it),
         // pinned bottom-right. Shown for any open document except mindmap.
-        let footer_layer: Element<'_, Message> =
-            if self.show_footer && self.file.is_some() && self.view_mode != ViewMode::Mindmap {
-                status_footer(&self.source, pal)
-            } else {
-                Space::new().into()
-            };
-        let base: Element<'_, Message> =
-            iced::widget::stack![Element::from(main), footer_layer, overlay_layer].into();
+        let footer_visible =
+            self.show_footer && self.file.is_some() && self.view_mode != ViewMode::Mindmap;
+        let footer_layer: Element<'_, Message> = if footer_visible {
+            status_footer(&self.source, pal)
+        } else {
+            Space::new().into()
+        };
+        // Floating cheatsheet button, bottom-right of the reader. Sits just above the
+        // word-count pill when the footer is visible; drops to the corner when it's
+        // off. Hidden over the mindmap canvas and while an overlay is open.
+        let kb_button_layer: Element<'_, Message> = if self.view_mode != ViewMode::Mindmap
+            && self.overlay == Overlay::None
+        {
+            let bottom_pad = if footer_visible { 44.0 } else { 12.0 };
+            container(
+                iced::widget::tooltip(
+                    ghost_lu(ic::KEYBOARD, pal).on_press(Message::ToggleShortcuts),
+                    container(text("Keyboard shortcuts  ⌘/").size(12).color(pal.fg))
+                        .padding(Padding::from([4, 8]))
+                        .style(move |_| container::Style {
+                            background: Some(pal.surface.into()),
+                            border: Border {
+                                color: pal.rule,
+                                width: 1.0,
+                                radius: 6.0.into(),
+                            },
+                            ..Default::default()
+                        }),
+                    iced::widget::tooltip::Position::Left,
+                ),
+            )
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .padding(Padding {
+                top: 0.0,
+                right: 12.0,
+                bottom: bottom_pad,
+                left: 0.0,
+            })
+            .align_x(iced::alignment::Horizontal::Right)
+            .align_y(iced::alignment::Vertical::Bottom)
+            .into()
+        } else {
+            Space::new().into()
+        };
+        let base: Element<'_, Message> = iced::widget::stack![
+            Element::from(main),
+            footer_layer,
+            kb_button_layer,
+            overlay_layer
+        ]
+        .into();
         let toast_layer: Element<'_, Message> = match &self.toast {
             Some(t) => toast_overlay(&t.text, pal),
             None => Space::new().into(),
@@ -4380,8 +4454,12 @@ fn sidebar_view<'a>(app: &'a App, pal: Palette) -> Element<'a, Message> {
             SidebarTab::Outline,
             pal
         ),
+        Space::new().width(Length::Fill),
+        hint_pills(&[("↑↓", "move"), ("↵", "open")], pal),
     ]
-    .spacing(6);
+    .spacing(6)
+    .clip(true)
+    .align_y(iced::Alignment::Center);
 
     let header = container(column![
         Space::new().height(Length::Fixed(sidebar_titlebar_reserve())),
@@ -5852,6 +5930,36 @@ fn picker_hint_footer<'a>(pal: Palette) -> Element<'a, Message> {
             .width(Length::Fill),
     ]
     .into()
+}
+
+/// A compact inline row of `key — label` hint pills, matching the picker footer
+/// style (surface_alt cap, rule border, subtle label). Reused for the mindmap
+/// panel footer and the sidebar tab-row hint.
+fn hint_pills<'a>(items: &[(&'a str, &'a str)], pal: Palette) -> Element<'a, Message> {
+    let mut row = irow![].align_y(iced::Alignment::Center);
+    for (i, (k, label)) in items.iter().enumerate() {
+        if i > 0 {
+            row = row.push(Space::new().width(12));
+        }
+        let pill = irow![
+            container(text(k.to_string()).size(11).color(pal.fg))
+                .padding(Padding::from([2, 6]))
+                .style(move |_| container::Style {
+                    background: Some(pal.surface_alt.into()),
+                    border: Border {
+                        color: pal.rule,
+                        width: 1.0,
+                        radius: 4.0.into(),
+                    },
+                    ..Default::default()
+                }),
+            Space::new().width(6),
+            text(label.to_string()).size(11).color(pal.subtle),
+        ]
+        .align_y(iced::Alignment::Center);
+        row = row.push(pill);
+    }
+    row.into()
 }
 
 fn overlay_frame<'a>(
