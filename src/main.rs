@@ -169,6 +169,8 @@ fn print_response(resp: &ipc::Response, pretty: bool) {
 }
 
 fn run_theme_cmd(args: &[String]) -> i32 {
+    // The theme CLI reads the config dir directly, so migrate before it does.
+    rmdv::config_migrate::run();
     let sub = match args.first().map(String::as_str) {
         Some(s) => s,
         None => {

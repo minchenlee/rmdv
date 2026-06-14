@@ -551,6 +551,8 @@ impl Default for App {
     fn default() -> Self {
         let mode = ThemeMode::System;
         let preset = theme::resolve_mode(mode);
+        // Migrate legacy `mdv` config into `rmdv` before the first read.
+        crate::config_migrate::run();
         let prefs = crate::prefs::load();
         Self {
             file: None,
