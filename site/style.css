@@ -1,4 +1,4 @@
-/* mdv.mclee.dev — palettes lifted verbatim from src/theme.rs (One Dark / One Light) */
+/* rmdv.mclee.dev — palettes lifted verbatim from src/theme.rs (One Dark / One Light) */
 
 @font-face {
   font-family: 'Inter';
@@ -120,7 +120,7 @@ body {
 }
 
 main {
-  max-width: 780px;            /* mdv's own content column width */
+  max-width: 780px;            /* rmdv's own content column width */
   margin: 0 auto;
   padding: 0 24px;
 }

@@ -1,4 +1,4 @@
-// mdv.mclee.dev — keyboard layer. Mirrors the app's bindings.
+// rmdv.mclee.dev — keyboard layer. Mirrors the app's bindings.
 (function () {
   'use strict';
 
@@ -16,7 +16,7 @@
   // ── theme ──────────────────────────────────────────────
   function setTheme(t) {
     document.documentElement.dataset.theme = t;
-    localStorage.setItem('mdv-theme', t);
+    localStorage.setItem('rmdv-theme', t);
     const shot = $('#shot-img');
     if (shot) shot.src = shot.dataset[t === 'dark' ? 'dark' : 'light'];
   }
@@ -80,7 +80,7 @@
 
   // ── resolve real download URLs from the latest release ─
   // Progressive enhancement: buttons already link to the releases page.
-  fetch('https://api.github.com/repos/minchenlee/mdv/releases/latest',
+  fetch('https://api.github.com/repos/minchenlee/rmdv/releases/latest',
     typeof AbortSignal.timeout === 'function' ? { signal: AbortSignal.timeout(5000) } : {})
     .then((r) => (r.ok ? r.json() : null))
     .then((rel) => {
@@ -90,18 +90,10 @@
         const hit = rel.assets.find((as) => as.name.endsWith(suffix));
         if (hit) a.href = hit.browser_download_url;
       });
-      // Primary button: pick the asset for this OS when we can tell.
+      // Primary button stays OS-agnostic: it just scrolls to the Install
+      // section (href="#install"). Only stamp the version into its label.
       const primary = $('#dl-primary');
-      const ua = navigator.userAgent;
-      let suffix = null;
-      if (mac) suffix = 'aarch64.dmg'; // most Macs now; Intel users get the page
-      else if (/Linux/.test(ua) && !/Android/.test(ua)) suffix = 'x86_64.AppImage';
-      const hit = suffix && rel.assets.find((as) => as.name.endsWith(suffix));
-      if (hit) {
-        primary.href = hit.browser_download_url;
-        // Be explicit about the arch — Intel users should use the Install section.
-        primary.textContent = 'Download ' + rel.tag_name + (mac ? ' for macOS (Apple Silicon)' : ' for Linux');
-      }
+      if (rel.tag_name) primary.textContent = 'Download ' + rel.tag_name;
     })
     .catch(() => {});
 
@@ -152,9 +144,9 @@
     { label: 'Go to top', hint: 'g', run: () => window.scrollTo({ top: 0 }) },
     ...sections,
     { label: 'Download latest release', hint: '', run: () => { location.href = $('#dl-primary').href; } },
-    { label: 'Open GitHub repository', hint: '', run: () => { location.href = 'https://github.com/minchenlee/mdv'; } },
-    { label: 'View releases / changelog', hint: '', run: () => { location.href = 'https://github.com/minchenlee/mdv/releases'; } },
-    { label: 'Copy: cargo build --release', hint: '', run: () => navigator.clipboard?.writeText('git clone https://github.com/minchenlee/mdv && cd mdv && cargo build --release') },
+    { label: 'Open GitHub repository', hint: '', run: () => { location.href = 'https://github.com/minchenlee/rmdv'; } },
+    { label: 'View releases / changelog', hint: '', run: () => { location.href = 'https://github.com/minchenlee/rmdv/releases'; } },
+    { label: 'Copy: cargo build --release', hint: '', run: () => navigator.clipboard?.writeText('git clone https://github.com/minchenlee/rmdv && cd rmdv && cargo build --release') },
     { label: 'Keyboard shortcuts', hint: '?', run: () => openOverlay(cheat) },
   ];
 

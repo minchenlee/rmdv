@@ -3,11 +3,11 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>mdv — fast, beautiful markdown viewer</title>
+<title>rmdv — fast, beautiful markdown viewer</title>
 <meta name="description" content="Free, open-source, native markdown viewer in Rust. No Electron. Cold start in ~150ms, 10k-line docs parse in 8ms. Keyboard-first, built for humans and coding agents.">
-<meta property="og:title" content="mdv — fast, beautiful markdown viewer">
+<meta property="og:title" content="rmdv — fast, beautiful markdown viewer">
 <meta property="og:description" content="Native Rust markdown viewer. No Electron. ~150ms cold start, keyboard-first, agent-controllable.">
-<meta property="og:url" content="https://mdv.mclee.dev">
+<meta property="og:url" content="https://rmdv.mclee.dev">
 <meta property="og:type" content="website">
 <link rel="icon" href="assets/favicon-32.png" sizes="32x32" type="image/png">
 <link rel="preconnect" href="https://api.github.com" crossorigin>
@@ -20,7 +20,7 @@
 <script>
 // Set theme before first paint — no flash. Mark JS-on so motion styles apply.
 (function () {
-  var t = localStorage.getItem('mdv-theme');
+  var t = localStorage.getItem('rmdv-theme');
   if (!t) t = matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
   document.documentElement.dataset.theme = t;
   document.documentElement.classList.add('js');
@@ -39,14 +39,14 @@
   <div class="top-inner">
     <a class="brand" href="#">
       <img src="assets/icon-64.png" alt="" width="22" height="22">
-      <span>mdv</span>
+      <span>rmdv</span>
     </a>
     <nav class="top-nav">
       <a href="#features">Features</a>
       <a href="#keyboard">Keyboard</a>
       <a href="#agents">Agents</a>
       <a href="#install">Install</a>
-      <a href="https://github.com/minchenlee/mdv" class="gh">GitHub</a>
+      <a href="https://github.com/minchenlee/rmdv" class="gh">GitHub</a>
     </nav>
   </div>
 </header>
@@ -55,27 +55,27 @@
 
   <!-- ───────────────────────── hero -->
   <section class="hero">
-    <p class="invoke"><span class="prompt">$</span>mdv README.md<span class="caret" aria-hidden="true"></span></p>
+    <p class="invoke"><span class="prompt">$</span>rmdv README.md<span class="caret" aria-hidden="true"></span></p>
     <h1>Markdown, rendered<br>at <span class="accent">native speed</span>.</h1>
     <p class="tagline">
-      mdv is a free, open-source markdown viewer written in Rust.
+      rmdv is a free, open-source markdown viewer written in Rust.
       No Electron, no webview, no JS runtime — just a ~30&nbsp;MB binary
       that paints before your fonts finish loading.
     </p>
     <div class="cta">
-      <a class="btn primary" id="dl-primary" href="https://github.com/minchenlee/mdv/releases/latest">Download</a>
-      <a class="btn" href="https://github.com/minchenlee/mdv">Source on GitHub</a>
+      <a class="btn primary" id="dl-primary" href="#install">Download</a>
+      <a class="btn" href="https://github.com/minchenlee/rmdv">Source on GitHub</a>
     </div>
     <p class="hint">
-      This page speaks mdv: <kbd data-key="j">j</kbd><kbd data-key="k">k</kbd> scroll ·
+      This page speaks rmdv: <kbd data-key="j">j</kbd><kbd data-key="k">k</kbd> scroll ·
       <kbd data-key="g">g</kbd><kbd data-key="G">G</kbd> top/bottom ·
       <kbd data-key="t">t</kbd> theme · <kbd data-mod>⌘</kbd><kbd>⇧</kbd><kbd>P</kbd> palette ·
       <kbd data-key="?">?</kbd> all keys
     </p>
 
     <figure class="shot">
-      <div class="chrome"><i></i><i></i><i></i><span>README.md — mdv</span></div>
-      <img id="shot-img" alt="mdv rendering its own README: sidebar file tree, rendered markdown with syntax-highlighted code" width="1024" height="768" fetchpriority="high"
+      <div class="chrome"><i></i><i></i><i></i><span>README.md — rmdv</span></div>
+      <img id="shot-img" alt="rmdv rendering its own README: sidebar file tree, rendered markdown with syntax-highlighted code" width="1024" height="768" fetchpriority="high"
            data-light="assets/shot-doc-light.png" data-dark="assets/shot-doc-dark.png">
       <script>
       // Only the active theme's screenshot downloads (display:none would still fetch both).
@@ -84,13 +84,13 @@
         img.src = img.dataset[document.documentElement.dataset.theme === 'dark' ? 'dark' : 'light'];
       })();
       </script>
-      <noscript><img src="assets/shot-doc-light.png" alt="mdv rendering its own README" width="1024" height="768"></noscript>
+      <noscript><img src="assets/shot-doc-light.png" alt="rmdv rendering its own README" width="1024" height="768"></noscript>
     </figure>
   </section>
 
   <!-- ───────────────────────── why -->
   <section id="why" class="reveal">
-    <h2><span class="h-mark">##</span> Why mdv</h2>
+    <h2><span class="h-mark">##</span> Why rmdv</h2>
     <p>
       For reading folders of <code>.md</code> files without spinning up Obsidian's vault,
       Typora's editor weight, or a static-site build. Open a folder. Read.
@@ -98,7 +98,7 @@
     <div class="table-wrap">
       <table>
         <thead>
-          <tr><th></th><th>mdv</th><th>Marky</th><th>Marked&nbsp;2</th><th>Glow</th><th>Obsidian</th><th>Typora</th></tr>
+          <tr><th></th><th>rmdv</th><th>Marky</th><th>Marked&nbsp;2</th><th>Glow</th><th>Obsidian</th><th>Typora</th></tr>
         </thead>
         <tbody>
           <tr><th scope="row">Free</th><td class="y">✓</td><td class="y">✓</td><td class="n">$14</td><td class="y">✓</td><td class="m">freemium</td><td class="n">$15</td></tr>
@@ -124,7 +124,7 @@
     </div>
     <p class="fine">
       Measured on an M2 MacBook Air (16&nbsp;GB), median of 5 runs.
-      Numbers, methodology, and how to reproduce: <a href="https://github.com/minchenlee/mdv/blob/main/docs/benchmarks.md">docs/benchmarks.md</a>.
+      Numbers, methodology, and how to reproduce: <a href="https://github.com/minchenlee/rmdv/blob/main/docs/benchmarks.md">docs/benchmarks.md</a>.
       The renderer is viewport-aware — only visible blocks become widgets, so memory stays flat no matter how long the document grows.
     </p>
   </section>
@@ -192,20 +192,20 @@
   <section id="agents" class="reveal">
     <h2><span class="h-mark">##</span> Built for coding agents</h2>
     <p>
-      mdv is single-instance with an IPC socket. Claude Code, Codex, or any agent
+      rmdv is single-instance with an IPC socket. Claude Code, Codex, or any agent
       can drive the window the human is reading — open files, jump to sections,
       switch view modes — without touching the keyboard.
     </p>
     <pre class="code" data-lang="bash"><code><span class="c"># open a file at a specific line</span>
-mdv path/to/spec.md --line 42
+rmdv path/to/spec.md --line 42
 
 <span class="c"># navigate the running instance</span>
-mdv goto --section <span class="s">"API/Authentication"</span>
-mdv mode mindmap
-mdv current                          <span class="c"># prints JSON state</span>
+rmdv goto --section <span class="s">"API/Authentication"</span>
+rmdv mode mindmap
+rmdv current                          <span class="c"># prints JSON state</span>
 
 <span class="c"># stateless — no window needed</span>
-mdv list-sections spec.md | jq -r <span class="s">'.[].path'</span></code></pre>
+rmdv list-sections spec.md | jq -r <span class="s">'.[].path'</span></code></pre>
     <p class="fine">
       Every command returns one line of JSON. Your agent writes a doc, opens it at the
       right heading, and keeps working while you read.
@@ -218,19 +218,19 @@ mdv list-sections spec.md | jq -r <span class="s">'.[].path'</span></code></pre>
     <div class="installs">
       <div class="inst">
         <h3>macOS</h3>
-        <p><a class="btn small" data-asset="aarch64.dmg" href="https://github.com/minchenlee/mdv/releases/latest">Apple Silicon .dmg</a>
-           <a class="btn small" data-asset="x86_64.dmg" href="https://github.com/minchenlee/mdv/releases/latest">Intel .dmg</a></p>
+        <p><a class="btn small" data-asset="aarch64.dmg" href="https://github.com/minchenlee/rmdv/releases/latest">Apple Silicon .dmg</a>
+           <a class="btn small" data-asset="x86_64.dmg" href="https://github.com/minchenlee/rmdv/releases/latest">Intel .dmg</a></p>
         <p class="fine">Signed &amp; notarized. Auto-updates from inside the app.</p>
       </div>
       <div class="inst">
         <h3>Linux</h3>
-        <p><a class="btn small" data-asset="x86_64.AppImage" href="https://github.com/minchenlee/mdv/releases/latest">x86_64 AppImage</a></p>
+        <p><a class="btn small" data-asset="x86_64.AppImage" href="https://github.com/minchenlee/rmdv/releases/latest">x86_64 AppImage</a></p>
         <p class="fine">Single file, self-updating.</p>
       </div>
       <div class="inst wide">
         <h3>From source</h3>
-        <pre class="code" data-lang="bash"><code>git clone https://github.com/minchenlee/mdv
-cd mdv &amp;&amp; cargo build --release</code></pre>
+        <pre class="code" data-lang="bash"><code>git clone https://github.com/minchenlee/rmdv
+cd rmdv &amp;&amp; cargo build --release</code></pre>
         <p class="fine">Rust 1.80+. Windows builds this way too.</p>
       </div>
     </div>
@@ -239,11 +239,11 @@ cd mdv &amp;&amp; cargo build --release</code></pre>
   <div class="md-hr" aria-hidden="true">---</div>
   <footer>
     <p>
-      MIT licensed · <a href="https://github.com/minchenlee/mdv">github.com/minchenlee/mdv</a>
-      · <a href="https://github.com/minchenlee/mdv/releases">releases</a>
+      MIT licensed · <a href="https://github.com/minchenlee/rmdv">github.com/minchenlee/rmdv</a>
+      · <a href="https://github.com/minchenlee/rmdv/releases">releases</a>
       · built with <a href="https://iced.rs">Iced</a>
     </p>
-    <p class="fine">This page is hand-written HTML + CSS + 7 KB of JS. No framework. It loads the way mdv starts.</p>
+    <p class="fine">This page is hand-written HTML + CSS + 7 KB of JS. No framework. It loads the way rmdv starts.</p>
   </footer>
 
 </main>
@@ -283,7 +283,7 @@ cd mdv &amp;&amp; cargo build --release</code></pre>
         <div class="keyrow"><span class="cap"><kbd>Esc</kbd></span><span>close overlay</span></div>
       </div>
     </div>
-    <p class="fine">The app itself has many more — press <kbd data-mod>⌘</kbd><kbd>/</kbd> inside mdv.</p>
+    <p class="fine">The app itself has many more — press <kbd data-mod>⌘</kbd><kbd>/</kbd> inside rmdv.</p>
   </div>
 </div>
 
