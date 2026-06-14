@@ -1,16 +1,17 @@
 name: Deploy site
 
-# Ships the landing site (site/) to Cloudflare on every push to main that
-# touches it. One-time setup: add repo secrets CLOUDFLARE_API_TOKEN (a token
-# with Workers Scripts:Edit + the rmdv.mclee.dev zone's DNS edit) and
-# CLOUDFLARE_ACCOUNT_ID. Can also be run on demand from the Actions tab.
+# Ships the landing site (site/) to Cloudflare. MANUAL-ONLY for now: run from
+# the Actions tab ("Run workflow"). Auto-deploy on push to main is DISABLED
+# until the repo secrets CLOUDFLARE_API_TOKEN (a token with Workers Scripts:Edit
+# + the rmdv.mclee.dev zone's DNS edit) and CLOUDFLARE_ACCOUNT_ID are added.
+# Re-enable by uncommenting the `push:` trigger below.
 on:
-  push:
-    branches: [main]
-    paths:
-      - 'site/**'
-      - 'wrangler.jsonc'
-      - '.github/workflows/deploy-site.yml'
+  # push:
+  #   branches: [main]
+  #   paths:
+  #     - 'site/**'
+  #     - 'wrangler.jsonc'
+  #     - '.github/workflows/deploy-site.yml'
   workflow_dispatch:
 
 permissions:
