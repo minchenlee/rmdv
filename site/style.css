@@ -196,10 +196,6 @@ code { font-size: .88em; background: var(--code-bg); padding: .12em .35em; borde
 .top-nav a.active { color: var(--fg); }
 .top-nav .gh { color: var(--fg); font-weight: 600; }
 .top-nav .gh::after { display: none; }
-.kbd-btn {
-  background: none; border: 0; padding: 2px; cursor: pointer;
-  display: flex; gap: 3px;
-}
 
 /* ── keycaps — flat surface_alt boxes, exactly the app's kbd (app.rs key_caps) ── */
 kbd {
@@ -215,6 +211,11 @@ kbd {
               border-color var(--t-fast) var(--ease),
               background var(--t-fast) var(--ease);
 }
+/* adjacent inline keycaps in prose (e.g. ⌘P in a card) must not touch.
+   .cap / .hint rows space their own caps (flex gap / explicit margin), so
+   reset there to avoid double spacing. */
+kbd + kbd { margin-left: 4px; }
+.cap kbd + kbd, .hint kbd + kbd { margin-left: 0; }
 /* in cap rows: 24×24 squares like the app cheatsheet */
 .cap kbd {
   display: inline-flex; align-items: center; justify-content: center;

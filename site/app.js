@@ -258,5 +258,6 @@
     }
   });
 
-  $('#palette-hint').addEventListener('click', () => openOverlay(palette));
+  const paletteHint = $('#palette-hint');
+  if (paletteHint) paletteHint.addEventListener('click', () => openOverlay(palette));
 })();
