@@ -3723,28 +3723,58 @@ impl App {
 
 /// Bottom-center banner inviting the user to install a downloaded update.
 fn update_banner<'a>(version: &str, pal: Palette) -> Element<'a, Message> {
-    use iced::widget::{button, container, row, text as text_w};
+    use iced::widget::{container, row, text as text_w};
+    // A small accent dot signals "something new", matching the warm accent the
+    // rest of the UI uses for its single highlight color.
+    let dot = container(Space::new().width(7).height(7))
+        .style(move |_| container::Style {
+            background: Some(pal.accent.into()),
+            border: Border {
+                radius: 999.0.into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        });
     let label = text_w(format!("mdv {version} ready to install"))
-        .size(13.5)
+        .size(13.0)
         .color(pal.fg);
-    let install = button(text_w("Install & Restart").size(13.0))
-        .padding([5, 12])
-        .on_press(Message::InstallUpdate);
-    let later = button(text_w("Later").size(13.0))
-        .padding([5, 12])
+    // Primary action uses the shared accent-pill button; "Later" is a quiet
+    // ghost so the two read as primary/secondary, not two competing buttons.
+    let install = primary_button("Install & Restart", pal).on_press(Message::InstallUpdate);
+    let later = button(text_w("Later").size(13.0).color(pal.muted))
+        .padding(Padding::from([8, 14]))
+        .style(move |_, status| button::Style {
+            background: match status {
+                button::Status::Hovered => Some(Background::Color(pal.surface_alt)),
+                _ => None,
+            },
+            text_color: pal.muted,
+            border: Border {
+                color: pal.rule,
+                width: 1.0,
+                radius: 999.0.into(),
+            },
+            ..Default::default()
+        })
         .on_press(Message::DismissUpdate);
     let bar = container(
-        row![label, install, later]
-            .spacing(12)
-            .align_y(iced::alignment::Vertical::Center),
+        row![
+            dot,
+            label,
+            Space::new().width(8),
+            install,
+            later
+        ]
+        .spacing(10)
+        .align_y(iced::alignment::Vertical::Center),
     )
-    .padding([10, 16])
+    .padding(Padding::from([8, 10]))
     .style(move |_| container::Style {
         background: Some(pal.surface.into()),
         border: iced::Border {
             color: pal.rule,
             width: 1.0,
-            radius: 10.0.into(),
+            radius: 12.0.into(),
         },
         text_color: Some(pal.fg),
         ..Default::default()
