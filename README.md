@@ -8,6 +8,8 @@ rmdv (Rust Markdown Viewer) is a fast, read-focused desktop app for browsing fol
 
 Its differentiator: a **scriptable IPC socket**. Any program or AI agent — Claude Code, Codex, Cursor, a shell script — can drive the running window (open files, scroll to a section, switch view mode, dump state) through the `rmdv` CLI. No other markdown viewer exposes a machine-readable interface built for agentic workflows.
 
+![rmdv showing a folder file tree beside a rendered document](site/assets/shot-hero.webp)
+
 ## Why rmdv
 
 | | rmdv | [Marky] | Marked 2 | Glow | Obsidian | Typora |
@@ -43,6 +45,19 @@ Its differentiator: a **scriptable IPC socket**. Any program or AI agent — Cla
 - **Auto-update** — checks GitHub releases, SHA-256 verifies; signed + notarized on macOS
 - **CJK-friendly** — bundled Inter + JetBrains Mono, system font fallback
 - **Drag and drop** files or folders
+
+## Screenshots
+
+| | |
+|:-:|:-:|
+| ![A Mermaid flowchart rendered natively in rmdv](site/assets/shot-diagrams.webp) | ![A JSON config file shown as a collapsible data mind map](site/assets/shot-mindmap.webp) |
+| **Native Mermaid / DOT / LaTeX** | **Mind-map view (`⌘M`)** |
+| ![Syntax-highlighted Rust and Java code blocks](site/assets/shot-treesitter.webp) | ![A deeply nested document with outline and breadcrumb navigation](site/assets/shot-search.webp) |
+| **Tree-sitter highlighting** | **Vault-wide search (`⌘⇧F`)** |
+| ![The demo vault shown in a light theme](site/assets/shot-themes.webp) | ![A notes document with task lists and tables, updated live](site/assets/shot-livereload.webp) |
+| **7 themes, light + dark** | **Live reload** |
+
+More on [rmdv.mclee.dev](https://rmdv.mclee.dev).
 
 ## Install
 
