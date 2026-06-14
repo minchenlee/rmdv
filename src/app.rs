@@ -343,6 +343,7 @@ pub enum Message {
     MindmapCyclePanelWidth,
     WindowResized(iced::window::Id, iced::Size),
     RefreshWindowMode(iced::window::Id),
+    RefreshWindowModeSettled(iced::window::Id),
     WindowModeChanged(iced::window::Mode),
     HintSelection,
     FoldChordStart,
@@ -2064,9 +2065,10 @@ impl App {
             }
             Message::WindowResized(id, size) => {
                 self.window_size = Some(size);
-                refresh_window_mode(id)
+                refresh_window_mode_after_native_transition(id)
             }
-            Message::RefreshWindowMode(id) => refresh_window_mode(id),
+            Message::RefreshWindowMode(id) => refresh_window_mode_after_native_transition(id),
+            Message::RefreshWindowModeSettled(id) => refresh_window_mode(id),
             Message::WindowModeChanged(mode) => {
                 self.window_fullscreen = matches!(mode, iced::window::Mode::Fullscreen);
                 Task::none()
@@ -2623,10 +2625,13 @@ impl App {
             }
             Message::OpenThemesDir => {
                 match crate::theme_load::ensure_themes_dir() {
-                    Ok(dir) => {
-                        let _ = open::that_detached(&dir);
-                        self.show_toast("opened themes folder".to_string())
-                    }
+                    Ok(dir) => match open::that_detached(&dir) {
+                        Ok(()) => self.show_toast("opened themes folder".to_string()),
+                        Err(e) => {
+                            self.error = Some(format!("open themes folder: {e}"));
+                            Task::none()
+                        }
+                    },
                     Err(e) => {
                         self.error = Some(format!("themes folder: {e}"));
                         Task::none()
@@ -4432,6 +4437,29 @@ fn refresh_window_mode(id: iced::window::Id) -> Task<Message> {
     iced::window::mode(id).map(Message::WindowModeChanged)
 }
 
+/// Sample the window mode now and again after the native transition settles.
+///
+/// macOS native fullscreen enter/exit animates; the resize/focus event that
+/// triggers a refresh can fire *before* the mode flips, so a single immediate
+/// query can read the stale (pre-transition) mode on exit. The delayed second
+/// query lands after the animation completes and corrects the flag, restoring
+/// the windowed header reserve. See the fullscreen-exit relayout bug.
+fn refresh_window_mode_after_native_transition(id: iced::window::Id) -> Task<Message> {
+    // Sample immediately, then again after the native animation could plausibly
+    // have settled. Two delayed samples (250ms + 600ms) because a single fixed
+    // delay can still land before a slow fullscreen-exit animation finishes.
+    let delayed = |ms: u64| {
+        Task::perform(
+            async move {
+                tokio::time::sleep(std::time::Duration::from_millis(ms)).await;
+                id
+            },
+            Message::RefreshWindowModeSettled,
+        )
+    };
+    Task::batch([refresh_window_mode(id), delayed(250), delayed(600)])
+}
+
 fn sidebar_view<'a>(app: &'a App, pal: Palette) -> Element<'a, Message> {
     let recently_scrolled = app
         .last_scroll_at
@@ -4468,11 +4496,19 @@ fn sidebar_view<'a>(app: &'a App, pal: Palette) -> Element<'a, Message> {
             iced::widget::tooltip::Position::Bottom,
         )
     };
-    let title_row = irow![
+    // Only the (variable-length) title may be clipped on a narrow sidebar — the
+    // control cluster stays unclipped so the collapse button is never cut off.
+    let title_label = container(
         text(ws_name.to_string().to_uppercase())
             .size(11)
-            .color(pal.muted),
-        Space::new().width(Length::Fill),
+            .color(pal.muted)
+            // No word-wrap: a long workspace name must truncate (clip below),
+            // not wrap onto a second line and grow the header row.
+            .wrapping(iced::widget::text::Wrapping::None),
+    )
+    .width(Length::Fill)
+    .clip(true);
+    let controls = irow![
         switch_tip(sidebar_tab_button(
             "Files",
             app.sidebar_tab == SidebarTab::Files,
@@ -4497,8 +4533,10 @@ fn sidebar_view<'a>(app: &'a App, pal: Palette) -> Element<'a, Message> {
         ),
     ]
     .spacing(6)
-    .clip(true)
     .align_y(iced::Alignment::Center);
+    let title_row = irow![title_label, controls]
+        .spacing(6)
+        .align_y(iced::Alignment::Center);
 
     let header = container(column![
         Space::new().height(Length::Fixed(sidebar_titlebar_reserve_for_fullscreen(
