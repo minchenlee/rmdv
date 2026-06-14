@@ -1,0 +1,30 @@
+{
+  "service": "rmdv-api",
+  "version": "2.0.0",
+  "server": {
+    "host": "0.0.0.0",
+    "port": 8443,
+    "tls": {
+      "enabled": true,
+      "cert": "/etc/rmdv/cert.pem",
+      "ciphers": ["TLS_AES_256_GCM_SHA384", "TLS_CHACHA20_POLY1305_SHA256"]
+    }
+  },
+  "auth": {
+    "providers": ["oauth", "apikey"],
+    "token_ttl_seconds": 3600,
+    "scopes": {
+      "read": ["users:list", "users:get"],
+      "write": ["users:create", "users:update"]
+    }
+  },
+  "rate_limits": {
+    "default": { "per_minute": 60, "burst": 10 },
+    "admin": { "per_minute": 600, "burst": 100 }
+  },
+  "features": {
+    "mindmap": true,
+    "vault_search": true,
+    "math": true
+  }
+}

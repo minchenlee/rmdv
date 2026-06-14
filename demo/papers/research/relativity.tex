@@ -1,0 +1,42 @@
+\documentclass{article}
+\title{On the Electrodynamics of Moving Bodies}
+\author{A. Demo}
+\date{2026}
+
+\begin{document}
+\maketitle
+
+\section{Introduction}
+rmdv renders whole \LaTeX{} documents, not just fenced math. This file is parsed
+into the same block/inline structure as markdown, so the outline (⌘↑/⌘↓), mind map
+(⌘M), and vault search all work on it.
+
+\section{The Lorentz Transformation}
+For a frame moving with velocity $v$ along $x$, coordinates transform as:
+
+\begin{equation}
+x' = \frac{x - vt}{\sqrt{1 - v^2/c^2}}
+\end{equation}
+
+\begin{equation}
+t' = \frac{t - vx/c^2}{\sqrt{1 - v^2/c^2}}
+\end{equation}
+
+\section{Mass--Energy Equivalence}
+The rest energy of a body is
+
+\begin{equation}
+E = mc^2
+\end{equation}
+
+and including momentum $p$,
+
+\begin{equation}
+E^2 = (pc)^2 + (mc^2)^2.
+\end{equation}
+
+\section{Conclusion}
+Press ⌘M to mind-map this paper, or open the
+\emph{equations} demo page for fenced \verb|$$…$$| math in markdown.
+
+\end{document}

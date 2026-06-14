@@ -1,0 +1,33 @@
+# Open this file and press ⌘M to see the data mind map.
+# Note the non-string keys (42, true) — rmdv resolves them in the subtree panel.
+app: rmdv
+profiles:
+  default:
+    theme: catppuccin-mocha
+    font_size: 15
+    sidebar: true
+  presentation:
+    theme: rose-pine
+    font_size: 22
+    sidebar: false
+http_status_messages:
+  200: OK
+  404: Not Found
+  500: Internal Server Error
+feature_flags:
+  true: enabled-by-default
+  false: opt-in-only
+limits:
+  max_files: 5000
+  max_depth: 8
+keybindings:
+  - { combo: "cmd+m", action: mindmap }
+  - { combo: "cmd+e", action: edit }
+  - { combo: "cmd+shift+f", action: vault-search }
+servers:
+  - name: primary
+    region: us-east
+    weight: 100
+  - name: replica
+    region: eu-west
+    weight: 50
