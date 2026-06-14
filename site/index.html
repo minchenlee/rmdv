@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>rmdv — fast, beautiful markdown viewer</title>
-<meta name="description" content="Free, open-source, native markdown viewer in Rust. No Electron. Cold start in ~150ms, 10k-line docs parse in 8ms. Keyboard-first, built for humans and coding agents.">
+<title>rmdv: Native Markdown Viewer for Developers — Rust, No Electron</title>
+<meta name="description" content="Free open-source Rust markdown viewer. Mermaid, Graphviz DOT, and LaTeX math render natively — no Electron, no JS. ~150ms cold start, ~70MB on 10k-line docs. Agent-controllable via IPC.">
 <meta name="author" content="Min-Chen Lee">
 <meta name="keywords" content="markdown viewer, markdown reader, rust, native app, no electron, obsidian alternative, typora alternative, glow alternative, mermaid, tree-sitter, coding agents">
 <link rel="canonical" href="https://rmdv.mclee.dev/">
@@ -12,7 +12,7 @@
 <meta name="theme-color" content="#282c34" media="(prefers-color-scheme: dark)">
 <meta name="color-scheme" content="light dark">
 <!-- Open Graph -->
-<meta property="og:title" content="rmdv — fast, beautiful markdown viewer">
+<meta property="og:title" content="rmdv: Native Markdown Viewer for Developers — Rust, No Electron">
 <meta property="og:description" content="Native Rust markdown viewer. No Electron. ~150ms cold start, keyboard-first, agent-controllable.">
 <meta property="og:url" content="https://rmdv.mclee.dev/">
 <meta property="og:type" content="website">
@@ -22,10 +22,10 @@
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
 <meta property="og:image:type" content="image/png">
-<meta property="og:image:alt" content="rmdv — Markdown, rendered at native speed. A native Rust markdown viewer.">
+<meta property="og:image:alt" content="Screenshot of rmdv rendering a README: sidebar file tree on the left, formatted markdown with syntax-highlighted code blocks on the right.">
 <!-- Twitter -->
 <meta name="twitter:card" content="summary_large_image">
-<meta name="twitter:title" content="rmdv — fast, beautiful markdown viewer">
+<meta name="twitter:title" content="rmdv: Native Markdown Viewer for Developers — Rust, No Electron">
 <meta name="twitter:description" content="Native Rust markdown viewer. No Electron. ~150ms cold start, keyboard-first, agent-controllable.">
 <meta name="twitter:image" content="https://rmdv.mclee.dev/assets/og-cover.png">
 <meta name="twitter:image:alt" content="rmdv — Markdown, rendered at native speed.">
@@ -36,7 +36,9 @@
 <link rel="preload" href="assets/fonts/inter-600.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="preload" href="assets/fonts/inter-700.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="preload" href="assets/fonts/jbmono-400.woff2" as="font" type="font/woff2" crossorigin>
-<link rel="preload" href="assets/shot-hero.webp" as="image" fetchpriority="high">
+<link rel="preload" href="assets/shot-hero.webp" as="image" fetchpriority="high"
+      imagesrcset="assets/shot-hero-960.webp 960w, assets/shot-hero.webp 1920w"
+      imagesizes="(max-width: 760px) 100vw, 760px">
 <link rel="stylesheet" href="style.css">
 <script>
 // Set theme before first paint — no flash. Mark JS-on so motion styles apply.
@@ -50,29 +52,195 @@
 <script type="application/ld+json">
 {
   "@context": "https://schema.org",
-  "@type": "SoftwareApplication",
-  "name": "rmdv",
-  "description": "Free, open-source, native markdown viewer written in Rust. No Electron, no webview — a ~30 MB binary that paints before fonts finish loading. Keyboard-first, agent-controllable, with tree-sitter highlighting, Mermaid/Graphviz diagrams, and a mindmap view.",
-  "url": "https://rmdv.mclee.dev/",
-  "applicationCategory": "DeveloperApplication",
-  "applicationSubCategory": "Markdown Viewer",
-  "operatingSystem": "macOS, Windows, Linux",
-  "downloadUrl": "https://github.com/minchenlee/rmdv/releases",
-  "softwareHelp": "https://github.com/minchenlee/rmdv",
-  "license": "https://opensource.org/licenses/MIT",
-  "isAccessibleForFree": true,
-  "offers": {
-    "@type": "Offer",
-    "price": "0",
-    "priceCurrency": "USD"
-  },
-  "author": {
-    "@type": "Person",
-    "name": "Min-Chen Lee",
-    "url": "https://github.com/minchenlee"
-  },
-  "image": "https://rmdv.mclee.dev/assets/og-cover.png",
-  "screenshot": "https://rmdv.mclee.dev/assets/shot-hero.webp"
+  "@graph": [
+    {
+      "@type": "WebSite",
+      "@id": "https://rmdv.mclee.dev/#website",
+      "name": "rmdv",
+      "url": "https://rmdv.mclee.dev/",
+      "description": "Free open-source native markdown viewer written in Rust. No Electron, no webview, no JavaScript runtime.",
+      "publisher": { "@id": "https://rmdv.mclee.dev/#author" }
+    },
+    {
+      "@type": "Person",
+      "@id": "https://rmdv.mclee.dev/#author",
+      "name": "Min-Chen Lee",
+      "url": "https://github.com/minchenlee",
+      "sameAs": [
+        "https://github.com/minchenlee",
+        "https://github.com/minchenlee/rmdv"
+      ]
+    },
+    {
+      "@type": "SoftwareApplication",
+      "@id": "https://rmdv.mclee.dev/#app",
+      "name": "rmdv",
+      "url": "https://rmdv.mclee.dev/",
+      "downloadUrl": "https://github.com/minchenlee/rmdv/releases",
+      "softwareHelp": "https://github.com/minchenlee/rmdv",
+      "applicationCategory": "DeveloperApplication",
+      "applicationSubCategory": "Markdown Viewer",
+      "operatingSystem": ["macOS", "Linux", "Windows"],
+      "softwareVersion": "0.3.0",
+      "datePublished": "2026-05-10",
+      "dateModified": "2026-06-14",
+      "releaseNotes": "https://github.com/minchenlee/rmdv/releases",
+      "license": "https://opensource.org/licenses/MIT",
+      "isAccessibleForFree": true,
+      "offers": {
+        "@type": "Offer",
+        "price": "0",
+        "priceCurrency": "USD"
+      },
+      "description": "rmdv is a free, open-source native markdown viewer written in Rust. It renders Markdown, Mermaid diagrams, Graphviz DOT graphs, LaTeX math, and JSON/YAML mind maps without a browser, Electron, or JavaScript runtime. Cold-start to first paint is ~150 ms; a 10,000-line document parses in 8.1 ms using ~70 MB of memory.",
+      "featureList": [
+        "Folder workspace browser with file tree",
+        "Fuzzy file finder (Cmd+P)",
+        "Tree-sitter syntax highlighting (Rust, Python, TypeScript, Go, C, C++, Java, SQL, Bash and more)",
+        "Mermaid diagram rendering (native, no browser)",
+        "Graphviz DOT diagram rendering (native, no browser)",
+        "Block LaTeX math rendering via pure-Rust layout engine (no JavaScript)",
+        "Mindmap view for any document including JSON and YAML (Cmd+M)",
+        "Vault-wide search with Zed-style full-page results (Cmd+Shift+F)",
+        "In-document search (Cmd+F)",
+        "Live reload on file change",
+        "Auto-update with SHA-256 verification, signed and notarized on macOS",
+        "Light and dark themes (One Dark, GitHub, Solarized, Gruvbox, Nord, Dracula, Tokyo Night)",
+        "Keyboard-first navigation (vim j/k/g/G)",
+        "Edit mode (Cmd+E)",
+        "Heading fold (Cmd+K 0-6)",
+        "IPC socket API — controllable by AI coding agents via the rmdv CLI returning one-line JSON"
+      ],
+      "memoryRequirements": "~70 MB on a 10,000-line document",
+      "storageRequirements": "~30 MB",
+      "inLanguage": "en",
+      "image": "https://rmdv.mclee.dev/assets/og-cover.png",
+      "screenshot": [
+        "https://rmdv.mclee.dev/assets/shot-hero.webp",
+        "https://rmdv.mclee.dev/assets/shot-workspace.webp",
+        "https://rmdv.mclee.dev/assets/shot-diagrams.webp",
+        "https://rmdv.mclee.dev/assets/shot-mindmap.webp",
+        "https://rmdv.mclee.dev/assets/shot-search.webp"
+      ],
+      "author": { "@id": "https://rmdv.mclee.dev/#author" },
+      "publisher": { "@id": "https://rmdv.mclee.dev/#author" },
+      "sameAs": ["https://github.com/minchenlee/rmdv"]
+    },
+    {
+      "@type": "FAQPage",
+      "@id": "https://rmdv.mclee.dev/#faq",
+      "mainEntity": [
+        {
+          "@type": "Question",
+          "name": "Is rmdv free and open source?",
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "Yes. rmdv is MIT-licensed and free to use, modify, and distribute. Source code is at github.com/minchenlee/rmdv."
+          }
+        },
+        {
+          "@type": "Question",
+          "name": "How is rmdv different from Obsidian?",
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "rmdv is a read-focused viewer, not a note-linking knowledge base. It opens any folder instantly without vault setup, uses ~70 MB of memory on a 10,000-line document (versus 300+ MB for Obsidian), and starts in ~150 ms. It has no plugin ecosystem, but it renders Mermaid diagrams and LaTeX math natively — Obsidian requires plugins for both."
+          }
+        },
+        {
+          "@type": "Question",
+          "name": "How is rmdv different from Typora?",
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "Typora is a paid ($15) editor-first app for macOS and Windows. rmdv is free, open source, read-focused, and also runs on Linux. It renders Mermaid diagrams and LaTeX math without a webview; Typora uses an embedded browser for rendering."
+          }
+        },
+        {
+          "@type": "Question",
+          "name": "Does rmdv work offline?",
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "Yes. rmdv is a native desktop application with no cloud dependency. All rendering — Markdown, Mermaid diagrams, LaTeX math, mindmaps — happens locally with no network requests at runtime."
+          }
+        },
+        {
+          "@type": "Question",
+          "name": "What diagram and math formats does rmdv support?",
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "rmdv renders Mermaid diagrams (all major diagram types) and Graphviz DOT graphs natively in Rust. Block LaTeX math ($$...$$) is rendered by a pure-Rust layout engine — no JavaScript, no KaTeX."
+          }
+        },
+        {
+          "@type": "Question",
+          "name": "How does rmdv work with Claude Code or other AI coding agents?",
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "rmdv runs as a single instance with a Unix socket IPC interface. An agent uses the rmdv CLI to open files, jump to specific headings, or switch view modes programmatically. Every command returns one line of JSON. The agent can keep a spec file open in rmdv at the exact section the human needs while continuing its own work."
+          }
+        },
+        {
+          "@type": "Question",
+          "name": "How do I install rmdv?",
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "On macOS, download the signed and notarized .dmg from github.com/minchenlee/rmdv/releases. On Linux, download the x86_64 AppImage from the same page. To build from source on any platform including Windows: install Rust 1.80 or newer, then run: git clone https://github.com/minchenlee/rmdv && cd rmdv && cargo build --release."
+          }
+        },
+        {
+          "@type": "Question",
+          "name": "Is rmdv faster than Electron-based markdown viewers?",
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "rmdv is a ~30 MB native binary with no Electron, no webview, and no JavaScript runtime. Cold start to first paint is ~150 ms on an M2 MacBook Air. A 10,000-line document parses in 8.1 ms and uses 70 MB of memory. Electron-based apps typically start in 1–3 seconds and use significantly more memory."
+          }
+        }
+      ]
+    },
+    {
+      "@type": "HowTo",
+      "@id": "https://rmdv.mclee.dev/#howto-install",
+      "name": "How to install rmdv",
+      "description": "Install rmdv, the native Rust markdown viewer, on macOS, Linux, or from source.",
+      "step": [
+        {
+          "@type": "HowToStep",
+          "position": 1,
+          "name": "Download",
+          "text": "Go to https://github.com/minchenlee/rmdv/releases and download the build for your platform: .dmg for macOS (Apple Silicon or Intel), AppImage for Linux."
+        },
+        {
+          "@type": "HowToStep",
+          "position": 2,
+          "name": "Install on macOS",
+          "text": "Open the .dmg and drag rmdv to Applications. On first launch, macOS may ask you to confirm opening a downloaded app — click Open. rmdv checks for updates automatically on each launch."
+        },
+        {
+          "@type": "HowToStep",
+          "position": 3,
+          "name": "Install on Linux",
+          "text": "Make the AppImage executable with: chmod +x rmdv-*.AppImage — then run it directly: ./rmdv-*.AppImage"
+        },
+        {
+          "@type": "HowToStep",
+          "position": 4,
+          "name": "Build from source (all platforms including Windows)",
+          "text": "Install Rust 1.80 or newer from https://rustup.rs. Clone the repo: git clone https://github.com/minchenlee/rmdv. Build: cd rmdv && cargo build --release. Run: ./target/release/rmdv"
+        }
+      ]
+    },
+    {
+      "@type": "BreadcrumbList",
+      "@id": "https://rmdv.mclee.dev/#breadcrumb",
+      "itemListElement": [
+        {
+          "@type": "ListItem",
+          "position": 1,
+          "name": "rmdv — Native Markdown Viewer",
+          "item": "https://rmdv.mclee.dev/"
+        }
+      ]
+    }
+  ]
 }
 </script>
 </head>
@@ -80,7 +248,7 @@
 
 <header class="top">
   <div class="top-inner">
-    <a class="brand" href="#">
+    <a class="brand" href="/">
       <img src="assets/icon-64.png" alt="" width="22" height="22">
       <span>rmdv</span>
     </a>
@@ -88,6 +256,7 @@
       <a href="#features">Features</a>
       <a href="#keyboard">Keyboard</a>
       <a href="#agents">Agents</a>
+      <a href="#faq">FAQ</a>
       <a href="#install">Install</a>
       <a href="https://github.com/minchenlee/rmdv" class="gh">GitHub</a>
     </nav>
@@ -110,7 +279,10 @@
       <a class="btn" href="https://github.com/minchenlee/rmdv">Source on GitHub</a>
     </div>
     <figure class="shot">
-      <img id="shot-img" src="assets/shot-hero.webp" alt="rmdv rendering its own README: sidebar file tree, rendered markdown with syntax-highlighted code" width="2940" height="1758" fetchpriority="high">
+      <img id="shot-img" src="assets/shot-hero.webp"
+           srcset="assets/shot-hero-960.webp 960w, assets/shot-hero.webp 1920w"
+           sizes="(max-width: 760px) 100vw, 760px"
+           alt="rmdv rendering its own README: sidebar file tree, rendered markdown with syntax-highlighted code" width="1920" height="1149" fetchpriority="high">
     </figure>
   </section>
 
@@ -310,6 +482,55 @@ rmdv list-sections spec.md | jq -r <span class="s">'.[].path'</span></code></pre
       Every command returns one line of JSON. Your agent writes a doc, opens it at the
       right heading, and keeps working while you read.
     </p>
+    <p class="fine">rmdv is the only markdown viewer in this category with a stable IPC CLI: a single-instance process, a well-defined JSON protocol, and no GUI interaction required.</p>
+  </section>
+
+  <!-- ───────────────────────── faq -->
+  <section id="faq" class="reveal">
+    <h2><span class="h-mark">##</span> FAQ</h2>
+    <dl class="faq-list">
+
+      <div class="faq-item">
+        <dt>Is rmdv free and open source?</dt>
+        <dd>Yes. rmdv is MIT-licensed and free to use, modify, and distribute. Source code is at <a href="https://github.com/minchenlee/rmdv">github.com/minchenlee/rmdv</a>.</dd>
+      </div>
+
+      <div class="faq-item">
+        <dt>How is rmdv different from Obsidian?</dt>
+        <dd>rmdv is a read-focused viewer, not a note-linking knowledge base. It opens any folder instantly without vault setup, uses ~70&nbsp;MB of memory on a 10,000-line document (versus 300+&nbsp;MB for Obsidian), and starts in ~150&nbsp;ms. It has no plugin ecosystem, but it renders Mermaid diagrams and LaTeX math natively — Obsidian requires plugins for both.</dd>
+      </div>
+
+      <div class="faq-item">
+        <dt>How is rmdv different from Typora?</dt>
+        <dd>Typora is a paid ($15) editor-first app for macOS and Windows. rmdv is free, open source, read-focused, and also runs on Linux. It renders Mermaid diagrams and LaTeX math without a webview; Typora uses an embedded browser for rendering.</dd>
+      </div>
+
+      <div class="faq-item">
+        <dt>Does rmdv work offline?</dt>
+        <dd>Yes. rmdv is a native desktop application with no cloud dependency. All rendering — Markdown, Mermaid diagrams, LaTeX math, mindmaps — happens locally with no network requests at runtime.</dd>
+      </div>
+
+      <div class="faq-item">
+        <dt>What diagram and math formats does rmdv support?</dt>
+        <dd>rmdv renders Mermaid diagrams (all major diagram types) and Graphviz DOT graphs natively in Rust. Block LaTeX math (<code>$$…$$</code>) is rendered by a pure-Rust layout engine — no JavaScript, no KaTeX.</dd>
+      </div>
+
+      <div class="faq-item">
+        <dt>How does rmdv work with Claude Code or other AI coding agents?</dt>
+        <dd>rmdv runs as a single instance with a Unix socket IPC interface. An agent uses the <code>rmdv</code> CLI to open files, jump to specific headings, or switch view modes programmatically. Every command returns one line of JSON. The agent can keep a spec file open in rmdv at the exact section the human needs while continuing its own work.</dd>
+      </div>
+
+      <div class="faq-item">
+        <dt>How do I install rmdv?</dt>
+        <dd>On macOS, download the signed and notarized .dmg from <a href="https://github.com/minchenlee/rmdv/releases">github.com/minchenlee/rmdv/releases</a>. On Linux, download the x86_64 AppImage from the same page. To build from source on any platform including Windows: install Rust 1.80 or newer, then run <code>git clone https://github.com/minchenlee/rmdv &amp;&amp; cd rmdv &amp;&amp; cargo build --release</code>.</dd>
+      </div>
+
+      <div class="faq-item">
+        <dt>Is rmdv faster than Electron-based markdown viewers?</dt>
+        <dd>rmdv is a ~30&nbsp;MB native binary with no Electron, no webview, and no JavaScript runtime. Cold start to first paint is ~150&nbsp;ms on an M2 MacBook Air. A 10,000-line document parses in 8.1&nbsp;ms and uses 70&nbsp;MB of memory. Electron-based apps typically start in 1–3 seconds and use significantly more memory.</dd>
+      </div>
+
+    </dl>
   </section>
 
   <!-- ───────────────────────── install -->

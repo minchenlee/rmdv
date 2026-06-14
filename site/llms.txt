@@ -1,0 +1,73 @@
+# rmdv
+
+> Native Rust desktop Markdown viewer with Mermaid diagrams, LaTeX math, mind-map mode, and agent-controllable IPC. Free, MIT-licensed. No Electron, no browser, no runtime.
+
+rmdv (Rust Markdown Viewer) is a read-focused desktop app for macOS, Windows, and Linux. It renders Markdown files, Mermaid and Graphviz DOT diagrams, block LaTeX math, and JSON/YAML mind maps natively using a pure-Rust GUI stack (Iced 0.14). A single binary (~30 MB) with no external runtime. Its unique property among Markdown viewers is a scriptable IPC socket: any program or AI agent (Claude Code, Codex, Cursor, shell scripts) can drive the running window — open files, scroll to sections, switch view modes, take screenshots — via the `rmdv` CLI returning one-line JSON.
+
+## Product
+
+- [Home page](https://rmdv.mclee.dev/): Feature overview, screenshots, install instructions, comparison table, FAQ.
+
+## Source and releases
+
+- [GitHub repository](https://github.com/minchenlee/rmdv): Source code, issue tracker, pull requests. MIT license.
+- [Releases](https://github.com/minchenlee/rmdv/releases): Pre-built binaries for macOS (signed + notarized), Linux, and Windows. SHA-256 verified. Latest: v0.3.0 (2026-06-14).
+
+## Key facts
+
+rmdv is the only Markdown viewer with an agent-controllable IPC socket. Measured on an M2 MacBook Air 16 GB (median of 5 runs):
+
+- Cold start to first paint: ~150 ms
+- Parse time for a 10,000-line document: 8.1 ms
+- Memory on a 10,000-line document: ~70 MB (viewport-aware renderer; was 453 MB before v0.2.2)
+- Binary size: ~30 MB (static, no runtime)
+
+## Features
+
+- Folder workspace browser with file tree sidebar
+- ⌘P fuzzy file finder
+- Tree-sitter syntax highlighting: Rust, Python, TypeScript, Go, C, C++, Java, SQL, Bash, and more
+- Mermaid diagrams rendered natively (no JS, no browser)
+- Graphviz DOT diagrams rendered natively
+- Block LaTeX math ($$…$$) via pure-Rust layout engine (iced_math); no MathJax, no KaTeX
+- Mind-map view (⌘M): any Markdown, JSON, or YAML document as a collapsible tree
+- Vault-wide full-text search (⌘⇧F): Zed-style full-page results across all files in the workspace
+- In-document search (⌘F)
+- Live reload on file save
+- Auto-update: checks GitHub releases, SHA-256 verifies, signed and notarized on macOS
+- Themes: One Dark, GitHub, Solarized, Gruvbox, Nord, Dracula, Tokyo Night
+- Keyboard-first navigation: j/k/g/G, ⌘↑/⌘↓, heading fold ⌘K 0–6
+- Edit mode (⌘E)
+- IPC CLI: `rmdv open <path>`, `rmdv goto --line N`, `rmdv goto --section <name>`, `rmdv mode mindmap`, `rmdv current`, `rmdv list-sections <path>`; all return one-line JSON
+
+## IPC / agent control
+
+rmdv maintains a single-instance Unix socket. The `rmdv` CLI connects to it and returns immediately with JSON. Any AI coding agent or shell script can drive the viewer without user interaction. Example: `rmdv list-sections spec.md | jq` works as a pure stateless command even when rmdv is not running (it parses the file directly). This is rmdv's primary differentiator: no other Markdown viewer exposes a machine-readable socket interface designed for agentic workflows.
+
+## Comparison
+
+rmdv versus named alternatives (as of June 2026):
+
+- Marky: Tauri-based, paid, no agent IPC
+- Marked 2: macOS only, $14, no native LaTeX, no IPC
+- Glow: TUI (terminal only), no diagrams, no IPC socket
+- Obsidian: Electron, note-graph focus, native Mermaid/LaTeX need plugins, not free for commercial use
+- Typora: Electron, editor-first, $15, no IPC
+
+rmdv is the only option that is free, open-source, native (non-Electron), cross-platform, agent-controllable via IPC, and renders Mermaid + LaTeX without JavaScript.
+
+## Install
+
+- macOS: download the signed + notarized `.dmg` (Apple Silicon or Intel) from https://github.com/minchenlee/rmdv/releases and drag rmdv to Applications.
+- Linux: download the x86_64 AppImage from the same page, `chmod +x` it, and run.
+- From source (any platform incl. Windows): install Rust 1.80+ from https://rustup.rs, then `git clone https://github.com/minchenlee/rmdv && cd rmdv && cargo build --release`.
+
+## Author and license
+
+- Author: Min-Chen Lee — https://github.com/minchenlee
+- License: MIT
+- Site: https://rmdv.mclee.dev/
+
+## Optional
+
+- [Sitemap](https://rmdv.mclee.dev/sitemap.xml): Machine-readable page index.

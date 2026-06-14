@@ -581,6 +581,21 @@ td.n, td.m { color: var(--subtle); }
 }
 .cap { display: flex; gap: 4px; min-width: 104px; justify-content: flex-start; flex-shrink: 0; }
 
+/* faq — hairline-separated dt/dd pairs, same density as the keyboard list */
+.faq-list { margin: 22px 0 0; padding: 0; }
+.faq-item { border-top: 1px solid var(--rule); padding: 16px 0; }
+.faq-item:last-child { border-bottom: 1px solid var(--rule); }
+.faq-item dt { font-weight: 600; color: var(--fg); margin: 0 0 6px; font-size: 15px; }
+.faq-item dd { margin: 0; color: var(--muted); font-size: 14px; line-height: 1.65; max-width: 70ch; }
+.faq-item dd a { color: var(--muted); text-decoration: underline; }
+.faq-item dd code {
+  font-family: var(--mono);
+  font-size: .88em;
+  background: var(--code-bg);
+  padding: .1em .35em;
+  border-radius: 4px;
+}
+
 /* code blocks — fences visible, like reading the source */
 pre.code {
   position: relative;
