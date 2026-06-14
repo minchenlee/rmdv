@@ -3745,7 +3745,9 @@ fn update_banner<'a>(version: &str, pal: Palette) -> Element<'a, Message> {
         .padding(Padding::from([8, 14]))
         .style(move |_, status| button::Style {
             background: match status {
-                button::Status::Hovered => Some(Background::Color(pal.surface_alt)),
+                button::Status::Hovered | button::Status::Pressed => {
+                    Some(Background::Color(pal.surface_alt))
+                }
                 _ => None,
             },
             text_color: pal.muted,
