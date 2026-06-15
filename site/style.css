@@ -278,6 +278,35 @@ kbd.hit {
 }
 @keyframes blink { 50% { opacity: 0; } }
 
+/* Ghostty-style ASCII ghost above the headline. JS (ghost.js) paints it; this
+   rule only reserves space so animating it never shifts layout (CLS = 0).
+   line-height × font-size × 30 rows ≈ the box height; min-height pins it even
+   before the first frame and when JS is off. */
+/* The wordmark is 96 monospace columns wide. Font size is driven by viewport
+   width so the whole word always fits — it shrinks on phones (no clipping) and
+   caps at 9px on desktop. --gfs is reused for min-height so the reserved box
+   tracks the glyph size exactly (CLS = 0). */
+.hero-ghost {
+  --gfs: clamp(3px, 1.45vw, 9px);
+  font-family: var(--mono);
+  font-size: var(--gfs);
+  line-height: 1.08;
+  letter-spacing: 0.01em;
+  white-space: pre;
+  margin: 6px auto 16px;
+  min-height: calc(var(--gfs) * 1.08 * 31 + 2px);
+  color: var(--accent);
+  user-select: none;
+  pointer-events: none;
+  overflow: hidden;
+}
+/* color tiers painted by ghost.js — classes (not inline styles) so the CSP's
+   style-src 'self' stays intact. They track the theme via the same vars. */
+.hero-ghost .gd { color: var(--muted); }
+.hero-ghost .ga { color: var(--accent); }
+.hero-ghost .gb { color: var(--accent-text); }
+@media (prefers-reduced-motion: reduce) { .hero-ghost { opacity: 0.9; } }
+
 .hero h1 {
   font-size: clamp(38px, 7vw, 58px);
   font-weight: 700; line-height: 1.1;
