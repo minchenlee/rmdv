@@ -141,8 +141,15 @@ impl Picker {
 }
 
 pub fn is_markdown_path(p: &Path) -> bool {
+    let ext = p.extension().and_then(|s| s.to_str());
+    // PDFs are viewable (extracted to markdown) only when the `pdf` feature is
+    // compiled in, so only surface them in the explorer then.
+    #[cfg(feature = "pdf")]
+    if ext.is_some_and(|e| e.eq_ignore_ascii_case("pdf")) {
+        return true;
+    }
     matches!(
-        p.extension().and_then(|s| s.to_str()),
+        ext,
         Some("md")
             | Some("markdown")
             | Some("tex")
@@ -234,4 +241,31 @@ pub fn fuzzy_score(query: &str, candidate: &str) -> Option<i32> {
     }
     score -= candidate.len() as i32 / 4;
     Some(score)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+
+    #[cfg(feature = "pdf")]
+    #[test]
+    fn pdf_is_listed_when_feature_on() {
+        assert!(is_markdown_path(Path::new("doc.pdf")));
+        assert!(is_markdown_path(Path::new("DOC.PDF"))); // case-insensitive
+    }
+
+    #[cfg(not(feature = "pdf"))]
+    #[test]
+    fn pdf_not_listed_when_feature_off() {
+        assert!(!is_markdown_path(Path::new("doc.pdf")));
+    }
+
+    #[test]
+    fn markdown_and_data_listed_but_binary_not() {
+        assert!(is_markdown_path(Path::new("a.md")));
+        assert!(is_markdown_path(Path::new("a.yaml")));
+        assert!(!is_markdown_path(Path::new("a.bin")));
+        assert!(!is_markdown_path(Path::new("a.png")));
+    }
 }
