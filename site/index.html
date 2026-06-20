@@ -36,9 +36,6 @@
 <link rel="preload" href="assets/fonts/inter-600.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="preload" href="assets/fonts/inter-700.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="preload" href="assets/fonts/jbmono-400.woff2" as="font" type="font/woff2" crossorigin>
-<link rel="preload" href="assets/shot-hero.webp" as="image" fetchpriority="high"
-      imagesrcset="assets/shot-hero-960.webp 960w, assets/shot-hero.webp 1920w"
-      imagesizes="(max-width: 760px) 100vw, 760px">
 <link rel="stylesheet" href="style.css">
 <script>
 // Set theme before first paint — no flash. Mark JS-on so motion styles apply.
@@ -267,7 +264,7 @@
 
   <!-- ───────────────────────── hero -->
   <section class="hero">
-    <p class="invoke"><span class="prompt">$</span>rmdv README.md<span class="caret" aria-hidden="true"></span></p>
+    <pre id="hero-ghost" class="hero-ghost" aria-hidden="true"></pre>
     <h1>Markdown, rendered<br>at <span class="accent">native speed</span>.</h1>
     <p class="tagline">
       rmdv is a free, open-source markdown viewer written in Rust.
@@ -278,11 +275,11 @@
       <a class="btn primary" id="dl-primary" href="#install">Download</a>
       <a class="btn" href="https://github.com/minchenlee/rmdv">Source on GitHub</a>
     </div>
-    <figure class="shot">
+    <figure class="shot" hidden>
       <img id="shot-img" src="assets/shot-hero.webp"
            srcset="assets/shot-hero-960.webp 960w, assets/shot-hero.webp 1920w"
            sizes="(max-width: 760px) 100vw, 760px"
-           alt="rmdv rendering its own README: sidebar file tree, rendered markdown with syntax-highlighted code" width="1920" height="1149" fetchpriority="high">
+           alt="rmdv rendering its own README: sidebar file tree, rendered markdown with syntax-highlighted code" width="1920" height="1149">
     </figure>
   </section>
 
@@ -620,5 +617,6 @@ cd rmdv &amp;&amp; cargo build --release</code></pre>
 </div>
 
 <script src="app.js" defer></script>
+<script src="ghost.js" defer></script>
 </body>
 </html>

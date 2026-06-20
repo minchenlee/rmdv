@@ -17,3 +17,6 @@ CLAUDE.md
 .codex/
 .gstack/
 .wrangler/
+
+# generative-art design scratch (demos + speed tuner), not shipped
+docs/genart-samples/
