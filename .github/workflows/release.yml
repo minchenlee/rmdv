@@ -182,7 +182,10 @@ jobs:
             libssl-dev pkg-config fuse libfuse2 file desktop-file-utils
 
       - name: Build release
-        run: cargo build --release --target x86_64-unknown-linux-gnu
+        # PDF support (default feature) is macOS-only for now: it dlopens a
+        # PDFium dylib that we embed + sign into the .app. Linux/Windows have
+        # no equivalent embed step yet, so build without it.
+        run: cargo build --release --no-default-features --target x86_64-unknown-linux-gnu
 
       - name: Build AppImage
         env:
@@ -243,7 +246,8 @@ jobs:
       - name: Install cargo-packager
         run: cargo install cargo-packager --locked
       - name: Build release
-        run: cargo build --release --target x86_64-pc-windows-msvc
+        # PDF support is macOS-only for now (see Linux note); build without it.
+        run: cargo build --release --no-default-features --target x86_64-pc-windows-msvc
       - name: Package
         run: cargo packager --release --target x86_64-pc-windows-msvc -f nsis
       - name: Upload Windows artifact

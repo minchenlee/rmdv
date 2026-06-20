@@ -56,8 +56,12 @@ libc = "0.2"
 liteparse = { version = "2", optional = true, default-features = false }
 
 [features]
-default = []
-# Enables reading .pdf files (extracted to markdown). Pulls in PDFium/Tesseract.
+# `pdf` is on by default so `.pdf` files render as markdown out of the box
+# (cargo run / installed app). Build with `--no-default-features` to drop it
+# and the ~6MB PDFium dylib if a leaner, PDF-less binary is wanted.
+default = ["pdf"]
+# Enables reading .pdf files (extracted to markdown). Pulls in PDFium (~6MB,
+# dlopen'd at runtime; CI embeds + signs it into the .app bundle).
 pdf = ["dep:liteparse"]
 
 [lib]
