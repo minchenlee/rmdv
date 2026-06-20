@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>404 — Page not found · rmdv</title>
+<meta name="description" content="That page doesn't exist on rmdv.mclee.dev. Head back to the home page, grab a release, or browse the source on GitHub.">
+<meta name="robots" content="noindex">
+<link rel="canonical" href="https://rmdv.mclee.dev/">
+<meta name="theme-color" content="#fafafa" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#282c34" media="(prefers-color-scheme: dark)">
+<meta name="color-scheme" content="light dark">
+<link rel="icon" href="assets/favicon-32.png" sizes="32x32" type="image/png">
+<link rel="icon" href="assets/icon-64.png" sizes="64x64" type="image/png">
+<link rel="apple-touch-icon" href="assets/icon-180.png">
+<link rel="preload" href="assets/fonts/inter-400.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="assets/fonts/inter-600.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="assets/fonts/inter-700.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="style.css">
+<script>
+// Set theme before first paint — no flash. Mark JS-on so motion styles apply.
+(function () {
+  var t = localStorage.getItem('rmdv-theme');
+  if (!t) t = matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+  document.documentElement.dataset.theme = t;
+  document.documentElement.classList.add('js');
+})();
+</script>
+</head>
+<body>
+
+<header class="top">
+  <div class="top-inner">
+    <a class="brand" href="/">
+      <img src="assets/icon-64.png" alt="" width="22" height="22">
+      <span>rmdv</span>
+    </a>
+    <nav class="top-nav">
+      <a href="/#features">Features</a>
+      <a href="/#keyboard">Keyboard</a>
+      <a href="/#agents">Agents</a>
+      <a href="/#faq">FAQ</a>
+      <a href="/#install">Install</a>
+      <a href="https://github.com/minchenlee/rmdv" class="gh">GitHub</a>
+    </nav>
+  </div>
+</header>
+
+<main id="top">
+
+  <section class="hero">
+    <p class="h-mark" aria-hidden="true"># 404</p>
+    <h1>Page not <span class="accent">found</span>.</h1>
+    <p class="tagline">
+      That path doesn't exist on rmdv.mclee.dev — it may have moved or never been here.
+      rmdv is a free, open-source markdown viewer written in Rust; here's the way back.
+    </p>
+    <div class="cta">
+      <a class="btn primary" href="/">Back to home</a>
+      <a class="btn" href="https://github.com/minchenlee/rmdv">Source on GitHub</a>
+    </div>
+
+    <nav class="cta" aria-label="Helpful links">
+      <a class="btn small" href="/#install">Install</a>
+      <a class="btn small" href="/#features">Features</a>
+      <a class="btn small" href="/#faq">FAQ</a>
+      <a class="btn small" href="https://github.com/minchenlee/rmdv/releases">Releases</a>
+    </nav>
+  </section>
+
+  <div class="md-hr" aria-hidden="true">---</div>
+  <footer>
+    <p>
+      MIT licensed · <a href="https://github.com/minchenlee/rmdv">github.com/minchenlee/rmdv</a>
+      · <a href="https://github.com/minchenlee/rmdv/releases">changelog</a>
+      · built with <a href="https://iced.rs">Iced</a>
+    </p>
+    <p class="fine">Native Rust markdown viewer. No Electron, no webview, no JS runtime.</p>
+  </footer>
+
+</main>
+
+</body>
+</html>
