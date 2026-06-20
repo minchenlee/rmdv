@@ -48,10 +48,25 @@ jobs:
         run: cargo install cargo-packager --locked
 
       - name: Build release
-        run: cargo build --release --target ${{ matrix.target }}
+        run: cargo build --release --features pdf --target ${{ matrix.target }}
 
       - name: Package (.app bundle)
         run: cargo packager --release --target ${{ matrix.target }} -f app
+
+      - name: Embed PDFium dylib (pdf feature)
+        shell: bash
+        run: |
+          set -euo pipefail
+          APP="target/${{ matrix.target }}/release/rmdv.app"
+          # liteparse's build script downloads libpdfium.dylib into the build
+          # tree. It is loaded at runtime via dlopen from next to the executable
+          # (current_exe dir), so it must live inside Contents/MacOS. The
+          # subsequent codesign --deep --options runtime step seals + hardens it.
+          DYLIB=$(find "target/${{ matrix.target }}/release" -name libpdfium.dylib | head -1)
+          if [ -z "$DYLIB" ]; then DYLIB=$(find target -name libpdfium.dylib | head -1); fi
+          if [ -z "$DYLIB" ]; then echo "libpdfium.dylib not found"; exit 1; fi
+          cp "$DYLIB" "$APP/Contents/MacOS/libpdfium.dylib"
+          echo "Embedded $DYLIB -> $APP/Contents/MacOS/"
 
       - name: Import signing certificate
         env:
@@ -93,6 +108,14 @@ jobs:
           # step rebuilds + re-adhoc-signs the app, so we build the dmg by hand
           # below to keep the Developer ID signature intact.)
           if [ -n "${APPLE_SIGNING_IDENTITY:-}" ]; then
+            # Sign the embedded PDFium dylib first (hardened runtime + timestamp),
+            # then sign the app deep. The dylib is dlopen'd at runtime and must
+            # carry its own valid Developer ID signature + runtime flag for
+            # notarization to accept the bundle.
+            if [ -f "$APP/Contents/MacOS/libpdfium.dylib" ]; then
+              codesign --force --options runtime --timestamp \
+                --sign "$APPLE_SIGNING_IDENTITY" "$APP/Contents/MacOS/libpdfium.dylib"
+            fi
             codesign --force --deep --options runtime \
               --sign "$APPLE_SIGNING_IDENTITY" "$APP"
             # Notarize the .app (zipped for submission), then staple the bundle.

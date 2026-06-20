@@ -50,6 +50,15 @@ clap = { version = "4", features = ["derive"] }
 interprocess = { version = "2", features = ["tokio"] }
 futures = "0.3"
 libc = "0.2"
+# Spike: optional PDF->markdown via liteparse (PDFium, local-only).
+# default-features=false drops Tesseract OCR (no cmake C build, no bloat);
+# scanned image-only PDFs won't yield text, but native-text PDFs work.
+liteparse = { version = "2", optional = true, default-features = false }
+
+[features]
+default = []
+# Enables reading .pdf files (extracted to markdown). Pulls in PDFium/Tesseract.
+pdf = ["dep:liteparse"]
 
 [lib]
 name = "rmdv"

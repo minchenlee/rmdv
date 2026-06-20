@@ -2009,6 +2009,12 @@ impl App {
                 if self.file.is_none() {
                     return Task::none();
                 }
+                // PDFs render to markdown for viewing only — their "source" is
+                // extracted text, not editable. Block edit mode; allow leaving
+                // Raw if somehow already there.
+                if is_pdf_path(self.file.as_deref()) && self.view_mode != ViewMode::Raw {
+                    return self.show_toast("PDFs are view-only".into());
+                }
                 let restore = self.restore_body_scroll();
                 match self.view_mode {
                     ViewMode::Rendered => {
@@ -3271,8 +3277,11 @@ impl App {
                         Response::ok(id)
                     }
                     Cmd::Mode { mode, focus } => {
+                        let is_pdf = is_pdf_path(self.file.as_deref());
                         self.view_mode = match mode {
                             Mode::View => ViewMode::Rendered,
+                            // PDFs are view-only: coerce edit requests to View.
+                            Mode::Edit if is_pdf => ViewMode::Rendered,
                             Mode::Edit => ViewMode::Raw,
                             Mode::Mindmap => ViewMode::Mindmap,
                         };
@@ -6440,6 +6449,14 @@ fn is_tex_path(path: Option<&std::path::Path>) -> bool {
         .is_some_and(|e| e.eq_ignore_ascii_case("tex"))
 }
 
+/// PDFs are extracted to markdown for viewing only; their source isn't editable
+/// text, so edit mode (⌘E / `ViewMode::Raw`) is disabled for them.
+fn is_pdf_path(path: Option<&std::path::Path>) -> bool {
+    path.and_then(|p| p.extension())
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| e.eq_ignore_ascii_case("pdf"))
+}
+
 fn data_lang_for(path: Option<&std::path::Path>) -> Option<&'static str> {
     let ext = path.and_then(|p| p.extension()).and_then(|e| e.to_str())?;
     match ext.to_ascii_lowercase().as_str() {
@@ -6462,6 +6479,18 @@ fn prettify_data(lang: &str, src: &str) -> String {
 }
 
 async fn load_file(p: PathBuf) -> Result<(PathBuf, String), String> {
+    #[cfg(feature = "pdf")]
+    if p.extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| e.eq_ignore_ascii_case("pdf"))
+    {
+        let path = p.clone();
+        // PDFium is sync + holds a process-global lock; run off the async runtime.
+        let md = tokio::task::spawn_blocking(move || crate::pdf::pdf_to_markdown(&path))
+            .await
+            .map_err(|e| e.to_string())??;
+        return Ok((p, md));
+    }
     let bytes = tokio::fs::read(&p).await.map_err(|e| e.to_string())?;
     let s = String::from_utf8_lossy(&bytes).into_owned();
     Ok((p, s))
