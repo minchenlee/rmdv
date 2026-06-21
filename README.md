@@ -4,7 +4,7 @@
 
 [rmdv.mclee.dev](https://rmdv.mclee.dev) · [Download](https://github.com/minchenlee/rmdv/releases) · MIT
 
-rmdv (Rust Markdown Viewer) is a fast, read-focused desktop app for browsing folders of `.md` files. It renders **Markdown, [Mermaid](https://mermaid.js.org/) diagrams, Graphviz DOT graphs, block LaTeX math, and JSON/YAML mind maps** natively — no Electron, no embedded browser, no JavaScript runtime. A single ~33 MB static binary opens to first paint in **~150 ms**.
+rmdv (Rust Markdown Viewer) is a fast, read-focused desktop app for browsing folders of `.md` files. It renders **Markdown, [Mermaid](https://mermaid.js.org/) diagrams, Graphviz DOT graphs, block LaTeX math, JSON/YAML mind maps, and PDFs** natively — no Electron, no embedded browser, no JavaScript runtime. A single ~33 MB static binary opens to first paint in **~150 ms**.
 
 Its differentiator: a **scriptable IPC socket**. Any program or AI agent — Claude Code, Codex, Cursor, a shell script — can drive the running window (open files, scroll to a section, switch view mode, dump state) through the `rmdv` CLI. No other markdown viewer exposes a machine-readable interface built for agentic workflows.
 
@@ -19,6 +19,7 @@ Its differentiator: a **scriptable IPC socket**. Any program or AI agent — Cla
 | Native (no webview) | ✅ | ⚠️ Tauri | ✅ | ✅ | ❌ | partial |
 | Mermaid + LaTeX, no JS | ✅ | ❌ | ❌ | ❌ | plugins | partial |
 | Mind-map view | ✅ | ❌ | ❌ | ❌ | plugin | ❌ |
+| PDF as Markdown (local) | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
 | Agent-controllable (IPC) | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
 | Windows support | ✅ | ❌ | ❌ | ✅ | ✅ | ✅ |
 | Folder workspace | ✅ | ✅ | ❌ | ❌ | ✅ | ❌ |
@@ -34,6 +35,7 @@ Its differentiator: a **scriptable IPC socket**. Any program or AI agent — Cla
 - **Graphviz DOT** diagrams rendered natively
 - **Block LaTeX math** (`$$…$$`) via a pure-Rust layout engine ([iced_math](https://crates.io/crates/iced_math)) — no MathJax, no KaTeX
 - **Mind-map view** (`⌘M`) — any Markdown, JSON, or YAML document as a collapsible tree
+- **PDF viewing** — open a `.pdf` and read it as rendered Markdown; text extracted locally via [liteparse](https://crates.io/crates/liteparse) (PDFium), no cloud, no LLM (macOS + Linux; view-only)
 - **Tree-sitter syntax highlighting** — Rust, Python, JS, TS, Go, C, C++, Java, SQL, Bash, JSON, HTML, Markdown, and more
 - **Vault-wide search** (`⌘⇧F`) — Zed-style full-page results across every file in the workspace
 - **In-document search** (`⌘F`)

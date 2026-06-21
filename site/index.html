@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>rmdv: Native Markdown Viewer for Developers — Rust, No Electron</title>
-<meta name="description" content="Free open-source Rust markdown viewer. Mermaid, Graphviz DOT, and LaTeX math render natively — no Electron, no JS. ~150ms cold start, ~70MB on 10k-line docs. Agent-controllable via IPC.">
+<meta name="description" content="Free open-source Rust markdown viewer. Mermaid, Graphviz DOT, LaTeX math, and PDFs render natively — no Electron, no JS. ~150ms cold start, ~70MB on 10k-line docs. Agent-controllable via IPC.">
 <meta name="author" content="Min-Chen Lee">
 <meta name="keywords" content="markdown viewer, markdown reader, rust, native app, no electron, obsidian alternative, typora alternative, glow alternative, mermaid, tree-sitter, coding agents">
 <link rel="canonical" href="https://rmdv.mclee.dev/">
@@ -89,7 +89,7 @@
         "price": "0",
         "priceCurrency": "USD"
       },
-      "description": "rmdv is a free, open-source native markdown viewer written in Rust. It renders Markdown, Mermaid diagrams, Graphviz DOT graphs, LaTeX math, and JSON/YAML mind maps without a browser, Electron, or JavaScript runtime. Cold-start to first paint is ~150 ms; a 10,000-line document parses in 8.1 ms using ~70 MB of memory.",
+      "description": "rmdv is a free, open-source native markdown viewer written in Rust. It renders Markdown, Mermaid diagrams, Graphviz DOT graphs, LaTeX math, JSON/YAML mind maps, and PDFs without a browser, Electron, or JavaScript runtime. Cold-start to first paint is ~150 ms; a 10,000-line document parses in 8.1 ms using ~70 MB of memory.",
       "featureList": [
         "Folder workspace browser with file tree",
         "Fuzzy file finder (Cmd+P)",
@@ -98,6 +98,7 @@
         "Graphviz DOT diagram rendering (native, no browser)",
         "Block LaTeX math rendering via pure-Rust layout engine (no JavaScript)",
         "Mindmap view for any document including JSON and YAML (Cmd+M)",
+        "PDF viewing as rendered Markdown via local PDFium text extraction, no cloud or LLM (macOS and Linux)",
         "Vault-wide search with Zed-style full-page results (Cmd+Shift+F)",
         "In-document search (Cmd+F)",
         "Live reload on file change",
@@ -156,7 +157,7 @@
           "name": "Does rmdv work offline?",
           "acceptedAnswer": {
             "@type": "Answer",
-            "text": "Yes. rmdv is a native desktop application with no cloud dependency. All rendering — Markdown, Mermaid diagrams, LaTeX math, mindmaps — happens locally with no network requests at runtime."
+            "text": "Yes. rmdv is a native desktop application with no cloud dependency. All rendering — Markdown, Mermaid diagrams, LaTeX math, mindmaps, PDF text extraction — happens locally with no network requests at runtime."
           }
         },
         {
@@ -504,7 +505,7 @@ rmdv list-sections spec.md | jq -r <span class="s">'.[].path'</span></code></pre
 
       <div class="faq-item">
         <dt>Does rmdv work offline?</dt>
-        <dd>Yes. rmdv is a native desktop application with no cloud dependency. All rendering — Markdown, Mermaid diagrams, LaTeX math, mindmaps — happens locally with no network requests at runtime.</dd>
+        <dd>Yes. rmdv is a native desktop application with no cloud dependency. All rendering — Markdown, Mermaid diagrams, LaTeX math, mindmaps, PDF text extraction — happens locally with no network requests at runtime.</dd>
       </div>
 
       <div class="faq-item">
