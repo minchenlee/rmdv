@@ -182,10 +182,10 @@ jobs:
             libssl-dev pkg-config fuse libfuse2 file desktop-file-utils
 
       - name: Build release
-        # PDF support (default feature) is macOS-only for now: it dlopens a
-        # PDFium dylib that we embed + sign into the .app. Linux/Windows have
-        # no equivalent embed step yet, so build without it.
-        run: cargo build --release --no-default-features --target x86_64-unknown-linux-gnu
+        # PDF support is on (default feature). PDFium's libpdfium.so is
+        # dlopen'd at runtime from next to the binary; the AppImage step below
+        # copies it into usr/bin alongside rmdv. (Windows still opts out.)
+        run: cargo build --release --target x86_64-unknown-linux-gnu
 
       - name: Build AppImage
         env:
@@ -197,6 +197,13 @@ jobs:
           rm -rf "$APPDIR"
           mkdir -p "$APPDIR/usr/bin"
           cp "$BIN" "$APPDIR/usr/bin/rmdv"
+          # PDFium .so must sit next to the binary (dlopen searches current_exe
+          # dir). liteparse's build script downloads it into the build tree.
+          SO=$(find target/x86_64-unknown-linux-gnu/release -name 'libpdfium.so' | head -1)
+          if [ -z "$SO" ]; then SO=$(find target -name 'libpdfium.so' | head -1); fi
+          if [ -z "$SO" ]; then echo "libpdfium.so not found"; exit 1; fi
+          cp "$SO" "$APPDIR/usr/bin/libpdfium.so"
+          echo "Embedded $SO -> $APPDIR/usr/bin/"
           cp assets/icon.png "$APPDIR/rmdv.png"
           cat > "$APPDIR/rmdv.desktop" <<'DESKTOP'
           [Desktop Entry]
