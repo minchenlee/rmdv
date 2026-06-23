@@ -1,6 +1,6 @@
 # rmdv demo vault
 
-Welcome. This folder is a hands-on tour of **rmdv** — a native, pure-Rust markdown viewer with diagrams, math, mind maps, and data trees.
+Welcome. This folder is a hands-on tour of **rmdv** — a native, pure-Rust markdown viewer with diagrams, math, mind maps, data trees, and PDF viewing.
 
 Open this folder as a project (⌘O on the folder, or pass it on the CLI) so the sidebar, breadcrumb, and **⌘⇧F vault search** light up.
 
@@ -17,6 +17,7 @@ Open this folder as a project (⌘O on the folder, or pass it on the CLI) so the
 | API ref | [OAuth](reference/api/v2/auth/oauth.md) · [Users endpoint](reference/api/v2/endpoints/users.md) | deep nesting, Rust/Java/SQL |
 | Data | [config.json](reference/data/config.json) · [settings.yaml](reference/data/settings.yaml) | **⌘M data mind map** |
 | Papers | [relativity.tex](papers/research/relativity.tex) | full .tex document rendering |
+| PDF | [NIST.SP.800-63-4-excerpt.pdf](papers/research/NIST.SP.800-63-4-excerpt.pdf) | a real `.pdf` read as Markdown — local PDFium, no cloud (macOS/Linux) |
 | Notes | [Q2 standup](projects/2026/q2/notes/standup.md) | deep dirs, task lists |
 
 ## Try these
