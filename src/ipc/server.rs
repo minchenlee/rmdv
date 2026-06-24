@@ -91,11 +91,17 @@ fn path_to_name(p: &Path) -> Result<interprocess::local_socket::Name<'_>> {
 }
 
 #[cfg(windows)]
-fn path_to_name(p: &Path) -> Result<interprocess::local_socket::Name<'_>> {
+fn path_to_name(p: &Path) -> Result<interprocess::local_socket::Name<'static>> {
     use interprocess::local_socket::{GenericNamespaced, ToNsName};
-    let s = p.to_string_lossy();
-    let trimmed = s.trim_start_matches(r"\\.\pipe\");
-    trimmed
+    // Build an *owned* name: `to_ns_name` on a `String` selects the owning impl
+    // (`Cow::Owned`), so the returned `Name` carries its own buffer instead of
+    // borrowing this local, avoiding E0515 (returning a value that borrows a
+    // dropped local).
+    let owned = p
+        .to_string_lossy()
+        .trim_start_matches(r"\\.\pipe\")
+        .to_owned();
+    owned
         .to_ns_name::<GenericNamespaced>()
         .map_err(|e| anyhow!("name: {e}"))
 }
