@@ -13,6 +13,9 @@ reader chrome.
 - `⌘E` enters a focused editing surface.
 - The editor uses a centered writing column with readable width and generous
   margins.
+- The Zen editor outer column uses the same max width as rendered viewer mode
+  (`READING_MAX`) so switching between read and edit does not shift the document
+  column wider or narrower.
 - Sidebar is hidden when Zen starts, while the footer and small keyboard help
   button stay visible.
 - Core app commands still work while editing: command palette, file finder,
@@ -75,8 +78,9 @@ through the existing error/toast surfaces.
 
 The Raw branch of `App::view` renders a full-height background with a centered
 editor column. The editor should keep JetBrains Mono, markdown highlighting,
-existing line height, and existing edit actions. The column should have a
-readable max width and responsive side padding so narrow windows still work.
+existing line height, and existing edit actions. The column should use
+`READING_MAX`, the same outer max width as rendered viewer mode, with responsive
+side padding so narrow windows still work.
 
 Visible by default in Zen:
 

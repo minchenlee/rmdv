@@ -3905,7 +3905,7 @@ impl App {
                         container(editor)
                             .width(Length::Fill)
                             .height(Length::Fill)
-                            .max_width(980),
+                            .max_width(READING_MAX),
                     )
                     .width(Length::Fill)
                     .height(Length::Fill)
@@ -3916,7 +3916,7 @@ impl App {
                         .font(iced::Font::MONOSPACE)
                         .size(self.typography.code_size)
                         .color(pal.fg);
-                    container(container(fallback).width(Length::Fill).max_width(980))
+                    container(container(fallback).width(Length::Fill).max_width(READING_MAX))
                         .width(Length::Fill)
                         .height(Length::Fill)
                         .center_x(Length::Fill)
