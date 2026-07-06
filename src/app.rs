@@ -399,6 +399,13 @@ pub struct PendingNav {
     pub fragment: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ZenRestoreState {
+    pub sidebar_open: bool,
+    pub show_footer: bool,
+    pub search_open: bool,
+}
+
 pub struct App {
     pub file: Option<PathBuf>,
     pub source: String,
@@ -483,6 +490,7 @@ pub struct App {
     pub zoom_url: Option<String>,
     pub view_mode: ViewMode,
     pub editor: Option<iced::widget::text_editor::Content>,
+    pub zen_restore: Option<ZenRestoreState>,
     pub dirty: bool,
     pub edit_history: crate::history::SnapshotStack,
     pub edit_redo: crate::history::SnapshotStack,
@@ -653,6 +661,7 @@ impl Default for App {
             zoom_url: None,
             view_mode: ViewMode::Rendered,
             editor: None,
+            zen_restore: None,
             dirty: false,
             edit_history: crate::history::SnapshotStack::default(),
             edit_redo: crate::history::SnapshotStack::default(),
@@ -701,6 +710,66 @@ impl App {
         self.font_scale = (self.font_scale * factor).clamp(0.6, 2.2);
         self.typography = self.typography_base.scaled(self.font_scale);
         self.typography.body_size
+    }
+
+    fn sync_editor_to_source(&mut self) -> bool {
+        let Some(ed) = self.editor.as_ref() else {
+            return false;
+        };
+        let text = ed.text();
+        if text == self.source {
+            return false;
+        }
+        self.source = text;
+        self.reparse_source();
+        true
+    }
+
+    fn enter_zen_edit_mode(&mut self) -> Task<Message> {
+        if self.file.is_none() {
+            return Task::none();
+        }
+        if is_pdf_path(self.file.as_deref()) {
+            return self.show_toast("PDFs are view-only".into());
+        }
+        if self.zen_restore.is_none() {
+            self.zen_restore = Some(ZenRestoreState {
+                sidebar_open: self.sidebar_open,
+                show_footer: self.show_footer,
+                search_open: self.search_open,
+            });
+        }
+        self.sidebar_open = false;
+        self.show_footer = true;
+        self.search_open = false;
+        self.overlay = Overlay::None;
+        self.mindmap_panel_drag = None;
+        self.editor = Some(iced::widget::text_editor::Content::with_text(
+            self.source.as_str(),
+        ));
+        self.edit_history.clear();
+        self.edit_redo.clear();
+        self.dirty = false;
+        self.view_mode = ViewMode::Raw;
+        Task::none()
+    }
+
+    fn exit_zen_edit_mode(&mut self) -> Task<Message> {
+        self.sync_editor_to_source();
+        self.editor = None;
+        self.edit_history.clear();
+        self.edit_redo.clear();
+        self.view_mode = ViewMode::Rendered;
+        self.restore_zen_chrome();
+        self.restore_body_scroll()
+    }
+
+    fn restore_zen_chrome(&mut self) {
+        if let Some(restore) = self.zen_restore.take() {
+            self.sidebar_open = restore.sidebar_open;
+            self.show_footer = restore.show_footer;
+            self.search_open = restore.search_open;
+        }
     }
 
     fn show_toast(&mut self, text: String) -> Task<Message> {
@@ -1553,7 +1622,7 @@ impl App {
             ("Toggle Hidden Files  ⌘⇧.", Message::ToggleHidden),
             ("Find in Document  ⌘F", Message::ToggleSearch),
             ("Search All Files…  ⌘⇧F", Message::OpenVaultSearch),
-            ("Toggle Raw/Rendered  ⌘E", Message::ToggleViewMode),
+            ("Toggle Zen Edit  ⌘E", Message::ToggleViewMode),
             ("Increase Font Size  ⌘+", Message::FontSizeUp),
             ("Decrease Font Size  ⌘-", Message::FontSizeDown),
             ("Reset Font Size  ⌘0", Message::FontSizeReset),
@@ -2009,47 +2078,10 @@ impl App {
                 if self.file.is_none() {
                     return Task::none();
                 }
-                // PDFs render to markdown for viewing only — their "source" is
-                // extracted text, not editable. Block edit mode; allow leaving
-                // Raw if somehow already there.
-                if is_pdf_path(self.file.as_deref()) && self.view_mode != ViewMode::Raw {
-                    return self.show_toast("PDFs are view-only".into());
-                }
-                let restore = self.restore_body_scroll();
                 match self.view_mode {
-                    ViewMode::Rendered => {
-                        self.editor = Some(iced::widget::text_editor::Content::with_text(
-                            self.source.as_str(),
-                        ));
-                        self.edit_history.clear();
-                        self.edit_redo.clear();
-                        self.dirty = false;
-                        self.view_mode = ViewMode::Raw;
-                    }
-                    ViewMode::Raw => {
-                        if let Some(ed) = self.editor.take() {
-                            let text = ed.text();
-                            if text != self.source {
-                                self.source = text;
-                                self.reparse_source();
-                            }
-                        }
-                        self.edit_history.clear();
-                        self.edit_redo.clear();
-                        self.view_mode = ViewMode::Rendered;
-                    }
-                    ViewMode::Mindmap => {
-                        self.mindmap_panel_drag = None;
-                        self.editor = Some(iced::widget::text_editor::Content::with_text(
-                            self.source.as_str(),
-                        ));
-                        self.edit_history.clear();
-                        self.edit_redo.clear();
-                        self.dirty = false;
-                        self.view_mode = ViewMode::Raw;
-                    }
+                    ViewMode::Raw => self.exit_zen_edit_mode(),
+                    ViewMode::Rendered | ViewMode::Mindmap => self.enter_zen_edit_mode(),
                 }
-                restore
             }
             Message::ToggleMindmap => {
                 if self.file.is_none() {
@@ -2062,15 +2094,11 @@ impl App {
                         self.view_mode = ViewMode::Rendered;
                     }
                     ViewMode::Raw => {
-                        if let Some(ed) = self.editor.take() {
-                            let text = ed.text();
-                            if text != self.source {
-                                self.source = text;
-                                self.reparse_source();
-                            }
-                        }
+                        self.sync_editor_to_source();
+                        self.editor = None;
                         self.edit_history.clear();
                         self.edit_redo.clear();
+                        self.restore_zen_chrome();
                         self.view_mode = ViewMode::Mindmap;
                     }
                     ViewMode::Rendered => self.view_mode = ViewMode::Mindmap,
@@ -3278,13 +3306,30 @@ impl App {
                     }
                     Cmd::Mode { mode, focus } => {
                         let is_pdf = is_pdf_path(self.file.as_deref());
-                        self.view_mode = match mode {
-                            Mode::View => ViewMode::Rendered,
+                        match mode {
+                            Mode::View => {
+                                if self.view_mode == ViewMode::Raw {
+                                    follow_up = self.exit_zen_edit_mode();
+                                } else {
+                                    self.view_mode = ViewMode::Rendered;
+                                }
+                            }
                             // PDFs are view-only: coerce edit requests to View.
-                            Mode::Edit if is_pdf => ViewMode::Rendered,
-                            Mode::Edit => ViewMode::Raw,
-                            Mode::Mindmap => ViewMode::Mindmap,
-                        };
+                            Mode::Edit if is_pdf => self.view_mode = ViewMode::Rendered,
+                            Mode::Edit => {
+                                follow_up = self.enter_zen_edit_mode();
+                            }
+                            Mode::Mindmap => {
+                                if self.view_mode == ViewMode::Raw {
+                                    self.sync_editor_to_source();
+                                    self.editor = None;
+                                    self.edit_history.clear();
+                                    self.edit_redo.clear();
+                                    self.restore_zen_chrome();
+                                }
+                                self.view_mode = ViewMode::Mindmap;
+                            }
+                        }
                         nav_focus = Some(focus);
                         Response::ok(id)
                     }
@@ -3558,6 +3603,9 @@ impl App {
                     if focused {
                         return Message::ToggleSearch;
                     }
+                    if editing {
+                        return Message::ToggleViewMode;
+                    }
                 }
                 if overlay_open {
                     return match key {
@@ -3807,7 +3855,7 @@ impl App {
                 }
             } else if self.view_mode == ViewMode::Raw {
                 if let Some(ed) = self.editor.as_ref() {
-                    iced::widget::text_editor(ed)
+                    let editor = iced::widget::text_editor(ed)
                         .on_action(Message::EditorAction)
                         // Filter cmd/ctrl combos so global shortcuts (⌘B, ⌘T,
                         // ⌘E, ⌘K, ⌘M, ⌘P, ⌘O, etc.) don't ALSO get inserted
@@ -3852,12 +3900,26 @@ impl App {
                             value: pal.fg,
                             selection: pal.selection,
                         })
+                        .height(Length::Fill);
+                    container(
+                        container(editor)
+                            .width(Length::Fill)
+                            .height(Length::Fill)
+                            .max_width(980),
+                    )
+                    .width(Length::Fill)
+                    .height(Length::Fill)
+                    .center_x(Length::Fill)
                         .into()
                 } else {
-                    text(self.source.as_str())
+                    let fallback = text(self.source.as_str())
                         .font(iced::Font::MONOSPACE)
                         .size(self.typography.code_size)
-                        .color(pal.fg)
+                        .color(pal.fg);
+                    container(container(fallback).width(Length::Fill).max_width(980))
+                        .width(Length::Fill)
+                        .height(Length::Fill)
+                        .center_x(Length::Fill)
                         .into()
                 }
             } else if self.is_data_doc {
@@ -5908,7 +5970,8 @@ fn shortcuts_overlay<'a>(pal: Palette) -> Element<'a, Message> {
             "View",
             &[
                 ("⌘B", "Toggle Sidebar"),
-                ("⌘E", "Toggle Raw / Rendered"),
+                ("⌘E", "Toggle Zen Edit"),
+                ("Esc", "Exit Zen Edit"),
                 ("⌘T", "Cycle Theme"),
                 ("⌘⇧.", "Toggle Hidden Files"),
                 ("⌘+ ⌘-", "Font Size Up / Down"),
@@ -6763,6 +6826,47 @@ mod tests {
             assert_eq!(sidebar_titlebar_reserve_for_fullscreen(true), 0.0);
             assert_eq!(sidebar_titlebar_reserve_for_fullscreen(false), 0.0);
         }
+    }
+
+    #[test]
+    fn zen_entry_hides_sidebar_search_and_keeps_footer() {
+        let mut app = App::default();
+        app.file = Some(std::path::PathBuf::from("note.md"));
+        app.source = "# Title\n\nBody".into();
+        app.sidebar_open = true;
+        app.show_footer = true;
+        app.search_open = true;
+        app.overlay = Overlay::Command;
+
+        let _ = app.enter_zen_edit_mode();
+
+        assert_eq!(app.view_mode, ViewMode::Raw);
+        assert!(app.editor.is_some());
+        assert!(!app.sidebar_open);
+        assert!(app.show_footer);
+        assert!(!app.search_open);
+        assert_eq!(app.overlay, Overlay::None);
+        assert!(app.zen_restore.is_some());
+    }
+
+    #[test]
+    fn zen_exit_restores_saved_chrome_state() {
+        let mut app = App::default();
+        app.file = Some(std::path::PathBuf::from("note.md"));
+        app.source = "before".into();
+        app.sidebar_open = true;
+        app.show_footer = false;
+        app.search_open = true;
+
+        let _ = app.enter_zen_edit_mode();
+        assert!(app.show_footer);
+        let _ = app.exit_zen_edit_mode();
+
+        assert_eq!(app.view_mode, ViewMode::Rendered);
+        assert!(app.sidebar_open);
+        assert!(!app.show_footer);
+        assert!(app.search_open);
+        assert!(app.zen_restore.is_none());
     }
 
     fn loaded_image(bytes: usize) -> ImageState {
