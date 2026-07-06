@@ -183,6 +183,43 @@ fn editor_font() -> iced::Font {
     }
 }
 
+fn editor_key_binding(
+    kp: iced::widget::text_editor::KeyPress,
+) -> Option<iced::widget::text_editor::Binding<Message>> {
+    use iced::keyboard::{key::Named, Key};
+    use iced::widget::text_editor::{Binding, Motion};
+
+    if kp.modifiers.command() {
+        let motion = match kp.key.as_ref() {
+            Key::Named(Named::ArrowLeft) => Some(Motion::Home),
+            Key::Named(Named::ArrowRight) => Some(Motion::End),
+            Key::Named(Named::ArrowUp) => Some(Motion::DocumentStart),
+            Key::Named(Named::ArrowDown) => Some(Motion::DocumentEnd),
+            _ => None,
+        };
+        if let Some(motion) = motion {
+            return Some(if kp.modifiers.shift() {
+                Binding::Select(motion)
+            } else {
+                Binding::Move(motion)
+            });
+        }
+    }
+
+    let cmd_or_ctrl = kp.modifiers.command() || kp.modifiers.control();
+    if cmd_or_ctrl {
+        let keep = matches!(
+            kp.key.to_latin(kp.physical_key),
+            Some('c' | 'x' | 'v' | 'a' | 'z' | 'y')
+        );
+        if !keep {
+            return None;
+        }
+    }
+
+    iced::widget::text_editor::Binding::from_key_press(kp)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Overlay {
     None,
@@ -3862,19 +3899,7 @@ impl App {
                         // as text by the editor. Keep ⌘C/⌘X/⌘V/⌘A/⌘Z/⌘Y for
                         // standard editor bindings — those have explicit
                         // handlers upstream that we want to preserve.
-                        .key_binding(|kp| {
-                            let cmd_or_ctrl = kp.modifiers.command() || kp.modifiers.control();
-                            if cmd_or_ctrl {
-                                let keep = matches!(
-                                    kp.key.to_latin(kp.physical_key),
-                                    Some('c' | 'x' | 'v' | 'a' | 'z' | 'y')
-                                );
-                                if !keep {
-                                    return None;
-                                }
-                            }
-                            iced::widget::text_editor::Binding::from_key_press(kp)
-                        })
+                        .key_binding(editor_key_binding)
                         .font(editor_font())
                         .size(self.typography.code_size)
                         .line_height(iced::widget::text::LineHeight::Relative(1.55))
@@ -5946,7 +5971,7 @@ fn byte_index_for_char(s: &str, n: usize) -> usize {
 fn shortcuts_overlay<'a>(pal: Palette) -> Element<'a, Message> {
     // (group title, [(keys, action)]). Hand-authored so we can group by category
     // and include non-command bindings (arrows, Space) the palette omits.
-    let groups: [(&str, &[(&str, &str)]); 5] = [
+    let groups: [(&str, &[(&str, &str)]); 6] = [
         (
             "File",
             &[
@@ -5980,6 +6005,14 @@ fn shortcuts_overlay<'a>(pal: Palette) -> Element<'a, Message> {
             ],
         ),
         (
+            "Edit",
+            &[
+                ("⌘← ⌘→", "Line Start / End"),
+                ("⌘↑ ⌘↓", "Document Start / End"),
+                ("⌘S", "Save"),
+            ],
+        ),
+        (
             "Mindmap",
             &[
                 ("⌘M", "Toggle Mindmap"),
@@ -5993,9 +6026,9 @@ fn shortcuts_overlay<'a>(pal: Palette) -> Element<'a, Message> {
     ];
 
     // Three balanced columns so the sheet is compact and nothing clips:
-    // File + Navigation | View | Mindmap + Help (each ≤ 8 rows).
+    // File + Navigation | View | Edit + Mindmap + Help.
     let columns: [&[(&str, &[(&str, &str)])]; 3] =
-        [&groups[0..2], &groups[2..3], &groups[3..5]];
+        [&groups[0..2], &groups[2..3], &groups[3..6]];
 
     let mut cols = irow![].spacing(24);
     for col_groups in columns {
@@ -6826,6 +6859,98 @@ mod tests {
             assert_eq!(sidebar_titlebar_reserve_for_fullscreen(true), 0.0);
             assert_eq!(sidebar_titlebar_reserve_for_fullscreen(false), 0.0);
         }
+    }
+
+    fn editor_key_press(
+        key: iced::keyboard::Key,
+        physical_key: iced::keyboard::key::Physical,
+        modifiers: iced::keyboard::Modifiers,
+    ) -> iced::widget::text_editor::KeyPress {
+        iced::widget::text_editor::KeyPress {
+            key: key.clone(),
+            modified_key: key,
+            physical_key,
+            modifiers,
+            text: None,
+            status: iced::widget::text_editor::Status::Focused { is_hovered: false },
+        }
+    }
+
+    #[test]
+    fn editor_key_binding_maps_command_arrows_to_cursor_motion() {
+        use iced::keyboard::key::{Code, Named, Physical};
+        use iced::keyboard::{Key, Modifiers};
+        use iced::widget::text_editor::{Binding, Motion};
+
+        assert!(matches!(
+            editor_key_binding(editor_key_press(
+                Key::Named(Named::ArrowLeft),
+                Physical::Code(Code::ArrowLeft),
+                Modifiers::COMMAND,
+            )),
+            Some(Binding::Move(Motion::Home))
+        ));
+        assert!(matches!(
+            editor_key_binding(editor_key_press(
+                Key::Named(Named::ArrowRight),
+                Physical::Code(Code::ArrowRight),
+                Modifiers::COMMAND,
+            )),
+            Some(Binding::Move(Motion::End))
+        ));
+        assert!(matches!(
+            editor_key_binding(editor_key_press(
+                Key::Named(Named::ArrowUp),
+                Physical::Code(Code::ArrowUp),
+                Modifiers::COMMAND,
+            )),
+            Some(Binding::Move(Motion::DocumentStart))
+        ));
+        assert!(matches!(
+            editor_key_binding(editor_key_press(
+                Key::Named(Named::ArrowDown),
+                Physical::Code(Code::ArrowDown),
+                Modifiers::COMMAND,
+            )),
+            Some(Binding::Move(Motion::DocumentEnd))
+        ));
+    }
+
+    #[test]
+    fn editor_key_binding_maps_shift_command_arrows_to_selection_motion() {
+        use iced::keyboard::key::{Code, Named, Physical};
+        use iced::keyboard::{Key, Modifiers};
+        use iced::widget::text_editor::{Binding, Motion};
+
+        assert!(matches!(
+            editor_key_binding(editor_key_press(
+                Key::Named(Named::ArrowLeft),
+                Physical::Code(Code::ArrowLeft),
+                Modifiers::COMMAND | Modifiers::SHIFT,
+            )),
+            Some(Binding::Select(Motion::Home))
+        ));
+        assert!(matches!(
+            editor_key_binding(editor_key_press(
+                Key::Named(Named::ArrowDown),
+                Physical::Code(Code::ArrowDown),
+                Modifiers::COMMAND | Modifiers::SHIFT,
+            )),
+            Some(Binding::Select(Motion::DocumentEnd))
+        ));
+    }
+
+    #[test]
+    fn editor_key_binding_still_blocks_non_editor_command_chords() {
+        use iced::keyboard::key::{Code, Physical};
+        use iced::keyboard::{Key, Modifiers};
+
+        assert!(editor_key_binding(editor_key_press(
+            Key::Character("b".into()),
+            Physical::Code(Code::KeyB),
+            Modifiers::COMMAND,
+        ))
+        .is_none());
     }
 
     #[test]

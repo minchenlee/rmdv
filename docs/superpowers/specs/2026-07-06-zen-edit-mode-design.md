@@ -106,6 +106,8 @@ Zen is visually quiet but not command-restricted. While editing, keep:
 - Editor-native typing, cursor movement, selection, mouse placement, copy, cut,
   paste, and select-all.
 - `⌘S`, `⌘Z`, `⌘Y`, `⌘⇧Z`, `⌘E`, and `Esc`.
+- `⌘←` and `⌘→` move the editor cursor to the start or end of the current line.
+- `⌘↑` and `⌘↓` move the editor cursor to the start or end of the document.
 - `⌘/` and the floating keyboard/help button.
 - Command palette, file finder, folder picker, sidebar toggle, theme commands,
   font commands, and all command-palette entries.
@@ -118,10 +120,11 @@ the text editor is focused.
 
 The `text_editor.key_binding` filter should continue preventing non-editor
 command chords from also being inserted as text. Standard editor bindings
-remain available.
+remain available. Command-arrow navigation is handled as editor-local motion in
+Zen mode; rendered viewer mode keeps its existing `⌘↑` / `⌘↓` scroll behavior.
 
 The shortcuts overlay should mention Zen-specific escape hatches: `Esc / ⌘E`
-to exit edit mode and `⌘S` to save.
+to exit edit mode, `⌘S` to save, and the command-arrow cursor movement bindings.
 
 ## IPC behavior
 
