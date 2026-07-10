@@ -397,7 +397,10 @@ pub enum Message {
     HeadingHoverExit(crate::ast::BlockId),
     EditorAction(iced::widget::text_editor::Action),
     SaveFile,
-    FileSaved(Result<(), String>),
+    FileSaved {
+        result: Result<(), String>,
+        saved_source: String,
+    },
     EditorUndo,
     EditorRedo,
     /// Zoom a rendered diagram into the image-viewer overlay. Looks up the
@@ -528,6 +531,9 @@ pub struct App {
     pub view_mode: ViewMode,
     pub editor: Option<iced::widget::text_editor::Content>,
     pub zen_restore: Option<ZenRestoreState>,
+    /// Last document text known to have been persisted successfully. `source`
+    /// may contain an unsaved Zen edit after switching back to rendered mode.
+    pub saved_source: String,
     pub dirty: bool,
     pub edit_history: crate::history::SnapshotStack,
     pub edit_redo: crate::history::SnapshotStack,
@@ -699,6 +705,7 @@ impl Default for App {
             view_mode: ViewMode::Rendered,
             editor: None,
             zen_restore: None,
+            saved_source: String::new(),
             dirty: false,
             edit_history: crate::history::SnapshotStack::default(),
             edit_redo: crate::history::SnapshotStack::default(),
@@ -755,10 +762,12 @@ impl App {
         };
         let text = ed.text();
         if text == self.source {
+            self.dirty = self.source != self.saved_source;
             return false;
         }
         self.source = text;
         self.reparse_source();
+        self.dirty = self.source != self.saved_source;
         true
     }
 
@@ -786,18 +795,23 @@ impl App {
         ));
         self.edit_history.clear();
         self.edit_redo.clear();
-        self.dirty = false;
         self.view_mode = ViewMode::Raw;
         Task::none()
     }
 
-    fn exit_zen_edit_mode(&mut self) -> Task<Message> {
-        self.sync_editor_to_source();
+    fn leave_zen_edit_mode(&mut self, sync_editor: bool) {
+        if sync_editor {
+            self.sync_editor_to_source();
+        }
         self.editor = None;
         self.edit_history.clear();
         self.edit_redo.clear();
         self.view_mode = ViewMode::Rendered;
         self.restore_zen_chrome();
+    }
+
+    fn exit_zen_edit_mode(&mut self) -> Task<Message> {
+        self.leave_zen_edit_mode(true);
         self.restore_body_scroll()
     }
 
@@ -807,6 +821,31 @@ impl App {
             self.show_footer = restore.show_footer;
             self.search_open = restore.search_open;
         }
+    }
+
+    fn unsaved_edits_open_message(&self) -> String {
+        format!(
+            "unsaved edits in {}; save or discard before opening another",
+            self.file
+                .as_ref()
+                .map(|p| p.display().to_string())
+                .unwrap_or_default()
+        )
+    }
+
+    fn block_file_open_if_dirty(&mut self) -> Option<Task<Message>> {
+        if self.dirty {
+            Some(self.show_toast(self.unsaved_edits_open_message()))
+        } else {
+            None
+        }
+    }
+
+    fn load_file_unless_dirty(&mut self, path: PathBuf) -> Task<Message> {
+        if let Some(blocked) = self.block_file_open_if_dirty() {
+            return blocked;
+        }
+        Task::perform(load_file(path), Message::FileLoaded)
     }
 
     fn show_toast(&mut self, text: String) -> Task<Message> {
@@ -1182,8 +1221,13 @@ impl App {
         let id = *id;
         // The scroll Operation walks the body scrollable, which only exists in
         // Rendered view — outline/fragment nav fired from Raw or Mindmap would
-        // otherwise no-op. Switch to Rendered (and reveal the target if folded).
-        self.view_mode = ViewMode::Rendered;
+        // otherwise no-op. Leave Zen through the normal cleanup path so editor
+        // text and chrome state do not remain stranded.
+        if self.view_mode == ViewMode::Raw {
+            self.leave_zen_edit_mode(true);
+        } else {
+            self.view_mode = ViewMode::Rendered;
+        }
         self.unfold_to_reveal(idx);
         self.rebuild_virt_around_block(idx);
         self.nav_anchor = Some(idx);
@@ -1778,7 +1822,7 @@ impl App {
             return Task::batch(tasks);
         }
         match msg {
-            Message::Open(p) => Task::perform(load_file(p), Message::FileLoaded),
+            Message::Open(p) => self.load_file_unless_dirty(p),
             Message::OpenWorkspace(p) => {
                 self.workspace_files = picker::walk_markdown(&p, 8, 5000, self.show_hidden);
                 self.workspace_tree = Some(tree::build(&p, self.show_hidden));
@@ -1924,6 +1968,9 @@ impl App {
             }
             Message::VaultOpenHit(idx) => {
                 if let Some(hit) = self.vault_results.get(idx).cloned() {
+                    if let Some(blocked) = self.block_file_open_if_dirty() {
+                        return blocked;
+                    }
                     self.vault_open = false;
                     self.pending_nav = Some(PendingNav {
                         line: Some(hit.line),
@@ -2407,7 +2454,7 @@ impl App {
                     }
                     ed.perform(action);
                     if edits {
-                        self.dirty = true;
+                        self.dirty = ed.text() != self.saved_source;
                     }
                 }
                 Task::none()
@@ -2418,7 +2465,7 @@ impl App {
                         let current = ed.text();
                         self.edit_redo.push(current);
                         *ed = iced::widget::text_editor::Content::with_text(&prev);
-                        self.dirty = prev != self.source;
+                        self.dirty = prev != self.saved_source;
                     }
                 }
                 Task::none()
@@ -2429,7 +2476,7 @@ impl App {
                         let current = ed.text();
                         self.edit_history.push(current);
                         *ed = iced::widget::text_editor::Content::with_text(&next);
-                        self.dirty = next != self.source;
+                        self.dirty = next != self.saved_source;
                     }
                 }
                 Task::none()
@@ -2444,7 +2491,8 @@ impl App {
                 };
                 self.source = text.clone();
                 self.reparse_source();
-                self.dirty = false;
+                self.dirty = self.source != self.saved_source;
+                let saved_source = text.clone();
                 let prime = self.prime_diagram_cache();
                 Task::batch([
                     Task::perform(
@@ -2453,13 +2501,41 @@ impl App {
                                 .await
                                 .map_err(|e| e.to_string())
                         },
-                        Message::FileSaved,
+                        move |result| Message::FileSaved {
+                            result,
+                            saved_source,
+                        },
                     ),
                     prime,
                 ])
             }
-            Message::FileSaved(Ok(())) => self.show_toast("✓ Saved".into()),
-            Message::FileSaved(Err(e)) => {
+            Message::FileSaved {
+                result: Ok(()),
+                saved_source,
+            } => {
+                // An older write may finish after a newer save was queued. Only
+                // advance the persisted baseline when this is still the source
+                // shown by the app; otherwise the newer write owns the state.
+                if self.source == saved_source {
+                    self.saved_source = saved_source;
+                    let current = self
+                        .editor
+                        .as_ref()
+                        .map(|ed| ed.text())
+                        .unwrap_or_else(|| self.source.clone());
+                    self.dirty = current != self.saved_source;
+                }
+                self.show_toast("✓ Saved".into())
+            }
+            Message::FileSaved {
+                result: Err(e),
+                saved_source,
+            } => {
+                // Keep the guard armed if the failed write is still the active
+                // document state. A later save may already have superseded it.
+                if self.source == saved_source {
+                    self.dirty = true;
+                }
                 self.error = Some(format!("save failed: {e}"));
                 Task::none()
             }
@@ -2545,6 +2621,9 @@ impl App {
             Message::PickerOpenFile(path) => {
                 self.overlay = Overlay::None;
                 self.picker = None;
+                if let Some(blocked) = self.block_file_open_if_dirty() {
+                    return blocked;
+                }
                 let parent = path.parent().map(|p| p.to_path_buf());
                 let load = Task::perform(load_file(path), Message::FileLoaded);
                 if let Some(parent) = parent {
@@ -2580,7 +2659,7 @@ impl App {
                     let files = self.filtered_files();
                     if let Some((p, _, _)) = files.get(self.overlay_selected).cloned() {
                         self.overlay = Overlay::None;
-                        return Task::perform(load_file(p), Message::FileLoaded);
+                        return self.load_file_unless_dirty(p);
                     }
                     Task::none()
                 }
@@ -2645,7 +2724,17 @@ impl App {
                 Task::none()
             }
             Message::FileLoaded(Ok((path, src))) => {
+                if self.dirty {
+                    // An IPC/link/vault open can queue navigation before its
+                    // asynchronous read returns. Do not let that stale target
+                    // affect the next successful open after this one is blocked.
+                    self.pending_nav = None;
+                    return self.show_toast(self.unsaved_edits_open_message());
+                }
                 crate::recent::add(&path);
+                if self.view_mode == ViewMode::Raw || self.editor.is_some() {
+                    self.leave_zen_edit_mode(false);
+                }
                 if self.workspace.is_none() {
                     if let Some(parent) = path.parent().map(PathBuf::from) {
                         self.workspace_files =
@@ -2669,7 +2758,9 @@ impl App {
                     self.body_viewport = None;
                 }
                 self.source = src;
+                self.saved_source = self.source.clone();
                 self.file = Some(path);
+                self.dirty = false;
                 self.outline_cursor = 0;
                 self.is_data_doc = data_lang_for(self.file.as_deref()).is_some();
                 self.mindmap_collapsed.clear();
@@ -2756,6 +2847,9 @@ impl App {
                                 || e.eq_ignore_ascii_case("tex")
                         });
                         if is_md && path.is_file() {
+                            if let Some(blocked) = self.block_file_open_if_dirty() {
+                                return blocked;
+                            }
                             if let Some(f) = fragment {
                                 self.pending_nav = Some(PendingNav {
                                     fragment: Some(f.to_string()),
@@ -2770,6 +2864,7 @@ impl App {
                 Task::none()
             }
             Message::FileLoaded(Err(e)) => {
+                self.pending_nav = None;
                 self.error = Some(e);
                 Task::none()
             }
@@ -2988,7 +3083,7 @@ impl App {
                     Task::none()
                 } else {
                     let p = r.node.path.clone();
-                    Task::perform(load_file(p), Message::FileLoaded)
+                    self.load_file_unless_dirty(p)
                 }
             }
             Message::OutlineMove(d) => {
@@ -3376,12 +3471,16 @@ impl App {
                         Response::ok(id)
                     }
                     Cmd::Reveal { file, focus } => {
-                        follow_up = Task::perform(
-                            load_file(std::path::PathBuf::from(file)),
-                            Message::FileLoaded,
-                        );
-                        nav_focus = Some(focus);
-                        Response::ok(id)
+                        if self.dirty {
+                            Response::err(id, self.unsaved_edits_open_message())
+                        } else {
+                            follow_up = Task::perform(
+                                load_file(std::path::PathBuf::from(file)),
+                                Message::FileLoaded,
+                            );
+                            nav_focus = Some(focus);
+                            Response::ok(id)
+                        }
                     }
                     Cmd::Open {
                         file,
@@ -3390,16 +3489,7 @@ impl App {
                         focus,
                     } => {
                         if self.dirty {
-                            Response::err(
-                                id,
-                                format!(
-                                    "unsaved edits in {}; save or discard before opening another",
-                                    self.file
-                                        .as_ref()
-                                        .map(|p| p.display().to_string())
-                                        .unwrap_or_default()
-                                ),
-                            )
+                            Response::err(id, self.unsaved_edits_open_message())
                         } else {
                             let path = std::path::PathBuf::from(file);
                             follow_up = Task::perform(load_file(path), Message::FileLoaded);
@@ -6988,6 +7078,266 @@ mod tests {
         let _ = app.exit_zen_edit_mode();
 
         assert_eq!(app.view_mode, ViewMode::Rendered);
+        assert!(app.sidebar_open);
+        assert!(!app.show_footer);
+        assert!(app.search_open);
+        assert!(app.zen_restore.is_none());
+    }
+
+    #[test]
+    fn clean_file_loaded_while_in_zen_clears_editor_and_restores_chrome() {
+        let mut app = App::default();
+        app.file = Some(std::path::PathBuf::from("old.md"));
+        app.source = "old file".into();
+        app.sidebar_open = true;
+        app.show_footer = false;
+        app.search_open = true;
+
+        let _ = app.enter_zen_edit_mode();
+        app.editor = Some(iced::widget::text_editor::Content::with_text(
+            "old file",
+        ));
+        app.dirty = false;
+
+        let new_path = std::path::PathBuf::from("new.md");
+        let _ = app.update(Message::FileLoaded(Ok((
+            new_path.clone(),
+            "new file".into(),
+        ))));
+
+        assert_eq!(app.view_mode, ViewMode::Rendered);
+        assert_eq!(app.file.as_deref(), Some(new_path.as_path()));
+        assert_eq!(app.source, "new file");
+        assert!(app.editor.is_none());
+        assert!(!app.dirty);
+        assert!(app.sidebar_open);
+        assert!(!app.show_footer);
+        assert!(app.search_open);
+        assert!(app.zen_restore.is_none());
+    }
+
+    #[test]
+    fn dirty_file_loaded_while_in_zen_keeps_editor_and_current_file() {
+        let mut app = App::default();
+        let old_path = std::path::PathBuf::from("old.md");
+        app.file = Some(old_path.clone());
+        app.source = "old file".into();
+        app.sidebar_open = true;
+        app.show_footer = false;
+        app.search_open = true;
+
+        let _ = app.enter_zen_edit_mode();
+        app.editor = Some(iced::widget::text_editor::Content::with_text(
+            "old edited text",
+        ));
+        app.dirty = true;
+        app.pending_nav = Some(PendingNav {
+            line: Some(12),
+            ..Default::default()
+        });
+
+        let _ = app.update(Message::FileLoaded(Ok((
+            std::path::PathBuf::from("new.md"),
+            "new file".into(),
+        ))));
+
+        assert_eq!(app.view_mode, ViewMode::Raw);
+        assert_eq!(app.file.as_deref(), Some(old_path.as_path()));
+        assert_eq!(app.source, "old file");
+        assert_eq!(
+            app.editor.as_ref().map(|ed| ed.text()),
+            Some("old edited text".to_string())
+        );
+        assert!(app.dirty);
+        assert!(app.pending_nav.is_none());
+        assert!(!app.sidebar_open);
+        assert!(app.show_footer);
+        assert!(!app.search_open);
+        assert!(app.zen_restore.is_some());
+        assert!(app
+            .toast
+            .as_ref()
+            .is_some_and(|toast| toast.text.contains("unsaved edits")));
+    }
+
+    #[test]
+    fn zen_exit_and_reentry_preserve_unsaved_document_state() {
+        let mut app = App::default();
+        let old_path = std::path::PathBuf::from("old.md");
+        app.file = Some(old_path.clone());
+        app.source = "saved text".into();
+        app.saved_source = app.source.clone();
+
+        let _ = app.enter_zen_edit_mode();
+        app.editor = Some(iced::widget::text_editor::Content::with_text(
+            "unsaved text",
+        ));
+        app.dirty = true;
+        let _ = app.exit_zen_edit_mode();
+
+        assert_eq!(app.source, "unsaved text");
+        assert!(app.dirty);
+
+        let _ = app.enter_zen_edit_mode();
+        assert!(app.dirty);
+        let _ = app.update(Message::FileLoaded(Ok((
+            std::path::PathBuf::from("new.md"),
+            "new file".into(),
+        ))));
+
+        assert_eq!(app.file.as_deref(), Some(old_path.as_path()));
+        assert_eq!(app.source, "unsaved text");
+        assert!(app.dirty);
+    }
+
+    #[test]
+    fn failed_save_keeps_file_switch_guard_armed() {
+        let mut app = App::default();
+        app.file = Some(std::path::PathBuf::from("note.md"));
+        app.source = "unsaved text".into();
+        app.saved_source = "saved text".into();
+        app.dirty = false; // Mimic the old optimistic-save state.
+
+        let _ = app.update(Message::FileSaved {
+            result: Err("disk full".into()),
+            saved_source: "unsaved text".into(),
+        });
+
+        assert!(app.dirty);
+        assert!(app
+            .error
+            .as_ref()
+            .is_some_and(|error| error.contains("disk full")));
+    }
+
+    #[test]
+    fn completed_save_updates_the_persisted_baseline() {
+        let mut app = App::default();
+        app.file = Some(std::path::PathBuf::from("note.md"));
+        app.source = "saved text".into();
+        app.saved_source = "old text".into();
+        app.dirty = true;
+
+        let _ = app.update(Message::FileSaved {
+            result: Ok(()),
+            saved_source: "saved text".into(),
+        });
+
+        assert_eq!(app.saved_source, "saved text");
+        assert!(!app.dirty);
+    }
+
+    #[test]
+    fn file_finder_open_while_dirty_blocks_load_and_returns_to_editor() {
+        let mut app = App::default();
+        let old_path = std::path::PathBuf::from("old.md");
+        let new_path = std::path::PathBuf::from("new.md");
+        app.file = Some(old_path.clone());
+        app.source = "old file".into();
+        app.workspace = Some(std::path::PathBuf::from("."));
+        app.workspace_files = vec![new_path];
+        app.sidebar_open = true;
+        app.show_footer = false;
+        app.search_open = true;
+
+        let _ = app.enter_zen_edit_mode();
+        app.overlay = Overlay::FileFinder;
+        app.overlay_selected = 0;
+        app.editor = Some(iced::widget::text_editor::Content::with_text(
+            "old edited text",
+        ));
+        app.dirty = true;
+
+        let _ = app.update(Message::OverlayConfirm);
+
+        assert_eq!(app.view_mode, ViewMode::Raw);
+        assert_eq!(app.file.as_deref(), Some(old_path.as_path()));
+        assert_eq!(
+            app.editor.as_ref().map(|ed| ed.text()),
+            Some("old edited text".to_string())
+        );
+        assert!(app.dirty);
+        assert_eq!(app.overlay, Overlay::None);
+        assert!(app
+            .toast
+            .as_ref()
+            .is_some_and(|toast| toast.text.contains("unsaved edits")));
+    }
+
+    #[test]
+    fn dirty_vault_hit_does_not_close_search_or_queue_navigation() {
+        let mut app = App::default();
+        app.file = Some(std::path::PathBuf::from("old.md"));
+        app.source = "old file".into();
+        app.dirty = true;
+        app.vault_open = true;
+        app.vault_results.push(crate::vault_search::VaultHit {
+            path: std::path::PathBuf::from("new.md"),
+            line: 7,
+            col_start: 0,
+            col_end: 4,
+            context: Vec::new(),
+        });
+
+        let _ = app.update(Message::VaultOpenHit(0));
+
+        assert!(app.vault_open);
+        assert!(app.pending_nav.is_none());
+        assert!(app
+            .toast
+            .as_ref()
+            .is_some_and(|toast| toast.text.contains("unsaved edits")));
+    }
+
+    #[test]
+    fn dirty_local_link_does_not_queue_navigation() {
+        let dir = std::env::temp_dir().join(format!(
+            "rmdv-dirty-link-test-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("target.md"), "# Target\n").unwrap();
+
+        let mut app = App::default();
+        let current = dir.join("current.md");
+        app.file = Some(current.clone());
+        app.source = "old file".into();
+        app.dirty = true;
+
+        let _ = app.update(Message::OpenLink("target.md#target".into()));
+
+        assert_eq!(app.file.as_deref(), Some(current.as_path()));
+        assert!(app.dirty);
+        assert!(app.pending_nav.is_none());
+        assert!(app
+            .toast
+            .as_ref()
+            .is_some_and(|toast| toast.text.contains("unsaved edits")));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn scroll_to_line_while_in_zen_syncs_editor_and_restores_chrome() {
+        let mut app = App::default();
+        app.file = Some(std::path::PathBuf::from("note.md"));
+        app.source = "# One\n\nBody\n\n# Two\n".into();
+        app.load_ast_from_source();
+        app.sidebar_open = true;
+        app.show_footer = false;
+        app.search_open = true;
+
+        let target_line = line_for_fragment(&app.source, "two", false).unwrap();
+        let _ = app.enter_zen_edit_mode();
+        app.editor = Some(iced::widget::text_editor::Content::with_text(
+            "# One\n\nEdited body\n\n# Two\n",
+        ));
+
+        let _ = app.update(Message::ScrollToLine(target_line));
+
+        assert_eq!(app.view_mode, ViewMode::Rendered);
+        assert_eq!(app.source, "# One\n\nEdited body\n\n# Two\n");
+        assert!(app.editor.is_none());
         assert!(app.sidebar_open);
         assert!(!app.show_footer);
         assert!(app.search_open);
