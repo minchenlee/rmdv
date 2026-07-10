@@ -1,34 +1,11 @@
 /* rmdv.mclee.dev — palettes lifted verbatim from src/theme.rs (One Dark / One Light) */
 
-@font-face {
-  font-family: 'Inter';
-  src: url('assets/fonts/inter-400.woff2') format('woff2');
-  font-weight: 400; font-display: swap;
-}
-@font-face {
-  font-family: 'Inter';
-  src: url('assets/fonts/inter-600.woff2') format('woff2');
-  font-weight: 600; font-display: swap;
-}
-@font-face {
-  font-family: 'Inter';
-  src: url('assets/fonts/inter-700.woff2') format('woff2');
-  font-weight: 700; font-display: swap;
-}
+/* Body text uses the native system stack (no web font). JetBrains Mono is the
+   one loaded face — code, keycaps, the perf table, the ## markers. */
 @font-face {
   font-family: 'JetBrains Mono';
   src: url('assets/fonts/jbmono-400.woff2') format('woff2');
   font-weight: 400; font-display: swap;
-}
-/* metric-matched fallback: text lays out at Inter's metrics before the woff2
-   arrives, so the swap doesn't reflow the page (was CLS 0.10 on mobile) */
-@font-face {
-  font-family: 'Inter Fallback';
-  src: local('Arial');
-  size-adjust: 107.4%;
-  ascent-override: 90.2%;
-  descent-override: 22.5%;
-  line-gap-override: 0%;
 }
 @font-face {
   font-family: 'JetBrains Mono Fallback';
@@ -114,7 +91,8 @@ body {
   margin: 0;
   background: var(--bg);
   color: var(--fg);
-  font: 400 16.5px/1.65 'Inter', 'Inter Fallback', system-ui, -apple-system, sans-serif;
+  /* native system stack — no web-font vanity. Reads as a tool, not a brand. */
+  font: 400 16.5px/1.65 system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
 }
@@ -233,33 +211,9 @@ kbd.hit {
   padding: 76px 0 30px;
   text-align: center;
 }
-/* the decorative glow is 720px wide; clip it so it can't widen the page on
-   narrow viewports (was pushing document scrollWidth past the viewport → CLS-free
-   but horizontally-scrolling, content shoved off-screen on mobile) */
-.hero::before {
-  content: '';
-  position: absolute;
-  top: -80px; left: 50%;
-  width: min(720px, 100vw); height: 420px;
-  transform: translateX(-50%);
-  background: radial-gradient(closest-side, var(--glow), transparent 72%);
-  pointer-events: none;
-}
+/* No glow, no halo, no entrance animation. The plasma wordmark anchors the hero
+   on a flat background; content is present at first paint. */
 .hero > * { position: relative; }
-
-/* staggered load reveal — fast, one orchestrated moment.
-   Desktop only: on mobile the held opacity:0 adds straight onto LCP. */
-@media (min-width: 641px) {
-.js .hero > * { animation: rise .5s var(--ease) both; }
-.js .hero > *:nth-child(2) { animation-delay: .05s; }
-.js .hero > *:nth-child(3) { animation-delay: .1s; }
-.js .hero > *:nth-child(4) { animation-delay: .15s; }
-.js .hero > *:nth-child(5) { animation-delay: .2s; }
-.js .hero > *:nth-child(6) { animation-delay: .25s; }
-}
-@keyframes rise {
-  from { opacity: 0; transform: translateY(10px); }
-}
 
 .invoke {
   margin: 0 0 18px;
@@ -356,31 +310,22 @@ kbd.hit {
 .shot img { display: block; width: 100%; height: auto; aspect-ratio: 2940 / 1758; }
 
 /* ── sections ────────────────────────────────── */
-section { padding: 58px 0 6px; }
-
-/* scroll reveal — subtle, fast, once.
-   Desktop only: holding sections at opacity:0 until JS runs is pure LCP
-   render delay on throttled mobile (PSI measured ~8s on the #why text). */
-@media (min-width: 641px) {
-  .js .reveal {
-    opacity: 0;
-    transform: translateY(14px);
-    transition: opacity .32s var(--ease), transform .32s var(--ease);
-  }
-  .js .reveal.in { opacity: 1; transform: none; }
-}
+/* hairline rule between sections reads as serious tooling, not motion. */
+section { padding: 52px 0 6px; }
+section + section { border-top: 1px solid var(--rule); padding-top: 48px; }
+/* No scroll-reveal animation: content renders immediately as you scroll. */
 
 h2 {
   font-size: 27px; font-weight: 700; letter-spacing: -.015em;
   margin: 0 0 14px;
 }
 .h-mark {
-  color: var(--accent);
+  color: var(--subtle);
   font-family: var(--mono);
   font-size: .72em; font-weight: 400;
   margin-right: .45em;
   vertical-align: .08em;
-  opacity: .85;
+  opacity: .6;
 }
 section > p { color: var(--muted); max-width: 640px; }
 .fine { font-size: 13.5px; color: var(--subtle); }
@@ -407,38 +352,34 @@ tbody tr:last-child th, tbody tr:last-child td { border-bottom: 0; }
 th:first-child, td:first-child { text-align: left; color: var(--muted); }
 th { color: var(--subtle); font-weight: 600; }
 tbody th { font-weight: 400; }
-thead th:nth-child(2), tbody td:nth-child(2) {
-  background: var(--selection);
-  font-weight: 600;
-}
-/* the accent-tinted column needs full-contrast header text (PSI: 3.06:1 on subtle) */
+/* rmdv column: name it in bold, no accent fill — no self-serving highlight. */
 thead th:nth-child(2) { color: var(--fg); }
-td.y { color: var(--accent-text); font-weight: 700; }
-td.n, td.m { color: var(--subtle); }
+tbody td:nth-child(2) { font-weight: 600; color: var(--fg); }
+/* checks/dashes are neutral monospace marks, not green wins. */
+td.y, td.n, td.m { font-family: var(--mono); color: var(--muted); }
+td.y { color: var(--fg); }
 
-/* stats */
-.stats {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-  gap: 14px;
-  margin: 26px 0 18px;
-}
-.stat {
-  padding: 20px 18px;
-  background: var(--surface);
+/* perf numbers — a plain measured-results table, not big orange ornaments.
+   The number's credibility comes from the measurement command beside it. */
+.perf {
+  margin: 22px 0 6px;
   border: 1px solid var(--rule);
   border-radius: 10px;
-  transition: transform var(--t-fast) var(--ease), border-color var(--t-fast) var(--ease);
+  overflow: hidden;
+  font-family: var(--mono);
+  font-size: 13.5px;
 }
-.stat:hover { transform: translateY(-2px); border-color: color-mix(in srgb, var(--accent) 45%, var(--rule)); }
-.stat strong {
-  display: block;
-  font-size: 34px; font-weight: 700; letter-spacing: -.02em;
-  color: var(--accent);
-  font-variant-numeric: tabular-nums;
+.perf .row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 18px;
+  padding: 11px 16px;
+  align-items: baseline;
 }
-.stat em { font-style: normal; font-size: .55em; color: var(--muted); margin-left: 2px; }
-.stat span { font-size: 13px; color: var(--muted); line-height: 1.45; display: block; margin-top: 4px; }
+.perf .row + .row { border-top: 1px solid var(--rule); }
+.perf .metric { color: var(--muted); }
+.perf .value { color: var(--fg); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.perf .value b { font-weight: 600; color: var(--fg); }
 
 /* feature grid */
 .grid {
@@ -464,87 +405,41 @@ td.n, td.m { color: var(--subtle); }
 .card h3 { margin: 0 0 6px; font-size: 15.5px; font-weight: 600; }
 .card p { margin: 0; font-size: 13.5px; color: var(--muted); line-height: 1.55; }
 
-/* feature carousels — scroll-snap track, JS drives the active slide */
-.carousel { margin-top: 28px; }
-.carousel + .carousel { margin-top: 36px; }
-.carousel-label {
-  margin: 0 0 12px; font-size: 12px; font-weight: 600;
-  letter-spacing: .04em; text-transform: uppercase; color: var(--accent);
+/* static screenshot grid — real product UI, no slideshow, no arrows */
+.shots {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 18px;
+  margin-top: 24px;
 }
-.carousel-viewport { position: relative; overflow: hidden; border-radius: 12px; }
-.carousel-track {
-  display: flex; margin: 0; padding: 0; list-style: none;
-  scroll-snap-type: x mandatory;
-  overflow-x: auto;
-  scrollbar-width: none;
-  -webkit-overflow-scrolling: touch;
-}
-.carousel-track::-webkit-scrollbar { display: none; }
-.slide {
-  flex: 0 0 100%; min-width: 0;
-  scroll-snap-align: start;
-  display: flex; flex-direction: column;
+.shot-card {
+  margin: 0;
   background: var(--surface);
   border: 1px solid var(--rule);
   border-radius: 12px;
   overflow: hidden;
 }
-.slide-shot {
-  margin: 0; background: var(--bg);
-  border-bottom: 1px solid var(--rule);
-  aspect-ratio: 3 / 2;
-  display: flex; align-items: center; justify-content: center;
-}
-.slide-shot img {
-  display: block; width: 100%; height: 100%;
-  object-fit: cover; object-position: top left;
+.shot-trigger {
+  display: block;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
   cursor: zoom-in;
 }
-.slide-copy { padding: 22px 26px; }
-.slide-copy h3 { margin: 0 0 8px; font-size: 17px; font-weight: 600; }
-.slide-copy p { margin: 0; font-size: 14px; color: var(--muted); line-height: 1.6; }
-
-/* floating prev/next over the image */
-.carousel-btn {
-  position: absolute; top: calc((100% - 110px) / 2); transform: translateY(-50%);
-  z-index: 2;
-  width: 38px; height: 38px; padding: 0;
-  display: grid; place-items: center;
-  font-size: 22px; line-height: 1; color: var(--fg);
-  background: color-mix(in srgb, var(--surface) 80%, transparent);
-  backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px);
-  border: 1px solid var(--rule); border-radius: 50%;
-  box-shadow: var(--shadow-sm);
-  cursor: pointer;
-  transition: border-color var(--t-fast) var(--ease), color var(--t-fast) var(--ease),
-              background var(--t-fast) var(--ease), opacity var(--t-fast) var(--ease);
+.shot-card img {
+  display: block; width: 100%; height: auto;
+  aspect-ratio: 3 / 2;
+  object-fit: cover; object-position: top left;
+  border-bottom: 1px solid var(--rule);
 }
-.carousel-btn svg { display: block; }
-.carousel-btn--prev { left: 14px; }
-.carousel-btn--next { right: 14px; }
-.carousel-btn:hover { border-color: var(--accent); color: var(--accent); }
-.carousel-btn:disabled { opacity: 0; pointer-events: none; }
-
-.carousel-nav {
-  display: flex; align-items: center; justify-content: center;
-  margin-top: 16px;
+.shot-card figcaption {
+  padding: 14px 18px;
+  font-size: 13.5px; color: var(--muted); line-height: 1.55;
 }
-.carousel-dots { display: flex; gap: 8px; }
-.carousel-dots button {
-  width: 8px; height: 8px; padding: 0;
-  border: 0; border-radius: 50%;
-  background: color-mix(in srgb, var(--fg) 28%, transparent);
-  cursor: pointer;
-  transition: background var(--t-fast) var(--ease), transform var(--t-fast) var(--ease);
-}
-.carousel-dots button:hover { background: color-mix(in srgb, var(--fg) 50%, transparent); }
-.carousel-dots button[aria-current="true"] {
-  background: var(--accent); transform: scale(1.25);
-}
-@media (max-width: 720px) {
-  .slide-copy { padding: 18px 20px; }
-  /* On touch, swipe + dots drive the carousel — hide the floating arrows. */
-  .carousel-btn { display: none; }
+.shot-card figcaption b { color: var(--fg); font-weight: 600; }
+@media (max-width: 640px) {
+  .shots { grid-template-columns: 1fr; }
 }
 
 /* image lightbox — click a slide shot to view it full-size */
@@ -610,14 +505,36 @@ td.n, td.m { color: var(--subtle); }
 }
 .cap { display: flex; gap: 4px; min-width: 104px; justify-content: flex-start; flex-shrink: 0; }
 
-/* faq — hairline-separated dt/dd pairs, same density as the keyboard list */
+/* faq — collapsed-by-default <details>, hairline-separated. Closed = a tidy list
+   of questions; the answers (and the FAQPage schema) are still in the DOM. */
 .faq-list { margin: 22px 0 0; padding: 0; }
-.faq-item { border-top: 1px solid var(--rule); padding: 16px 0; }
+.faq-item { border-top: 1px solid var(--rule); }
 .faq-item:last-child { border-bottom: 1px solid var(--rule); }
-.faq-item dt { font-weight: 600; color: var(--fg); margin: 0 0 6px; font-size: 15px; }
-.faq-item dd { margin: 0; color: var(--muted); font-size: 14px; line-height: 1.65; max-width: 70ch; }
-.faq-item dd a { color: var(--muted); text-decoration: underline; }
-.faq-item dd code {
+.faq-item > summary {
+  list-style: none;
+  cursor: pointer;
+  padding: 14px 0;
+  font-weight: 600; color: var(--fg); font-size: 15px;
+  display: flex; align-items: center; gap: 10px;
+}
+.faq-item > summary::-webkit-details-marker { display: none; }
+/* a quiet mono +/− marker that flips open, instead of the native triangle */
+.faq-item > summary::before {
+  content: '+';
+  font-family: var(--mono);
+  color: var(--subtle);
+  font-weight: 400;
+  width: 1ch; flex-shrink: 0;
+  transition: transform var(--t-fast) var(--ease);
+}
+.faq-item[open] > summary::before { content: '−'; }
+.faq-item > summary:hover { color: var(--accent-text); }
+.faq-item > p {
+  margin: 0 0 16px 1.6ch;
+  color: var(--muted); font-size: 14px; line-height: 1.65; max-width: 70ch;
+}
+.faq-item > p a { color: var(--muted); text-decoration: underline; }
+.faq-item > p code {
   font-family: var(--mono);
   font-size: .88em;
   background: var(--code-bg);
@@ -708,7 +625,7 @@ footer a { text-decoration: underline; }
   border: 0; outline: 0;
   background: transparent;
   color: var(--fg);
-  font: 400 15px 'Inter', system-ui, sans-serif;
+  font: 400 15px system-ui, -apple-system, sans-serif;
   border-bottom: 1px solid var(--rule);
 }
 #palette-input::placeholder { color: var(--subtle); }

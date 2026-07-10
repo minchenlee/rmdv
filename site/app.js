@@ -37,19 +37,6 @@
     });
   }
 
-  // ── scroll reveal — once, fast, subtle ─────────────────
-  const revealed = document.querySelectorAll('.reveal');
-  if ('IntersectionObserver' in window && !reduced) {
-    const io = new IntersectionObserver((entries) => {
-      entries.forEach((e) => {
-        if (e.isIntersecting) { e.target.classList.add('in'); io.unobserve(e.target); }
-      });
-    }, { rootMargin: '0px 0px -8% 0px' });
-    revealed.forEach((el) => io.observe(el));
-  } else {
-    revealed.forEach((el) => el.classList.add('in'));
-  }
-
   // ── scrollspy: highlight the section under the cursor ──
   const navLinks = [...document.querySelectorAll('.top-nav a[href^="#"]')];
   const spied = navLinks
@@ -249,10 +236,13 @@
 
     if (e.key === 'Escape') { if (closeOverlays()) e.preventDefault(); return; }
 
-    // Everything below: plain keys only — never steal typing from the input.
+    // Everything below: plain keys only — never steal native keyboard behavior
+    // from an interactive control (in particular, Space toggles a FAQ summary).
     if (!palette.hidden || !cheat.hidden) return;
     if (e.metaKey || e.ctrlKey || e.altKey) return;
-    if (/^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement?.tagName)) return;
+    if (document.activeElement?.matches(
+      'input, textarea, select, button, summary, a, [contenteditable="true"]'
+    )) return;
 
     switch (e.key) {
       case 'j': window.scrollBy({ top: SCROLL }); echo('j'); break;
@@ -272,65 +262,7 @@
   const paletteHint = $('#palette-hint');
   if (paletteHint) paletteHint.addEventListener('click', () => openOverlay(palette));
 
-  // ── feature carousels — snap track + buttons + dots ────
-  document.querySelectorAll('[data-carousel]').forEach((root) => {
-    const track = root.querySelector('[data-track]');
-    const slides = Array.from(track.children);
-    const prev = root.querySelector('[data-prev]');
-    const next = root.querySelector('[data-next]');
-    const dotsWrap = root.querySelector('[data-dots]');
-    if (!track || slides.length < 2) return;
-
-    let index = 0;
-
-    const dots = slides.map((_, i) => {
-      const d = document.createElement('button');
-      d.type = 'button';
-      // Dots live in an aria-hidden container (prev/next already expose nav to
-      // assistive tech); keep them out of the tab order too.
-      d.tabIndex = -1;
-      d.setAttribute('aria-label', 'Show feature ' + (i + 1));
-      d.addEventListener('click', () => go(i));
-      dotsWrap.appendChild(d);
-      return d;
-    });
-
-    function go(i) {
-      index = Math.max(0, Math.min(slides.length - 1, i));
-      track.scrollTo({ left: slides[index].offsetLeft, behavior: reduced ? 'auto' : 'smooth' });
-      sync();
-    }
-
-    function sync() {
-      prev.disabled = index === 0;
-      next.disabled = index === slides.length - 1;
-      dots.forEach((d, i) => d.setAttribute('aria-current', i === index ? 'true' : 'false'));
-    }
-
-    prev.addEventListener('click', () => go(index - 1));
-    next.addEventListener('click', () => go(index + 1));
-
-    // keep dots/buttons in sync when the user swipes the track directly
-    let raf = 0;
-    track.addEventListener('scroll', () => {
-      if (raf) return;
-      raf = requestAnimationFrame(() => {
-        raf = 0;
-        const mid = track.scrollLeft + track.clientWidth / 2;
-        let nearest = 0, best = Infinity;
-        slides.forEach((s, i) => {
-          const c = s.offsetLeft + s.offsetWidth / 2;
-          const dist = Math.abs(c - mid);
-          if (dist < best) { best = dist; nearest = i; }
-        });
-        if (nearest !== index) { index = nearest; sync(); }
-      });
-    });
-
-    sync();
-  });
-
-  // ── image lightbox — click a slide shot to view full-size ──
+  // ── image lightbox — click a screenshot to view full-size ──
   const lightbox = $('#lightbox');
   if (lightbox) {
     const lbImg = $('#lightbox-img');
@@ -362,8 +294,10 @@
       else setTimeout(finish, 180);
     }
 
-    document.querySelectorAll('.slide-shot img').forEach((img) => {
-      img.addEventListener('click', () => openLightbox(img.currentSrc || img.src, img.alt));
+    document.querySelectorAll('.shot-trigger').forEach((button) => {
+      const img = button.querySelector('img');
+      if (!img) return;
+      button.addEventListener('click', () => openLightbox(img.currentSrc || img.src, img.alt));
     });
 
     // Click the image toggles native-size zoom; the stage scrolls when zoomed.
