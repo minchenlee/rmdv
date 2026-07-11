@@ -4585,6 +4585,7 @@ version = "0.4.0"
 dependencies = [
  "anyhow",
  "arboard",
+ "block2 0.6.2",
  "clap",
  "criterion",
  "dark-light",
@@ -4601,6 +4602,8 @@ dependencies = [
  "lru 0.12.5",
  "mermaid-rs-renderer",
  "notify",
+ "objc2 0.6.4",
+ "objc2-app-kit 0.3.2",
  "open",
  "pulldown-cmark",
  "reqwest 0.12.28",

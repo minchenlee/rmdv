@@ -1,7 +1,7 @@
 use crate::ast::{Block, BlockId, Inline};
 use crate::theme::Palette;
 use iced::widget::canvas::{self, path, Fill, Path, Stroke, Text};
-use iced::{mouse, window, Point, Rectangle, Renderer, Size, Theme, Vector};
+use iced::{keyboard, mouse, touch, window, Point, Rectangle, Renderer, Size, Theme, Vector};
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
@@ -19,7 +19,9 @@ const MAX_CHARS: usize = 120;
 const TEXT_INSET_X: f32 = 14.0;
 const ZOOM_MIN: f32 = 0.2;
 const ZOOM_MAX: f32 = 4.0;
+const KEYBOARD_ZOOM_FACTOR: f32 = 1.25;
 const ANIM_DURATION: Duration = Duration::from_millis(220);
+const ZOOM_ANIM_DURATION: Duration = Duration::from_millis(140);
 
 #[derive(Debug, Clone, Copy)]
 struct Anim {
@@ -266,6 +268,7 @@ pub struct MindmapState<Id = BlockId> {
     pub initialized: bool,
     anim: HashMap<Id, Anim>,
     pan_anim: Option<PanAnim>,
+    zoom_anim: Option<ZoomAnim>,
     last_selected: Option<Id>,
     /// The node whose viewport focus is requested by the owning navigator.
     /// Document mindmaps keep this equal to `selected`; Full Mindmap can keep
@@ -280,6 +283,9 @@ pub struct MindmapState<Id = BlockId> {
     /// selected identity itself does not change.
     last_layout_generation: Option<u64>,
     hovered_idx: Option<usize>,
+    touch_points: Vec<(touch::Finger, Point)>,
+    touch_span: Option<f32>,
+    native_pinch_log: Option<f64>,
 }
 
 impl<Id> Default for MindmapState<Id> {
@@ -293,6 +299,7 @@ impl<Id> Default for MindmapState<Id> {
             initialized: false,
             anim: HashMap::new(),
             pan_anim: None,
+            zoom_anim: None,
             last_selected: None,
             last_focus: None,
             last_bounds_w: 0.0,
@@ -300,6 +307,9 @@ impl<Id> Default for MindmapState<Id> {
             last_panel_open: false,
             last_layout_generation: None,
             hovered_idx: None,
+            touch_points: Vec::new(),
+            touch_span: None,
+            native_pinch_log: None,
         }
     }
 }
@@ -308,6 +318,17 @@ impl<Id> Default for MindmapState<Id> {
 struct PanAnim {
     start: Vector,
     target: Vector,
+    start_at: Instant,
+}
+
+/// A short, retargetable animation for both pieces of the canvas transform.
+/// Interpolating pan with zoom keeps the point under the input anchor still.
+#[derive(Debug, Clone, Copy)]
+struct ZoomAnim {
+    start_zoom: f32,
+    target_zoom: f32,
+    start_pan: Vector,
+    target_pan: Vector,
     start_at: Instant,
 }
 
@@ -326,9 +347,177 @@ pub struct MindmapProgram<'a, Id, Message> {
     /// can be rebuilt without changing selection. Document mindmaps leave it
     /// unset; Full Mindmap supplies its graph generation.
     pub layout_generation: Option<u64>,
+    /// Bare graph zoom keys belong to the canvas only while no higher-level
+    /// input surface (for example search or an overlay) owns the keyboard.
+    pub keyboard_zoom_enabled: bool,
+    /// Cumulative macOS magnification input. Iced 0.14 drops Winit's native
+    /// `PinchGesture`, so the app supplies it through a small platform bridge.
+    /// A cumulative log lets the canvas apply every queued pinch delta even
+    /// when multiple native events arrive before the next redraw.
+    pub native_pinch_log: f64,
     pub on_toggle: Box<dyn Fn(Id) -> Message + 'a>,
     pub on_select: Box<dyn Fn(Id) -> Message + 'a>,
     pub on_deselect: Message,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum KeyboardZoom {
+    In,
+    Out,
+    Reset,
+}
+
+fn keyboard_zoom(event: &iced::Event) -> Option<KeyboardZoom> {
+    use keyboard::key::{Code, Physical};
+
+    let iced::Event::Keyboard(keyboard::Event::KeyPressed {
+        modified_key,
+        physical_key,
+        modifiers,
+        ..
+    }) = event
+    else {
+        return None;
+    };
+    // The document Mindmap panel retains ⌘/Ctrl +, −, and 0 for reader
+    // typography. Graph zoom is deliberately graph-scoped and unmodified.
+    // Both `=` and `+` share the same physical key on common layouts.
+    if modifiers.command() || modifiers.control() || modifiers.alt() {
+        return None;
+    }
+
+    match physical_key {
+        Physical::Code(Code::Equal) => Some(KeyboardZoom::In),
+        Physical::Code(Code::NumpadAdd | Code::NumpadEqual) => Some(KeyboardZoom::In),
+        Physical::Code(Code::Minus) if !modifiers.shift() => Some(KeyboardZoom::Out),
+        Physical::Code(Code::NumpadSubtract) => Some(KeyboardZoom::Out),
+        Physical::Code(Code::Digit0) if !modifiers.shift() => Some(KeyboardZoom::Reset),
+        Physical::Code(Code::Numpad0) => Some(KeyboardZoom::Reset),
+        _ => match modified_key.as_ref() {
+            keyboard::Key::Character("=" | "+") => Some(KeyboardZoom::In),
+            keyboard::Key::Character("-") => Some(KeyboardZoom::Out),
+            keyboard::Key::Character("0") => Some(KeyboardZoom::Reset),
+            _ => None,
+        },
+    }
+}
+
+fn canvas_center(bounds: Rectangle) -> Point {
+    Point::new(bounds.width / 2.0, bounds.height / 2.0)
+}
+
+/// Set an absolute zoom while preserving the world point under `anchor`.
+/// Returns whether the scale actually changed after clamping.
+#[cfg(test)]
+fn set_zoom_about<Id>(state: &mut MindmapState<Id>, anchor: Point, target_zoom: f32) -> bool {
+    let old_zoom = state.zoom;
+    let new_zoom = target_zoom.clamp(ZOOM_MIN, ZOOM_MAX);
+    if !new_zoom.is_finite() || (new_zoom - old_zoom).abs() < f32::EPSILON {
+        return false;
+    }
+    let world_x = (anchor.x - state.pan.x) / old_zoom;
+    let world_y = (anchor.y - state.pan.y) / old_zoom;
+    state.zoom = new_zoom;
+    state.pan.x = anchor.x - world_x * new_zoom;
+    state.pan.y = anchor.y - world_y * new_zoom;
+    true
+}
+
+#[cfg(test)]
+fn zoom_by<Id>(state: &mut MindmapState<Id>, anchor: Point, factor: f32) -> bool {
+    if !factor.is_finite() || factor <= 0.0 {
+        return false;
+    }
+    set_zoom_about(state, anchor, state.zoom * factor)
+}
+
+/// Advance a scheduled zoom to its current rendered transform. Returns whether
+/// another frame is needed to finish it.
+fn step_zoom_animation<Id>(state: &mut MindmapState<Id>) -> bool {
+    let Some(animation) = state.zoom_anim else {
+        return false;
+    };
+    let elapsed = Instant::now()
+        .duration_since(animation.start_at)
+        .as_secs_f32();
+    let t = (elapsed / ZOOM_ANIM_DURATION.as_secs_f32()).clamp(0.0, 1.0);
+    let k = ease_out_cubic(t);
+    state.zoom = animation.start_zoom + (animation.target_zoom - animation.start_zoom) * k;
+    state.pan.x = animation.start_pan.x + (animation.target_pan.x - animation.start_pan.x) * k;
+    state.pan.y = animation.start_pan.y + (animation.target_pan.y - animation.start_pan.y) * k;
+    if t >= 1.0 {
+        state.zoom = animation.target_zoom;
+        state.pan = animation.target_pan;
+        state.zoom_anim = None;
+        false
+    } else {
+        true
+    }
+}
+
+/// Animate toward an absolute zoom while preserving the world point below the
+/// input anchor. User zoom input supersedes automatic selection re-centering.
+fn animate_zoom_to<Id>(state: &mut MindmapState<Id>, anchor: Point, target_zoom: f32) -> bool {
+    if !target_zoom.is_finite() {
+        return false;
+    }
+    let target_zoom = target_zoom.clamp(ZOOM_MIN, ZOOM_MAX);
+    let prior_target = state.zoom_anim.map(|animation| animation.target_zoom);
+    let was_running = step_zoom_animation(state);
+    if (target_zoom - state.zoom).abs() < f32::EPSILON {
+        state.zoom_anim = None;
+        return false;
+    }
+    if prior_target.is_some_and(|prior| (prior - target_zoom).abs() < f32::EPSILON) {
+        return was_running;
+    }
+    let world_x = (anchor.x - state.pan.x) / state.zoom;
+    let world_y = (anchor.y - state.pan.y) / state.zoom;
+    let target_pan = Vector::new(
+        anchor.x - world_x * target_zoom,
+        anchor.y - world_y * target_zoom,
+    );
+    state.pan_anim = None;
+    state.zoom_anim = Some(ZoomAnim {
+        start_zoom: state.zoom,
+        target_zoom,
+        start_pan: state.pan,
+        target_pan,
+        start_at: Instant::now(),
+    });
+    true
+}
+
+/// Schedule a relative zoom. Repeated wheel, pinch, or key events compound
+/// from the last requested target so the animation never loses input distance.
+fn animate_zoom_by<Id>(state: &mut MindmapState<Id>, anchor: Point, factor: f32) -> bool {
+    if !factor.is_finite() || factor <= 0.0 {
+        return false;
+    }
+    let base_zoom = state
+        .zoom_anim
+        .map(|animation| animation.target_zoom)
+        .unwrap_or(state.zoom);
+    animate_zoom_to(state, anchor, base_zoom * factor)
+}
+
+fn touch_point_in_canvas(bounds: Rectangle, position: Point) -> Option<Point> {
+    let local = Point::new(position.x - bounds.x, position.y - bounds.y);
+    (local.x >= 0.0 && local.x <= bounds.width && local.y >= 0.0 && local.y <= bounds.height)
+        .then_some(local)
+}
+
+fn touch_geometry(points: &[(touch::Finger, Point)]) -> Option<(f32, Point)> {
+    if points.len() < 2 {
+        return None;
+    }
+    let first = points[0].1;
+    let second = points[1].1;
+    let dx = second.x - first.x;
+    let dy = second.y - first.y;
+    let span = (dx * dx + dy * dy).sqrt();
+    let center = Point::new((first.x + second.x) / 2.0, (first.y + second.y) / 2.0);
+    Some((span, center))
 }
 
 impl<'a, Id, Message> MindmapProgram<'a, Id, Message>
@@ -604,6 +793,95 @@ where
             None => (n.x, n.y),
         }
     }
+
+    /// Apply a macOS trackpad pinch that arrived through the native bridge.
+    /// We only zoom when the current pointer is over this canvas, so a pinch
+    /// over an adjacent panel never changes the graph behind it.
+    fn sync_native_pinch(
+        &self,
+        state: &mut MindmapState<Id>,
+        bounds: Rectangle,
+        cursor: mouse::Cursor,
+    ) -> bool {
+        let Some(previous_log) = state.native_pinch_log.replace(self.native_pinch_log) else {
+            // Establish the baseline when a canvas is first shown. A newly
+            // mounted canvas should not replay pinch history from an earlier
+            // document or Full Mindmap session.
+            return false;
+        };
+        let delta = self.native_pinch_log - previous_log;
+        if !delta.is_finite() || delta.abs() < f64::EPSILON {
+            return false;
+        }
+        let Some(anchor) = cursor.position_in(bounds) else {
+            return false;
+        };
+        animate_zoom_by(state, anchor, delta.exp() as f32)
+    }
+
+    /// Handle a two-finger touchscreen pinch. Native macOS trackpads use the
+    /// bridge above; Winit forwards physical touch contacts through Iced.
+    fn handle_touch_pinch(
+        &self,
+        state: &mut MindmapState<Id>,
+        event: &iced::Event,
+        bounds: Rectangle,
+    ) -> bool {
+        let iced::Event::Touch(event) = event else {
+            return false;
+        };
+        match event {
+            touch::Event::FingerPressed { id, position } => {
+                let Some(position) = touch_point_in_canvas(bounds, *position) else {
+                    return false;
+                };
+                if state.touch_points.is_empty() {
+                    // A direct gesture should take over from any just-finished
+                    // wheel or keyboard transition immediately.
+                    state.zoom_anim = None;
+                    state.pan_anim = None;
+                }
+                if let Some((_, existing)) = state
+                    .touch_points
+                    .iter_mut()
+                    .find(|(finger, _)| finger == id)
+                {
+                    *existing = position;
+                } else {
+                    state.touch_points.push((*id, position));
+                }
+                state.touch_span = touch_geometry(&state.touch_points).map(|(span, _)| span);
+                true
+            }
+            touch::Event::FingerMoved { id, position } => {
+                let Some((_, existing)) = state
+                    .touch_points
+                    .iter_mut()
+                    .find(|(finger, _)| finger == id)
+                else {
+                    return false;
+                };
+                // Keep following an existing contact even when it moves just
+                // outside the canvas, which avoids a jump at the edge.
+                *existing = Point::new(position.x - bounds.x, position.y - bounds.y);
+                let previous = state.touch_span;
+                let geometry = touch_geometry(&state.touch_points);
+                state.touch_span = geometry.map(|(span, _)| span);
+                if let (Some(previous), Some((span, center))) = (previous, geometry) {
+                    if previous > f32::EPSILON && span > f32::EPSILON {
+                        let _ = animate_zoom_by(state, center, span / previous);
+                    }
+                }
+                true
+            }
+            touch::Event::FingerLifted { id, .. } | touch::Event::FingerLost { id, .. } => {
+                let previous_len = state.touch_points.len();
+                state.touch_points.retain(|(finger, _)| finger != id);
+                state.touch_span = touch_geometry(&state.touch_points).map(|(span, _)| span);
+                state.touch_points.len() != previous_len
+            }
+        }
+    }
 }
 
 impl<'a, Id, Message: Clone> canvas::Program<Message, Theme, Renderer>
@@ -625,6 +903,24 @@ where
             state.initialized = true;
         }
         match event {
+            iced::Event::Keyboard(_) if self.keyboard_zoom_enabled => {
+                let Some(action) = keyboard_zoom(event) else {
+                    return None;
+                };
+                let anchor = canvas_center(bounds);
+                match action {
+                    KeyboardZoom::In => {
+                        let _ = animate_zoom_by(state, anchor, KEYBOARD_ZOOM_FACTOR);
+                    }
+                    KeyboardZoom::Out => {
+                        let _ = animate_zoom_by(state, anchor, 1.0 / KEYBOARD_ZOOM_FACTOR);
+                    }
+                    KeyboardZoom::Reset => {
+                        let _ = animate_zoom_to(state, anchor, 1.0);
+                    }
+                }
+                Some(canvas::Action::request_redraw().and_capture())
+            }
             iced::Event::Mouse(mouse::Event::WheelScrolled { delta }) => {
                 let Some(pos) = cursor.position_in(bounds) else {
                     return None;
@@ -633,16 +929,12 @@ where
                     mouse::ScrollDelta::Lines { y, .. } => (*y * 0.05).exp(),
                     mouse::ScrollDelta::Pixels { y, .. } => (*y * 0.0025).exp(),
                 };
-                let old_zoom = state.zoom;
-                let new_zoom = (old_zoom * factor).clamp(ZOOM_MIN, ZOOM_MAX);
-                // Zoom around cursor: keep world point under cursor fixed.
-                let world_x = (pos.x - state.pan.x) / old_zoom;
-                let world_y = (pos.y - state.pan.y) / old_zoom;
-                state.zoom = new_zoom;
-                state.pan.x = pos.x - world_x * new_zoom;
-                state.pan.y = pos.y - world_y * new_zoom;
+                let _ = animate_zoom_by(state, pos, factor);
                 Some(canvas::Action::request_redraw().and_capture())
             }
+            iced::Event::Touch(_) => self
+                .handle_touch_pinch(state, event, bounds)
+                .then(|| canvas::Action::request_redraw().and_capture()),
             iced::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {
                 let Some(pos) = cursor.position_in(bounds) else {
                     return None;
@@ -672,8 +964,9 @@ where
                 state.drag_origin = Some(pos);
                 state.drag_pan_origin = state.pan;
                 state.drag_moved = false;
-                // Cancel any in-flight programmatic pan animation.
+                // Direct dragging wins over any in-flight programmatic motion.
                 state.pan_anim = None;
+                state.zoom_anim = None;
                 Some(canvas::Action::capture())
             }
             iced::Event::Mouse(mouse::Event::CursorMoved { .. }) => {
@@ -733,10 +1026,18 @@ where
             }
             iced::Event::Window(window::Event::RedrawRequested(_)) => {
                 self.sync_anim(state);
-                self.sync_focus_pan(state, bounds);
+                let pinch_zoomed = self.sync_native_pinch(state, bounds, cursor);
+                let zoom_running = step_zoom_animation(state);
+                if !zoom_running {
+                    self.sync_focus_pan(state, bounds);
+                }
                 let node_running = self.step_anim(state);
-                let pan_running = self.step_pan_anim(state);
-                if node_running || pan_running {
+                let pan_running = if state.zoom_anim.is_none() {
+                    self.step_pan_anim(state)
+                } else {
+                    false
+                };
+                if node_running || pan_running || zoom_running || pinch_zoomed {
                     Some(canvas::Action::request_redraw())
                 } else {
                     None
@@ -1124,6 +1425,8 @@ mod tests {
             panel_width: 360.0,
             autocenter: true,
             layout_generation: Some(generation),
+            keyboard_zoom_enabled: false,
+            native_pinch_log: 0.0,
             on_toggle: Box::new(|_| ()),
             on_select: Box::new(|_| ()),
             on_deselect: (),
@@ -1480,6 +1783,8 @@ mod tests {
                 panel_width: 360.0,
                 autocenter: true,
                 layout_generation: Some(1),
+                keyboard_zoom_enabled: false,
+                native_pinch_log: 0.0,
                 on_toggle: Box::new(|_| ()),
                 on_select: Box::new(|_| ()),
                 on_deselect: (),
@@ -1685,5 +1990,170 @@ mod tests {
             pan_target, root_target,
             "removing a nested shell must not refocus the workspace root"
         );
+    }
+
+    fn key_pressed(
+        key: iced::keyboard::Key,
+        physical_key: iced::keyboard::key::Physical,
+        modifiers: iced::keyboard::Modifiers,
+    ) -> iced::Event {
+        iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
+            key: key.clone(),
+            modified_key: key,
+            physical_key,
+            location: iced::keyboard::Location::Standard,
+            modifiers,
+            text: None,
+            repeat: false,
+        })
+    }
+
+    #[test]
+    fn keyboard_zoom_uses_unmodified_graph_keys() {
+        use iced::keyboard::key::{Code, Physical};
+        use iced::keyboard::{Key, Modifiers};
+
+        assert_eq!(
+            keyboard_zoom(&key_pressed(
+                Key::Character("+".into()),
+                Physical::Code(Code::Equal),
+                Modifiers::SHIFT,
+            )),
+            Some(KeyboardZoom::In)
+        );
+        assert_eq!(
+            keyboard_zoom(&key_pressed(
+                Key::Character("-".into()),
+                Physical::Code(Code::NumpadSubtract),
+                Modifiers::NONE,
+            )),
+            Some(KeyboardZoom::Out)
+        );
+        assert_eq!(
+            keyboard_zoom(&key_pressed(
+                Key::Character("0".into()),
+                Physical::Code(Code::Digit0),
+                Modifiers::NONE,
+            )),
+            Some(KeyboardZoom::Reset)
+        );
+        assert_eq!(
+            keyboard_zoom(&key_pressed(
+                Key::Character("+".into()),
+                Physical::Code(Code::Equal),
+                Modifiers::COMMAND | Modifiers::SHIFT,
+            )),
+            None
+        );
+        assert_eq!(
+            keyboard_zoom(&key_pressed(
+                Key::Character("=".into()),
+                Physical::Code(Code::Equal),
+                Modifiers::NONE,
+            )),
+            Some(KeyboardZoom::In)
+        );
+    }
+
+    #[test]
+    fn zoom_keeps_the_world_point_under_its_anchor() {
+        let mut state = MindmapState::<BlockId>::default();
+        state.zoom = 1.25;
+        state.pan = Vector::new(18.0, -11.0);
+        let anchor = Point::new(82.0, 47.0);
+        let before = (
+            (anchor.x - state.pan.x) / state.zoom,
+            (anchor.y - state.pan.y) / state.zoom,
+        );
+
+        assert!(zoom_by(&mut state, anchor, 1.1));
+        let after = (
+            (anchor.x - state.pan.x) / state.zoom,
+            (anchor.y - state.pan.y) / state.zoom,
+        );
+
+        assert!((before.0 - after.0).abs() < 0.0001);
+        assert!((before.1 - after.1).abs() < 0.0001);
+    }
+
+    #[test]
+    fn zoom_animation_keeps_the_anchor_fixed_and_compounds_requests() {
+        let mut state = MindmapState::<BlockId>::default();
+        state.zoom = 1.25;
+        state.pan = Vector::new(18.0, -11.0);
+        let anchor = Point::new(82.0, 47.0);
+        let before = (
+            (anchor.x - state.pan.x) / state.zoom,
+            (anchor.y - state.pan.y) / state.zoom,
+        );
+
+        assert!(animate_zoom_by(&mut state, anchor, KEYBOARD_ZOOM_FACTOR));
+        assert!(animate_zoom_by(&mut state, anchor, KEYBOARD_ZOOM_FACTOR));
+        assert!(
+            (state.zoom_anim.expect("animation").target_zoom - 1.25 * 1.25 * 1.25).abs() < 0.0001
+        );
+
+        state.zoom_anim.as_mut().expect("animation").start_at =
+            Instant::now() - Duration::from_millis(70);
+        assert!(step_zoom_animation(&mut state));
+        let midpoint = (
+            (anchor.x - state.pan.x) / state.zoom,
+            (anchor.y - state.pan.y) / state.zoom,
+        );
+        assert!((before.0 - midpoint.0).abs() < 0.0001);
+        assert!((before.1 - midpoint.1).abs() < 0.0001);
+
+        state.zoom_anim.as_mut().expect("animation").start_at =
+            Instant::now() - Duration::from_millis(200);
+        assert!(!step_zoom_animation(&mut state));
+        let after = (
+            (anchor.x - state.pan.x) / state.zoom,
+            (anchor.y - state.pan.y) / state.zoom,
+        );
+        assert!((before.0 - after.0).abs() < 0.0001);
+        assert!((before.1 - after.1).abs() < 0.0001);
+    }
+
+    #[test]
+    fn zoom_reset_retargets_an_in_flight_transition() {
+        let mut state = MindmapState::<BlockId>::default();
+        state.zoom = 1.0;
+        let anchor = Point::new(50.0, 50.0);
+
+        assert!(animate_zoom_by(&mut state, anchor, KEYBOARD_ZOOM_FACTOR));
+        assert!(state.zoom_anim.is_some());
+        assert!(animate_zoom_to(&mut state, anchor, 1.0));
+        assert_eq!(state.zoom_anim.expect("reset animation").target_zoom, 1.0);
+        state.zoom_anim.as_mut().expect("reset animation").start_at =
+            Instant::now() - Duration::from_millis(200);
+        assert!(!step_zoom_animation(&mut state));
+        assert_eq!(state.zoom, 1.0);
+        assert!(state.zoom_anim.is_none());
+    }
+
+    #[test]
+    fn zoom_clamps_and_reset_returns_to_one_hundred_percent() {
+        let mut state = MindmapState::<BlockId>::default();
+        state.zoom = 1.0;
+        let anchor = Point::new(50.0, 50.0);
+
+        assert!(zoom_by(&mut state, anchor, 100.0));
+        assert_eq!(state.zoom, ZOOM_MAX);
+        assert!(zoom_by(&mut state, anchor, 0.0001));
+        assert_eq!(state.zoom, ZOOM_MIN);
+        assert!(set_zoom_about(&mut state, anchor, 1.0));
+        assert_eq!(state.zoom, 1.0);
+    }
+
+    #[test]
+    fn touch_geometry_uses_two_finger_distance_and_midpoint() {
+        let points = vec![
+            (touch::Finger(1), Point::new(10.0, 20.0)),
+            (touch::Finger(2), Point::new(13.0, 24.0)),
+        ];
+        let (span, center) = touch_geometry(&points).expect("two contacts");
+
+        assert_eq!(span, 5.0);
+        assert_eq!(center, Point::new(11.5, 22.0));
     }
 }

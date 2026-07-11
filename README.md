@@ -99,6 +99,7 @@ Designed for coding agents (Claude Code, Codex, Cursor) to pull rmdv to the rele
 | `⌘O` | Open folder | | `⌘T` | Toggle theme |
 | `⌘B` | Toggle sidebar | | `⌘K 0–6` | Fold headings to level |
 | `⌘F` | Search in document | | `⌘/` | Shortcut cheatsheet |
+| `=` / `−` | Mindmap zoom in / out | | `0` | Reset mindmap zoom |
 | `⌘⇧F` | Search whole vault | | `j` / `k` | Scroll down / up |
 | `g` / `G` | Top / bottom | | `Space` / `⇧Space` | Page down / up |
 | `Esc` | Close overlay / search | | | |

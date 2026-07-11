@@ -12,6 +12,7 @@ pub mod ipc;
 pub mod keyed_body;
 pub mod md_highlight;
 pub mod mindmap;
+pub mod native_pinch;
 pub mod parser;
 #[cfg(feature = "pdf")]
 pub mod pdf;
