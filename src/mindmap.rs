@@ -38,9 +38,12 @@ fn ease_out_cubic(t: f32) -> f32 {
     1.0 - u * u * u
 }
 
+/// A laid-out canvas node. The document mindmap uses the default `BlockId`
+/// identity; other tree-shaped navigators can supply a distinct identity type
+/// without borrowing document collapse or selection state.
 #[derive(Clone)]
-pub struct MNode {
-    pub id: Option<BlockId>,
+pub struct MNode<Id = BlockId> {
+    pub id: Option<Id>,
     pub label: String,
     pub full_label: String,
     pub truncated: bool,
@@ -211,7 +214,7 @@ pub fn build_tree(
     nodes
 }
 
-pub(crate) fn layout(nodes: &mut [MNode], idx: usize, y_cursor: &mut f32) -> f32 {
+pub(crate) fn layout<Id>(nodes: &mut [MNode<Id>], idx: usize, y_cursor: &mut f32) -> f32 {
     let kids = nodes[idx].children.clone();
     let x = PAD + nodes[idx].level as f32 * (NODE_W + X_GAP);
     nodes[idx].x = x;
@@ -253,21 +256,41 @@ pub fn build_layout(
     (nodes, Size::new(width, height))
 }
 
-#[derive(Debug, Default)]
-pub struct MindmapState {
+#[derive(Debug)]
+pub struct MindmapState<Id = BlockId> {
     pub zoom: f32,
     pub pan: Vector,
     pub drag_origin: Option<Point>,
     pub drag_pan_origin: Vector,
     pub drag_moved: bool,
     pub initialized: bool,
-    anim: HashMap<BlockId, Anim>,
+    anim: HashMap<Id, Anim>,
     pan_anim: Option<PanAnim>,
-    last_selected: Option<BlockId>,
+    last_selected: Option<Id>,
     last_bounds_w: f32,
     last_bounds_h: f32,
     last_panel_open: bool,
     hovered_idx: Option<usize>,
+}
+
+impl<Id> Default for MindmapState<Id> {
+    fn default() -> Self {
+        Self {
+            zoom: 0.0,
+            pan: Vector::default(),
+            drag_origin: None,
+            drag_pan_origin: Vector::default(),
+            drag_moved: false,
+            initialized: false,
+            anim: HashMap::new(),
+            pan_anim: None,
+            last_selected: None,
+            last_bounds_w: 0.0,
+            last_bounds_h: 0.0,
+            last_panel_open: false,
+            hovered_idx: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -277,20 +300,23 @@ struct PanAnim {
     start_at: Instant,
 }
 
-pub struct MindmapProgram<'a, Message> {
-    pub nodes: std::sync::Arc<Vec<MNode>>,
+pub struct MindmapProgram<'a, Id, Message> {
+    pub nodes: std::sync::Arc<Vec<MNode<Id>>>,
     pub content_size: Size,
     pub palette: Palette,
-    pub selected: Option<BlockId>,
+    pub selected: Option<Id>,
     pub panel_open: bool,
     pub panel_width: f32,
     pub autocenter: bool,
-    pub on_toggle: Box<dyn Fn(BlockId) -> Message + 'a>,
-    pub on_select: Box<dyn Fn(BlockId) -> Message + 'a>,
+    pub on_toggle: Box<dyn Fn(Id) -> Message + 'a>,
+    pub on_select: Box<dyn Fn(Id) -> Message + 'a>,
     pub on_deselect: Message,
 }
 
-impl<'a, Message> MindmapProgram<'a, Message> {
+impl<'a, Id, Message> MindmapProgram<'a, Id, Message>
+where
+    Id: Clone + Eq + std::hash::Hash,
+{
     /// Compute parent index for each node.
     fn parent_map(&self) -> Vec<Option<usize>> {
         let mut parents = vec![None; self.nodes.len()];
@@ -303,21 +329,21 @@ impl<'a, Message> MindmapProgram<'a, Message> {
     }
 
     /// Update `anim` entries to reflect new targets. New nodes spawn at parent's current pos.
-    fn sync_anim(&self, state: &mut MindmapState) {
+    fn sync_anim(&self, state: &mut MindmapState<Id>) {
         let parents = self.parent_map();
         let now = Instant::now();
         // Build a snapshot of pre-existing current positions so we can read
         // parent's current pos when seeding new children.
-        let prev_current: HashMap<BlockId, (f32, f32)> = state
+        let prev_current: HashMap<Id, (f32, f32)> = state
             .anim
             .iter()
-            .map(|(k, v)| (*k, (v.current_x, v.current_y)))
+            .map(|(k, v)| (k.clone(), (v.current_x, v.current_y)))
             .collect();
-        let present: HashSet<BlockId> = self.nodes.iter().filter_map(|n| n.id).collect();
+        let present: HashSet<Id> = self.nodes.iter().filter_map(|n| n.id.clone()).collect();
         state.anim.retain(|k, _| present.contains(k));
 
         for (i, n) in self.nodes.iter().enumerate() {
-            let Some(id) = n.id else { continue };
+            let Some(id) = n.id.clone() else { continue };
             let target = (n.x, n.y);
             match state.anim.get_mut(&id) {
                 Some(a) => {
@@ -335,8 +361,8 @@ impl<'a, Message> MindmapProgram<'a, Message> {
                 None => {
                     // New node — seed from parent's current pos if known, else target.
                     let (sx, sy) = parents[i]
-                        .and_then(|pi| self.nodes[pi].id)
-                        .and_then(|pid| prev_current.get(&pid).copied())
+                        .and_then(|pi| self.nodes[pi].id.as_ref())
+                        .and_then(|pid| prev_current.get(pid).copied())
                         .unwrap_or(target);
                     state.anim.insert(
                         id,
@@ -357,7 +383,7 @@ impl<'a, Message> MindmapProgram<'a, Message> {
     }
 
     /// Advance all animations. Returns true if any still running.
-    fn step_anim(&self, state: &mut MindmapState) -> bool {
+    fn step_anim(&self, state: &mut MindmapState<Id>) -> bool {
         let now = Instant::now();
         let mut running = false;
         for a in state.anim.values_mut() {
@@ -383,7 +409,7 @@ impl<'a, Message> MindmapProgram<'a, Message> {
 
     /// Detect selection change; if newly focused, start a pan animation that
     /// centers the selected node in the visible bounds (keeping current zoom).
-    fn sync_focus_pan(&self, state: &mut MindmapState, bounds: Rectangle) {
+    fn sync_focus_pan(&self, state: &mut MindmapState<Id>, bounds: Rectangle) {
         let prev_bounds_w = state.last_bounds_w;
         let bounds_changed = (bounds.width - state.last_bounds_w).abs() > 0.5
             || (bounds.height - state.last_bounds_h).abs() > 0.5;
@@ -396,13 +422,13 @@ impl<'a, Message> MindmapProgram<'a, Message> {
         }
         if !self.autocenter {
             // Keep bookkeeping in sync so re-enable doesn't fire stale change.
-            state.last_selected = self.selected;
+            state.last_selected = self.selected.clone();
             state.last_bounds_w = bounds.width;
             state.last_bounds_h = bounds.height;
             state.last_panel_open = self.panel_open;
             return;
         }
-        state.last_selected = self.selected;
+        state.last_selected = self.selected.clone();
         state.last_bounds_w = bounds.width;
         state.last_bounds_h = bounds.height;
         let snap = panel_just_opened || panel_just_closed || (sel_changed && self.panel_open);
@@ -410,12 +436,14 @@ impl<'a, Message> MindmapProgram<'a, Message> {
         if !sel_changed && self.selected.is_none() {
             return;
         }
-        let Some(sel) = self.selected else { return };
+        let Some(sel) = self.selected.as_ref() else {
+            return;
+        };
         let Some((idx, _)) = self
             .nodes
             .iter()
             .enumerate()
-            .find(|(_, n)| n.id == Some(sel))
+            .find(|(_, n)| n.id.as_ref() == Some(sel))
         else {
             return;
         };
@@ -443,7 +471,7 @@ impl<'a, Message> MindmapProgram<'a, Message> {
         }
     }
 
-    fn snap_focus_to_node(&self, state: &mut MindmapState, idx: usize, bounds: Rectangle) {
+    fn snap_focus_to_node(&self, state: &mut MindmapState<Id>, idx: usize, bounds: Rectangle) {
         let future_open = !self.panel_open;
         let target =
             self.focus_target_for_node(state, idx, bounds, bounds.width, future_open, false);
@@ -453,7 +481,7 @@ impl<'a, Message> MindmapProgram<'a, Message> {
 
     fn focus_target_for_node(
         &self,
-        state: &MindmapState,
+        state: &MindmapState<Id>,
         idx: usize,
         bounds: Rectangle,
         prev_bounds_w: f32,
@@ -481,7 +509,7 @@ impl<'a, Message> MindmapProgram<'a, Message> {
     }
 
     /// Advance pan animation. Returns true if still running.
-    fn step_pan_anim(&self, state: &mut MindmapState) -> bool {
+    fn step_pan_anim(&self, state: &mut MindmapState<Id>) -> bool {
         let Some(p) = state.pan_anim else {
             return false;
         };
@@ -502,17 +530,21 @@ impl<'a, Message> MindmapProgram<'a, Message> {
     }
 
     /// Get rendered (animated) position for a node.
-    fn pos(&self, state: &MindmapState, idx: usize) -> (f32, f32) {
+    fn pos(&self, state: &MindmapState<Id>, idx: usize) -> (f32, f32) {
         let n = &self.nodes[idx];
-        match n.id.and_then(|id| state.anim.get(&id)) {
+        match n.id.as_ref().and_then(|id| state.anim.get(id)) {
             Some(a) => (a.current_x, a.current_y),
             None => (n.x, n.y),
         }
     }
 }
 
-impl<'a, Message: Clone> canvas::Program<Message, Theme, Renderer> for MindmapProgram<'a, Message> {
-    type State = MindmapState;
+impl<'a, Id, Message: Clone> canvas::Program<Message, Theme, Renderer>
+    for MindmapProgram<'a, Id, Message>
+where
+    Id: Clone + Eq + std::hash::Hash + 'static,
+{
+    type State = MindmapState<Id>;
 
     fn update(
         &self,
@@ -554,7 +586,7 @@ impl<'a, Message: Clone> canvas::Program<Message, Theme, Renderer> for MindmapPr
                 for (i, n) in self.nodes.iter().enumerate() {
                     let (nx, ny) = self.pos(state, i);
                     if wx >= nx && wx <= nx + NODE_W && wy >= ny && wy <= ny + NODE_H {
-                        if let Some(id) = n.id {
+                        if let Some(id) = n.id.clone() {
                             let msg = if n.children.is_empty() && !n.has_hidden_children {
                                 if self.autocenter {
                                     self.snap_focus_to_node(state, i, bounds);
@@ -785,12 +817,12 @@ impl<'a, Message: Clone> canvas::Program<Message, Theme, Renderer> for MindmapPr
         frame.stroke(&accent_borders, accent_border_stroke);
 
         // Selection ring (drawn over borders for the leaf currently open in the panel).
-        if let Some(sel) = self.selected {
+        if let Some(sel) = self.selected.as_ref() {
             if let Some((i, _)) = self
                 .nodes
                 .iter()
                 .enumerate()
-                .find(|(_, n)| n.id == Some(sel))
+                .find(|(_, n)| n.id.as_ref() == Some(sel))
             {
                 let (nx, ny) = positions[i];
                 let sx = proj_x(nx);
@@ -925,4 +957,88 @@ fn append_rounded_rect(b: &mut path::Builder, x: f32, y: f32, w: f32, h: f32, r:
     b.line_to(Point::new(x, y + r));
     b.quadratic_curve_to(Point::new(x, y), Point::new(x + r, y));
     b.close();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn heading(id: u64, level: u8, label: &str) -> (BlockId, Block) {
+        (
+            BlockId(id),
+            Block::Heading {
+                level,
+                id: label.to_lowercase(),
+                inlines: vec![Inline::Text(label.to_string())],
+            },
+        )
+    }
+
+    #[test]
+    fn document_tree_keeps_block_ids_and_collapse_behavior() {
+        let ast = vec![
+            heading(1, 1, "Top"),
+            heading(2, 2, "Child"),
+            heading(3, 1, "Next"),
+        ];
+        let collapsed = HashSet::from([BlockId(1)]);
+        let nodes = build_tree(&ast, "Document", &collapsed);
+
+        assert_eq!(nodes[0].id, None);
+        assert_eq!(nodes[0].children.len(), 2);
+        assert_eq!(nodes[1].id, Some(BlockId(1)));
+        assert!(nodes[1].has_hidden_children);
+        assert!(nodes.iter().all(|node| node.id != Some(BlockId(2))));
+        assert_eq!(nodes[2].id, Some(BlockId(3)));
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+    struct PathId(String);
+
+    fn sample_nodes<Id: Clone>(root: Id, child: Id) -> Vec<MNode<Id>> {
+        vec![
+            MNode {
+                id: Some(root),
+                label: "root".into(),
+                full_label: "root".into(),
+                truncated: false,
+                level: 0,
+                children: vec![1],
+                has_hidden_children: false,
+                x: 0.0,
+                y: 0.0,
+            },
+            MNode {
+                id: Some(child),
+                label: "child".into(),
+                full_label: "child".into(),
+                truncated: false,
+                level: 1,
+                children: Vec::new(),
+                has_hidden_children: false,
+                x: 0.0,
+                y: 0.0,
+            },
+        ]
+    }
+
+    #[test]
+    fn generic_layout_accepts_non_copy_workspace_identity() {
+        let mut document = sample_nodes(BlockId(1), BlockId(2));
+        let mut workspace = sample_nodes(
+            PathId("/project".into()),
+            PathId("/project/readme.md".into()),
+        );
+        let mut document_y = PAD;
+        let mut workspace_y = PAD;
+        layout(&mut document, 0, &mut document_y);
+        layout(&mut workspace, 0, &mut workspace_y);
+
+        assert_eq!(document_y, workspace_y);
+        assert_eq!(document[0].x, workspace[0].x);
+        assert_eq!(document[0].y, workspace[0].y);
+        assert_eq!(document[1].x, workspace[1].x);
+        assert_eq!(document[1].y, workspace[1].y);
+        let _state = MindmapState::<PathId>::default();
+    }
 }

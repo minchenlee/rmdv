@@ -30,3 +30,4 @@ pub mod update;
 pub mod vault_search;
 pub mod virt;
 pub mod watch;
+pub mod workspace_mindmap;

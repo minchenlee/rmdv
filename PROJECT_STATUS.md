@@ -40,8 +40,15 @@ Last reconciled: 2026-07-10 (Asia/Taipei)
 
 ## Current state
 
-- No source, documentation, or site work remains uncommitted after the status
-  coordination files themselves are committed.
+- **Full Mindmap Mode is implemented in the working tree, not yet committed.**
+  It uses `FullMindmapState` and path-based `WorkspaceNodeId`s to keep project
+  navigation independent of document `ViewMode::Mindmap`, `BlockId`, document
+  collapse, and document-layout state.
+- The intentional uncommitted files are `src/app.rs`, `src/lib.rs`,
+  `src/mindmap.rs`, `src/workspace_mindmap.rs`,
+  `docs/superpowers/specs/2026-07-10-full-mindmap-mode-design.md`, and this
+  status update. They add the mode, generic shared canvas identity, workspace
+  graph/model tests, app state-transition tests, and the approved design record.
 - Do not merge, push, tag, release, or deploy without a new explicit request.
 
 ## Verification evidence
@@ -50,6 +57,20 @@ Last reconciled: 2026-07-10 (Asia/Taipei)
   165 library tests plus all integration suites. One pre-existing unused-import
   warning remains in `tests/ipc_protocol.rs`.
 - `git diff --check` passed before the three implementation commits.
+- `cargo test --target-dir /private/tmp/mdv-full-mindmap-target -q` passed:
+  182 library tests plus all integration suites. The same pre-existing unused
+  `Section` import warning remains in `tests/ipc_protocol.rs`.
+- `cargo build --release --target-dir /private/tmp/mdv-full-mindmap-target -q`
+  passed.
+- `rustfmt --edition 2021 --check src/mindmap.rs src/workspace_mindmap.rs`
+  passed, and `git diff --check` passed. Repository-wide `cargo fmt --check`
+  and strict Clippy are not clean because the repository already has broad
+  formatting/lint debt (and test-style lint output); do not claim a clean
+  baseline from this feature work.
+- The focused headless Iced view test for both Full Mindmap phases passed.
+  Native desktop visual automation was unavailable because the local
+  Computer Use service timed out; perform a manual interaction pass before a
+  future release or visual-polish request.
 - Site static QA passed: `node --check site/app.js`, `node --check site/ghost.js`,
   JSON-LD parsing, local resource resolution, screenshot-button count, and the
   inline-theme CSP hash all passed.
@@ -63,25 +84,26 @@ Last reconciled: 2026-07-10 (Asia/Taipei)
 1. Merge `fix/cjk-emphasis-issue-6` into `main`.
 2. Push the branch, tag a release, publish artifacts, or deploy the site.
 
-## Planned next work — not started
+## Completed in working tree — awaiting review or commit request
 
-**Full Mindmap Mode** should be an opt-in navigation mode, distinct from and
-compatible with the existing document-level `ViewMode::Mindmap`. The user wants
-folder selection, project-folder browsing, and file selection to be possible
-end-to-end through a mindmap-style UI.
+**Full Mindmap Mode** is now an opt-in, full-window navigation mode, distinct
+from and compatible with the existing document-level `ViewMode::Mindmap`. It
+lets users select a folder, browse folders/files as a mindmap, and open a file
+without a list becoming the primary interaction.
 
-Start the next session with a design spec. It should define the activation and
-exit UX, workspace-node model, file/folder selection actions, state ownership,
-keyboard/panel behavior, and fallback to the current tree/picker/file-finder.
-Reuse the current mindmap canvas where safe, but do not conflate document nodes
-with filesystem nodes without a clear adapter and tests.
+The implementation is recorded in
+`docs/superpowers/specs/2026-07-10-full-mindmap-mode-design.md` and covers
+activation/exit UX, path-based workspace nodes, keyboard and panel behavior,
+dirty and late-async protection, shared-canvas adapter boundaries, fallback
+picker/tree/file-finder paths, and focused tests.
 
 ## Safe next action
 
-Begin the Full Mindmap Mode design if the next user request confirms it. If the
-user instead asks to merge or release, first re-check the branch against the
-then-current `main`, rerun appropriate verification, and follow the release
-workflow rather than relying on this historical snapshot.
+Review the working-tree Full Mindmap implementation and perform a manual native
+desktop interaction pass if visual sign-off is desired. Commit only on an
+explicit request. If the user instead asks to merge or release, first re-check
+the branch against the then-current `main`, rerun appropriate verification, and
+follow the release workflow rather than relying on this historical snapshot.
 
 ## Maintenance rule
 
