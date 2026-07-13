@@ -8,11 +8,12 @@ pub fn parse(src: &str) -> (Vec<(BlockId, Block)>, Vec<u32>) {
     // CommonMark's flanking rules refuse to close `*`/`**` when the closing
     // delimiter sits between CJK punctuation (e.g. `）`) and a CJK letter
     // (e.g. `的`) with no surrounding spaces — common in Chinese/Japanese/Korean
-    // prose, which doesn't use spaces. Insert a zero-width space before such a
-    // delimiter so the parser closes the emphasis. `inserts` records the
+    // prose, which doesn't use spaces. Insert a synthetic non-punctuation
+    // marker before such a delimiter so the parser closes the emphasis.
+    // `inserts` records the
     // byte positions (in the rewritten string) so block offsets can be mapped
     // back to coordinates in the original `src`. See issue #6.
-    let (cooked, inserts) = preprocess_cjk_emphasis(src);
+    let (cooked, inserts, synthetic_marker) = preprocess_cjk_emphasis(src);
     let mut opts = Options::empty();
     opts.insert(Options::ENABLE_TABLES);
     opts.insert(Options::ENABLE_STRIKETHROUGH);
@@ -21,7 +22,7 @@ pub fn parse(src: &str) -> (Vec<(BlockId, Block)>, Vec<u32>) {
     opts.insert(Options::ENABLE_MATH);
     let parser = Parser::new_ext(&cooked, opts).into_offset_iter();
     let mut state = ParseState {
-        strip_zwsp: !inserts.is_empty(),
+        synthetic_marker,
         ..ParseState::default()
     };
     let mut pending_offset: Option<u32> = None;
@@ -58,16 +59,22 @@ pub fn parse(src: &str) -> (Vec<(BlockId, Block)>, Vec<u32>) {
     (blocks, state.offsets)
 }
 
-/// Width of the zero-width space (`\u{200b}`) in UTF-8.
-const ZWSP_LEN: u32 = 3;
+/// Width of the BMP private-use marker in UTF-8.
+const SYNTHETIC_MARKER_LEN: u32 = 3;
+const PUA_START: u32 = 0xE000;
+const PUA_END: u32 = 0xF8FF;
+const PUA_COUNT: usize = (PUA_END - PUA_START + 1) as usize;
+const PUA_WORDS: usize = PUA_COUNT / u64::BITS as usize;
+#[cfg(test)]
 const ZWSP: char = '\u{200b}';
 
-/// Translate a byte offset in the rewritten (ZWSP-injected) string back to the
-/// equivalent offset in the original source: subtract `ZWSP_LEN` for every
+/// Translate a byte offset in the marker-injected string back to the
+/// equivalent offset in the original source: subtract `SYNTHETIC_MARKER_LEN`
+/// for every
 /// insertion that occurred strictly before `off`. `inserts` is sorted ascending.
 fn map_offset_back(off: u32, inserts: &[u32]) -> u32 {
     let before = inserts.partition_point(|&p| p < off);
-    off - before as u32 * ZWSP_LEN
+    off - before as u32 * SYNTHETIC_MARKER_LEN
 }
 
 /// Returns true for punctuation/symbol characters that, in CJK typography,
@@ -92,27 +99,134 @@ fn is_cjk_punct(c: char) -> bool {
     )
 }
 
-/// Insert a zero-width space where a run of `*` delimiters sits flush against a
-/// CJK punctuation character, so CommonMark's flanking rules will open/close the
-/// emphasis. Two symmetric placements (see issue #6):
+struct MarkerOccupancy {
+    words: [u64; PUA_WORDS],
+}
+
+impl Default for MarkerOccupancy {
+    fn default() -> Self {
+        Self {
+            words: [0; PUA_WORDS],
+        }
+    }
+}
+
+impl MarkerOccupancy {
+    /// Build a fixed-size occupancy map in one forward pass over the source.
+    /// Numeric references are decoded with pulldown-cmark's limits (six hex or
+    /// seven decimal digits) because they become authored characters in events.
+    fn from_source(src: &str) -> Self {
+        let mut occupied = Self::default();
+        let bytes = src.as_bytes();
+        let mut i = 0;
+        while i < bytes.len() {
+            if bytes[i] == b'&' {
+                if let Some((codepoint, consumed)) = scan_numeric_reference(&bytes[i..]) {
+                    occupied.mark_codepoint(codepoint);
+                    i += consumed;
+                    continue;
+                }
+            }
+
+            let c = src[i..]
+                .chars()
+                .next()
+                .expect("i always points at a UTF-8 character boundary");
+            occupied.mark_codepoint(c as u32);
+            i += c.len_utf8();
+        }
+        occupied
+    }
+
+    fn mark_codepoint(&mut self, codepoint: u32) {
+        if !(PUA_START..=PUA_END).contains(&codepoint) {
+            return;
+        }
+        let index = (codepoint - PUA_START) as usize;
+        self.words[index / u64::BITS as usize] |= 1 << (index % u64::BITS as usize);
+    }
+
+    fn first_free(&self) -> Option<char> {
+        self.words
+            .iter()
+            .enumerate()
+            .find_map(|(word_index, &word)| {
+                if word == u64::MAX {
+                    return None;
+                }
+                let bit = (!word).trailing_zeros() as usize;
+                let index = word_index * u64::BITS as usize + bit;
+                (index < PUA_COUNT).then(|| {
+                    char::from_u32(PUA_START + index as u32)
+                        .expect("BMP private-use values are valid scalars")
+                })
+            })
+    }
+}
+
+/// Match pulldown-cmark's numeric character reference grammar closely enough
+/// to reserve any BMP private-use scalar it will decode into an event payload.
+fn scan_numeric_reference(bytes: &[u8]) -> Option<(u32, usize)> {
+    if bytes.get(0..2) != Some(b"&#") {
+        return None;
+    }
+
+    let mut i = 2;
+    let (radix, limit): (u32, usize) = if bytes.get(i).is_some_and(|&b| b | 0x20 == b'x') {
+        i += 1;
+        (16, 6)
+    } else {
+        (10, 7)
+    };
+    let start = i;
+    let mut value = 0u32;
+    while i - start < limit {
+        let Some(&b) = bytes.get(i) else {
+            break;
+        };
+        let digit = match b {
+            b'0'..=b'9' => u32::from(b - b'0'),
+            b'a'..=b'f' if radix == 16 => u32::from(b - b'a' + 10),
+            b'A'..=b'F' if radix == 16 => u32::from(b - b'A' + 10),
+            _ => break,
+        };
+        value = value * radix + digit;
+        i += 1;
+    }
+
+    (i > start && bytes.get(i) == Some(&b';')).then_some((value, i + 1))
+}
+
+/// Insert a synthetic marker where a run of `*` delimiters sits flush against a
+/// CJK punctuation character, so CommonMark's flanking rules will open/close
+/// the emphasis. Two symmetric placements (see issue #6):
 ///
-/// * **closer:** `CJK-punct` immediately followed by `*…` → ZWSP *before* the run
-///   (e.g. `（CNN）**的` → `（CNN）\u{200b}**的`)
-/// * **opener:** `*…` immediately followed by `CJK-punct` → ZWSP *after* the run
-///   (e.g. `**「你好」` → `**\u{200b}「你好」`)
+/// * **closer:** `CJK-punct` immediately followed by `*…` → marker *before* the
+///   run
+/// * **opener:** `*…` immediately followed by `CJK-punct` → marker *after* the
+///   run
 ///
 /// Fenced code blocks and inline code spans are emitted verbatim so code is
-/// never polluted. Returns the rewritten text plus the sorted byte positions (in
-/// the rewritten string) where a ZWSP was inserted. When nothing matches, the
-/// input is returned borrowed with an empty insertion list — the common ASCII /
-/// no-`*` case pays only a single scan and no allocation.
-fn preprocess_cjk_emphasis(src: &str) -> (std::borrow::Cow<'_, str>, Vec<u32>) {
+/// never polluted. The marker is selected from the BMP private-use range and is
+/// guaranteed not to occur in the source, so cleanup cannot remove authored
+/// content such as U+200B. Returns the rewritten text, sorted marker byte
+/// positions, and the selected marker. When nothing matches, the input is
+/// returned borrowed with an empty insertion list and no marker — the common
+/// ASCII / no-`*` case pays only a single scan and no allocation.
+fn preprocess_cjk_emphasis(src: &str) -> (std::borrow::Cow<'_, str>, Vec<u32>, Option<char>) {
     // Any rewrite needs both a `*` and a non-ASCII byte somewhere; bail cheaply
     // otherwise (covers virtually all English documents).
     let bytes = src.as_bytes();
     if !bytes.contains(&b'*') || bytes.iter().all(|b| b.is_ascii()) {
-        return (std::borrow::Cow::Borrowed(src), Vec::new());
+        return (std::borrow::Cow::Borrowed(src), Vec::new(), None);
     }
+
+    // Every BMP private-use scalar is three UTF-8 bytes, keeping offset mapping
+    // constant. Literal and entity-authored scalars are reserved in one source
+    // pass. If the range is full, preserve content and skip the rewrite.
+    let Some(synthetic_marker) = MarkerOccupancy::from_source(src).first_free() else {
+        return (std::borrow::Cow::Borrowed(src), Vec::new(), None);
+    };
 
     let mut out = String::with_capacity(src.len() + 8);
     let mut inserts: Vec<u32> = Vec::new();
@@ -142,13 +256,17 @@ fn preprocess_cjk_emphasis(src: &str) -> (std::borrow::Cow<'_, str>, Vec<u32>) {
             out.push_str(line);
             continue;
         }
-        rewrite_line(line, &mut out, &mut inserts);
+        rewrite_line(line, &mut out, &mut inserts, synthetic_marker);
     }
 
     if inserts.is_empty() {
-        (std::borrow::Cow::Borrowed(src), Vec::new())
+        (std::borrow::Cow::Borrowed(src), Vec::new(), None)
     } else {
-        (std::borrow::Cow::Owned(out), inserts)
+        (
+            std::borrow::Cow::Owned(out),
+            inserts,
+            Some(synthetic_marker),
+        )
     }
 }
 
@@ -177,9 +295,9 @@ fn fence_delimiter(line: &str) -> Option<(char, usize)> {
 }
 
 /// Rewrite one line (known to be outside a fenced block), appending to `out` and
-/// recording ZWSP insertion offsets (into `out`) in `inserts`. Inline code spans
-/// (matched backtick runs) are passed through untouched.
-fn rewrite_line(line: &str, out: &mut String, inserts: &mut Vec<u32>) {
+/// recording marker insertion offsets (into `out`) in `inserts`. Inline code
+/// spans (matched backtick runs) are passed through untouched.
+fn rewrite_line(line: &str, out: &mut String, inserts: &mut Vec<u32>, synthetic_marker: char) {
     let mut chars = line.char_indices().peekable();
     let mut prev: Option<char> = None;
     let mut inline_code_run: usize = 0; // backtick run length holding an open span; 0 = outside code
@@ -211,7 +329,7 @@ fn rewrite_line(line: &str, out: &mut String, inserts: &mut Vec<u32>) {
         // Closer: CJK punctuation flush against the start of a `*` run.
         if c == '*' && prev.is_some_and(is_cjk_punct) {
             inserts.push(out.len() as u32);
-            out.push(ZWSP);
+            out.push(synthetic_marker);
             out.push(c);
             // Emit the rest of the `*` run, then, if it abuts CJK punctuation,
             // also apply the opener fix after the run.
@@ -221,7 +339,7 @@ fn rewrite_line(line: &str, out: &mut String, inserts: &mut Vec<u32>) {
             }
             if matches!(chars.peek(), Some(&(_, n)) if is_cjk_punct(n)) {
                 inserts.push(out.len() as u32);
-                out.push(ZWSP);
+                out.push(synthetic_marker);
             }
             prev = Some('*');
             continue;
@@ -237,7 +355,7 @@ fn rewrite_line(line: &str, out: &mut String, inserts: &mut Vec<u32>) {
             }
             if matches!(chars.peek(), Some(&(_, n)) if is_cjk_punct(n)) {
                 inserts.push(out.len() as u32);
-                out.push(ZWSP);
+                out.push(synthetic_marker);
             }
             prev = Some('*');
             continue;
@@ -343,10 +461,9 @@ struct ParseState {
     offsets: Vec<u32>,
     emitted_offsets: VecDeque<u32>,
     stack: Vec<Frame>,
-    /// True when the source was rewritten with ZWSP (issue #6). When set, the
-    /// ZWSP we injected must be stripped out of emitted text so it never leaks
-    /// into copy/search/content-hashing.
-    strip_zwsp: bool,
+    /// Marker selected for this parse's CJK-emphasis rewrite. It is absent from
+    /// the original source, so removing it cannot remove authored content.
+    synthetic_marker: Option<char>,
 }
 
 enum Frame {
@@ -389,16 +506,15 @@ enum Frame {
 }
 
 impl ParseState {
-    /// Remove any ZWSP we injected for the CJK-emphasis fix (issue #6) from a
-    /// payload before it enters the AST. The per-line preprocessor cannot see
-    /// inside multi-line inline-code or math spans, so it may inject a ZWSP that
-    /// pulldown then emits as `Code`/`InlineMath`/`DisplayMath`; this is the
-    /// backstop that keeps that ZWSP out of rendered text, search, copy, and
-    /// content hashes. No-op (and allocation-free) when no rewrite happened.
-    fn clean_zwsp(&self, s: String) -> String {
-        if self.strip_zwsp && s.contains(ZWSP) {
+    /// Remove this parse's synthetic CJK-emphasis marker from a payload before
+    /// it enters the AST. The per-line preprocessor cannot see inside multiline
+    /// inline-code, math, or link destinations, so this is the backstop that
+    /// keeps the marker out of rendered text, URLs, search, copy, and hashes.
+    /// No-op (and allocation-free) when no rewrite happened.
+    fn clean_synthetic_marker(&self, s: String) -> String {
+        if let Some(marker) = self.synthetic_marker.filter(|&marker| s.contains(marker)) {
             let mut s = s;
-            s.retain(|c| c != ZWSP);
+            s.retain(|c| c != marker);
             s
         } else {
             s
@@ -410,11 +526,11 @@ impl ParseState {
             Event::Start(tag) => self.start(tag, offset),
             Event::End(tag) => self.end(tag, offset),
             Event::Text(s) => {
-                let s = self.clean_zwsp(s.into_string());
+                let s = self.clean_synthetic_marker(s.into_string());
                 self.push_inline(Inline::Text(s), offset, true)
             }
             Event::Code(s) => {
-                let s = self.clean_zwsp(s.into_string());
+                let s = self.clean_synthetic_marker(s.into_string());
                 self.push_inline(Inline::Code(s), offset, true)
             }
             Event::SoftBreak | Event::HardBreak => {
@@ -424,7 +540,7 @@ impl ParseState {
             // inline math renders as literal `$…$` source text for now. The hash
             // must be computed over the cleaned source so cache keys are stable.
             Event::DisplayMath(s) => {
-                let source = self.clean_zwsp(s.into_string());
+                let source = self.clean_synthetic_marker(s.into_string());
                 let mut h = DefaultHasher::new();
                 2u8.hash(&mut h);
                 source.hash(&mut h);
@@ -438,7 +554,7 @@ impl ParseState {
                 );
             }
             Event::InlineMath(s) => {
-                let s = self.clean_zwsp(s.into_string());
+                let s = self.clean_synthetic_marker(s.into_string());
                 self.push_inline(Inline::Text(format!("${}$", s)), offset, true)
             }
             Event::Rule => self.push_block(Block::Rule),
@@ -466,10 +582,13 @@ impl ParseState {
             Tag::Emphasis => self.stack.push(Frame::Emph(Vec::new())),
             Tag::Strong => self.stack.push(Frame::Strong(Vec::new())),
             Tag::Strikethrough => self.stack.push(Frame::Strike(Vec::new())),
-            Tag::Link { dest_url, .. } => self.stack.push(Frame::Link {
-                url: dest_url.into_string(),
-                children: Vec::new(),
-            }),
+            Tag::Link { dest_url, .. } => {
+                let url = self.clean_synthetic_marker(dest_url.into_string());
+                self.stack.push(Frame::Link {
+                    url,
+                    children: Vec::new(),
+                });
+            }
             Tag::BlockQuote(_) => self.stack.push(Frame::Blockquote(Vec::new())),
             Tag::List(start) => self.stack.push(Frame::List {
                 ordered: start.is_some(),
@@ -493,8 +612,9 @@ impl ParseState {
                 });
             }
             Tag::Image { dest_url, .. } => {
+                let url = self.clean_synthetic_marker(dest_url.into_string());
                 self.push_block(Block::Image {
-                    url: dest_url.into_string(),
+                    url,
                     alt: String::new(),
                 });
             }
@@ -894,22 +1014,23 @@ mod tests {
 
     #[test]
     fn ascii_bold_unaffected() {
-        // Plain ASCII bold still works and is byte-identical (no ZWSP injected,
-        // borrowed fast path).
+        // Plain ASCII bold still works and is byte-identical (no marker
+        // injected, borrowed fast path).
         let src = "this is **bold** text";
         assert_eq!(strong_texts(src), vec!["bold".to_string()]);
-        let (cooked, inserts) = preprocess_cjk_emphasis(src);
+        let (cooked, inserts, marker) = preprocess_cjk_emphasis(src);
         assert!(matches!(cooked, std::borrow::Cow::Borrowed(_)));
         assert!(inserts.is_empty());
+        assert!(marker.is_none());
     }
 
     #[test]
     fn ascii_punct_before_close_not_rewritten() {
         // CommonMark intentionally leaves `**(foo)**bar` literal (punct before,
-        // letter after, no space). We must NOT change ASCII semantics: no ZWSP
-        // inserted, so it stays literal exactly as upstream / the CommonMark spec.
+        // letter after, no space). We must NOT change ASCII semantics: no marker
+        // is inserted, so it stays literal exactly as upstream / CommonMark.
         let src = "a **(foo)**bar";
-        let (_, inserts) = preprocess_cjk_emphasis(src);
+        let (_, inserts, _) = preprocess_cjk_emphasis(src);
         assert!(
             inserts.is_empty(),
             "ASCII punctuation must not trigger a rewrite"
@@ -920,9 +1041,9 @@ mod tests {
     #[test]
     fn fenced_code_block_untouched() {
         // Asterisks after CJK punctuation inside a fenced block must not get a
-        // ZWSP — code is rendered verbatim.
+        // marker — code is rendered verbatim.
         let src = "```\n（X）**的\n```\n";
-        let (_, inserts) = preprocess_cjk_emphasis(src);
+        let (_, inserts, _) = preprocess_cjk_emphasis(src);
         assert!(inserts.is_empty(), "fenced code must not be rewritten");
     }
 
@@ -930,7 +1051,7 @@ mod tests {
     fn inline_code_untouched() {
         // Inline code span content is verbatim too.
         let src = "看這個 `（X）**的` 範例";
-        let (_, inserts) = preprocess_cjk_emphasis(src);
+        let (_, inserts, _) = preprocess_cjk_emphasis(src);
         assert!(inserts.is_empty(), "inline code must not be rewritten");
     }
 
@@ -944,7 +1065,7 @@ mod tests {
 
     #[test]
     fn block_offsets_map_to_original_coordinates() {
-        // The ZWSP injection must not corrupt the byte offsets parse() returns:
+        // Marker injection must not corrupt the byte offsets parse() returns:
         // each block's offset must point at the right line in the ORIGINAL src.
         // First line is a heading, second a paragraph that triggers a rewrite.
         let src = "# 標題\n\n這是**內容（X）**的段落\n";
@@ -969,7 +1090,7 @@ mod tests {
     fn cjk_strong_opener_followed_by_punct() {
         // Issue #6 mirror case: the OPENING `**` is immediately followed by CJK
         // punctuation (`**「`), which also fails CommonMark flanking. Needs a
-        // ZWSP after the opener AND before the closer.
+        // a marker after the opener AND before the closer.
         let src = "他說**「你好，世界」**然後離開";
         assert_eq!(strong_texts(src), vec!["「你好，世界」".to_string()]);
     }
@@ -978,7 +1099,7 @@ mod tests {
     fn tilde_fence_untouched() {
         // `~~~`-fenced blocks are skipped just like ```-fenced ones.
         let src = "~~~\n（X）**的\n~~~\n";
-        let (_, inserts) = preprocess_cjk_emphasis(src);
+        let (_, inserts, _) = preprocess_cjk_emphasis(src);
         assert!(inserts.is_empty(), "~~~ fenced code must not be rewritten");
     }
 
@@ -1003,71 +1124,200 @@ mod tests {
     }
 
     #[test]
-    fn no_zwsp_leaks_into_text() {
-        // The injected ZWSP must be stripped from rendered/searchable text.
+    fn no_synthetic_marker_leaks_into_text() {
+        // The injected marker must be stripped from rendered/searchable text.
         let src = "這是**內容（X）**的段落";
-        assert!(!any_zwsp_in_ast(src), "no ZWSP may leak into text");
+        assert!(!any_synthetic_marker_in_ast(src));
     }
 
-    /// True if a ZWSP appears anywhere in the parsed AST — inline text, inline
-    /// code, link text, or a Math diagram's source. The injected ZWSP must never
-    /// reach any of these (issue #6 review).
-    fn any_zwsp_in_ast(src: &str) -> bool {
+    #[test]
+    fn authored_zwsp_survives_cjk_emphasis_rewrite() {
+        let src = "原文\u{200b}保留，並且**內容（X）**的格式正確";
         let (blocks, _) = parse(src);
-        blocks.iter().any(|(_, b)| block_has_zwsp(b))
+        let rendered = blocks
+            .iter()
+            .find_map(|(_, block)| match block {
+                Block::Paragraph(inlines) => Some(inline_to_string(inlines)),
+                _ => None,
+            })
+            .expect("paragraph");
+
+        assert_eq!(rendered.matches(ZWSP).count(), 1);
+        assert!(rendered.contains("原文\u{200b}保留"));
+        assert_eq!(strong_texts(src), vec!["內容（X）".to_string()]);
     }
 
-    fn block_has_zwsp(b: &Block) -> bool {
+    #[test]
+    fn authored_literal_pua_survives_marker_collision() {
+        let src = "保留\u{E000}字元，並且**內容（X）**的格式正確";
+        let (_, _, marker) = preprocess_cjk_emphasis(src);
+        assert_eq!(marker, Some('\u{E001}'));
+
+        let (blocks, _) = parse(src);
+        let rendered = blocks
+            .iter()
+            .find_map(|(_, block)| match block {
+                Block::Paragraph(inlines) => Some(inline_to_string(inlines)),
+                _ => None,
+            })
+            .expect("paragraph");
+        assert!(rendered.contains('\u{E000}'));
+        assert_eq!(strong_texts(src), vec!["內容（X）".to_string()]);
+    }
+
+    #[test]
+    fn decoded_pua_entity_survives_cjk_emphasis_rewrite() {
+        let src = "保留 &#xE000; 字元，並且**內容（X）**的格式正確";
+        let (_, _, marker) = preprocess_cjk_emphasis(src);
+        assert_eq!(marker, Some('\u{E001}'));
+
+        let (blocks, _) = parse(src);
+        let rendered = blocks
+            .iter()
+            .find_map(|(_, block)| match block {
+                Block::Paragraph(inlines) => Some(inline_to_string(inlines)),
+                _ => None,
+            })
+            .expect("paragraph");
+        assert!(rendered.contains('\u{E000}'));
+        assert_eq!(strong_texts(src), vec!["內容（X）".to_string()]);
+    }
+
+    #[test]
+    fn decoded_pua_entity_survives_in_link_destination() {
+        let src = "[連結](https://example.com/a&#X0E000;b/路徑（X）**的)";
+        let (blocks, _) = parse(src);
+        let url = blocks.iter().find_map(|(_, block)| match block {
+            Block::Paragraph(inlines) => inlines.iter().find_map(|inline| match inline {
+                Inline::Link { url, .. } => Some(url.as_str()),
+                _ => None,
+            }),
+            _ => None,
+        });
+
+        assert_eq!(url, Some("https://example.com/a\u{E000}b/路徑（X）**的"));
+    }
+
+    #[test]
+    fn marker_occupancy_uses_one_pass_fixed_map() {
+        let src = "\u{E000} &#xE001; &#X00E002; &#0057347;";
+        assert_eq!(
+            MarkerOccupancy::from_source(src).first_free(),
+            Some('\u{E004}')
+        );
+    }
+
+    #[test]
+    fn all_pua_scalars_fall_back_without_marker() {
+        let mut src = String::with_capacity(PUA_COUNT * 3 + 32);
+        for codepoint in PUA_START..=PUA_END {
+            src.push(char::from_u32(codepoint).unwrap());
+        }
+        src.push_str(" 並且**內容（X）**的格式正確");
+
+        assert!(MarkerOccupancy::from_source(&src).first_free().is_none());
+        let (cooked, inserts, marker) = preprocess_cjk_emphasis(&src);
+        assert!(matches!(cooked, std::borrow::Cow::Borrowed(_)));
+        assert!(inserts.is_empty());
+        assert!(marker.is_none());
+    }
+
+    #[test]
+    fn synthetic_marker_is_removed_from_link_destination() {
+        let expected = "https://example.com/路徑（X）**的";
+        let src = format!("[連結]({expected})");
+        let (blocks, _) = parse(&src);
+        let url = blocks.iter().find_map(|(_, block)| match block {
+            Block::Paragraph(inlines) => inlines.iter().find_map(|inline| match inline {
+                Inline::Link { url, .. } => Some(url.as_str()),
+                _ => None,
+            }),
+            _ => None,
+        });
+
+        assert_eq!(url, Some(expected));
+    }
+
+    #[test]
+    fn synthetic_marker_is_removed_from_image_destination() {
+        let expected = "https://example.com/圖片（X）**的.png";
+        let src = format!("![圖片]({expected})");
+        let (blocks, _) = parse(&src);
+        let url = blocks.iter().find_map(|(_, block)| match block {
+            Block::Image { url, .. } => Some(url.as_str()),
+            _ => None,
+        });
+
+        assert_eq!(url, Some(expected));
+    }
+
+    /// True if a BMP private-use marker appears anywhere in the parsed AST.
+    /// Test inputs do not author private-use scalars, so any match leaked from
+    /// preprocessing.
+    fn any_synthetic_marker_in_ast(src: &str) -> bool {
+        let (blocks, _) = parse(src);
+        blocks.iter().any(|(_, b)| block_has_synthetic_marker(b))
+    }
+
+    fn has_synthetic_marker(s: &str) -> bool {
+        s.chars().any(|c| matches!(c, '\u{E000}'..='\u{F8FF}'))
+    }
+
+    fn block_has_synthetic_marker(b: &Block) -> bool {
         match b {
             Block::Paragraph(inl) | Block::Heading { inlines: inl, .. } => {
-                inl.iter().any(inline_has_zwsp)
+                inl.iter().any(inline_has_synthetic_marker)
             }
-            Block::CodeBlock { code, .. } => code.contains(ZWSP),
-            Block::Diagram { source, .. } => source.contains(ZWSP),
-            Block::Blockquote(bs) => bs.iter().any(block_has_zwsp),
-            Block::List { items, .. } => {
-                items.iter().any(|it| it.blocks.iter().any(block_has_zwsp))
-            }
+            Block::CodeBlock { code, .. } => has_synthetic_marker(code),
+            Block::Diagram { source, .. } => has_synthetic_marker(source),
+            Block::Blockquote(bs) => bs.iter().any(block_has_synthetic_marker),
+            Block::List { items, .. } => items
+                .iter()
+                .any(|it| it.blocks.iter().any(block_has_synthetic_marker)),
             Block::Table { headers, rows } => {
-                headers.iter().flatten().any(inline_has_zwsp)
-                    || rows.iter().flatten().flatten().any(inline_has_zwsp)
+                headers.iter().flatten().any(inline_has_synthetic_marker)
+                    || rows
+                        .iter()
+                        .flatten()
+                        .flatten()
+                        .any(inline_has_synthetic_marker)
             }
             _ => false,
         }
     }
 
-    fn inline_has_zwsp(i: &Inline) -> bool {
+    fn inline_has_synthetic_marker(i: &Inline) -> bool {
         match i {
-            Inline::Text(s) | Inline::Code(s) => s.contains(ZWSP),
+            Inline::Text(s) | Inline::Code(s) => has_synthetic_marker(s),
             Inline::Emph(c) | Inline::Strong(c) | Inline::Strike(c) => {
-                c.iter().any(inline_has_zwsp)
+                c.iter().any(inline_has_synthetic_marker)
             }
             Inline::Link { url, children } => {
-                url.contains(ZWSP) || children.iter().any(inline_has_zwsp)
+                has_synthetic_marker(url) || children.iter().any(inline_has_synthetic_marker)
             }
         }
     }
 
     #[test]
-    fn no_zwsp_leaks_into_multiline_inline_code() {
+    fn no_synthetic_marker_leaks_into_multiline_inline_code() {
         // An inline code span that spans a soft break: the per-line preprocessor
-        // can't see it's inside code, so it may inject a ZWSP that pulldown emits
-        // as Event::Code. That ZWSP must still be stripped. (Review: Critical 1)
+        // can't see it's inside code, so it may inject a marker that pulldown
+        // emits as Event::Code. That marker must still be stripped.
         let src = "`\n（X）**字`";
         assert!(
-            !any_zwsp_in_ast(src),
-            "ZWSP must not leak into multi-line inline code"
+            !any_synthetic_marker_in_ast(src),
+            "marker must not leak into multi-line inline code"
         );
     }
 
     #[test]
-    fn no_zwsp_leaks_into_display_math() {
-        // Display math `$$…$$` contains `*` as LaTeX, not emphasis. No ZWSP may
-        // reach the math source or its content hash. (Review: Critical 2)
+    fn no_synthetic_marker_leaks_into_display_math() {
+        // Display math `$$…$$` contains `*` as LaTeX, not emphasis. No marker
+        // may reach the math source or its content hash.
         let src = "$$（X）*的*$$";
-        assert!(!any_zwsp_in_ast(src), "ZWSP must not leak into math source");
+        assert!(!any_synthetic_marker_in_ast(src));
         // The content hash must match the same math written without any CJK-punct
-        // trigger — i.e. the hash is computed over clean source, not ZWSP-polluted.
+        // trigger — i.e. the hash is computed over clean source.
         let polluted = parse(src);
         let clean = parse("$$ x *y* $$");
         let polluted_hash = polluted.0.iter().find_map(|(_, b)| match b {
@@ -1080,31 +1330,31 @@ mod tests {
         });
         assert!(polluted_hash.is_some() && clean_hash.is_some());
         // (Different content → different hash; the point is the polluted hash is
-        // over clean "（X）*的*" not "（X）\u{200b}*的*". Recompute the expected.)
+        // over clean "（X）*的*", without the marker. Recompute the expected.)
         let mut h = DefaultHasher::new();
         2u8.hash(&mut h);
         "（X）*的*".hash(&mut h);
         assert_eq!(
             polluted_hash.unwrap(),
             h.finish(),
-            "display-math hash must be over ZWSP-free source"
+            "display-math hash must be over marker-free source"
         );
     }
 
     #[test]
-    fn no_zwsp_leaks_into_inline_math() {
-        // Inline math renders as literal `$…$` text; no ZWSP may appear in it.
+    fn no_synthetic_marker_leaks_into_inline_math() {
+        // Inline math renders as literal `$…$` text; no marker may appear in it.
         let src = "計算 $x（X）*的*$ 完成";
         assert!(
-            !any_zwsp_in_ast(src),
-            "ZWSP must not leak into inline math text"
+            !any_synthetic_marker_in_ast(src),
+            "marker must not leak into inline math text"
         );
     }
 
     #[test]
     fn map_offset_back_boundary() {
-        // An insertion at byte 5 (rewritten coords) means a ZWSP occupies
-        // [5, 8). An offset exactly at 5 must NOT shift back (the ZWSP starts
+        // An insertion at byte 5 (rewritten coords) means a marker occupies
+        // [5, 8). An offset exactly at 5 must NOT shift back (the marker starts
         // at/after it); only insertions strictly before it count.
         assert_eq!(map_offset_back(5, &[5]), 5);
         assert_eq!(map_offset_back(6, &[5]), 3); // 6 - 3
@@ -1136,9 +1386,9 @@ mod tests {
     #[test]
     fn ideographic_space_does_not_trigger_rewrite() {
         // U+3000 is whitespace; `*` adjacent to it already flanks correctly, so
-        // we must not waste a ZWSP there. Bold still renders (via the space).
+        // we must not waste a marker there. Bold still renders (via the space).
         let src = "標題　**內容**　結束"; // 　 is U+3000
-        let (_, inserts) = preprocess_cjk_emphasis(src);
+        let (_, inserts, _) = preprocess_cjk_emphasis(src);
         assert!(
             inserts.is_empty(),
             "ideographic space must not trigger a rewrite"
