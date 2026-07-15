@@ -7,7 +7,7 @@ Last reconciled: 2026-07-15 (Asia/Taipei)
 - Actual checkout: `/Users/liminchen/Documents/GitHub/mdv`
 - Legacy non-repo path: `/Users/liminchen/Documents/GitHub/mdv-main`
 - Active branch: `feat/full-mindmap-mode`; its latest implementation candidate
-  is `400e41b` (`fix: preserve full mindmap child focus`).
+  is `6f05ecf` (`fix: keep nearest ancestor after empty shell`).
 - Local `main` is at `67564e5`, eleven commits ahead of `origin/main`: Windows
   IPC fix `6fa6450`, CJK emphasis fix `0df1fe2`, reviewed CJK repair `d97370e`,
   the six-commit reviewed Zen feature/repair line `1199455..f2b0519`, and Zen
@@ -108,11 +108,16 @@ Last reconciled: 2026-07-15 (Asia/Taipei)
    so async folder discovery recenters the acted-on folder or accepted first
    child at its final layout position instead of a transient parent/root seed.
    Document Mindmap leaves the generation unset and retains its prior behavior.
+17. **Full Mindmap nearest-ancestor correction** is committed as `6f05ecf`.
+   When lazy verification removes a selected exact-empty shell, selection and
+   canvas focus now walk to the nearest still-visible folder ancestor; the
+   workspace root is used only when no closer graph ancestor remains.
 
 ## Current state
 
-- **Full Mindmap nearest-ancestor focus correction is maker-SUBMITTED** at
-  implementation commit `6f05ecf` after the metadata-only `/Shopee backroom`
+- **Full Mindmap nearest-ancestor focus correction is independently accepted**
+  at implementation commit `6f05ecf` with no P0/P1 findings, after the
+  metadata-only `/Shopee backroom`
   investigation on `feat/full-mindmap-mode`. The real path is
   `/Users/liminchen/Documents/Shopee Backroom`. A read-only production scan of
   its parent retained the folder as `LowerBound(0)` because the bounded
@@ -135,8 +140,8 @@ Last reconciled: 2026-07-15 (Asia/Taipei)
   `/private/tmp/mdv-full-mindmap-protect-target`. The fresh binary is
   `/private/tmp/mdv-full-mindmap-protect-target/debug/rmdv` with SHA-256
   `a5c8f0d39b9c4ae61749531b11c3cf4787c65d4da138ac84e37d6808adc86434`.
-  Main/Zoom integration, release, and native acceptance remain out of scope;
-  maker submission is complete but native/manual acceptance is pending.
+  Main/Zoom integration and release remain out of scope; native/manual
+  acceptance is pending.
 
 - **Full Mindmap child-focus correction is independently accepted** at
   implementation commit `400e41b` with no P0/P1 findings. It adds a Full Mindmap
@@ -189,7 +194,7 @@ Last reconciled: 2026-07-15 (Asia/Taipei)
 - `feat/full-mindmap-mode` and `feat/mindmap-zoom-controls` still follow the old
   `0df1fe2` line and do not contain repair `d97370e`, the Zen feature, or the
   screenshot repair. Full Mindmap is 9 main-only commits behind and contains
-  37 branch-only commits; Zoom Controls is 9 main-only commits
+  41 branch-only commits; Zoom Controls is 9 main-only commits
   behind and has 10 branch-only commits. The Full Mindmap refinement is
   protected at `82afd5a`; integrate current
   `main@67564e5` only after the requested manual acceptance, then retest.
@@ -470,6 +475,13 @@ Last reconciled: 2026-07-15 (Asia/Taipei)
   mindmap, 40 Full Mindmap, 14 workspace-graph, and 9 sidebar tests plus
   touched-file rustfmt, implementation/status diff checks, worktree cleanliness,
   and the final binary SHA-256. All passed.
+- A fresh lead-side review of `e991a67..6f05ecf` found no P0/P1 issue after
+  checking graph-root boundaries, path-parent walking, deferred-file selection,
+  exact-empty-only normalization, root final fallback, and generation-driven
+  canvas focus on the accepted ancestor. The lead independently reran 36
+  canvas/mindmap, 42 Full Mindmap, 15 workspace-graph, 12 tree, and 9 sidebar
+  tests plus touched-file rustfmt, implementation/status diff checks, worktree
+  cleanliness, and the final binary SHA-256. All passed.
 - A fresh lead-side static review of `3e2b3fd..1317a06` found no P0/P1 issue
   after checking exact-empty pruning, branch-local shallow ownership, bounded
   background execution, exact request/root/filter/expansion/mode rejection,
@@ -583,7 +595,7 @@ Last reconciled: 2026-07-15 (Asia/Taipei)
 
 The Full Mindmap feature is an opt-in, full-window navigation mode, distinct
 from and compatible with the existing document-level `ViewMode::Mindmap`.
-Commits through `400e41b` remove its visual controls, make folder traversal and
+Commits through `6f05ecf` remove its visual controls, make folder traversal and
 file opening keyboard-first, address the manual-acceptance corrections, harden
 large-workspace behavior, unify both entry scenarios around one explorer, add
 recursive collapsed-folder count labels from the bounded snapshot, lazily
@@ -611,9 +623,11 @@ and nested folders beneath Documents are reachable from Home or an ancestor
 without first making Documents the root. Expand a child beneath Documents with
 Space and Right and confirm the viewport remains focused on that folder/child
 after Loading completes rather than jumping to the user root. A/B/C/D/E/G and
-hidden additivity were accepted on earlier candidates; `1317a06` and `400e41b`
-passed independent automated review and still need native acceptance. Do not
-integrate main while that gate is held.
+hidden additivity were accepted on earlier candidates. Expanding
+`Shopee Backroom` should still remove it because it has no supported
+descendants, but focus must return to `Documents`, not `liminchen`. `1317a06`, `400e41b`, and
+`6f05ecf` passed independent automated review and still need native acceptance.
+Do not integrate main while that gate is held.
 After acceptance,
 integrate current
 `main@67564e5`, rebuild and repeat the large-folder interaction; only then
