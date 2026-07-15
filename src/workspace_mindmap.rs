@@ -5,16 +5,18 @@
 //! `BlockId` state.
 
 use crate::mindmap::{self, MNode};
-use crate::picker::{Entry, Picker};
+use crate::picker::{Entry, Picker, SupportedFileCount};
 use crate::tree::Node;
 use iced::Size;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
+use std::sync::Arc;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum WorkspaceStatus {
     Empty,
     Error,
+    Truncated,
 }
 
 /// Stable, filesystem-scoped canvas identity. These values never enter the
@@ -34,6 +36,7 @@ pub enum WorkspaceNodeKind {
     File,
     Empty,
     Error,
+    Truncated,
 }
 
 #[derive(Debug, Clone)]
@@ -48,7 +51,7 @@ pub struct WorkspaceNode {
 /// A visible, laid-out adapter graph plus domain metadata for app actions.
 #[derive(Clone)]
 pub struct WorkspaceGraph {
-    pub nodes: Vec<MNode<WorkspaceNodeId>>,
+    pub nodes: Arc<Vec<MNode<WorkspaceNodeId>>>,
     pub content_size: Size,
     root: WorkspaceNodeId,
     by_id: HashMap<WorkspaceNodeId, WorkspaceNode>,
@@ -162,7 +165,7 @@ impl Builder {
         let width =
             mindmap::PAD * 2.0 + mindmap::NODE_W + max_level * (mindmap::NODE_W + mindmap::X_GAP);
         WorkspaceGraph {
-            nodes: self.nodes,
+            nodes: Arc::new(self.nodes),
             content_size: Size::new(width, y_cursor + mindmap::PAD),
             root,
             by_id: self.by_id,
@@ -175,23 +178,73 @@ fn status_label(status: WorkspaceStatus, detail: Option<&str>) -> String {
         (WorkspaceStatus::Empty, _) => "Empty folder".to_string(),
         (WorkspaceStatus::Error, Some(error)) => format!("⚠ {error}"),
         (WorkspaceStatus::Error, None) => "⚠ Couldn't read folder".to_string(),
+        (WorkspaceStatus::Truncated, _) => "More files not indexed".to_string(),
     }
+}
+
+fn picker_folder_label(
+    name: &str,
+    path: &PathBuf,
+    file_counts: &HashMap<PathBuf, SupportedFileCount>,
+    unavailable_count_paths: &HashSet<PathBuf>,
+    pending_count_path: Option<&PathBuf>,
+) -> String {
+    if pending_count_path.is_some_and(|pending| pending == path) {
+        return format!("{name} · counting files…");
+    }
+    if unavailable_count_paths.contains(path) {
+        return format!("{name} · count unavailable");
+    }
+    let Some(count) = file_counts.get(path) else {
+        return name.to_string();
+    };
+    if count.capped && count.count == 0 {
+        // The entry budget can end before we encounter a supported file. Do
+        // not imply an impossible "0+ files" result or that the folder is
+        // empty; the count is simply incomplete.
+        return format!("{name} · scan limit reached");
+    }
+    let amount = if count.capped {
+        format!("{}+", count.count)
+    } else {
+        count.count.to_string()
+    };
+    let noun = if count.count == 1 && !count.capped {
+        "file"
+    } else {
+        "files"
+    };
+    format!("{name} · {amount} {noun}")
 }
 
 /// Adapt the folder-only picker into a shallow mindmap graph. A picker knows
 /// only immediate directory entries; selecting/activating a folder changes the
-/// picker directory and rebuilds this graph.
-pub fn from_picker(picker: &Picker) -> WorkspaceGraph {
+/// picker directory and rebuilds this graph. `file_counts` contains only
+/// asynchronously collected, chooser-scoped metadata, so graph construction
+/// never walks the filesystem itself.
+pub fn from_picker(
+    picker: &Picker,
+    file_counts: &HashMap<PathBuf, SupportedFileCount>,
+    unavailable_count_paths: &HashSet<PathBuf>,
+    pending_count_path: Option<&PathBuf>,
+) -> WorkspaceGraph {
     let mut builder = Builder {
         nodes: Vec::new(),
         by_id: HashMap::new(),
     };
     let root_path = picker.cwd.clone();
     let root_id = WorkspaceNodeId::Root(root_path.clone());
-    let root_label = root_path
+    let root_name = root_path
         .file_name()
         .map(|part| part.to_string_lossy().into_owned())
         .unwrap_or_else(|| root_path.to_string_lossy().into_owned());
+    let root_label = picker_folder_label(
+        &root_name,
+        &root_path,
+        file_counts,
+        unavailable_count_paths,
+        pending_count_path,
+    );
     let root_idx = builder.push(
         root_id.clone(),
         WorkspaceNodeKind::Root,
@@ -214,7 +267,16 @@ pub fn from_picker(picker: &Picker) -> WorkspaceGraph {
         builder.attach(root_idx, child);
     } else {
         let folders: Vec<&Entry> = picker.entries.iter().filter(|entry| entry.is_dir).collect();
-        if folders.is_empty() {
+        let root_has_known_files = file_counts
+            .get(&root_path)
+            .is_some_and(|count| count.count > 0 || count.capped);
+        let root_is_counting = pending_count_path.is_some_and(|path| path == &root_path);
+        let root_count_unavailable = unavailable_count_paths.contains(&root_path);
+        if folders.is_empty()
+            && !root_has_known_files
+            && !root_is_counting
+            && !root_count_unavailable
+        {
             let status = WorkspaceStatus::Empty;
             let child = builder.push(
                 WorkspaceNodeId::Status(root_path, status),
@@ -231,7 +293,13 @@ pub fn from_picker(picker: &Picker) -> WorkspaceGraph {
                     WorkspaceNodeId::Folder(entry.path.clone()),
                     WorkspaceNodeKind::Folder,
                     Some(entry.path.clone()),
-                    entry.name.clone(),
+                    picker_folder_label(
+                        &entry.name,
+                        &entry.path,
+                        file_counts,
+                        unavailable_count_paths,
+                        pending_count_path,
+                    ),
                     1,
                     false,
                 );
@@ -246,7 +314,7 @@ pub fn from_picker(picker: &Picker) -> WorkspaceGraph {
 /// Adapt the existing prebuilt workspace tree. The caller owns expansion;
 /// folders outside `expanded` remain present but contribute no visible children
 /// and advertise their hidden descendants to the shared canvas.
-pub fn from_tree(tree_root: &Node, expanded: &HashSet<PathBuf>) -> WorkspaceGraph {
+pub fn from_tree(tree_root: &Node, expanded: &HashSet<PathBuf>, truncated: bool) -> WorkspaceGraph {
     let mut builder = Builder {
         nodes: Vec::new(),
         by_id: HashMap::new(),
@@ -263,10 +331,19 @@ pub fn from_tree(tree_root: &Node, expanded: &HashSet<PathBuf>) -> WorkspaceGrap
     );
 
     if tree_root.children.is_empty() {
-        let status = WorkspaceStatus::Empty;
+        let status = if truncated {
+            WorkspaceStatus::Truncated
+        } else {
+            WorkspaceStatus::Empty
+        };
+        let kind = if truncated {
+            WorkspaceNodeKind::Truncated
+        } else {
+            WorkspaceNodeKind::Empty
+        };
         let child = builder.push(
             WorkspaceNodeId::Status(tree_root.path.clone(), status),
-            WorkspaceNodeKind::Empty,
+            kind,
             None,
             status_label(status, None),
             1,
@@ -276,6 +353,18 @@ pub fn from_tree(tree_root: &Node, expanded: &HashSet<PathBuf>) -> WorkspaceGrap
     } else if root_expanded {
         for child in &tree_root.children {
             append_tree_node(&mut builder, root_idx, child, expanded, 1);
+        }
+        if truncated {
+            let status = WorkspaceStatus::Truncated;
+            let child = builder.push(
+                WorkspaceNodeId::Status(tree_root.path.clone(), status),
+                WorkspaceNodeKind::Truncated,
+                None,
+                status_label(status, None),
+                1,
+                false,
+            );
+            builder.attach(root_idx, child);
         }
     }
 
@@ -360,7 +449,7 @@ mod tests {
             show_hidden: false,
         };
 
-        let graph = from_picker(&picker);
+        let graph = from_picker(&picker, &HashMap::new(), &HashSet::new(), None);
         assert_eq!(graph.nodes.len(), 2);
         assert!(graph
             .node(&WorkspaceNodeId::Folder(PathBuf::from(
@@ -369,6 +458,63 @@ mod tests {
             .is_some());
         assert!(graph
             .node(&WorkspaceNodeId::File(PathBuf::from("/home/user/note.md")))
+            .is_none());
+    }
+
+    #[test]
+    fn capped_zero_file_count_is_rendered_as_incomplete_not_zero_plus() {
+        let path = PathBuf::from("/home/user/wide-folder");
+        let counts = HashMap::from([(
+            path.clone(),
+            SupportedFileCount {
+                count: 0,
+                capped: true,
+            },
+        )]);
+
+        assert_eq!(
+            picker_folder_label("wide-folder", &path, &counts, &HashSet::new(), None),
+            "wide-folder · scan limit reached"
+        );
+    }
+
+    #[test]
+    fn unavailable_file_count_is_not_rendered_as_empty() {
+        let path = PathBuf::from("/home/user/restricted");
+        let unavailable = HashSet::from([path.clone()]);
+
+        assert_eq!(
+            picker_folder_label("restricted", &path, &HashMap::new(), &unavailable, None,),
+            "restricted · count unavailable"
+        );
+    }
+
+    #[test]
+    fn unavailable_root_count_does_not_add_an_empty_folder_status() {
+        let mut picker = Picker::new(
+            Some(PathBuf::from("/tmp/rmdv-unavailable-root")),
+            PickerMode::Folder,
+            false,
+        );
+        picker.entries.clear();
+        picker.error = None;
+        let unavailable = HashSet::from([picker.cwd.clone()]);
+
+        let graph = from_picker(&picker, &HashMap::new(), &unavailable, None);
+        let root = WorkspaceNodeId::Root(picker.cwd.clone());
+        let root_label = graph
+            .index_of(&root)
+            .and_then(|index| graph.nodes.get(index))
+            .map(|node| node.full_label.as_str());
+        assert_eq!(
+            root_label,
+            Some("rmdv-unavailable-root · count unavailable")
+        );
+        assert!(graph
+            .node(&WorkspaceNodeId::Status(
+                picker.cwd.clone(),
+                WorkspaceStatus::Empty
+            ))
             .is_none());
     }
 
@@ -387,14 +533,14 @@ mod tests {
             ],
         );
         let mut expanded = HashSet::from([PathBuf::from("/vault")]);
-        let collapsed = from_tree(&root, &expanded);
+        let collapsed = from_tree(&root, &expanded, false);
         let src = WorkspaceNodeId::Folder(PathBuf::from("/vault/src"));
         let app = WorkspaceNodeId::File(PathBuf::from("/vault/src/app.rs"));
         assert!(collapsed.node(&src).unwrap().has_hidden_children);
         assert!(collapsed.node(&app).is_none());
 
         expanded.insert(PathBuf::from("/vault/src"));
-        let open = from_tree(&root, &expanded);
+        let open = from_tree(&root, &expanded, false);
         assert!(!open.node(&src).unwrap().has_hidden_children);
         assert!(open.node(&app).is_some());
     }
@@ -428,8 +574,8 @@ mod tests {
         );
         let expanded = HashSet::from([PathBuf::from("/vault"), PathBuf::from("/vault/src")]);
         let id = WorkspaceNodeId::File(PathBuf::from("/vault/src/app.rs"));
-        assert!(from_tree(&one, &expanded).node(&id).is_some());
-        assert!(from_tree(&two, &expanded).node(&id).is_some());
+        assert!(from_tree(&one, &expanded, false).node(&id).is_some());
+        assert!(from_tree(&two, &expanded, false).node(&id).is_some());
     }
 
     #[test]
@@ -442,7 +588,7 @@ mod tests {
                 node("/vault/b.md", false, vec![]),
             ],
         );
-        let graph = from_tree(&root, &HashSet::from([PathBuf::from("/vault")]));
+        let graph = from_tree(&root, &HashSet::from([PathBuf::from("/vault")]), false);
         let root_id = graph.root_id();
         let a = WorkspaceNodeId::File(PathBuf::from("/vault/a.md"));
         let b = WorkspaceNodeId::File(PathBuf::from("/vault/b.md"));
@@ -456,7 +602,7 @@ mod tests {
         let mut picker = Picker::new(Some(PathBuf::from("/tmp")), PickerMode::Folder, false);
         picker.entries.clear();
         picker.error = None;
-        let empty = from_picker(&picker);
+        let empty = from_picker(&picker, &HashMap::new(), &HashSet::new(), None);
         assert!(empty
             .node(&WorkspaceNodeId::Status(
                 picker.cwd.clone(),
@@ -465,11 +611,28 @@ mod tests {
             .is_some());
 
         picker.error = Some("permission denied".into());
-        let error = from_picker(&picker);
+        let error = from_picker(&picker, &HashMap::new(), &HashSet::new(), None);
         assert!(error
             .node(&WorkspaceNodeId::Status(
                 picker.cwd.clone(),
                 WorkspaceStatus::Error
+            ))
+            .is_some());
+    }
+
+    #[test]
+    fn truncated_workspace_has_an_explicit_status_node() {
+        let root = node(
+            "/vault",
+            true,
+            vec![node("/vault/readme.md", false, vec![])],
+        );
+        let graph = from_tree(&root, &HashSet::from([PathBuf::from("/vault")]), true);
+
+        assert!(graph
+            .node(&WorkspaceNodeId::Status(
+                PathBuf::from("/vault"),
+                WorkspaceStatus::Truncated,
             ))
             .is_some());
     }

@@ -1,5 +1,22 @@
 use std::path::{Path, PathBuf};
 
+/// A bounded count of files rmdv can open inside a folder.
+///
+/// This deliberately mirrors the workspace tree's filtering rules.  The cap
+/// keeps folder-selection previews useful without turning a quick peek into an
+/// unbounded filesystem walk.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SupportedFileCount {
+    pub count: usize,
+    pub capped: bool,
+}
+
+pub const FOLDER_FILE_COUNT_MAX_DEPTH: usize = 12;
+pub const FOLDER_FILE_COUNT_MAX_FILES: usize = 5_000;
+/// Maximum directory entries examined for one chooser preview. This bounds
+/// background work even when a tree contains only unsupported files.
+pub const FOLDER_FILE_COUNT_MAX_ENTRIES: usize = 10_000;
+
 #[derive(Debug, Clone)]
 pub struct Entry {
     pub name: String,
@@ -160,6 +177,66 @@ pub fn is_markdown_path(p: &Path) -> bool {
     )
 }
 
+/// Count supported files below `root` without allocating their paths.
+///
+/// The depth, hidden-file, and large-directory exclusions intentionally match
+/// `tree::build`, so the chooser's count describes the files that would become
+/// navigable after choosing the folder as a workspace.
+pub fn count_supported_files(
+    root: &Path,
+    max_depth: usize,
+    max_files: usize,
+    max_entries: usize,
+    show_hidden: bool,
+) -> Result<SupportedFileCount, String> {
+    let mut count = 0;
+    let mut examined_entries = 0;
+    let mut stack = vec![(root.to_path_buf(), 0usize)];
+
+    while let Some((dir, depth)) = stack.pop() {
+        if depth >= max_depth {
+            continue;
+        }
+        let entries = match std::fs::read_dir(&dir) {
+            Ok(entries) => entries,
+            Err(error) if depth == 0 => return Err(error.to_string()),
+            Err(_) => continue,
+        };
+        for entry in entries.flatten() {
+            if examined_entries >= max_entries {
+                return Ok(SupportedFileCount {
+                    count,
+                    capped: true,
+                });
+            }
+            examined_entries += 1;
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if matches!(name.as_str(), ".git" | "node_modules" | "target")
+                || (!show_hidden && name.starts_with('.'))
+            {
+                continue;
+            }
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push((path, depth + 1));
+            } else if is_markdown_path(&path) {
+                count += 1;
+                if count >= max_files {
+                    return Ok(SupportedFileCount {
+                        count,
+                        capped: true,
+                    });
+                }
+            }
+        }
+    }
+
+    Ok(SupportedFileCount {
+        count,
+        capped: false,
+    })
+}
+
 /// Walk a workspace folder gathering all markdown files (limited depth + count).
 pub fn walk_markdown(
     root: &Path,
@@ -267,5 +344,75 @@ mod tests {
         assert!(is_markdown_path(Path::new("a.yaml")));
         assert!(!is_markdown_path(Path::new("a.bin")));
         assert!(!is_markdown_path(Path::new("a.png")));
+    }
+
+    #[test]
+    fn supported_file_count_is_recursive_bounded_and_respects_filters() {
+        let root = std::env::temp_dir().join(format!(
+            "rmdv-picker-file-count-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let nested = root.join("nested");
+        let cap_dir = root.join("cap");
+        std::fs::create_dir_all(&nested).unwrap();
+        std::fs::create_dir_all(&cap_dir).unwrap();
+        std::fs::create_dir_all(root.join(".hidden")).unwrap();
+        std::fs::create_dir_all(root.join("target")).unwrap();
+        std::fs::write(root.join("readme.md"), "# Root\n").unwrap();
+        std::fs::write(nested.join("data.json"), "{}\n").unwrap();
+        std::fs::write(root.join(".hidden/secret.md"), "# Hidden\n").unwrap();
+        std::fs::write(root.join("target/generated.md"), "# Generated\n").unwrap();
+        std::fs::write(cap_dir.join("one.bin"), "").unwrap();
+        std::fs::write(cap_dir.join("two.bin"), "").unwrap();
+
+        assert_eq!(
+            count_supported_files(
+                &root,
+                FOLDER_FILE_COUNT_MAX_DEPTH,
+                10,
+                FOLDER_FILE_COUNT_MAX_ENTRIES,
+                false,
+            )
+            .unwrap(),
+            SupportedFileCount {
+                count: 2,
+                capped: false
+            }
+        );
+        assert_eq!(
+            count_supported_files(
+                &root,
+                FOLDER_FILE_COUNT_MAX_DEPTH,
+                1,
+                FOLDER_FILE_COUNT_MAX_ENTRIES,
+                false,
+            )
+            .unwrap(),
+            SupportedFileCount {
+                count: 1,
+                capped: true
+            }
+        );
+        assert_eq!(
+            count_supported_files(&cap_dir, FOLDER_FILE_COUNT_MAX_DEPTH, 10, 1, false).unwrap(),
+            SupportedFileCount {
+                count: 0,
+                capped: true,
+            }
+        );
+        assert!(count_supported_files(
+            &root.join("missing"),
+            FOLDER_FILE_COUNT_MAX_DEPTH,
+            10,
+            FOLDER_FILE_COUNT_MAX_ENTRIES,
+            false,
+        )
+        .is_err());
+
+        let _ = std::fs::remove_dir_all(root);
     }
 }
