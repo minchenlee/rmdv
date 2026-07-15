@@ -50,6 +50,81 @@ pub struct WorkspaceSnapshot {
     pub truncated: bool,
 }
 
+/// A bounded, non-recursive file listing for one expanded explorer folder.
+/// Folder structure and recursive counts remain owned by `WorkspaceSnapshot`;
+/// these paths are short-lived UI materialization only.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ImmediateFilesSnapshot {
+    pub files: Vec<PathBuf>,
+    pub truncated: bool,
+}
+
+pub fn load_immediate_supported_files(
+    folder: &Path,
+    show_hidden: bool,
+) -> Result<ImmediateFilesSnapshot, String> {
+    load_immediate_supported_files_with_limits(
+        folder,
+        show_hidden,
+        WORKSPACE_MAX_FILES,
+        WORKSPACE_MAX_ENTRIES,
+    )
+}
+
+fn load_immediate_supported_files_with_limits(
+    folder: &Path,
+    show_hidden: bool,
+    max_files: usize,
+    max_entries: usize,
+) -> Result<ImmediateFilesSnapshot, String> {
+    let read_dir = std::fs::read_dir(folder).map_err(|error| error.to_string())?;
+    let mut files = Vec::new();
+    let mut truncated = false;
+
+    for (examined, entry) in read_dir.enumerate() {
+        if examined >= max_entries {
+            truncated = true;
+            break;
+        }
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(_) => {
+                truncated = true;
+                continue;
+            }
+        };
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if !show_hidden && name.starts_with('.') {
+            continue;
+        }
+        let path = entry.path();
+        if path.is_dir() || !is_markdown_path(&path) {
+            continue;
+        }
+        if files.len() >= max_files {
+            truncated = true;
+            break;
+        }
+        files.push(path);
+    }
+
+    files.sort_by(|a, b| {
+        let a_name = a
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_else(|| a.to_string_lossy().into_owned());
+        let b_name = b
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_else(|| b.to_string_lossy().into_owned());
+        a_name
+            .to_lowercase()
+            .cmp(&b_name.to_lowercase())
+            .then_with(|| a_name.cmp(&b_name))
+    });
+    Ok(ImmediateFilesSnapshot { files, truncated })
+}
+
 pub fn build(root: &Path, show_hidden: bool) -> Node {
     build_workspace(root, show_hidden)
         .map(|snapshot| snapshot.root)
@@ -214,7 +289,7 @@ fn fill_bounded(
     });
 
     let mut dirs: Vec<Node> = Vec::new();
-    let mut files: Vec<Node> = Vec::new();
+    let mut local_supported_files = 0;
     for entry in entries {
         if entry.is_dir {
             dirs.push(Node {
@@ -232,16 +307,10 @@ fn fill_bounded(
                 break;
             }
             budget.supported_files += 1;
+            local_supported_files += 1;
             if depth < file_index_max_depth {
                 indexed_files.push(entry.path.clone());
             }
-            files.push(Node {
-                path: entry.path,
-                name: entry.name,
-                is_dir: false,
-                children: Vec::new(),
-                recursive_supported_file_count: None,
-            });
             if budget.supported_files >= budget.max_files {
                 budget.exhausted = true;
                 budget.truncated = true;
@@ -270,14 +339,13 @@ fn fill_bounded(
             subtree_incomplete = true;
         }
     }
-    let recursive_count = files.len()
+    let recursive_count = local_supported_files
         + dirs
             .iter()
             .filter_map(|child| child.recursive_supported_file_count)
             .map(RecursiveFileCount::counted)
             .sum::<usize>();
     node.children = dirs;
-    node.children.extend(files);
     node.recursive_supported_file_count = Some(if subtree_incomplete {
         RecursiveFileCount::LowerBound(recursive_count)
     } else {
@@ -295,7 +363,11 @@ fn prune(node: &mut Node) -> bool {
     !node.children.is_empty()
         || matches!(
             node.recursive_supported_file_count,
-            Some(RecursiveFileCount::LowerBound(_) | RecursiveFileCount::Unavailable)
+            Some(
+                RecursiveFileCount::Exact(1..)
+                    | RecursiveFileCount::LowerBound(_)
+                    | RecursiveFileCount::Unavailable
+            )
         )
 }
 
@@ -366,17 +438,13 @@ mod tests {
         assert_eq!(snapshot.files.len(), 2);
         assert!(snapshot.files.contains(&root.join("readme.md")));
         assert!(snapshot.files.contains(&root.join("docs/guide.md")));
-        assert_eq!(snapshot.root.children.len(), 2);
+        assert_eq!(snapshot.root.children.len(), 1);
         assert!(snapshot
             .root
             .children
             .iter()
             .any(|node| node.name == "docs"));
-        assert!(snapshot
-            .root
-            .children
-            .iter()
-            .any(|node| node.name == "readme.md"));
+        assert!(snapshot.root.children.iter().all(|node| node.is_dir));
         assert_eq!(
             snapshot.root.recursive_supported_file_count,
             Some(RecursiveFileCount::Exact(2))
@@ -392,6 +460,32 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn immediate_file_load_is_non_recursive_hidden_aware_and_bounded() {
+        let root = test_dir("immediate");
+        std::fs::create_dir_all(root.join("nested")).unwrap();
+        std::fs::write(root.join("b.md"), "# B\n").unwrap();
+        std::fs::write(root.join("a.md"), "# A\n").unwrap();
+        std::fs::write(root.join(".secret.md"), "# Secret\n").unwrap();
+        std::fs::write(root.join("ignored.txt"), "nope\n").unwrap();
+        std::fs::write(root.join("nested/deep.md"), "# Deep\n").unwrap();
+
+        let visible = load_immediate_supported_files_with_limits(&root, false, 10, 10).unwrap();
+        assert_eq!(visible.files, vec![root.join("a.md"), root.join("b.md")]);
+        assert!(!visible.truncated);
+
+        let hidden = load_immediate_supported_files_with_limits(&root, true, 10, 10).unwrap();
+        assert_eq!(hidden.files.len(), 3);
+        assert!(hidden.files.contains(&root.join(".secret.md")));
+        assert!(!hidden.files.contains(&root.join("nested/deep.md")));
+
+        let bounded = load_immediate_supported_files_with_limits(&root, true, 1, 10).unwrap();
+        assert_eq!(bounded.files.len(), 1);
+        assert!(bounded.truncated);
+
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

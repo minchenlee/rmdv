@@ -16,6 +16,8 @@ pub enum WorkspaceStatus {
     Empty,
     Error,
     Truncated,
+    LoadingFiles,
+    FilesTruncated,
 }
 
 /// Stable, filesystem-scoped canvas identity. These values never enter the
@@ -36,6 +38,16 @@ pub enum WorkspaceNodeKind {
     Empty,
     Error,
     Truncated,
+    Loading,
+}
+
+#[derive(Debug, Clone)]
+pub enum MaterializedFolderFiles {
+    Loaded {
+        files: Arc<Vec<PathBuf>>,
+        truncated: bool,
+    },
+    Error(String),
 }
 
 #[derive(Debug, Clone)]
@@ -178,7 +190,21 @@ fn status_label(status: WorkspaceStatus, detail: Option<&str>) -> String {
         (WorkspaceStatus::Error, Some(error)) => format!("⚠ {error}"),
         (WorkspaceStatus::Error, None) => "⚠ Couldn't read folder".to_string(),
         (WorkspaceStatus::Truncated, _) => "More files not indexed".to_string(),
+        (WorkspaceStatus::LoadingFiles, _) => "Loading files…".to_string(),
+        (WorkspaceStatus::FilesTruncated, _) => "More files not loaded".to_string(),
     }
+}
+
+fn has_discoverable_children(node: &Node) -> bool {
+    !node.children.is_empty()
+        || matches!(
+            node.recursive_supported_file_count,
+            Some(
+                RecursiveFileCount::Exact(1..)
+                    | RecursiveFileCount::LowerBound(_)
+                    | RecursiveFileCount::Unavailable
+            )
+        )
 }
 
 fn workspace_folder_label(node: &Node, expanded: bool) -> String {
@@ -206,7 +232,13 @@ fn workspace_folder_label(node: &Node, expanded: bool) -> String {
 /// Adapt the existing prebuilt workspace tree. The caller owns expansion;
 /// folders outside `expanded` remain present but contribute no visible children
 /// and advertise their hidden descendants to the shared canvas.
-pub fn from_tree(tree_root: &Node, expanded: &HashSet<PathBuf>, truncated: bool) -> WorkspaceGraph {
+pub fn from_tree(
+    tree_root: &Node,
+    expanded: &HashSet<PathBuf>,
+    materialized: &HashMap<PathBuf, MaterializedFolderFiles>,
+    pending: &HashSet<PathBuf>,
+    truncated: bool,
+) -> WorkspaceGraph {
     let mut builder = Builder {
         nodes: Vec::new(),
         by_id: HashMap::new(),
@@ -220,38 +252,51 @@ pub fn from_tree(tree_root: &Node, expanded: &HashSet<PathBuf>, truncated: bool)
         Some(tree_root.path.clone()),
         root_label,
         0,
-        !tree_root.children.is_empty() && !root_expanded,
+        has_discoverable_children(tree_root) && !root_expanded,
     );
 
-    if tree_root.children.is_empty() {
-        let status = if truncated {
-            WorkspaceStatus::Truncated
-        } else {
-            WorkspaceStatus::Empty
-        };
-        let kind = if truncated {
-            WorkspaceNodeKind::Truncated
-        } else {
-            WorkspaceNodeKind::Empty
-        };
-        let child = builder.push(
-            WorkspaceNodeId::Status(tree_root.path.clone(), status),
-            kind,
-            None,
-            status_label(status, None),
-            1,
-            false,
-        );
-        builder.attach(root_idx, child);
-    } else if root_expanded {
+    if root_expanded {
         for child in &tree_root.children {
-            append_tree_node(&mut builder, root_idx, child, expanded, 1);
+            append_tree_node(
+                &mut builder,
+                root_idx,
+                child,
+                expanded,
+                materialized,
+                pending,
+                1,
+            );
         }
+        append_materialized_children(
+            &mut builder,
+            root_idx,
+            &tree_root.path,
+            materialized,
+            pending,
+            1,
+        );
         if truncated {
             let status = WorkspaceStatus::Truncated;
             let child = builder.push(
                 WorkspaceNodeId::Status(tree_root.path.clone(), status),
                 WorkspaceNodeKind::Truncated,
+                None,
+                status_label(status, None),
+                1,
+                false,
+            );
+            builder.attach(root_idx, child);
+        }
+        if builder.nodes[root_idx].children.is_empty()
+            && matches!(
+                tree_root.recursive_supported_file_count,
+                Some(RecursiveFileCount::Exact(0))
+            )
+        {
+            let status = WorkspaceStatus::Empty;
+            let child = builder.push(
+                WorkspaceNodeId::Status(tree_root.path.clone(), status),
+                WorkspaceNodeKind::Empty,
                 None,
                 status_label(status, None),
                 1,
@@ -269,21 +314,18 @@ fn append_tree_node(
     parent: usize,
     node: &Node,
     expanded: &HashSet<PathBuf>,
+    materialized: &HashMap<PathBuf, MaterializedFolderFiles>,
+    pending: &HashSet<PathBuf>,
     level: u8,
 ) {
-    let (id, kind) = if node.is_dir {
-        (
-            WorkspaceNodeId::Folder(node.path.clone()),
-            WorkspaceNodeKind::Folder,
-        )
-    } else {
-        (
-            WorkspaceNodeId::File(node.path.clone()),
-            WorkspaceNodeKind::File,
-        )
-    };
-    let is_expanded = node.is_dir && expanded.contains(&node.path);
-    let has_hidden_children = node.is_dir && !node.children.is_empty() && !is_expanded;
+    debug_assert!(node.is_dir, "workspace skeleton must contain folders only");
+    if !node.is_dir {
+        return;
+    }
+    let id = WorkspaceNodeId::Folder(node.path.clone());
+    let kind = WorkspaceNodeKind::Folder;
+    let is_expanded = expanded.contains(&node.path);
+    let has_hidden_children = has_discoverable_children(node) && !is_expanded;
     let idx = builder.push(
         id,
         kind,
@@ -293,10 +335,92 @@ fn append_tree_node(
         has_hidden_children,
     );
     builder.attach(parent, idx);
-    if node.is_dir && is_expanded {
+    if is_expanded {
         for child in &node.children {
-            append_tree_node(builder, idx, child, expanded, level.saturating_add(1));
+            append_tree_node(
+                builder,
+                idx,
+                child,
+                expanded,
+                materialized,
+                pending,
+                level.saturating_add(1),
+            );
         }
+        append_materialized_children(
+            builder,
+            idx,
+            &node.path,
+            materialized,
+            pending,
+            level.saturating_add(1),
+        );
+    }
+}
+
+fn append_materialized_children(
+    builder: &mut Builder,
+    parent: usize,
+    folder: &PathBuf,
+    materialized: &HashMap<PathBuf, MaterializedFolderFiles>,
+    pending: &HashSet<PathBuf>,
+    level: u8,
+) {
+    match materialized.get(folder) {
+        Some(MaterializedFolderFiles::Loaded { files, truncated }) => {
+            for path in files.iter() {
+                let label = path
+                    .file_name()
+                    .map(|name| name.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| path.to_string_lossy().into_owned());
+                let child = builder.push(
+                    WorkspaceNodeId::File(path.clone()),
+                    WorkspaceNodeKind::File,
+                    Some(path.clone()),
+                    label,
+                    level,
+                    false,
+                );
+                builder.attach(parent, child);
+            }
+            if *truncated {
+                let status = WorkspaceStatus::FilesTruncated;
+                let child = builder.push(
+                    WorkspaceNodeId::Status(folder.clone(), status),
+                    WorkspaceNodeKind::Truncated,
+                    None,
+                    status_label(status, None),
+                    level,
+                    false,
+                );
+                builder.attach(parent, child);
+            }
+        }
+        Some(MaterializedFolderFiles::Error(error)) => {
+            let status = WorkspaceStatus::Error;
+            let child = builder.push(
+                WorkspaceNodeId::Status(folder.clone(), status),
+                WorkspaceNodeKind::Error,
+                None,
+                status_label(status, Some(error)),
+                level,
+                false,
+            );
+            builder.attach(parent, child);
+        }
+        None if pending.contains(folder) => {
+            let status = WorkspaceStatus::LoadingFiles;
+            let child = builder.push(
+                WorkspaceNodeId::Status(folder.clone(), status),
+                WorkspaceNodeKind::Loading,
+                None,
+                status_label(status, None),
+                level,
+                false,
+            );
+            builder.attach(parent, child);
+        }
+        None => {}
     }
 }
 
@@ -326,6 +450,55 @@ mod tests {
         }
     }
 
+    fn test_graph(root: &Node, expanded: &HashSet<PathBuf>, truncated: bool) -> WorkspaceGraph {
+        fn collect(node: &Node, out: &mut HashMap<PathBuf, MaterializedFolderFiles>) {
+            if !node.is_dir {
+                return;
+            }
+            let files = node
+                .children
+                .iter()
+                .filter(|child| !child.is_dir)
+                .map(|child| child.path.clone())
+                .collect::<Vec<_>>();
+            out.insert(
+                node.path.clone(),
+                MaterializedFolderFiles::Loaded {
+                    files: Arc::new(files),
+                    truncated: false,
+                },
+            );
+            for child in node.children.iter().filter(|child| child.is_dir) {
+                collect(child, out);
+            }
+        }
+
+        fn skeleton(node: &Node) -> Node {
+            Node {
+                path: node.path.clone(),
+                name: node.name.clone(),
+                is_dir: node.is_dir,
+                children: node
+                    .children
+                    .iter()
+                    .filter(|child| child.is_dir)
+                    .map(skeleton)
+                    .collect(),
+                recursive_supported_file_count: node.recursive_supported_file_count,
+            }
+        }
+
+        let mut materialized = HashMap::new();
+        collect(root, &mut materialized);
+        from_tree(
+            &skeleton(root),
+            expanded,
+            &materialized,
+            &HashSet::new(),
+            truncated,
+        )
+    }
+
     #[test]
     fn expanded_workspace_root_uses_plain_label() {
         let mut root = node(
@@ -334,7 +507,7 @@ mod tests {
             vec![node("/vault/readme.md", false, vec![])],
         );
         root.recursive_supported_file_count = Some(RecursiveFileCount::LowerBound(5_000));
-        let graph = from_tree(&root, &HashSet::from([PathBuf::from("/vault")]), true);
+        let graph = test_graph(&root, &HashSet::from([PathBuf::from("/vault")]), true);
         let label = graph
             .index_of(&graph.root_id())
             .and_then(|index| graph.nodes.get(index))
@@ -354,7 +527,7 @@ mod tests {
         unavailable.recursive_supported_file_count = Some(RecursiveFileCount::Unavailable);
         let root = node("/vault", true, vec![exact, lower, limit, unavailable]);
 
-        let graph = from_tree(&root, &HashSet::from([PathBuf::from("/vault")]), true);
+        let graph = test_graph(&root, &HashSet::from([PathBuf::from("/vault")]), true);
         let label = |path: &str| {
             graph
                 .index_of(&WorkspaceNodeId::Folder(PathBuf::from(path)))
@@ -382,14 +555,14 @@ mod tests {
         );
         folder.recursive_supported_file_count = Some(RecursiveFileCount::Exact(1));
         let root = node("/vault", true, vec![folder]);
-        let collapsed = from_tree(&root, &HashSet::from([PathBuf::from("/vault")]), false);
+        let collapsed = test_graph(&root, &HashSet::from([PathBuf::from("/vault")]), false);
         let id = WorkspaceNodeId::Folder(PathBuf::from("/vault/notes"));
         let collapsed_label = collapsed.nodes[collapsed.index_of(&id).unwrap()]
             .full_label
             .clone();
         assert_eq!(collapsed_label, "notes · 1 file");
 
-        let expanded = from_tree(
+        let expanded = test_graph(
             &root,
             &HashSet::from([PathBuf::from("/vault"), PathBuf::from("/vault/notes")]),
             false,
@@ -415,14 +588,14 @@ mod tests {
             ],
         );
         let mut expanded = HashSet::from([PathBuf::from("/vault")]);
-        let collapsed = from_tree(&root, &expanded, false);
+        let collapsed = test_graph(&root, &expanded, false);
         let src = WorkspaceNodeId::Folder(PathBuf::from("/vault/src"));
         let app = WorkspaceNodeId::File(PathBuf::from("/vault/src/app.rs"));
         assert!(collapsed.node(&src).unwrap().has_hidden_children);
         assert!(collapsed.node(&app).is_none());
 
         expanded.insert(PathBuf::from("/vault/src"));
-        let open = from_tree(&root, &expanded, false);
+        let open = test_graph(&root, &expanded, false);
         assert!(!open.node(&src).unwrap().has_hidden_children);
         assert!(open.node(&app).is_some());
     }
@@ -456,8 +629,8 @@ mod tests {
         );
         let expanded = HashSet::from([PathBuf::from("/vault"), PathBuf::from("/vault/src")]);
         let id = WorkspaceNodeId::File(PathBuf::from("/vault/src/app.rs"));
-        assert!(from_tree(&one, &expanded, false).node(&id).is_some());
-        assert!(from_tree(&two, &expanded, false).node(&id).is_some());
+        assert!(test_graph(&one, &expanded, false).node(&id).is_some());
+        assert!(test_graph(&two, &expanded, false).node(&id).is_some());
     }
 
     #[test]
@@ -470,7 +643,7 @@ mod tests {
                 node("/vault/b.md", false, vec![]),
             ],
         );
-        let graph = from_tree(&root, &HashSet::from([PathBuf::from("/vault")]), false);
+        let graph = test_graph(&root, &HashSet::from([PathBuf::from("/vault")]), false);
         let root_id = graph.root_id();
         let a = WorkspaceNodeId::File(PathBuf::from("/vault/a.md"));
         let b = WorkspaceNodeId::File(PathBuf::from("/vault/b.md"));
@@ -486,7 +659,7 @@ mod tests {
             true,
             vec![node("/vault/readme.md", false, vec![])],
         );
-        let graph = from_tree(&root, &HashSet::from([PathBuf::from("/vault")]), true);
+        let graph = test_graph(&root, &HashSet::from([PathBuf::from("/vault")]), true);
 
         assert!(graph
             .node(&WorkspaceNodeId::Status(
@@ -494,5 +667,72 @@ mod tests {
                 WorkspaceStatus::Truncated,
             ))
             .is_some());
+    }
+
+    #[test]
+    fn expanded_folder_shows_stable_loading_then_only_its_accepted_files() {
+        let mut folder = node("/vault/notes", true, vec![]);
+        folder.recursive_supported_file_count = Some(RecursiveFileCount::Exact(1));
+        let root = node("/vault", true, vec![folder]);
+        let expanded = HashSet::from([PathBuf::from("/vault"), PathBuf::from("/vault/notes")]);
+        let pending = HashSet::from([PathBuf::from("/vault/notes")]);
+        let loading = from_tree(&root, &expanded, &HashMap::new(), &pending, false);
+        assert!(loading
+            .node(&WorkspaceNodeId::Status(
+                PathBuf::from("/vault/notes"),
+                WorkspaceStatus::LoadingFiles,
+            ))
+            .is_some());
+        assert!(loading
+            .node(&WorkspaceNodeId::File(PathBuf::from("/vault/notes/a.md")))
+            .is_none());
+
+        let materialized = HashMap::from([(
+            PathBuf::from("/vault/notes"),
+            MaterializedFolderFiles::Loaded {
+                files: Arc::new(vec![PathBuf::from("/vault/notes/a.md")]),
+                truncated: false,
+            },
+        )]);
+        let loaded = from_tree(&root, &expanded, &materialized, &HashSet::new(), false);
+        assert!(loaded
+            .node(&WorkspaceNodeId::File(PathBuf::from("/vault/notes/a.md")))
+            .is_some());
+        assert!(loaded
+            .node(&WorkspaceNodeId::Status(
+                PathBuf::from("/vault/notes"),
+                WorkspaceStatus::LoadingFiles,
+            ))
+            .is_none());
+    }
+
+    #[test]
+    fn collapsed_folder_never_exposes_retained_materialized_files() {
+        let mut folder = node("/vault/notes", true, vec![]);
+        folder.recursive_supported_file_count = Some(RecursiveFileCount::Exact(1));
+        let root = node("/vault", true, vec![folder]);
+        let materialized = HashMap::from([(
+            PathBuf::from("/vault/notes"),
+            MaterializedFolderFiles::Loaded {
+                files: Arc::new(vec![PathBuf::from("/vault/notes/a.md")]),
+                truncated: false,
+            },
+        )]);
+        let graph = from_tree(
+            &root,
+            &HashSet::from([PathBuf::from("/vault")]),
+            &materialized,
+            &HashSet::new(),
+            false,
+        );
+        assert!(graph
+            .node(&WorkspaceNodeId::File(PathBuf::from("/vault/notes/a.md")))
+            .is_none());
+        assert!(
+            graph
+                .node(&WorkspaceNodeId::Folder(PathBuf::from("/vault/notes")))
+                .unwrap()
+                .has_hidden_children
+        );
     }
 }

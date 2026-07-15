@@ -262,10 +262,13 @@ scoped to the directory and status kind so empty/error placeholders are stable
 across a redraw. Filesystem nodes never enter the document
 `mindmap_collapsed`, `mindmap_selected`, or document panel maps.
 
-The module exposes `from_tree(&tree::Node, &HashSet<PathBuf>, truncated) ->
-WorkspaceGraph`, respecting Full Mindmap expansion, using the count metadata
-already present on each folder node, and exposing a stable truncated status
-node when the index budget was reached.
+The module exposes a pure adapter from the retained folder skeleton plus Full
+Mindmap-owned accepted/pending immediate-file materialization into a
+`WorkspaceGraph`. It respects expansion, uses count metadata already present
+on each folder node, exposes files only beneath their expanded parent, and
+renders stable loading/error/local-truncation status children while a bounded
+folder load is pending or incomplete. The global bounded-scan truncation status
+remains distinct.
 
 It also exposes pure parent/sibling/child navigation helpers and node lookup by
 `WorkspaceNodeId`. `app.rs` owns actions and async tasks; the module never opens
@@ -474,19 +477,24 @@ The approved design is implemented as follows:
 - `src/mindmap.rs` now shares a generic canvas/layout adapter while its default
   type remains the existing document `BlockId` path.
 - `src/app.rs` owns Full Mindmap selection, expansion, panel, preview,
-  and request-identity state; a successful file open exits back to normal
-  reading.
-- `src/tree.rs` performs one bounded pass for the workspace tree and file
-  index. Full Mindmap runs it off the UI thread; `src/workspace_mindmap.rs`
-  shares cached graphs/nodes by `Arc` and renders an explicit truncation node.
+  immediate-file materialization, and request-identity state; a successful
+  file open exits back to normal reading. Collapse evicts the branch's accepted
+  and pending materialization, so re-expansion always owns a new request.
+- `src/tree.rs` performs one bounded pass for the folder skeleton, recursive
+  counts, and flat file-finder index. Expanded folders request a separate
+  bounded, non-recursive immediate-file listing off the UI thread.
+  `src/workspace_mindmap.rs` shares cached graphs/nodes by `Arc`, keeps file
+  nodes out of collapsed branches, and renders explicit loading/error/
+  truncation nodes.
 - Focused model and app-state tests cover unified entry, expansion,
   successful and dirty file opens, late completion, stale completion, and exit
   state restoration, including workspace-switch cancellation and same-path
   exit/re-entry request identity. The keyboard-first refinement also covers
   Space folding, Enter folder re-rooting, direct workspace-root parent
   traversal, recursive snapshot counts, read-only previews, stale async
-  completions, async bounded workspace indexing, zero-copy graph cache reuse,
-  and independent `⌘⌥W` panel sizing.
+  completions, async bounded workspace indexing, lazy root/current-file reveal,
+  collapse/re-expand eviction, hidden/root/re-entry stale rejection, zero-copy
+  graph cache reuse, and independent `⌘⌥W` panel sizing.
 
 Verification recorded in `PROJECT_STATUS.md`: the current library suite,
 integration suites, focused Full Mindmap tests, and diff validation passed.

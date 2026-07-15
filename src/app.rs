@@ -76,6 +76,17 @@ pub struct PendingFullMindmapWorkspaceLoad {
     pub exit_after_refresh: bool,
 }
 
+/// Identity for one expanded folder's bounded, immediate file listing. The
+/// workspace/filter tuple prevents a late completion from another explorer
+/// generation from repopulating a collapsed or replaced branch.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingFullMindmapFolderFiles {
+    pub id: u64,
+    pub workspace_root: PathBuf,
+    pub folder: PathBuf,
+    pub show_hidden: bool,
+}
+
 #[derive(Debug, Clone)]
 pub enum FullMindmapPreview {
     None,
@@ -111,6 +122,11 @@ pub struct FullMindmapState {
     pub pending_open: Option<PendingFullMindmapOpen>,
     pub pending_preview: Option<PendingFullMindmapPreview>,
     pub pending_workspace_load: Option<PendingFullMindmapWorkspaceLoad>,
+    pub pending_folder_file_loads: HashMap<PathBuf, PendingFullMindmapFolderFiles>,
+    pub materialized_folder_files: HashMap<PathBuf, workspace_mindmap::MaterializedFolderFiles>,
+    /// A current or previously selected file is selected only after its parent
+    /// listing proves that the file is still visible under the accepted filter.
+    pub deferred_file_selection: Option<PathBuf>,
     pub preview: FullMindmapPreview,
     pub load_error: Option<String>,
     /// Visible workspace graphs are rebuilt only after their source/expansion
@@ -500,6 +516,10 @@ pub enum Message {
     FullMindmapWorkspaceLoaded {
         request: PendingFullMindmapWorkspaceLoad,
         result: Result<(PathBuf, tree::WorkspaceSnapshot), String>,
+    },
+    FullMindmapFolderFilesLoaded {
+        request: PendingFullMindmapFolderFiles,
+        result: Result<(PathBuf, tree::ImmediateFilesSnapshot), String>,
     },
     WindowResized(iced::window::Id, iced::Size),
     RefreshWindowMode(iced::window::Id),
@@ -998,6 +1018,9 @@ impl App {
             pending_open: None,
             pending_preview: None,
             pending_workspace_load: None,
+            pending_folder_file_loads: HashMap::new(),
+            materialized_folder_files: HashMap::new(),
+            deferred_file_selection: None,
             preview: FullMindmapPreview::None,
             load_error: None,
             layout_cache: std::cell::RefCell::new(None),
@@ -1020,6 +1043,8 @@ impl App {
         let graph = std::sync::Arc::new(workspace_mindmap::from_tree(
             self.workspace_tree.as_ref()?,
             &full.expanded,
+            &full.materialized_folder_files,
+            &full.pending_folder_file_loads.keys().cloned().collect(),
             self.workspace_truncated,
         ));
         *full.layout_cache.borrow_mut() = Some(std::sync::Arc::clone(&graph));
@@ -1037,7 +1062,7 @@ impl App {
         self.full_mindmap = Some(Self::new_full_mindmap_state());
         if self.workspace_tree.is_some() {
             self.reset_full_mindmap_workspace();
-            Task::none()
+            self.begin_full_mindmap_expanded_folder_loads()
         } else {
             let start = self.full_mindmap_start_folder().or_else(Picker::home);
             start.map_or_else(Task::none, |path| {
@@ -1101,10 +1126,7 @@ impl App {
             for ancestor in ancestors {
                 full.expanded.insert(ancestor);
             }
-            full.selected = current_file
-                .clone()
-                .map(WorkspaceNodeId::File)
-                .or(Some(WorkspaceNodeId::Root(root)));
+            full.selected = Some(WorkspaceNodeId::Root(root));
             full.panel_open = true;
             full.panel_drag = None;
             // Rebuilding the workspace means navigation has changed intent. An
@@ -1113,19 +1135,12 @@ impl App {
             full.pending_open = None;
             full.pending_preview = None;
             full.pending_workspace_load = None;
+            full.pending_folder_file_loads.clear();
+            full.materialized_folder_files.clear();
+            full.deferred_file_selection = current_file;
             full.preview = FullMindmapPreview::None;
             full.load_error = None;
             *full.layout_cache.borrow_mut() = None;
-        }
-        // The current document is already in memory. Seed its visible preview
-        // immediately instead of showing an indefinite loading state on entry.
-        if let Some(path) = current_file {
-            let preview = self.build_full_mindmap_preview(path.clone(), self.source.clone());
-            if let Some(full) = self.full_mindmap.as_mut() {
-                if full.selected == Some(WorkspaceNodeId::File(path)) {
-                    full.preview = preview;
-                }
-            }
         }
     }
 
@@ -1139,8 +1154,15 @@ impl App {
         let Some(graph) = self.full_mindmap_graph() else {
             return;
         };
+        let deferred = self
+            .full_mindmap
+            .as_ref()
+            .and_then(|full| full.deferred_file_selection.as_ref());
         let next = selected
-            .filter(|id| graph.node(id).is_some())
+            .filter(|id| {
+                graph.node(id).is_some()
+                    || matches!(id, WorkspaceNodeId::File(path) if deferred == Some(path))
+            })
             .unwrap_or_else(|| graph.root_id());
         if let Some(full) = self.full_mindmap.as_mut() {
             if full.selected.as_ref() != Some(&next) {
@@ -1237,6 +1259,15 @@ impl App {
         };
         let full = self.full_mindmap.as_mut().expect("checked above");
         full.pending_workspace_load = Some(request.clone());
+        if preserve_navigation {
+            if let Some(WorkspaceNodeId::File(path)) = full.selected.as_ref() {
+                full.deferred_file_selection = Some(path.clone());
+            }
+        } else {
+            full.deferred_file_selection = None;
+        }
+        full.pending_folder_file_loads.clear();
+        full.materialized_folder_files.clear();
         full.pending_open = None;
         full.pending_preview = None;
         full.load_error = None;
@@ -1247,6 +1278,69 @@ impl App {
             load_full_mindmap_workspace(path, show_hidden),
             move |result| Message::FullMindmapWorkspaceLoaded { request, result },
         )
+    }
+
+    fn begin_full_mindmap_expanded_folder_loads(&mut self) -> Task<Message> {
+        let folders = self
+            .full_mindmap
+            .as_ref()
+            .map(|full| full.expanded.iter().cloned().collect::<Vec<_>>())
+            .unwrap_or_default();
+        Task::batch(
+            folders
+                .into_iter()
+                .map(|folder| self.begin_full_mindmap_folder_file_load(folder)),
+        )
+    }
+
+    fn begin_full_mindmap_folder_file_load(&mut self, folder: PathBuf) -> Task<Message> {
+        let Some(workspace_root) = self.workspace.clone() else {
+            return Task::none();
+        };
+        let eligible = self.full_mindmap.as_ref().is_some_and(|full| {
+            full.expanded.contains(&folder)
+                && folder.starts_with(&workspace_root)
+                && !full.materialized_folder_files.contains_key(&folder)
+                && !full.pending_folder_file_loads.contains_key(&folder)
+        });
+        if !eligible || self.workspace_snapshot_show_hidden != self.show_hidden {
+            return Task::none();
+        }
+
+        self.full_mindmap_request_seq = self.full_mindmap_request_seq.wrapping_add(1);
+        let request = PendingFullMindmapFolderFiles {
+            id: self.full_mindmap_request_seq,
+            workspace_root,
+            folder: folder.clone(),
+            show_hidden: self.show_hidden,
+        };
+        let full = self.full_mindmap.as_mut().expect("eligible Full Mindmap");
+        full.pending_folder_file_loads
+            .insert(folder.clone(), request.clone());
+        full.materialized_folder_files.remove(&folder);
+        self.invalidate_full_mindmap_layout();
+        Task::perform(
+            load_full_mindmap_folder_files(folder, request.show_hidden),
+            move |result| Message::FullMindmapFolderFilesLoaded { request, result },
+        )
+    }
+
+    fn evict_full_mindmap_folder_files(&mut self, folder: &std::path::Path) {
+        if let Some(full) = self.full_mindmap.as_mut() {
+            full.expanded.retain(|path| !path.starts_with(folder));
+            full.pending_folder_file_loads
+                .retain(|path, _| !path.starts_with(folder));
+            full.materialized_folder_files
+                .retain(|path, _| !path.starts_with(folder));
+            if full
+                .deferred_file_selection
+                .as_ref()
+                .is_some_and(|path| path.starts_with(folder))
+            {
+                full.deferred_file_selection = None;
+            }
+        }
+        self.invalidate_full_mindmap_layout();
     }
 
     /// Full Mindmap-only file load. The wrapper retains request identity so a
@@ -1303,12 +1397,30 @@ impl App {
         let node = self
             .full_mindmap_graph()
             .and_then(|graph| graph.node(&id).cloned());
-        let preview_path = node.as_ref().and_then(|node| {
-            matches!(&node.kind, WorkspaceNodeKind::File)
-                .then(|| node.path.clone())
-                .flatten()
-        });
+        let preview_path = node
+            .as_ref()
+            .and_then(|node| {
+                matches!(&node.kind, WorkspaceNodeKind::File)
+                    .then(|| node.path.clone())
+                    .flatten()
+            })
+            .or_else(|| match &id {
+                WorkspaceNodeId::File(path)
+                    if self.workspace_files.contains(path)
+                        && self
+                            .workspace
+                            .as_ref()
+                            .is_some_and(|root| path.starts_with(root)) =>
+                {
+                    Some(path.clone())
+                }
+                _ => None,
+            });
         if let Some(full) = self.full_mindmap.as_mut() {
+            full.deferred_file_selection = match &id {
+                WorkspaceNodeId::File(path) if node.is_none() => Some(path.clone()),
+                _ => None,
+            };
             full.selected = Some(id);
             full.panel_open = true;
             // A background hidden-entry refresh describes the same workspace
@@ -1336,13 +1448,16 @@ impl App {
             return Task::none();
         };
         let already_ready = self.full_mindmap.as_ref().is_some_and(|full| {
-            full.pending_preview.is_none()
-                && matches!(
+            full.pending_preview
+                .as_ref()
+                .is_some_and(|pending| pending.path == path)
+                || (full.pending_preview.is_none()
+                    && matches!(
                     &full.preview,
                     FullMindmapPreview::Document { path: current, .. }
                         | FullMindmapPreview::Data { path: current, .. }
                         if current == &path
-                )
+                    ))
         });
         if already_ready {
             return Task::none();
@@ -3009,6 +3124,8 @@ impl App {
                         .flatten()
                     })
                 });
+                let mut load = None;
+                let mut collapse = None;
                 if let Some(full) = self.full_mindmap.as_mut() {
                     full.selected = Some(id);
                     full.panel_open = true;
@@ -3016,13 +3133,23 @@ impl App {
                     full.preview = FullMindmapPreview::None;
                     full.load_error = None;
                     if let Some(path) = workspace_path {
-                        if !full.expanded.remove(&path) {
-                            full.expanded.insert(path);
+                        if full.expanded.contains(&path) {
+                            collapse = Some(path);
+                        } else {
+                            full.expanded.insert(path.clone());
+                            load = Some(path);
                         }
                     }
                 }
                 self.invalidate_full_mindmap_layout();
-                Task::none()
+                if let Some(path) = collapse {
+                    self.evict_full_mindmap_folder_files(&path);
+                    Task::none()
+                } else {
+                    load.map_or_else(Task::none, |path| {
+                        self.begin_full_mindmap_folder_file_load(path)
+                    })
+                }
             }
             Message::FullMindmapSelectNode(id) => self.select_full_mindmap_node(id),
             Message::FullMindmapDeselect => {
@@ -3101,11 +3228,17 @@ impl App {
                 let child = if node.has_hidden_children {
                     if let Some(path) = node.path.clone() {
                         if let Some(full) = self.full_mindmap.as_mut() {
-                            full.expanded.insert(path);
+                            full.expanded.insert(path.clone());
                         }
                         self.invalidate_full_mindmap_layout();
-                        self.full_mindmap_graph()
+                        let load = self.begin_full_mindmap_folder_file_load(path);
+                        let select = self
+                            .full_mindmap_graph()
                             .and_then(|expanded| expanded.first_child(&id))
+                            .map_or_else(Task::none, |child| {
+                                self.update(Message::FullMindmapSelectNode(child))
+                            });
+                        return Task::batch([load, select]);
                     } else {
                         None
                     }
@@ -3121,6 +3254,11 @@ impl App {
                     let full = self.full_mindmap.as_ref()?;
                     let graph = self.full_mindmap_graph()?;
                     let selected = full.selected.clone().unwrap_or_else(|| graph.root_id());
+                    if let WorkspaceNodeId::File(path) = &selected {
+                        if full.deferred_file_selection.as_ref() == Some(path) {
+                            return Some(Message::OpenFileFinderPath(path.clone()));
+                        }
+                    }
                     let node = graph.node(&selected)?;
                     match node.kind {
                         WorkspaceNodeKind::Root | WorkspaceNodeKind::Folder => {
@@ -3131,7 +3269,8 @@ impl App {
                         }
                         WorkspaceNodeKind::Empty
                         | WorkspaceNodeKind::Error
-                        | WorkspaceNodeKind::Truncated => None,
+                        | WorkspaceNodeKind::Truncated
+                        | WorkspaceNodeKind::Loading => None,
                     }
                 })();
                 action.map_or_else(Task::none, |message| self.update(message))
@@ -3331,6 +3470,116 @@ impl App {
                 }
                 Task::none()
             }
+            Message::FullMindmapFolderFilesLoaded { request, result } => {
+                let current = self.workspace.as_ref() == Some(&request.workspace_root)
+                    && self.show_hidden == request.show_hidden
+                    && self.workspace_snapshot_show_hidden == request.show_hidden
+                    && self.full_mindmap.as_ref().is_some_and(|full| {
+                        full.expanded.contains(&request.folder)
+                            && full
+                                .pending_folder_file_loads
+                                .get(&request.folder)
+                                .is_some_and(|pending| pending == &request)
+                    });
+                if !current {
+                    return Task::none();
+                }
+
+                let accepted_files = match result {
+                    Ok((path, snapshot)) if path == request.folder => {
+                        let files = std::sync::Arc::new(snapshot.files);
+                        if let Some(full) = self.full_mindmap.as_mut() {
+                            full.pending_folder_file_loads.remove(&request.folder);
+                            full.materialized_folder_files.insert(
+                                request.folder.clone(),
+                                workspace_mindmap::MaterializedFolderFiles::Loaded {
+                                    files: std::sync::Arc::clone(&files),
+                                    truncated: snapshot.truncated,
+                                },
+                            );
+                        }
+                        Some(files)
+                    }
+                    Ok((path, _)) => {
+                        if let Some(full) = self.full_mindmap.as_mut() {
+                            full.pending_folder_file_loads.remove(&request.folder);
+                            full.materialized_folder_files.insert(
+                                request.folder.clone(),
+                                workspace_mindmap::MaterializedFolderFiles::Error(format!(
+                                    "Loaded unexpected folder: {}",
+                                    path.display()
+                                )),
+                            );
+                        }
+                        None
+                    }
+                    Err(error) => {
+                        if let Some(full) = self.full_mindmap.as_mut() {
+                            full.pending_folder_file_loads.remove(&request.folder);
+                            full.materialized_folder_files.insert(
+                                request.folder.clone(),
+                                workspace_mindmap::MaterializedFolderFiles::Error(error),
+                            );
+                        }
+                        None
+                    }
+                };
+                self.invalidate_full_mindmap_layout();
+
+                let deferred = self.full_mindmap.as_ref().and_then(|full| {
+                    full.deferred_file_selection
+                        .as_ref()
+                        .filter(|path| path.parent() == Some(request.folder.as_path()))
+                        .cloned()
+                });
+                if let (Some(files), Some(path)) = (accepted_files.as_ref(), deferred) {
+                    if files.contains(&path) {
+                        if let Some(full) = self.full_mindmap.as_mut() {
+                            full.deferred_file_selection = None;
+                            full.selected = Some(WorkspaceNodeId::File(path.clone()));
+                            full.panel_open = true;
+                        }
+                        if self.file.as_ref() == Some(&path) {
+                            let preview =
+                                self.build_full_mindmap_preview(path.clone(), self.source.clone());
+                            if let Some(full) = self.full_mindmap.as_mut() {
+                                full.preview = preview;
+                                full.pending_preview = None;
+                            }
+                            return Task::none();
+                        }
+                        return self.begin_full_mindmap_preview(Some(path));
+                    }
+                    if let Some(full) = self.full_mindmap.as_mut() {
+                        full.deferred_file_selection = None;
+                    }
+                    self.normalize_full_mindmap_workspace();
+                }
+
+                let loading_id = WorkspaceNodeId::Status(
+                    request.folder.clone(),
+                    workspace_mindmap::WorkspaceStatus::LoadingFiles,
+                );
+                let selected_loading = self
+                    .full_mindmap
+                    .as_ref()
+                    .is_some_and(|full| full.selected.as_ref() == Some(&loading_id));
+                if selected_loading {
+                    let parent_id = if self.workspace.as_ref() == Some(&request.folder) {
+                        WorkspaceNodeId::Root(request.folder)
+                    } else {
+                        WorkspaceNodeId::Folder(request.folder)
+                    };
+                    if let Some(child) = self
+                        .full_mindmap_graph()
+                        .and_then(|graph| graph.first_child(&parent_id))
+                    {
+                        return self.select_full_mindmap_node(child);
+                    }
+                    return self.select_full_mindmap_node(parent_id);
+                }
+                Task::none()
+            }
             Message::FullMindmapWorkspaceLoaded { request, result } => {
                 let current = self.full_mindmap.as_ref().is_some_and(|full| {
                     full.pending_workspace_load
@@ -3380,9 +3629,15 @@ impl App {
                             self.invalidate_full_mindmap_layout();
                         }
                         if !request.exit_after_refresh {
-                            if let Some(file) = open_after {
+                            if let Some(file) = open_after.clone() {
                                 followup = self.begin_full_mindmap_open(file);
                             }
+                        }
+                        if !request.exit_after_refresh && open_after.is_none() {
+                            followup = Task::batch([
+                                followup,
+                                self.begin_full_mindmap_expanded_folder_loads(),
+                            ]);
                         }
                     }
                     Ok((path, _)) => {
@@ -3396,6 +3651,9 @@ impl App {
                         } else if let Some(full) = self.full_mindmap.as_mut() {
                             full.pending_workspace_load = None;
                             full.load_error = Some(message);
+                        }
+                        if request.preserve_navigation && !request.exit_after_refresh {
+                            followup = self.begin_full_mindmap_expanded_folder_loads();
                         }
                     }
                     Err(error) => {
@@ -3416,6 +3674,9 @@ impl App {
                         } else if let Some(full) = self.full_mindmap.as_mut() {
                             full.pending_workspace_load = None;
                             full.load_error = Some(message);
+                        }
+                        if request.preserve_navigation && !request.exit_after_refresh {
+                            followup = self.begin_full_mindmap_expanded_folder_loads();
                         }
                     }
                 }
@@ -8092,6 +8353,19 @@ async fn load_full_mindmap_workspace(
     Ok((path, snapshot))
 }
 
+async fn load_full_mindmap_folder_files(
+    path: PathBuf,
+    show_hidden: bool,
+) -> Result<(PathBuf, tree::ImmediateFilesSnapshot), String> {
+    let scan_path = path.clone();
+    let snapshot = tokio::task::spawn_blocking(move || {
+        tree::load_immediate_supported_files(&scan_path, show_hidden)
+    })
+    .await
+    .map_err(|error| error.to_string())??;
+    Ok((path, snapshot))
+}
+
 /// Keep side-panel previews responsive even when the selected workspace file is
 /// much larger than a document normally shown in the reader.
 fn truncate_full_mindmap_preview_source(mut source: String) -> (String, bool) {
@@ -8838,9 +9112,29 @@ mod tests {
     }
 
     fn full_workspace_state(root: &std::path::Path) -> FullMindmapState {
+        fn materialize(path: &std::path::Path, state: &mut FullMindmapState) {
+            if let Ok(snapshot) = tree::load_immediate_supported_files(path, true) {
+                state.materialized_folder_files.insert(
+                    path.to_path_buf(),
+                    workspace_mindmap::MaterializedFolderFiles::Loaded {
+                        files: std::sync::Arc::new(snapshot.files),
+                        truncated: snapshot.truncated,
+                    },
+                );
+            }
+            if let Ok(entries) = std::fs::read_dir(path) {
+                for entry in entries.flatten() {
+                    if entry.path().is_dir() {
+                        materialize(&entry.path(), state);
+                    }
+                }
+            }
+        }
+
         let mut state = App::new_full_mindmap_state();
         state.expanded.insert(root.to_path_buf());
         state.selected = Some(WorkspaceNodeId::Root(root.to_path_buf()));
+        materialize(root, &mut state);
         state
     }
 
@@ -8866,7 +9160,35 @@ mod tests {
             request: request.clone(),
             result: Ok((request.path.clone(), snapshot)),
         });
+        complete_full_mindmap_folder_loads(app);
         request
+    }
+
+    fn complete_full_mindmap_folder_loads(app: &mut App) {
+        loop {
+            let requests = app
+                .full_mindmap
+                .as_ref()
+                .map(|full| {
+                    full.pending_folder_file_loads
+                        .values()
+                        .cloned()
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            if requests.is_empty() {
+                break;
+            }
+            for request in requests {
+                let snapshot =
+                    tree::load_immediate_supported_files(&request.folder, request.show_hidden)
+                        .unwrap();
+                let _ = app.update(Message::FullMindmapFolderFilesLoaded {
+                    request: request.clone(),
+                    result: Ok((request.folder.clone(), snapshot)),
+                });
+            }
+        }
     }
 
     #[test]
@@ -9020,6 +9342,177 @@ mod tests {
             .node(&WorkspaceNodeId::File(file))
             .is_none());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn full_mindmap_collapse_evicts_branch_and_rejects_pre_reexpand_result() {
+        let dir = full_mindmap_test_dir("lazy-collapse-stale");
+        let folder = dir.join("notes");
+        let file = folder.join("a.md");
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(&file, "# A\n").unwrap();
+
+        let mut app = App::default();
+        app.set_workspace(dir.clone(), false);
+        let _ = app.enter_full_mindmap();
+        complete_full_mindmap_folder_loads(&mut app);
+        let folder_id = WorkspaceNodeId::Folder(folder.clone());
+
+        let _ = app.update(Message::FullMindmapToggleNode(folder_id.clone()));
+        let first = app
+            .full_mindmap
+            .as_ref()
+            .unwrap()
+            .pending_folder_file_loads
+            .get(&folder)
+            .cloned()
+            .unwrap();
+        assert!(app
+            .full_mindmap_graph()
+            .unwrap()
+            .node(&WorkspaceNodeId::Status(
+                folder.clone(),
+                workspace_mindmap::WorkspaceStatus::LoadingFiles,
+            ))
+            .is_some());
+
+        let _ = app.update(Message::FullMindmapToggleNode(folder_id.clone()));
+        let full = app.full_mindmap.as_ref().unwrap();
+        assert!(!full.pending_folder_file_loads.contains_key(&folder));
+        assert!(!full.materialized_folder_files.contains_key(&folder));
+
+        let _ = app.update(Message::FullMindmapToggleNode(folder_id));
+        let second = app
+            .full_mindmap
+            .as_ref()
+            .unwrap()
+            .pending_folder_file_loads
+            .get(&folder)
+            .cloned()
+            .unwrap();
+        assert_ne!(first, second);
+        let snapshot = tree::load_immediate_supported_files(&folder, false).unwrap();
+        let _ = app.update(Message::FullMindmapFolderFilesLoaded {
+            request: first,
+            result: Ok((folder.clone(), snapshot.clone())),
+        });
+        assert_eq!(
+            app.full_mindmap
+                .as_ref()
+                .unwrap()
+                .pending_folder_file_loads
+                .get(&folder),
+            Some(&second)
+        );
+        assert!(!app
+            .full_mindmap
+            .as_ref()
+            .unwrap()
+            .materialized_folder_files
+            .contains_key(&folder));
+
+        let _ = app.update(Message::FullMindmapFolderFilesLoaded {
+            request: second,
+            result: Ok((folder, snapshot)),
+        });
+        assert!(app
+            .full_mindmap_graph()
+            .unwrap()
+            .node(&WorkspaceNodeId::File(file))
+            .is_some());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn full_mindmap_folder_results_are_stale_across_filter_root_and_reentry() {
+        let dir = full_mindmap_test_dir("lazy-generation-stale");
+        let other = full_mindmap_test_dir("lazy-generation-other");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::create_dir_all(&other).unwrap();
+        std::fs::write(dir.join("a.md"), "# A\n").unwrap();
+        let snapshot = tree::load_immediate_supported_files(&dir, false).unwrap();
+
+        let pending_root = |app: &App| {
+            app.full_mindmap
+                .as_ref()
+                .unwrap()
+                .pending_folder_file_loads
+                .get(&dir)
+                .cloned()
+                .unwrap()
+        };
+
+        let mut hidden_app = App::default();
+        hidden_app.set_workspace(dir.clone(), false);
+        let _ = hidden_app.enter_full_mindmap();
+        let hidden_stale = pending_root(&hidden_app);
+        let _ = hidden_app.update(Message::ToggleHidden);
+        let _ = hidden_app.update(Message::FullMindmapFolderFilesLoaded {
+            request: hidden_stale,
+            result: Ok((dir.clone(), snapshot.clone())),
+        });
+        assert!(!hidden_app
+            .full_mindmap
+            .as_ref()
+            .unwrap()
+            .materialized_folder_files
+            .contains_key(&dir));
+
+        let mut root_app = App::default();
+        root_app.set_workspace(dir.clone(), false);
+        let _ = root_app.enter_full_mindmap();
+        let root_stale = pending_root(&root_app);
+        let _ = root_app.update(Message::FullMindmapSetRoot(other.clone()));
+        let workspace_request = root_app
+            .full_mindmap
+            .as_ref()
+            .unwrap()
+            .pending_workspace_load
+            .clone();
+        let _ = root_app.update(Message::FullMindmapFolderFilesLoaded {
+            request: root_stale,
+            result: Ok((dir.clone(), snapshot.clone())),
+        });
+        assert_eq!(
+            root_app
+                .full_mindmap
+                .as_ref()
+                .unwrap()
+                .pending_workspace_load,
+            workspace_request
+        );
+        assert!(!root_app
+            .full_mindmap
+            .as_ref()
+            .unwrap()
+            .materialized_folder_files
+            .contains_key(&dir));
+
+        let mut reentry_app = App::default();
+        reentry_app.set_workspace(dir.clone(), false);
+        let _ = reentry_app.enter_full_mindmap();
+        let reentry_stale = pending_root(&reentry_app);
+        let _ = reentry_app.update(Message::ExitFullMindmap);
+        let _ = reentry_app.enter_full_mindmap();
+        let replacement = pending_root(&reentry_app);
+        assert_ne!(reentry_stale, replacement);
+        let _ = reentry_app.update(Message::FullMindmapFolderFilesLoaded {
+            request: reentry_stale,
+            result: Ok((dir.clone(), snapshot)),
+        });
+        assert_eq!(
+            reentry_app
+                .full_mindmap
+                .as_ref()
+                .unwrap()
+                .pending_folder_file_loads
+                .get(&dir),
+            Some(&replacement)
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&other);
     }
 
     #[test]
@@ -9353,6 +9846,7 @@ mod tests {
             request,
             result: Ok((dir.clone(), snapshot)),
         });
+        complete_full_mindmap_folder_loads(&mut app);
 
         let graph = app.full_mindmap_graph().unwrap();
         assert!(graph.node(&WorkspaceNodeId::File(first)).is_some());
@@ -9756,6 +10250,7 @@ mod tests {
         app.saved_source = app.source.clone();
 
         let _ = app.enter_full_mindmap();
+        complete_full_mindmap_folder_loads(&mut app);
 
         let full = app.full_mindmap.as_ref().unwrap();
         assert_eq!(full.selected, Some(WorkspaceNodeId::File(file.clone())));
