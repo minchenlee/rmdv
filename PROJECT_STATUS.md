@@ -7,7 +7,7 @@ Last reconciled: 2026-07-15 (Asia/Taipei)
 - Actual checkout: `/Users/liminchen/Documents/GitHub/mdv`
 - Legacy non-repo path: `/Users/liminchen/Documents/GitHub/mdv-main`
 - Active branch: `feat/full-mindmap-mode`; its latest implementation candidate
-  is `eeb9889` (`feat: unify full mindmap explorer`).
+  is `5a5fb3a` (`feat: lazily materialize mindmap files`).
 - Local `main` is at `67564e5`, eleven commits ahead of `origin/main`: Windows
   IPC fix `6fa6450`, CJK emphasis fix `0df1fe2`, reviewed CJK repair `d97370e`,
   the six-commit reviewed Zen feature/repair line `1199455..f2b0519`, and Zen
@@ -77,6 +77,12 @@ Last reconciled: 2026-07-15 (Asia/Taipei)
    project exists, makes Enter re-root folders, gives Right one-step
    expand-and-first-child behavior, and records per-folder recursive counts in
    the existing single bounded scan.
+12. **Full Mindmap lazy file materialization candidate** is committed as
+   `5a5fb3a`. The retained workspace tree now contains only the folder skeleton
+   and recursive counts while the flat `workspace_files` index remains
+   available to Cmd+P. Expanded folders load only their immediate supported
+   files on a bounded background worker; collapse evicts the branch, and exact
+   request/workspace/filter/expansion identity rejects stale results.
 
 ## Current state
 
@@ -109,7 +115,7 @@ Last reconciled: 2026-07-15 (Asia/Taipei)
 - `feat/full-mindmap-mode` and `feat/mindmap-zoom-controls` still follow the old
   `0df1fe2` line and do not contain repair `d97370e`, the Zen feature, or the
   screenshot repair. Full Mindmap is 9 main-only commits behind and contains
-  17 branch-only commits; Zoom Controls is 9 main-only commits
+  23 branch-only commits; Zoom Controls is 9 main-only commits
   behind and has 10 branch-only commits. The Full Mindmap refinement is
   protected at `82afd5a`; integrate current
   `main@67564e5` only after the requested manual acceptance, then retest.
@@ -133,15 +139,23 @@ Last reconciled: 2026-07-15 (Asia/Taipei)
   folder, moves a workspace root’s `←` directly to its parent workspace graph
   without touching a dirty document, and gives Full Mindmap its own `⌘⌥W`
   panel-width cycle.
-- Its committed performance hardening pass makes workspace tree and file-finder
-  data come from one pass capped at 12 levels, 5,000
+- Its committed performance hardening pass makes the folder skeleton, recursive
+  counts, and file-finder index come from one pass capped at 12 levels, 5,000
   supported files, and 10,000 examined entries. Full Mindmap project changes
   run that pass off the UI thread with stale-result protection. At `eeb9889`,
   that same pass also stores recursive exact/lower-bound/unavailable counts on
   directory nodes; there are no Full-Mindmap-local per-folder scans. Cached
   workspace graphs and node vectors are shared by `Arc` instead of cloned each
   frame. Partial indexes render an explicit **More files not indexed** node.
-- The feature source and design record are cleanly isolated through `eeb9889`;
+- At `5a5fb3a`, files are no longer retained as `tree::Node`s. The initially
+  expanded root and every ancestor needed for the current file queue bounded,
+  non-recursive immediate-file loads. Pending folders render **Loading files…**;
+  accepted files appear only under their expanded parent; local read/truncation
+  outcomes render stable status children. Collapse discards accepted and
+  pending materialization for the entire branch, and re-expansion creates a new
+  request. Current-file reveal completes only after the parent listing accepts
+  the file. Cmd+P continues to use the flat bounded file index.
+- The feature source and design record are cleanly isolated through `5a5fb3a`;
   this status reconciliation remains separate bookkeeping.
 - Manual acceptance on 2026-07-15 passed A/B/C/D/E/G for entry/exit, preview,
   file open, dirty-edit protection, folder choice/count, and root-parent
@@ -165,8 +179,9 @@ Last reconciled: 2026-07-15 (Asia/Taipei)
   entry uses the accepted snapshot immediately. No-project entry indexes and
   adopts the current file parent or Home in the background.
 - The unified/count candidate passed independent lead review with no P0/P1
-  findings and is awaiting native manual acceptance. Main integration remains
-  held.
+  findings. The subsequent lazy-materialization candidate is independently
+  verified by automated gates and is awaiting lead review plus native manual
+  acceptance. Main integration remains held.
 - Do not merge, push, tag, release, or deploy without a new explicit request.
 
 ## Verification evidence
@@ -258,6 +273,19 @@ Last reconciled: 2026-07-15 (Asia/Taipei)
   warning in `tests/ipc_protocol.rs`. The rebuilt manual-test binary is
   `/private/tmp/mdv-full-mindmap-protect-target/debug/rmdv` with SHA-256
   `3098217566425624e52d8b516bc87c229717c0638bd20b8100f3d6becca293d4`.
+- The exact lazy-materialization candidate at `5a5fb3a` passed 51 focused Full
+  Mindmap/tree/graph tests (35 Full Mindmap, 9 workspace graph, and 7 tree), all
+  221 library tests, all 67 integration tests, `cargo check`, `cargo build --bin
+  rmdv`,
+  `rustfmt --edition 2021 --check src/app.rs src/tree.rs
+  src/workspace_mindmap.rs`, and `git diff --check` using
+  `/private/tmp/mdv-full-mindmap-protect-target`. Focused regressions cover
+  lazy loading/status, current-file reveal, collapse eviction and re-expansion,
+  and stale folder results across hidden refresh, root switch, exit, and
+  re-entry. The integration run emitted only the pre-existing unused `Section`
+  import warning in `tests/ipc_protocol.rs`. The rebuilt manual-test binary is
+  `/private/tmp/mdv-full-mindmap-protect-target/debug/rmdv` with SHA-256
+  `240431cb09c36767d8ea5f6af6f79f32c2d79b5ec896099f727c6accd75089bc`.
 - A fresh independent re-review of `8dc9ead` returned PASS with no P0/P1
   findings after checking both completion orders, stale request rejection,
   dirty and exit intent, and accepted refresh failure fallback.
