@@ -486,12 +486,15 @@ The approved design is implemented as follows:
   `src/workspace_mindmap.rs` shares cached graphs/nodes by `Arc`, keeps file
   nodes out of collapsed branches, and renders explicit loading/error/
   truncation nodes.
-- The same bounded pass retains a second lightweight path list through the
-  historical tree depth for the ordinary Files sidebar. `tree::flatten_with_files`
-  transiently splices those paths beneath visible/expanded folder rows, so the
-  sidebar keeps root/nested files, ordering, keyboard activation, and hidden
-  refresh behavior without restoring permanent file `Node`s. Cmd+P and vault
-  search continue to use their historical shallower file-index depth.
+- The same bounded pass retains a second lightweight path index through the
+  historical tree depth for the ordinary Files sidebar. Paths are grouped by
+  parent and sibling-sorted once while the snapshot is built; each subsequent
+  `tree::flatten_with_files` traverses only visible folders and performs
+  parent-local lookups. It transiently splices files beneath visible/expanded
+  folder rows, so the sidebar keeps root/nested files, ordering, keyboard
+  activation, and hidden refresh behavior without permanent file `Node`s or
+  per-frame full-index regrouping. Cmd+P and vault search continue to use their
+  historical shallower file-index depth.
 - Focused model and app-state tests cover unified entry, expansion,
   successful and dirty file opens, late completion, stale completion, and exit
   state restoration, including workspace-switch cancellation and same-path

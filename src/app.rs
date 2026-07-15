@@ -609,10 +609,10 @@ pub struct App {
     pub search_open: bool,
     pub workspace: Option<PathBuf>,
     pub workspace_files: Vec<PathBuf>,
-    /// Bounded lightweight paths used only to reconstruct ordinary Files
+    /// Bounded lightweight path index used only to reconstruct ordinary Files
     /// sidebar rows across the full retained tree depth. Cmd+P and vault search
     /// continue to use `workspace_files` and its historical shallower depth.
-    pub workspace_sidebar_files: Vec<PathBuf>,
+    pub workspace_sidebar_files: tree::SidebarFileIndex,
     pub workspace_tree: Option<Node>,
     /// Filter used to produce the stored workspace snapshot. Full Mindmap may
     /// change `show_hidden` while the Files sidebar remains obscured.
@@ -820,7 +820,7 @@ impl Default for App {
             search_open: false,
             workspace: None,
             workspace_files: Vec::new(),
-            workspace_sidebar_files: Vec::new(),
+            workspace_sidebar_files: tree::SidebarFileIndex::default(),
             workspace_tree: None,
             workspace_snapshot_show_hidden: false,
             workspace_truncated: false,

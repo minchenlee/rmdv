@@ -50,11 +50,48 @@ pub struct WorkspaceSnapshot {
     /// File-finder/vault-search index, limited by
     /// `WORKSPACE_FILE_INDEX_MAX_DEPTH` as before.
     pub files: Vec<PathBuf>,
-    /// Lightweight file paths for the standard Files sidebar across the full
-    /// retained tree depth. This remains bounded by the same global scan and
-    /// replaces permanent file `Node`s without reducing sidebar coverage.
-    pub sidebar_files: Vec<PathBuf>,
+    /// Lightweight, parent-grouped file paths for the standard Files sidebar
+    /// across the full retained tree depth. This remains bounded by the same
+    /// global scan and replaces permanent file `Node`s without reducing sidebar
+    /// coverage.
+    pub sidebar_files: SidebarFileIndex,
     pub truncated: bool,
+}
+
+/// Immutable, already-grouped sidebar file paths produced with the background
+/// workspace snapshot. Keeping the map private forces render/navigation code
+/// through parent-local lookup instead of re-grouping every frame.
+#[derive(Debug, Clone, Default)]
+pub struct SidebarFileIndex {
+    by_parent: HashMap<PathBuf, Vec<PathBuf>>,
+}
+
+impl SidebarFileIndex {
+    fn from_paths(paths: Vec<PathBuf>) -> Self {
+        let mut by_parent: HashMap<PathBuf, Vec<PathBuf>> = HashMap::new();
+        for path in paths {
+            if let Some(parent) = path.parent() {
+                by_parent
+                    .entry(parent.to_path_buf())
+                    .or_default()
+                    .push(path);
+            }
+        }
+        for siblings in by_parent.values_mut() {
+            siblings.sort_by(|a, b| sidebar_file_order(a, b));
+        }
+        Self { by_parent }
+    }
+
+    pub fn files_for(&self, parent: &Path) -> &[PathBuf] {
+        self.by_parent.get(parent).map(Vec::as_slice).unwrap_or(&[])
+    }
+
+    #[cfg(test)]
+    fn contains(&self, path: &Path) -> bool {
+        path.parent()
+            .is_some_and(|parent| self.files_for(parent).iter().any(|file| file == path))
+    }
 }
 
 /// A bounded, non-recursive file listing for one expanded explorer folder.
@@ -199,7 +236,7 @@ fn build_workspace_with_limits(
         prune(&mut root_node);
     }
     files.sort();
-    sidebar_files.sort();
+    let sidebar_files = SidebarFileIndex::from_paths(sidebar_files);
     Ok(WorkspaceSnapshot {
         root: root_node,
         files,
@@ -412,24 +449,14 @@ fn push<'a>(node: &'a Node, depth: usize, expanded: &HashSet<PathBuf>, out: &mut
 /// file rows or allocating a second permanent file-node tree.
 pub fn flatten_with_files<'a>(
     root: &'a Node,
-    files: &'a [PathBuf],
+    files: &'a SidebarFileIndex,
     expanded: &HashSet<PathBuf>,
 ) -> Vec<Row<'a>> {
-    let mut files_by_parent: HashMap<&'a Path, Vec<&'a Path>> = HashMap::new();
-    for file in files {
-        if let Some(parent) = file.parent() {
-            files_by_parent.entry(parent).or_default().push(file);
-        }
-    }
-    for siblings in files_by_parent.values_mut() {
-        siblings.sort_by(|a, b| sidebar_file_order(a, b));
-    }
-
     let mut out = Vec::new();
     for child in &root.children {
-        push_with_files(child, 0, expanded, &files_by_parent, &mut out);
+        push_with_files(child, 0, expanded, files, &mut out);
     }
-    append_indexed_files(&root.path, 0, &files_by_parent, &mut out);
+    append_indexed_files(&root.path, 0, files, &mut out);
     out
 }
 
@@ -437,7 +464,7 @@ fn push_with_files<'a>(
     node: &'a Node,
     depth: usize,
     expanded: &HashSet<PathBuf>,
-    files_by_parent: &HashMap<&'a Path, Vec<&'a Path>>,
+    files: &'a SidebarFileIndex,
     out: &mut Vec<Row<'a>>,
 ) {
     out.push(Row {
@@ -446,24 +473,22 @@ fn push_with_files<'a>(
     });
     if node.is_dir && expanded.contains(&node.path) {
         for child in &node.children {
-            push_with_files(child, depth + 1, expanded, files_by_parent, out);
+            push_with_files(child, depth + 1, expanded, files, out);
         }
-        append_indexed_files(&node.path, depth + 1, files_by_parent, out);
+        append_indexed_files(&node.path, depth + 1, files, out);
     }
 }
 
 fn append_indexed_files<'a>(
     parent: &Path,
     depth: usize,
-    files_by_parent: &HashMap<&'a Path, Vec<&'a Path>>,
+    files: &'a SidebarFileIndex,
     out: &mut Vec<Row<'a>>,
 ) {
-    if let Some(files) = files_by_parent.get(parent) {
-        out.extend(files.iter().map(|path| Row {
-            node: RowNode::IndexedFile(path),
-            depth,
-        }));
-    }
+    out.extend(files.files_for(parent).iter().map(|path| Row {
+        node: RowNode::IndexedFile(path),
+        depth,
+    }));
 }
 
 fn sidebar_file_order(a: &Path, b: &Path) -> std::cmp::Ordering {
@@ -692,6 +717,41 @@ mod tests {
             &HashSet::from([root.clone(), root.join("one"), deep_folder.clone()]),
         );
         assert!(rows.iter().any(|row| row.node.path() == deep_file));
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn sidebar_flatten_reuses_pre_grouped_sorted_parent_slices() {
+        let root = test_dir("sidebar-pre-grouped");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("z.md"), "# Z\n").unwrap();
+        std::fs::write(root.join("a.md"), "# A\n").unwrap();
+        let snapshot = build_workspace(&root, false).unwrap();
+
+        let parent_files = snapshot.sidebar_files.files_for(&root);
+        assert_eq!(
+            parent_files
+                .iter()
+                .filter_map(|path| path.file_name())
+                .map(|name| name.to_string_lossy().into_owned())
+                .collect::<Vec<_>>(),
+            vec!["a.md", "z.md"]
+        );
+        let grouped_storage = parent_files.as_ptr();
+
+        for _ in 0..3 {
+            let rows = flatten_with_files(
+                &snapshot.root,
+                &snapshot.sidebar_files,
+                &HashSet::from([root.clone()]),
+            );
+            assert_eq!(
+                snapshot.sidebar_files.files_for(&root).as_ptr(),
+                grouped_storage
+            );
+            assert_eq!(rows.iter().filter(|row| !row.node.is_dir()).count(), 2);
+        }
 
         std::fs::remove_dir_all(root).unwrap();
     }
