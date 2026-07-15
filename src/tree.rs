@@ -1,4 +1,4 @@
-use crate::picker::is_markdown_path;
+use crate::picker::{is_markdown_path, SupportedFileCount};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
@@ -24,6 +24,10 @@ pub struct Node {
 pub struct WorkspaceSnapshot {
     pub root: Node,
     pub files: Vec<PathBuf>,
+    /// Count gathered by the same bounded pass as `root` and `files`.
+    /// `capped` is true whenever an entry or supported-file budget stopped the
+    /// scan, so callers never need a second recursive traversal for metadata.
+    pub supported_file_count: SupportedFileCount,
     pub truncated: bool,
 }
 
@@ -83,11 +87,20 @@ fn build_workspace_with_limits(
         &mut budget,
         &mut files,
     )?;
-    prune(&mut root_node);
+    // When the budget ends, retain already-discovered directories even if we
+    // could not inspect their descendants. This keeps shallow, ordinary
+    // folders discoverable instead of falsely presenting them as absent.
+    if !budget.truncated {
+        prune(&mut root_node);
+    }
     files.sort();
     Ok(WorkspaceSnapshot {
         root: root_node,
         files,
+        supported_file_count: SupportedFileCount {
+            count: budget.supported_files,
+            capped: budget.truncated,
+        },
         truncated: budget.truncated,
     })
 }
@@ -117,8 +130,14 @@ fn fill_bounded(
         Err(error) if depth == 0 => return Err(error.to_string()),
         Err(_) => return Ok(()),
     };
-    let mut dirs: Vec<Node> = Vec::new();
-    let mut files: Vec<Node> = Vec::new();
+    struct ScanEntry {
+        path: PathBuf,
+        name: String,
+        is_dir: bool,
+        is_hidden: bool,
+    }
+
+    let mut entries = Vec::new();
     for entry in rd {
         if budget.examined_entries >= budget.max_entries {
             budget.truncated = true;
@@ -137,46 +156,73 @@ fn fill_bounded(
         if !show_hidden && name.starts_with('.') {
             continue;
         }
-        let p = e.path();
-        if p.is_dir() {
-            let mut child = Node {
-                path: p,
-                name,
+        let path = e.path();
+        entries.push(ScanEntry {
+            is_dir: path.is_dir(),
+            is_hidden: name.starts_with('.'),
+            path,
+            name,
+        });
+    }
+
+    // Ordinary entries always precede optional dot entries. In particular, a
+    // large hidden cache must not consume the global scan budget before a
+    // sibling such as Documents is even considered.
+    entries.sort_by(|a, b| {
+        a.is_hidden
+            .cmp(&b.is_hidden)
+            .then_with(|| b.is_dir.cmp(&a.is_dir))
+            .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+    });
+
+    let mut dirs: Vec<Node> = Vec::new();
+    let mut files: Vec<Node> = Vec::new();
+    for entry in entries {
+        if entry.is_dir {
+            dirs.push(Node {
+                path: entry.path,
+                name: entry.name,
                 is_dir: true,
                 children: Vec::new(),
-            };
-            fill_bounded(
-                &mut child,
-                depth + 1,
-                tree_max_depth,
-                file_index_max_depth,
-                show_hidden,
-                budget,
-                indexed_files,
-            )?;
-            dirs.push(child);
-        } else if is_markdown_path(&p) {
+            });
+        } else if is_markdown_path(&entry.path) {
             if budget.supported_files >= budget.max_files {
                 budget.truncated = true;
                 break;
             }
             budget.supported_files += 1;
             if depth < file_index_max_depth {
-                indexed_files.push(p.clone());
+                indexed_files.push(entry.path.clone());
             }
             files.push(Node {
-                path: p,
-                name,
+                path: entry.path,
+                name: entry.name,
                 is_dir: false,
                 children: Vec::new(),
             });
+            if budget.supported_files >= budget.max_files {
+                budget.truncated = true;
+                break;
+            }
         }
+    }
+
+    // Discover all immediate siblings before descending. This prevents one
+    // early subtree from making later top-level folders disappear entirely.
+    for child in &mut dirs {
         if budget.truncated {
             break;
         }
+        fill_bounded(
+            child,
+            depth + 1,
+            tree_max_depth,
+            file_index_max_depth,
+            show_hidden,
+            budget,
+            indexed_files,
+        )?;
     }
-    dirs.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
-    files.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
     node.children = dirs;
     node.children.extend(files);
     Ok(())
@@ -255,6 +301,13 @@ mod tests {
         let snapshot = build_workspace(&root, false).unwrap();
 
         assert!(!snapshot.truncated);
+        assert_eq!(
+            snapshot.supported_file_count,
+            SupportedFileCount {
+                count: 2,
+                capped: false
+            }
+        );
         assert_eq!(snapshot.files.len(), 2);
         assert!(snapshot.files.contains(&root.join("readme.md")));
         assert!(snapshot.files.contains(&root.join("docs/guide.md")));
@@ -288,8 +341,62 @@ mod tests {
     }
 
     #[test]
+    fn workspace_snapshot_marks_the_exact_file_cap_incomplete() {
+        let root = test_dir("file-cap");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("one.md"), "# One\n").unwrap();
+
+        let snapshot = build_workspace_with_limits(&root, false, 12, 8, 1, 10).unwrap();
+
+        assert_eq!(
+            snapshot.supported_file_count,
+            SupportedFileCount {
+                count: 1,
+                capped: true
+            }
+        );
+        assert!(snapshot.truncated);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn workspace_snapshot_surfaces_unreadable_root() {
         let missing = test_dir("missing");
         assert!(build_workspace(&missing, false).is_err());
+    }
+
+    #[test]
+    fn hidden_workspace_entries_are_additive_and_do_not_crowd_documents() {
+        let root = test_dir("hidden-union");
+        let documents = root.join("Documents");
+        let hidden = root.join(".cache");
+        std::fs::create_dir_all(&documents).unwrap();
+        std::fs::create_dir_all(&hidden).unwrap();
+        std::fs::write(documents.join("visible.md"), "# Visible\n").unwrap();
+        for index in 0..12 {
+            std::fs::write(hidden.join(format!("cache-{index}.bin")), "").unwrap();
+        }
+        std::fs::write(hidden.join("hidden.md"), "# Hidden\n").unwrap();
+
+        let hidden_off = build_workspace_with_limits(&root, false, 12, 8, 20, 8).unwrap();
+        assert!(hidden_off.files.contains(&documents.join("visible.md")));
+        assert!(!hidden_off.files.contains(&hidden.join("hidden.md")));
+
+        let complete_hidden_on = build_workspace(&root, true).unwrap();
+        assert!(complete_hidden_on
+            .files
+            .contains(&documents.join("visible.md")));
+        assert!(complete_hidden_on.files.contains(&hidden.join("hidden.md")));
+
+        let hidden_on = build_workspace_with_limits(&root, true, 12, 8, 20, 8).unwrap();
+        assert!(hidden_on.files.contains(&documents.join("visible.md")));
+        assert!(hidden_on
+            .root
+            .children
+            .iter()
+            .any(|node| node.path == documents));
+        assert!(hidden_on.truncated);
+
+        let _ = std::fs::remove_dir_all(root);
     }
 }

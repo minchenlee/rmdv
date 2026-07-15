@@ -102,10 +102,15 @@ impl Picker {
                         })
                     })
                     .collect();
-                items.sort_by(|a, b| match (a.is_dir, b.is_dir) {
-                    (true, false) => std::cmp::Ordering::Less,
-                    (false, true) => std::cmp::Ordering::Greater,
-                    _ => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
+                items.sort_by(|a, b| {
+                    // Optional dot entries are additive. Keep ordinary folders
+                    // first so enabling hidden files cannot crowd familiar
+                    // destinations out of the initial Full Mindmap viewport.
+                    a.name
+                        .starts_with('.')
+                        .cmp(&b.name.starts_with('.'))
+                        .then_with(|| b.is_dir.cmp(&a.is_dir))
+                        .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
                 });
                 self.entries = items;
             }
@@ -412,6 +417,40 @@ mod tests {
             false,
         )
         .is_err());
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn showing_hidden_folders_is_additive_and_keeps_documents_first() {
+        let root = std::env::temp_dir().join(format!(
+            "rmdv-picker-hidden-union-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(root.join("Documents")).unwrap();
+        std::fs::create_dir_all(root.join("Downloads")).unwrap();
+        std::fs::create_dir_all(root.join(".cache")).unwrap();
+
+        let mut picker = Picker::new(Some(root.clone()), PickerMode::Folder, true);
+        let shown: Vec<&str> = picker
+            .entries
+            .iter()
+            .map(|entry| entry.name.as_str())
+            .collect();
+        assert_eq!(shown, vec!["Documents", "Downloads", ".cache"]);
+
+        picker.show_hidden = false;
+        picker.refresh();
+        let hidden_off: Vec<&str> = picker
+            .entries
+            .iter()
+            .map(|entry| entry.name.as_str())
+            .collect();
+        assert_eq!(hidden_off, vec!["Documents", "Downloads"]);
 
         let _ = std::fs::remove_dir_all(root);
     }

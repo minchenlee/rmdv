@@ -171,6 +171,27 @@ impl Builder {
             by_id: self.by_id,
         }
     }
+
+    /// Folder choosers can have dozens of immediate siblings. Aligning the
+    /// selected root with the first child keeps the start of the ordinary
+    /// folder list in view; keyboard selection still autocenters each later
+    /// child independently.
+    fn finish_picker(mut self, root: WorkspaceNodeId, root_idx: usize) -> WorkspaceGraph {
+        let mut y_cursor = mindmap::PAD;
+        mindmap::layout(&mut self.nodes, root_idx, &mut y_cursor);
+        if let Some(first_child) = self.nodes[root_idx].children.first().copied() {
+            self.nodes[root_idx].y = self.nodes[first_child].y;
+        }
+        let max_level = self.nodes.iter().map(|node| node.level).max().unwrap_or(0) as f32;
+        let width =
+            mindmap::PAD * 2.0 + mindmap::NODE_W + max_level * (mindmap::NODE_W + mindmap::X_GAP);
+        WorkspaceGraph {
+            nodes: Arc::new(self.nodes),
+            content_size: Size::new(width, y_cursor + mindmap::PAD),
+            root,
+            by_id: self.by_id,
+        }
+    }
 }
 
 fn status_label(status: WorkspaceStatus, detail: Option<&str>) -> String {
@@ -308,24 +329,42 @@ pub fn from_picker(
         }
     }
 
-    builder.finish(root_id)
+    builder.finish_picker(root_id, root_idx)
 }
 
 /// Adapt the existing prebuilt workspace tree. The caller owns expansion;
 /// folders outside `expanded` remain present but contribute no visible children
 /// and advertise their hidden descendants to the shared canvas.
-pub fn from_tree(tree_root: &Node, expanded: &HashSet<PathBuf>, truncated: bool) -> WorkspaceGraph {
+pub fn from_tree(
+    tree_root: &Node,
+    expanded: &HashSet<PathBuf>,
+    truncated: bool,
+    supported_file_count: Option<SupportedFileCount>,
+) -> WorkspaceGraph {
     let mut builder = Builder {
         nodes: Vec::new(),
         by_id: HashMap::new(),
     };
     let root_id = WorkspaceNodeId::Root(tree_root.path.clone());
     let root_expanded = expanded.contains(&tree_root.path);
+    let root_label = supported_file_count.map_or_else(
+        || tree_root.name.clone(),
+        |count| {
+            let counts = HashMap::from([(tree_root.path.clone(), count)]);
+            picker_folder_label(
+                &tree_root.name,
+                &tree_root.path,
+                &counts,
+                &HashSet::new(),
+                None,
+            )
+        },
+    );
     let root_idx = builder.push(
         root_id.clone(),
         WorkspaceNodeKind::Root,
         Some(tree_root.path.clone()),
-        tree_root.name.clone(),
+        root_label,
         0,
         !tree_root.children.is_empty() && !root_expanded,
     );
@@ -462,6 +501,62 @@ mod tests {
     }
 
     #[test]
+    fn picker_root_focus_starts_at_first_ordinary_folder() {
+        let picker = Picker {
+            cwd: PathBuf::from("/Users/example"),
+            entries: vec![
+                Entry {
+                    name: "Documents".into(),
+                    path: PathBuf::from("/Users/example/Documents"),
+                    is_dir: true,
+                    is_md: false,
+                },
+                Entry {
+                    name: ".cache".into(),
+                    path: PathBuf::from("/Users/example/.cache"),
+                    is_dir: true,
+                    is_md: false,
+                },
+            ],
+            selected: 0,
+            error: None,
+            mode: PickerMode::Folder,
+            show_hidden: true,
+        };
+        let graph = from_picker(&picker, &HashMap::new(), &HashSet::new(), None);
+        let root = graph.index_of(&graph.root_id()).unwrap();
+        let documents = graph
+            .index_of(&WorkspaceNodeId::Folder(PathBuf::from(
+                "/Users/example/Documents",
+            )))
+            .unwrap();
+        assert_eq!(graph.nodes[root].y, graph.nodes[documents].y);
+    }
+
+    #[test]
+    fn workspace_root_retains_bounded_supported_file_count() {
+        let root = node(
+            "/vault",
+            true,
+            vec![node("/vault/readme.md", false, vec![])],
+        );
+        let graph = from_tree(
+            &root,
+            &HashSet::from([PathBuf::from("/vault")]),
+            true,
+            Some(SupportedFileCount {
+                count: 5_000,
+                capped: true,
+            }),
+        );
+        let label = graph
+            .index_of(&graph.root_id())
+            .and_then(|index| graph.nodes.get(index))
+            .map(|node| node.full_label.as_str());
+        assert_eq!(label, Some("vault · 5000+ files"));
+    }
+
+    #[test]
     fn capped_zero_file_count_is_rendered_as_incomplete_not_zero_plus() {
         let path = PathBuf::from("/home/user/wide-folder");
         let counts = HashMap::from([(
@@ -533,14 +628,14 @@ mod tests {
             ],
         );
         let mut expanded = HashSet::from([PathBuf::from("/vault")]);
-        let collapsed = from_tree(&root, &expanded, false);
+        let collapsed = from_tree(&root, &expanded, false, None);
         let src = WorkspaceNodeId::Folder(PathBuf::from("/vault/src"));
         let app = WorkspaceNodeId::File(PathBuf::from("/vault/src/app.rs"));
         assert!(collapsed.node(&src).unwrap().has_hidden_children);
         assert!(collapsed.node(&app).is_none());
 
         expanded.insert(PathBuf::from("/vault/src"));
-        let open = from_tree(&root, &expanded, false);
+        let open = from_tree(&root, &expanded, false, None);
         assert!(!open.node(&src).unwrap().has_hidden_children);
         assert!(open.node(&app).is_some());
     }
@@ -574,8 +669,8 @@ mod tests {
         );
         let expanded = HashSet::from([PathBuf::from("/vault"), PathBuf::from("/vault/src")]);
         let id = WorkspaceNodeId::File(PathBuf::from("/vault/src/app.rs"));
-        assert!(from_tree(&one, &expanded, false).node(&id).is_some());
-        assert!(from_tree(&two, &expanded, false).node(&id).is_some());
+        assert!(from_tree(&one, &expanded, false, None).node(&id).is_some());
+        assert!(from_tree(&two, &expanded, false, None).node(&id).is_some());
     }
 
     #[test]
@@ -588,7 +683,12 @@ mod tests {
                 node("/vault/b.md", false, vec![]),
             ],
         );
-        let graph = from_tree(&root, &HashSet::from([PathBuf::from("/vault")]), false);
+        let graph = from_tree(
+            &root,
+            &HashSet::from([PathBuf::from("/vault")]),
+            false,
+            None,
+        );
         let root_id = graph.root_id();
         let a = WorkspaceNodeId::File(PathBuf::from("/vault/a.md"));
         let b = WorkspaceNodeId::File(PathBuf::from("/vault/b.md"));
@@ -627,7 +727,7 @@ mod tests {
             true,
             vec![node("/vault/readme.md", false, vec![])],
         );
-        let graph = from_tree(&root, &HashSet::from([PathBuf::from("/vault")]), true);
+        let graph = from_tree(&root, &HashSet::from([PathBuf::from("/vault")]), true, None);
 
         assert!(graph
             .node(&WorkspaceNodeId::Status(
