@@ -1,4 +1,4 @@
-use crate::picker::{is_markdown_path, SupportedFileCount};
+use crate::picker::is_markdown_path;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
@@ -16,6 +16,29 @@ pub struct Node {
     pub name: String,
     pub is_dir: bool,
     pub children: Vec<Node>,
+    /// Recursive supported-file count gathered while this node's subtree is
+    /// visited by the one bounded workspace scan. Files leave this as `None`.
+    pub recursive_supported_file_count: Option<RecursiveFileCount>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RecursiveFileCount {
+    Exact(usize),
+    LowerBound(usize),
+    Unavailable,
+}
+
+impl RecursiveFileCount {
+    fn counted(self) -> usize {
+        match self {
+            Self::Exact(count) | Self::LowerBound(count) => count,
+            Self::Unavailable => 0,
+        }
+    }
+
+    fn is_exact(self) -> bool {
+        matches!(self, Self::Exact(_))
+    }
 }
 
 /// One bounded filesystem pass produces both consumers that previously walked
@@ -24,10 +47,6 @@ pub struct Node {
 pub struct WorkspaceSnapshot {
     pub root: Node,
     pub files: Vec<PathBuf>,
-    /// Count gathered by the same bounded pass as `root` and `files`.
-    /// `capped` is true whenever an entry or supported-file budget stopped the
-    /// scan, so callers never need a second recursive traversal for metadata.
-    pub supported_file_count: SupportedFileCount,
     pub truncated: bool,
 }
 
@@ -58,6 +77,7 @@ fn empty_root(root: &Path) -> Node {
         name,
         is_dir: true,
         children: Vec::new(),
+        recursive_supported_file_count: None,
     }
 }
 
@@ -76,6 +96,7 @@ fn build_workspace_with_limits(
         supported_files: 0,
         max_entries,
         max_files,
+        exhausted: false,
         truncated: false,
     };
     fill_bounded(
@@ -97,10 +118,6 @@ fn build_workspace_with_limits(
     Ok(WorkspaceSnapshot {
         root: root_node,
         files,
-        supported_file_count: SupportedFileCount {
-            count: budget.supported_files,
-            capped: budget.truncated,
-        },
         truncated: budget.truncated,
     })
 }
@@ -110,6 +127,9 @@ struct ScanBudget {
     supported_files: usize,
     max_entries: usize,
     max_files: usize,
+    /// Hard global entry/file budget exhausted. Unlike a depth or read
+    /// interruption, this stops later sibling walks too.
+    exhausted: bool,
     truncated: bool,
 }
 
@@ -122,13 +142,22 @@ fn fill_bounded(
     budget: &mut ScanBudget,
     indexed_files: &mut Vec<PathBuf>,
 ) -> Result<(), String> {
-    if depth >= tree_max_depth || budget.truncated {
+    if depth >= tree_max_depth {
+        node.recursive_supported_file_count = Some(RecursiveFileCount::LowerBound(0));
+        budget.truncated = true;
+        return Ok(());
+    }
+    if budget.exhausted {
+        node.recursive_supported_file_count = Some(RecursiveFileCount::LowerBound(0));
         return Ok(());
     }
     let rd = match std::fs::read_dir(&node.path) {
         Ok(rd) => rd,
         Err(error) if depth == 0 => return Err(error.to_string()),
-        Err(_) => return Ok(()),
+        Err(_) => {
+            node.recursive_supported_file_count = Some(RecursiveFileCount::Unavailable);
+            return Ok(());
+        }
     };
     struct ScanEntry {
         path: PathBuf,
@@ -138,14 +167,22 @@ fn fill_bounded(
     }
 
     let mut entries = Vec::new();
+    let mut subtree_incomplete = false;
     for entry in rd {
         if budget.examined_entries >= budget.max_entries {
+            budget.exhausted = true;
             budget.truncated = true;
+            subtree_incomplete = true;
             break;
         }
         budget.examined_entries += 1;
-        let Ok(e) = entry else {
-            continue;
+        let e = match entry {
+            Ok(entry) => entry,
+            Err(_) => {
+                budget.truncated = true;
+                subtree_incomplete = true;
+                continue;
+            }
         };
         let name = e.file_name().to_string_lossy().into_owned();
         // Always skip massive build/vcs caches.
@@ -185,10 +222,13 @@ fn fill_bounded(
                 name: entry.name,
                 is_dir: true,
                 children: Vec::new(),
+                recursive_supported_file_count: None,
             });
         } else if is_markdown_path(&entry.path) {
             if budget.supported_files >= budget.max_files {
+                budget.exhausted = true;
                 budget.truncated = true;
+                subtree_incomplete = true;
                 break;
             }
             budget.supported_files += 1;
@@ -200,9 +240,12 @@ fn fill_bounded(
                 name: entry.name,
                 is_dir: false,
                 children: Vec::new(),
+                recursive_supported_file_count: None,
             });
             if budget.supported_files >= budget.max_files {
+                budget.exhausted = true;
                 budget.truncated = true;
+                subtree_incomplete = true;
                 break;
             }
         }
@@ -211,9 +254,6 @@ fn fill_bounded(
     // Discover all immediate siblings before descending. This prevents one
     // early subtree from making later top-level folders disappear entirely.
     for child in &mut dirs {
-        if budget.truncated {
-            break;
-        }
         fill_bounded(
             child,
             depth + 1,
@@ -223,9 +263,26 @@ fn fill_bounded(
             budget,
             indexed_files,
         )?;
+        let child_count = child
+            .recursive_supported_file_count
+            .unwrap_or(RecursiveFileCount::LowerBound(0));
+        if !child_count.is_exact() {
+            subtree_incomplete = true;
+        }
     }
+    let recursive_count = files.len()
+        + dirs
+            .iter()
+            .filter_map(|child| child.recursive_supported_file_count)
+            .map(RecursiveFileCount::counted)
+            .sum::<usize>();
     node.children = dirs;
     node.children.extend(files);
+    node.recursive_supported_file_count = Some(if subtree_incomplete {
+        RecursiveFileCount::LowerBound(recursive_count)
+    } else {
+        RecursiveFileCount::Exact(recursive_count)
+    });
     Ok(())
 }
 
@@ -236,6 +293,10 @@ fn prune(node: &mut Node) -> bool {
     }
     node.children.retain_mut(|c| prune(c));
     !node.children.is_empty()
+        || matches!(
+            node.recursive_supported_file_count,
+            Some(RecursiveFileCount::LowerBound(_) | RecursiveFileCount::Unavailable)
+        )
 }
 
 /// Flatten tree into visible rows respecting `expanded` set. Root not shown.
@@ -302,13 +363,6 @@ mod tests {
         let snapshot = build_workspace(&root, false).unwrap();
 
         assert!(!snapshot.truncated);
-        assert_eq!(
-            snapshot.supported_file_count,
-            SupportedFileCount {
-                count: 2,
-                capped: false
-            }
-        );
         assert_eq!(snapshot.files.len(), 2);
         assert!(snapshot.files.contains(&root.join("readme.md")));
         assert!(snapshot.files.contains(&root.join("docs/guide.md")));
@@ -323,6 +377,19 @@ mod tests {
             .children
             .iter()
             .any(|node| node.name == "readme.md"));
+        assert_eq!(
+            snapshot.root.recursive_supported_file_count,
+            Some(RecursiveFileCount::Exact(2))
+        );
+        assert_eq!(
+            snapshot
+                .root
+                .children
+                .iter()
+                .find(|node| node.name == "docs")
+                .and_then(|node| node.recursive_supported_file_count),
+            Some(RecursiveFileCount::Exact(1))
+        );
 
         let _ = std::fs::remove_dir_all(root);
     }
@@ -338,6 +405,10 @@ mod tests {
 
         assert!(snapshot.truncated);
         assert!(snapshot.files.is_empty());
+        assert_eq!(
+            snapshot.root.recursive_supported_file_count,
+            Some(RecursiveFileCount::LowerBound(0))
+        );
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -349,14 +420,49 @@ mod tests {
 
         let snapshot = build_workspace_with_limits(&root, false, 12, 8, 1, 10).unwrap();
 
-        assert_eq!(
-            snapshot.supported_file_count,
-            SupportedFileCount {
-                count: 1,
-                capped: true
-            }
-        );
         assert!(snapshot.truncated);
+        assert_eq!(
+            snapshot.root.recursive_supported_file_count,
+            Some(RecursiveFileCount::LowerBound(1))
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn workspace_snapshot_marks_only_interrupted_subtrees_as_lower_bounds() {
+        let root = test_dir("subtree-cap");
+        std::fs::create_dir_all(root.join("a-exact")).unwrap();
+        std::fs::create_dir_all(root.join("b-interrupted")).unwrap();
+        std::fs::write(root.join("a-exact/one.md"), "# One\n").unwrap();
+        std::fs::write(root.join("b-interrupted/two.md"), "# Two\n").unwrap();
+        std::fs::write(root.join("b-interrupted/three.md"), "# Three\n").unwrap();
+
+        let snapshot = build_workspace_with_limits(&root, false, 12, 8, 2, 20).unwrap();
+        let exact = snapshot
+            .root
+            .children
+            .iter()
+            .find(|node| node.name == "a-exact")
+            .unwrap();
+        let interrupted = snapshot
+            .root
+            .children
+            .iter()
+            .find(|node| node.name == "b-interrupted")
+            .unwrap();
+        assert_eq!(
+            exact.recursive_supported_file_count,
+            Some(RecursiveFileCount::Exact(1))
+        );
+        assert_eq!(
+            interrupted.recursive_supported_file_count,
+            Some(RecursiveFileCount::LowerBound(1))
+        );
+        assert_eq!(
+            snapshot.root.recursive_supported_file_count,
+            Some(RecursiveFileCount::LowerBound(2))
+        );
+
         let _ = std::fs::remove_dir_all(root);
     }
 

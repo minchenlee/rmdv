@@ -2,13 +2,13 @@
 
 **Date:** 2026-07-10
 **Branch:** `feat/full-mindmap-mode`
-**Status:** Base implementation committed as `ae0b4a8`; keyboard/performance refinement protected as `82afd5a`; native-acceptance corrections under review (2026-07-15)
+**Status:** Unified folder-rooted explorer and recursive count correction submitted for manual acceptance (2026-07-15)
 
 ## Goal
 
-Add an opt-in, full-window mindmap navigator that lets a user choose a project
-folder, browse its folder hierarchy, and open a supported document without
-falling back to a list as the primary interaction.
+Add an opt-in, full-window, folder-rooted mindmap navigator that lets a user
+browse any filesystem folder and open a supported document without falling
+back to a list as the primary interaction.
 
 This is a workspace-navigation feature. It is deliberately separate from the
 existing document-level `ViewMode::Mindmap`, which continues to map one open
@@ -22,11 +22,11 @@ change, clear, or reinterpret the current document view mode.
 | Feature name | **Full Mindmap Mode** in user-facing copy; `FullMindmapState` in code. |
 | Activation | `⌘⇧M`, command palette item, and a welcome-screen action. `⌘M` remains the existing document mindmap toggle. |
 | Exit | `Esc` or `⌘⇧M`. Exit restores the unchanged underlying document/navigation surface; Full Mindmap has no persistent toolbar button. |
-| No workspace yet | Open a mindmap-style folder browser rooted at the current file's parent or the home directory. |
+| No workspace yet | Adopt the current file's parent as the app workspace, or Home when no file is open, through the same bounded background workspace loader used by every root change. |
 | Workspace already open | Open the workspace graph immediately, revealing the current file when it belongs to that workspace. |
 | File activation | Selecting a file loads a bounded, read-only content preview in the side panel. Press `Enter` to open it; there is no **Open File** button. A successful load exits Full Mindmap Mode to show the document. |
-| Folder activation | In the chooser, `Space` descends into a selected folder. In a workspace, `Space` toggles the selected folder/root expanded or collapsed without moving selection, matching document Mindmap. `Enter` chooses a project folder or opens a workspace file. |
-| Folder discovery | In folder-selection phase, the selected root/folder receives a background count of supported files. The walk is bounded at 12 levels, 5,000 files, and 10,000 entries; its node label shows the result (`5,000+` at the file cap, or an at-least/incomplete result at the entry budget). Files remain hidden until the folder is chosen as a project. |
+| Folder activation | `Space` always toggles the selected folder/root without moving selection. `Right` expands a collapsed folder and selects its first child in one step. `Enter` makes a folder the new root or opens a file. |
+| Folder discovery | The one bounded background workspace pass records recursive counts for every discovered folder. Collapsed exact folders show `N files`; interrupted folders show `N+ files`; zero before interruption shows `scan limit reached`; unreadable folders show `count unavailable`. Expanded folders use plain labels. |
 | Workspace indexing | Choosing a project performs one background pass for the tree, file finder, and root supported-file count, capped at 12 levels, 5,000 supported files, and 10,000 examined entries. The UI remains interactive and a truncated status node makes partial results explicit. |
 | Root parent traversal | `←` at a workspace root indexes the filesystem parent in the background, then selects that new root. It changes workspace navigation scope but never loads or replaces the current document. |
 | Panel sizing | `⌘⌥W` cycles the Full Mindmap panel through the existing 1/3, 1/2, and 3/5 window-width steps using Full Mindmap-owned state. |
@@ -51,55 +51,31 @@ It closes a transient overlay if invoked from the command palette, but does not
 destroy editor content, change `view_mode`, change document mindmap selection,
 or mutate sidebar/search/footer preferences.
 
-When a workspace is open, the workspace graph appears immediately. When no
-workspace is open, Full Mindmap Mode starts in **Choose Project Folder**.
+When a workspace is open, the workspace graph appears immediately. When none
+is open, Full Mindmap starts the same bounded background load for the current
+file's parent, or Home, and adopts the matching accepted result as the app
+workspace. There is no separate user-visible chooser mode.
 
-### 2. Choose Project Folder phase
+### 2. Unified folder-rooted explorer
 
-The screen contains:
+The screen has one workspace graph and one keyboard contract in every entry
+scenario. Root changes, including first entry and `Enter` on a folder, run the
+existing bounded scan off the UI thread. The accepted request atomically
+replaces the app workspace snapshot; stale completions are ignored.
 
-- No top toolbar or action buttons: the mode is keyboard-first.
-- A mindmap canvas whose root is the current directory and whose children are
-  its immediate visible subfolders.
-- A right panel whose footer documents `Space` to descend and `Enter` to choose
-  the project folder.
+That scan remains capped at 12 tree levels, 5,000 supported files, and 10,000
+examined entries. While building the tree and file-finder list it also rolls
+each supported file into its ancestor folders. It never starts per-folder
+walks. A folder whose own directory cannot be read retains an unavailable
+count; an ancestor or subtree cut short by the scan retains the number already
+seen as a lower bound.
 
-This phase reuses `Picker` with `PickerMode::Folder` for filesystem enumeration,
-hidden-file filtering, sorting, home lookup, parent navigation, and readable
-error reporting. It changes only the presentation: picker entries are adapted
-to workspace mindmap nodes instead of rendered as rows.
+Hidden entries remain additive and use the same request-identified refresh
+ordering. File previews remain read-only and independent of the current dirty
+document. `⌘O` remains the standard folder-picker fallback, but it is not a
+second Full Mindmap presentation.
 
-Ordinary folders sort before optional dot-folders, and the chooser root aligns
-with the first child rather than the midpoint of an arbitrarily tall sibling
-column. Enabling hidden entries is therefore additive: it cannot push familiar
-top-level destinations such as `Documents` out of the initial usable graph.
-
-Selecting a root/folder starts a background count of the same supported files
-that would become workspace nodes. Only the selected folder is counted and
-completed results are cached for the chooser session, so drawing a wide
-directory never recursively scans every sibling. The background walk stops at
-12 levels, 5,000 supported files, or 10,000 examined entries. The node changes
-from `notes` to `notes · 12 files`; it shows `5,000+ files` at the file cap,
-an at-least count such as `12+ files` when the entry budget ends early, or
-`scan limit reached` when no supported file has been encountered yet. No file
-nodes appear in this phase. If the selected root cannot be read, the result is
-rendered as `count unavailable`, never `0 files`; the existing picker
-error/recovery path remains available.
-
-Pressing `Enter` uses the selected/current folder as the workspace, then
-starts a bounded background index. The chooser remains visible with an
-“Indexing project…” panel until the matching result is ready, then transitions
-to the workspace graph. The selected workspace root retains the supported-file
-count produced by that same snapshot; no second recursive count is launched.
-It does not open or replace a document. Repeated Enter
-on the same target is deduplicated, and stale results from an older selection
-are ignored.
-
-An unreadable folder produces an error node and keyboard recovery remains
-available through `←`, `⌘O`, and `Esc`. Hidden entries follow the existing
-`show_hidden` setting.
-
-### 3. Browse Workspace phase
+### 3. Browse workspace
 
 The workspace root is the graph root. Its visible children come from the
 existing `workspace_tree`; the same supported-file filter, hidden-file rule,
@@ -118,10 +94,11 @@ Initial expansion contains the workspace root. If the current file is inside
 the workspace, its ancestor folders are also expanded and the file starts
 selected. Otherwise the root starts selected.
 
-Folder nodes show a hidden-children indicator when collapsed. File nodes are
-leaves. Selecting a file opens a bounded, read-only preview without touching
-the current document, editor, or dirty state. Selecting any non-file shows the
-single hint: “Select a file to preview its content.”
+Collapsed folder nodes show their recursive count and a hidden-children
+indicator. Expanded folders use plain labels. File nodes are leaves. Selecting
+a file opens a bounded, read-only preview without touching the current
+document, editor, or dirty state. Selecting any non-file shows the single hint:
+“Select a file to preview its content.”
 
 Opening a file records it as the pending Full Mindmap open and delegates to the
 existing `load_file_unless_dirty(path)` path. The navigator exits only when the
@@ -154,11 +131,11 @@ document-mindmap handlers. Global commands such as theme, save, hidden files,
 | Key | Behavior |
 |---|---|
 | `↑` / `↓` | Select previous/next sibling. |
-| `←` | Select parent. From a folder-selection root it navigates to the filesystem parent. From a workspace root it rebuilds Full Mindmap around the workspace’s filesystem parent and selects that root. |
-| `→` | Expand a collapsed folder; if already expanded, select its first child. |
-| `Space` | Folder-selection phase: descend into the selected folder. Workspace phase: toggle the selected folder/root expanded or collapsed and retain selection. |
-| `Enter` | Folder-selection phase: use the selected/current folder as the project folder. Workspace phase: open the selected file. |
-| `Home` | Select the graph root. Folder-selection phase `⌘Home` returns to the home directory. |
+| `←` | Select the graph parent. At the root, load the filesystem parent as the new workspace root in the background. |
+| `→` | Expand a collapsed folder and select its first child in one step; if already expanded, select its first child. |
+| `Space` | Toggle the selected folder/root expanded or collapsed and retain selection. |
+| `Enter` | Open the selected file, or load the selected folder as the new workspace root. |
+| `Home` | Select the graph root. |
 | `Esc` | Exit Full Mindmap Mode. An open overlay still gets first refusal and closes before the mode exits. |
 | `⌘⇧M` | Toggle Full Mindmap Mode. |
 | `⌘⌥W` | Cycle the Full Mindmap side-panel width (1/3 → 1/2 → 3/5 of the window). |
@@ -170,9 +147,7 @@ panel's 75 ms rendered-Markdown debounce.
 
 ## Mouse behavior
 
-- Clicking a folder selects it and toggles expansion in workspace phase.
-- Clicking a folder selects it in folder-selection phase; keyboard `Space` and
-  `Enter` perform descend and project-folder confirmation.
+- Clicking a folder selects it and toggles expansion.
 - Clicking a file selects it and starts the read-only preview. It does not
   immediately replace the document; `Enter` is the deliberate activation step.
 - Drag-to-pan, wheel zoom, auto-center, hover tooltips, node animation, and
@@ -184,7 +159,6 @@ Full Mindmap Mode is app-level navigation state, not a `ViewMode` variant:
 
 ```rust
 pub struct FullMindmapState {
-    pub phase: FullMindmapPhase,
     pub selected: Option<WorkspaceNodeId>,
     pub expanded: HashSet<PathBuf>,
     pub panel_open: bool,
@@ -192,10 +166,7 @@ pub struct FullMindmapState {
     pub panel_step: usize,
     pub pending_open: Option<PendingFullMindmapOpen>,
     pub pending_preview: Option<PendingFullMindmapPreview>,
-    pub pending_folder_count: Option<PendingFullMindmapFolderCount>,
     pub pending_workspace_load: Option<PendingFullMindmapWorkspaceLoad>,
-    pub folder_file_counts: HashMap<PathBuf, SupportedFileCount>,
-    pub folder_file_count_unavailable: HashSet<PathBuf>,
     pub preview: FullMindmapPreview,
     pub layout_cache: Option<Arc<WorkspaceGraph>>,
 }
@@ -205,10 +176,6 @@ pub struct PendingFullMindmapOpen {
     pub path: PathBuf,
 }
 
-pub enum FullMindmapPhase {
-    ChooseFolder(Picker),
-    Workspace,
-}
 ```
 
 `App` owns one field:
@@ -225,7 +192,7 @@ app-level request sequence survives exit/re-entry, and every workspace switch
 cancels the current pending Full Mindmap read, so an older completion cannot
 collide with a same-path request in a new navigation session.
 
-Hidden-file changes in workspace phase rebuild through the same background,
+Hidden-file changes rebuild through the same background,
 request-identified snapshot path. A newer toggle rejects an older completion;
 the accepted refresh replaces only workspace snapshot data and preserves any
 still-valid selection, expansion, preview request, and file-open request. Scan
@@ -242,11 +209,10 @@ the navigator before the sidebar snapshot matches the filter. A refresh failure
 reverts the filter to the last accepted snapshot value and keeps its error
 visible.
 
-If the filter changes in the chooser while an older workspace still backs the
-hidden Files sidebar, every normal exit first refreshes that snapshot on the
-same worker and exits only after the matching result is accepted. `Esc` and
-`⌘⇧M` restore the prior surface; Return to Files additionally opens the Files
-sidebar.
+If the filter changes while an older workspace snapshot still backs the hidden
+Files sidebar, every normal exit first refreshes that snapshot on the same
+worker and exits only after the matching result is accepted. `Esc` and `⌘⇧M`
+restore the prior surface; Return to Files additionally opens the Files sidebar.
 
 If exit reconciliation fails, the exit still completes: the hidden-file filter
 reverts to the last accepted snapshot value and the failure is promoted to the
@@ -296,14 +262,10 @@ scoped to the directory and status kind so empty/error placeholders are stable
 across a redraw. Filesystem nodes never enter the document
 `mindmap_collapsed`, `mindmap_selected`, or document panel maps.
 
-The module exposes two pure builders:
-
-1. `from_picker(&Picker, &file_counts, &unavailable_count_paths,
-   pending_count_path) -> WorkspaceGraph` for immediate folder browsing without
-   filesystem reads during rendering.
-2. `from_tree(&tree::Node, &HashSet<PathBuf>, truncated) -> WorkspaceGraph` for
-   the open workspace, respecting Full Mindmap expansion and exposing a stable
-   truncated status node when the index budget was reached.
+The module exposes `from_tree(&tree::Node, &HashSet<PathBuf>, truncated) ->
+WorkspaceGraph`, respecting Full Mindmap expansion, using the count metadata
+already present on each folder node, and exposing a stable truncated status
+node when the index budget was reached.
 
 It also exposes pure parent/sibling/child navigation helpers and node lookup by
 `WorkspaceNodeId`. `app.rs` owns actions and async tasks; the module never opens
@@ -378,8 +340,8 @@ open/drag state separate; persisting a second width is not required.
 - Route file activations from the standard picker/file-finder fallback through
   the same Full Mindmap pending-open helper so a successful fallback open also
   exits the navigator, while a blocked or failed open leaves it intact.
-- Invalidate/rebuild the workspace layout when workspace, picker directory,
-  hidden visibility, expansion, or selection source changes.
+- Invalidate/rebuild the workspace layout when workspace, hidden visibility,
+  expansion, or selection source changes.
 
 ### `src/mindmap.rs`
 
@@ -390,8 +352,9 @@ open/drag state separate; persisting a second width is not required.
 
 ### `src/tree.rs`
 
-- Remains the authoritative workspace tree and now builds a
-  `WorkspaceSnapshot { root, files, truncated }` in one pass.
+- Remains the authoritative workspace tree and builds a
+  `WorkspaceSnapshot { root, files, truncated }` in one pass; every directory
+  node also retains its exact, lower-bound, or unavailable recursive count.
 - Applies hard depth, supported-file, and examined-entry budgets before
   allocation can grow without bound.
 - Keeps filtering, sorting, pruning, and file-finder depth behavior aligned
@@ -399,14 +362,9 @@ open/drag state separate; persisting a second width is not required.
 
 ### `src/picker.rs`
 
-- Reuse `PickerMode::Folder` for Choose Project Folder.
-- Keep the list overlay as the standard fallback.
+- Keep the list overlay as the standard `⌘O` fallback.
 - Do not change `PickerMode::OpenAny` behavior.
-- Provide a bounded, allocation-light supported-file counter for the selected
-  chooser folder. Its filters and 12-level depth cap match `tree::build`; a
-  10,000-entry budget prevents unbounded work in wide trees. It runs in a
-  background task owned by `app.rs`, never while building a canvas graph. A
-  root read error remains unavailable rather than becoming a false `0` count.
+- Full Mindmap does not use picker-owned snapshots or per-folder count walks.
 
 ## Fallback behavior
 
@@ -448,15 +406,15 @@ may directly assign `file`, `source`, `saved_source`, `dirty`, or `editor`.
 
 ### Pure workspace-model tests (`workspace_mindmap.rs`)
 
-1. Folder picker graph contains root plus sorted visible child folders and no
-   file nodes.
-2. Workspace graph preserves folder/file kinds and parent/child indices.
+1. Workspace graph preserves folder/file kinds and parent/child indices.
+2. Collapsed exact, lower-bound, zero-before-limit, and unavailable folders use
+   the specified labels; expanded folders use plain labels.
 3. Initial root-only expansion hides descendants and marks folders as having
    hidden children.
 4. Expanding and collapsing a folder changes only its visible descendants.
 5. Path-based IDs remain stable when an unrelated sibling is inserted or
    hidden visibility changes.
-6. Empty, unreadable, and depth-truncated inputs produce explicit status nodes
+6. Empty, unreadable, and depth-truncated inputs produce explicit metadata/status nodes
    without panicking.
 7. Parent/sibling/first-child navigation matches document mindmap arrow
    semantics.
@@ -466,9 +424,9 @@ may directly assign `file`, `source`, `saved_source`, `dirty`, or `editor`.
 
 ### App state-transition tests (`app.rs`)
 
-1. **Folder selection:** entering without a workspace creates
-   `ChooseFolder(PickerMode::Folder)`; choosing a folder uses the shared
-   workspace setup and transitions to workspace phase.
+1. **Unified entry:** entering without a workspace starts one background load
+   for the current file's parent or Home; entering with a workspace reuses its
+   accepted snapshot immediately.
 2. **Folder expansion/collapse:** Workspace `Space` toggles the selected
    folder/root without moving selection; Full Mindmap expansion remains
    independent from sidebar `expanded` and document `mindmap_collapsed`.
@@ -484,15 +442,10 @@ may directly assign `file`, `source`, `saved_source`, `dirty`, or `editor`.
 7. `⌘M` still changes only document `ViewMode::Mindmap`; `⌘⇧M` changes only
    `full_mindmap`.
 8. Hidden-file toggle adds/removes only dot entries, preserves ordinary
-   picker/workspace nodes, and performs workspace refreshes in the background
-   with stale-result rejection and valid navigation retention. The folder
-   chooser resets to its visible root and invalidates cached file counts.
-9. A selected chooser folder receives a bounded supported-file count without
-   adding file nodes; the 10,000-entry budget and 5,000-file cap produce an
-   explicit at-least/incomplete label, root read failures show `count
-   unavailable` rather than a false empty count, and stale count completions
-   are ignored. After project selection the workspace root retains the count
-   from the accepted snapshot without a second scan.
+   workspace nodes, and performs workspace refreshes in the background with
+   stale-result rejection and valid navigation retention.
+9. Per-folder counts come only from the accepted snapshot; exact and interrupted
+   subtrees retain the correct count semantics without a second scan.
 10. `←` at the workspace root moves to the parent workspace while preserving a
     dirty editor/current document and rejecting late file-open completions.
 11. `⌘⌥W` cycles only the Full Mindmap panel state and does not alter the
@@ -500,7 +453,7 @@ may directly assign `file`, `source`, `saved_source`, `dirty`, or `editor`.
 12. Project selection and root-parent navigation do not mutate the workspace
     until their matching background index completes; stale completions are
     ignored and pending file opens are cancelled immediately.
-13. Folder-picker file fallback waits for its parent workspace index before
+13. Standard picker file fallback waits for its parent workspace index before
     opening, and cached graphs reuse the same graph/node allocations.
 
 ### Shared canvas regression tests (`mindmap.rs`)
@@ -520,18 +473,18 @@ The approved design is implemented as follows:
   never reuses document `BlockId`s.
 - `src/mindmap.rs` now shares a generic canvas/layout adapter while its default
   type remains the existing document `BlockId` path.
-- `src/app.rs` owns Full Mindmap phase, selection, expansion, panel, preview,
+- `src/app.rs` owns Full Mindmap selection, expansion, panel, preview,
   and request-identity state; a successful file open exits back to normal
   reading.
 - `src/tree.rs` performs one bounded pass for the workspace tree and file
   index. Full Mindmap runs it off the UI thread; `src/workspace_mindmap.rs`
   shares cached graphs/nodes by `Arc` and renders an explicit truncation node.
-- Focused model and app-state tests cover the folder picker, expansion,
+- Focused model and app-state tests cover unified entry, expansion,
   successful and dirty file opens, late completion, stale completion, and exit
   state restoration, including workspace-switch cancellation and same-path
   exit/re-entry request identity. The keyboard-first refinement also covers
-  Space descent, Enter project confirmation, direct workspace-root parent
-  traversal, bounded chooser file counts, read-only previews, stale async
+  Space folding, Enter folder re-rooting, direct workspace-root parent
+  traversal, recursive snapshot counts, read-only previews, stale async
   completions, async bounded workspace indexing, zero-copy graph cache reuse,
   and independent `⌘⌥W` panel sizing.
 
@@ -561,8 +514,11 @@ release-oriented work.
    coverage.
 2. Added `workspace_mindmap` model/builders and model tests.
 3. Added `FullMindmapState`, messages, entry/exit, and keyboard routing.
-4. Added Choose Project Folder rendering and workspace selection.
+4. Added folder-rooted workspace rendering and selection.
 5. Added workspace graph, detail panel, folder expansion, and file activation.
 6. Added dirty/async state-transition tests and fallback actions.
 7. Ran automated verification and recorded exact evidence in
    `PROJECT_STATUS.md`; only native manual interaction remains outstanding.
+8. Replaced the visible chooser/workspace split with one workspace explorer,
+   auto-adopted current-file parent/Home entry, and added per-folder recursive
+   count metadata to the existing single bounded scan.
