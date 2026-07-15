@@ -98,6 +98,15 @@ Last reconciled: 2026-07-15 (Asia/Taipei)
 
 ## Current state
 
+- **Full Mindmap native correctness correction is in progress under one serial
+  maker.** The clean baseline was `3e2b3fd` with `main...HEAD = 9/30` before
+  this bookkeeping commit. Scope is limited to bounded background lazy
+  discovery for interrupted branches, pruning determinably exact-empty
+  subtrees, and ancestor discovery of useful late/wide siblings while
+  preserving stale rejection, collapse eviction, ordinary Files/Cmd+P,
+  document safety, and the unified keyboard contract. No production files are
+  modified yet; main integration and Zoom retargeting remain prohibited.
+
 - **Zen UI polish is implemented, verified, committed, and merged into local
   `main` as `68fc8d0`.** Zen editor vertical padding is removed; toast feedback
   now has neutral 1.5-second, neutral guidance 2.5-second, and accent attention
@@ -127,7 +136,7 @@ Last reconciled: 2026-07-15 (Asia/Taipei)
 - `feat/full-mindmap-mode` and `feat/mindmap-zoom-controls` still follow the old
   `0df1fe2` line and do not contain repair `d97370e`, the Zen feature, or the
   screenshot repair. Full Mindmap is 9 main-only commits behind and contains
-  29 branch-only commits; Zoom Controls is 9 main-only commits
+  31 branch-only commits; Zoom Controls is 9 main-only commits
   behind and has 10 branch-only commits. The Full Mindmap refinement is
   protected at `82afd5a`; integrate current
   `main@67564e5` only after the requested manual acceptance, then retest.
