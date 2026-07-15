@@ -132,6 +132,10 @@ pub struct FullMindmapState {
     /// Visible workspace graphs are rebuilt only after their source/expansion
     /// changes, not every `view()` frame.
     layout_cache: std::cell::RefCell<Option<std::sync::Arc<WorkspaceGraph>>>,
+    /// Generation of the visible workspace graph. The shared canvas uses this
+    /// to preserve focus when async folder discovery rebuilds the graph without
+    /// changing the selected path.
+    pub layout_generation: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -1029,6 +1033,7 @@ impl App {
             preview: FullMindmapPreview::None,
             load_error: None,
             layout_cache: std::cell::RefCell::new(None),
+            layout_generation: 0,
         }
     }
 
@@ -1056,8 +1061,12 @@ impl App {
         Some(graph)
     }
 
-    fn invalidate_full_mindmap_layout(&self) {
-        if let Some(full) = self.full_mindmap.as_ref() {
+    fn invalidate_full_mindmap_layout(&mut self) {
+        if let Some(full) = self.full_mindmap.as_mut() {
+            // Invalidate the cache and publish a distinct focus-generation
+            // signal. A selected folder can survive a graph rebuild, so the
+            // canvas cannot infer this intent from selection identity alone.
+            full.layout_generation = full.layout_generation.wrapping_add(1);
             *full.layout_cache.borrow_mut() = None;
         }
     }
@@ -1145,6 +1154,7 @@ impl App {
             full.deferred_file_selection = current_file;
             full.preview = FullMindmapPreview::None;
             full.load_error = None;
+            full.layout_generation = full.layout_generation.wrapping_add(1);
             *full.layout_cache.borrow_mut() = None;
         }
     }
@@ -2454,6 +2464,7 @@ impl App {
             panel_open: full.panel_open,
             panel_width: full.panel_width,
             autocenter: true,
+            layout_generation: Some(full.layout_generation),
             on_toggle: Box::new(Message::FullMindmapToggleNode),
             on_select: Box::new(Message::FullMindmapSelectNode),
             on_deselect: Message::FullMindmapDeselect,
@@ -5642,6 +5653,7 @@ impl App {
                     panel_open: self.mindmap_panel_open,
                     panel_width: self.mindmap_panel_width,
                     autocenter: self.mindmap_autocenter,
+                    layout_generation: None,
                     on_toggle: Box::new(Message::MindmapToggleNode),
                     on_select: Box::new(Message::MindmapSelectLeaf),
                     on_deselect: Message::MindmapDeselect,

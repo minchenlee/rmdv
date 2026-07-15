@@ -270,6 +270,11 @@ pub struct MindmapState<Id = BlockId> {
     last_bounds_w: f32,
     last_bounds_h: f32,
     last_panel_open: bool,
+    /// Full Mindmap increments this generation whenever its visible graph is
+    /// rebuilt. Keeping it separate from selection lets the canvas preserve a
+    /// selected folder's focus across async child discovery even when the
+    /// selected identity itself does not change.
+    last_layout_generation: Option<u64>,
     hovered_idx: Option<usize>,
 }
 
@@ -288,6 +293,7 @@ impl<Id> Default for MindmapState<Id> {
             last_bounds_w: 0.0,
             last_bounds_h: 0.0,
             last_panel_open: false,
+            last_layout_generation: None,
             hovered_idx: None,
         }
     }
@@ -308,6 +314,10 @@ pub struct MindmapProgram<'a, Id, Message> {
     pub panel_open: bool,
     pub panel_width: f32,
     pub autocenter: bool,
+    /// Optional source-generation signal for navigators whose visible graph
+    /// can be rebuilt without changing selection. Document mindmaps leave it
+    /// unset; Full Mindmap supplies its graph generation.
+    pub layout_generation: Option<u64>,
     pub on_toggle: Box<dyn Fn(Id) -> Message + 'a>,
     pub on_select: Box<dyn Fn(Id) -> Message + 'a>,
     pub on_deselect: Message,
@@ -414,10 +424,19 @@ where
         let bounds_changed = (bounds.width - state.last_bounds_w).abs() > 0.5
             || (bounds.height - state.last_bounds_h).abs() > 0.5;
         let sel_changed = self.selected != state.last_selected;
+        let layout_changed = self
+            .layout_generation
+            .is_some_and(|generation| state.last_layout_generation != Some(generation));
         let panel_just_opened = self.panel_open && !state.last_panel_open;
         let panel_just_closed = !self.panel_open && state.last_panel_open;
-        if !sel_changed && !bounds_changed && !panel_just_opened && !panel_just_closed {
+        if !sel_changed
+            && !bounds_changed
+            && !layout_changed
+            && !panel_just_opened
+            && !panel_just_closed
+        {
             state.last_panel_open = self.panel_open;
+            state.last_layout_generation = self.layout_generation;
             return;
         }
         if !self.autocenter {
@@ -426,14 +445,23 @@ where
             state.last_bounds_w = bounds.width;
             state.last_bounds_h = bounds.height;
             state.last_panel_open = self.panel_open;
+            state.last_layout_generation = self.layout_generation;
             return;
         }
         state.last_selected = self.selected.clone();
         state.last_bounds_w = bounds.width;
         state.last_bounds_h = bounds.height;
-        let snap = panel_just_opened || panel_just_closed || (sel_changed && self.panel_open);
+        state.last_layout_generation = self.layout_generation;
+        // A graph rebuild may move the selected node or introduce a newly
+        // selected child from a Loading status. Animate the transform to the
+        // rebuilt layout target so the node stays in focus while its position
+        // animation settles. Existing selection changes retain the historical
+        // immediate snap behavior.
+        let snap = panel_just_opened
+            || panel_just_closed
+            || (sel_changed && self.panel_open && !layout_changed);
         state.last_panel_open = self.panel_open;
-        if !sel_changed && self.selected.is_none() {
+        if !sel_changed && !layout_changed && self.selected.is_none() {
             return;
         }
         let Some(sel) = self.selected.as_ref() else {
@@ -454,6 +482,7 @@ where
             prev_bounds_w,
             panel_just_opened,
             panel_just_closed,
+            layout_changed,
         );
         // If already on target, skip.
         if (target.x - state.pan.x).abs() < 0.5 && (target.y - state.pan.y).abs() < 0.5 {
@@ -474,7 +503,7 @@ where
     fn snap_focus_to_node(&self, state: &mut MindmapState<Id>, idx: usize, bounds: Rectangle) {
         let future_open = !self.panel_open;
         let target =
-            self.focus_target_for_node(state, idx, bounds, bounds.width, future_open, false);
+            self.focus_target_for_node(state, idx, bounds, bounds.width, future_open, false, false);
         state.pan = target;
         state.pan_anim = None;
     }
@@ -487,6 +516,7 @@ where
         prev_bounds_w: f32,
         panel_just_opened: bool,
         panel_just_closed: bool,
+        prefer_layout_position: bool,
     ) -> Vector {
         let panel_span = self.panel_width + PANEL_HANDLE_W;
         let effective_w = if panel_just_opened && (bounds.width - prev_bounds_w).abs() <= 0.5 {
@@ -497,8 +527,17 @@ where
             bounds.width
         };
 
-        // Node center in world space (use animated current pos to avoid jumps).
-        let (nx, ny) = self.pos(state, idx);
+        // For a rebuilt graph, use the node's final layout position. New
+        // children are seeded from their parent for the 220 ms node animation;
+        // using that transient seed here would center the parent/root instead
+        // of the selected child. Ordinary selection keeps the animated-current
+        // behavior to avoid changing existing document-mindmap motion.
+        let (nx, ny) = if prefer_layout_position {
+            let node = &self.nodes[idx];
+            (node.x, node.y)
+        } else {
+            self.pos(state, idx)
+        };
         let world_cx = nx + NODE_W / 2.0;
         let world_cy = ny + NODE_H / 2.0;
         let z = state.zoom;
@@ -1040,5 +1079,241 @@ mod tests {
         assert_eq!(document[1].x, workspace[1].x);
         assert_eq!(document[1].y, workspace[1].y);
         let _state = MindmapState::<PathId>::default();
+    }
+
+    fn canvas_program(
+        nodes: Vec<MNode<PathId>>,
+        selected: PathId,
+        generation: u64,
+    ) -> MindmapProgram<'static, PathId, ()> {
+        MindmapProgram {
+            nodes: std::sync::Arc::new(nodes),
+            content_size: Size::new(1200.0, 900.0),
+            palette: Palette::ONE_DARK,
+            selected: Some(selected),
+            panel_open: true,
+            panel_width: 360.0,
+            autocenter: true,
+            layout_generation: Some(generation),
+            on_toggle: Box::new(|_| ()),
+            on_select: Box::new(|_| ()),
+            on_deselect: (),
+        }
+    }
+
+    fn folder_graph(child: Option<PathId>) -> Vec<MNode<PathId>> {
+        let mut nodes = vec![
+            MNode {
+                id: Some(PathId("/Users/me".into())),
+                label: "me".into(),
+                full_label: "me".into(),
+                truncated: false,
+                level: 0,
+                children: vec![1, 2],
+                has_hidden_children: false,
+                x: 0.0,
+                y: 0.0,
+            },
+            MNode {
+                id: Some(PathId("/Users/me/Documents".into())),
+                label: "Documents".into(),
+                full_label: "Documents".into(),
+                truncated: false,
+                level: 1,
+                children: Vec::new(),
+                has_hidden_children: false,
+                x: 0.0,
+                y: 0.0,
+            },
+            MNode {
+                id: Some(PathId("/Users/me/Downloads".into())),
+                label: "Downloads".into(),
+                full_label: "Downloads".into(),
+                truncated: false,
+                level: 1,
+                children: Vec::new(),
+                has_hidden_children: false,
+                x: 0.0,
+                y: 0.0,
+            },
+        ];
+        if let Some(child) = child {
+            nodes[1].children.push(3);
+            nodes.push(MNode {
+                id: Some(child),
+                label: "Notes".into(),
+                full_label: "Notes".into(),
+                truncated: false,
+                level: 2,
+                children: Vec::new(),
+                has_hidden_children: false,
+                x: 0.0,
+                y: 0.0,
+            });
+            nodes[1].children.push(4);
+            nodes.push(MNode {
+                id: Some(PathId("/Users/me/Documents/Archive".into())),
+                label: "Archive".into(),
+                full_label: "Archive".into(),
+                truncated: false,
+                level: 2,
+                children: Vec::new(),
+                has_hidden_children: false,
+                x: 0.0,
+                y: 0.0,
+            });
+        }
+        let mut y_cursor = PAD;
+        layout(&mut nodes, 0, &mut y_cursor);
+        nodes
+    }
+
+    #[test]
+    fn full_mindmap_async_expansion_refocuses_selected_folder_after_relayout() {
+        let root = PathId("/Users/me".into());
+        let documents = PathId("/Users/me/Documents".into());
+        let bounds = Rectangle::new(Point::ORIGIN, Size::new(1000.0, 800.0));
+        let initial = canvas_program(folder_graph(None), documents.clone(), 1);
+        let mut state = MindmapState::default();
+        state.zoom = 1.0;
+
+        // Entry establishes the deliberate initial folder focus. Mark the
+        // initial node animation settled before the async expansion arrives.
+        initial.sync_anim(&mut state);
+        initial.sync_focus_pan(&mut state, bounds);
+        for anim in state.anim.values_mut() {
+            anim.current_x = anim.target_x;
+            anim.current_y = anim.target_y;
+            anim.done = true;
+        }
+        state.pan_anim = None;
+
+        let accepted = canvas_program(
+            folder_graph(Some(PathId("/Users/me/Documents/Notes".into()))),
+            documents,
+            2,
+        );
+        accepted.sync_anim(&mut state);
+        accepted.sync_focus_pan(&mut state, bounds);
+
+        let selected_idx = accepted
+            .nodes
+            .iter()
+            .position(|node| node.id.as_ref() == accepted.selected.as_ref())
+            .unwrap();
+        let target = accepted.focus_target_for_node(
+            &state,
+            selected_idx,
+            bounds,
+            bounds.width,
+            false,
+            false,
+            true,
+        );
+        let pan_target = state
+            .pan_anim
+            .expect("relayout should preserve focus")
+            .target;
+        assert_eq!(pan_target, target);
+
+        let root_idx = accepted
+            .nodes
+            .iter()
+            .position(|node| node.id.as_ref() == Some(&root))
+            .unwrap();
+        let root_target = accepted.focus_target_for_node(
+            &state,
+            root_idx,
+            bounds,
+            bounds.width,
+            false,
+            false,
+            true,
+        );
+        assert_ne!(
+            pan_target, root_target,
+            "async relayout must not refocus root"
+        );
+    }
+
+    #[test]
+    fn full_mindmap_right_status_replacement_targets_new_first_child() {
+        let root = PathId("/Users/me".into());
+        let status = PathId("/Users/me/Documents::loading".into());
+        let child = PathId("/Users/me/Documents/Notes".into());
+        let bounds = Rectangle::new(Point::ORIGIN, Size::new(1000.0, 800.0));
+
+        let mut pending_nodes = folder_graph(None);
+        let status_idx = pending_nodes.len();
+        pending_nodes[1].children.push(status_idx);
+        pending_nodes.push(MNode {
+            id: Some(status.clone()),
+            label: "Loading files…".into(),
+            full_label: "Loading files…".into(),
+            truncated: false,
+            level: 2,
+            children: Vec::new(),
+            has_hidden_children: false,
+            x: 0.0,
+            y: 0.0,
+        });
+        let pending = canvas_program(pending_nodes, status, 1);
+        let mut state = MindmapState::default();
+        state.zoom = 1.0;
+        pending.sync_anim(&mut state);
+        pending.sync_focus_pan(&mut state, bounds);
+        for anim in state.anim.values_mut() {
+            anim.current_x = anim.target_x;
+            anim.current_y = anim.target_y;
+            anim.done = true;
+        }
+        state.pan_anim = None;
+
+        let accepted = canvas_program(
+            folder_graph(Some(child)),
+            PathId("/Users/me/Documents/Notes".into()),
+            2,
+        );
+        accepted.sync_anim(&mut state);
+        accepted.sync_focus_pan(&mut state, bounds);
+
+        let child_idx = accepted
+            .nodes
+            .iter()
+            .position(|node| node.id.as_ref() == accepted.selected.as_ref())
+            .unwrap();
+        let child_target = accepted.focus_target_for_node(
+            &state,
+            child_idx,
+            bounds,
+            bounds.width,
+            false,
+            false,
+            true,
+        );
+        let pan_target = state
+            .pan_anim
+            .expect("new child should receive focus")
+            .target;
+        assert_eq!(pan_target, child_target);
+
+        let root_idx = accepted
+            .nodes
+            .iter()
+            .position(|node| node.id.as_ref() == Some(&root))
+            .unwrap();
+        let root_target = accepted.focus_target_for_node(
+            &state,
+            root_idx,
+            bounds,
+            bounds.width,
+            false,
+            false,
+            true,
+        );
+        assert_ne!(
+            pan_target, root_target,
+            "Right must focus the accepted first child"
+        );
     }
 }
