@@ -7,7 +7,7 @@ Last reconciled: 2026-07-15 (Asia/Taipei)
 - Actual checkout: `/Users/liminchen/Documents/GitHub/mdv`
 - Legacy non-repo path: `/Users/liminchen/Documents/GitHub/mdv-main`
 - Active branch: `feat/full-mindmap-mode`; its latest implementation candidate
-  is `1d0b81a` (`fix: preserve files sidebar rows`).
+  is `5d421dc` (`perf: preindex files sidebar rows`).
 - Local `main` is at `67564e5`, eleven commits ahead of `origin/main`: Windows
   IPC fix `6fa6450`, CJK emphasis fix `0df1fe2`, reviewed CJK repair `d97370e`,
   the six-commit reviewed Zen feature/repair line `1199455..f2b0519`, and Zen
@@ -89,6 +89,12 @@ Last reconciled: 2026-07-15 (Asia/Taipei)
    rows, ordering, expansion visibility, cursor activation, dirty guarding,
    current-file reveal, and hidden refreshes without restoring retained file
    `Node`s or broadening the shallower Cmd+P/vault-search index.
+14. **Files-sidebar pre-indexing correction** is committed as `5d421dc`.
+   The bounded sidebar paths are grouped by parent and sibling-sorted once when
+   the workspace snapshot is built. Repeated render and keyboard-navigation
+   flattening now traverses only visible folder nodes and performs parent-local
+   lookups, preserving the restored sidebar rows without per-call whole-index
+   regrouping, permanent file `Node`s, or changes to Full Mindmap lazy loading.
 
 ## Current state
 
@@ -121,7 +127,7 @@ Last reconciled: 2026-07-15 (Asia/Taipei)
 - `feat/full-mindmap-mode` and `feat/mindmap-zoom-controls` still follow the old
   `0df1fe2` line and do not contain repair `d97370e`, the Zen feature, or the
   screenshot repair. Full Mindmap is 9 main-only commits behind and contains
-  27 branch-only commits; Zoom Controls is 9 main-only commits
+  29 branch-only commits; Zoom Controls is 9 main-only commits
   behind and has 10 branch-only commits. The Full Mindmap refinement is
   protected at `82afd5a`; integrate current
   `main@67564e5` only after the requested manual acceptance, then retest.
@@ -169,7 +175,15 @@ Last reconciled: 2026-07-15 (Asia/Taipei)
   transient file rows beneath visible/expanded parents. Cmd+P and vault search
   remain on the historical file-index depth, and Full Mindmap lazy ownership
   is unchanged.
-- The feature source and design record are cleanly isolated through `1d0b81a`;
+- Lead review then rejected `1d0b81a` as-is on a second P1: every sidebar
+  render/navigation flatten rebuilt a parent map from as many as 5,000 paths
+  and re-sorted sibling groups, including lowercase-name allocations, on the
+  UI thread. `5d421dc` closes that hot-path issue with a private immutable
+  `SidebarFileIndex` built once with the bounded snapshot. Flattening now walks
+  the visible folder skeleton and uses average O(1) parent-local lookups; the
+  ordinary sidebar correctness restored by `1d0b81a` and Full Mindmap lazy
+  ownership remain unchanged.
+- The feature source and design record are cleanly isolated through `5d421dc`;
   this status reconciliation remains separate bookkeeping.
 - Manual acceptance on 2026-07-15 passed A/B/C/D/E/G for entry/exit, preview,
   file open, dirty-edit protection, folder choice/count, and root-parent
@@ -194,9 +208,10 @@ Last reconciled: 2026-07-15 (Asia/Taipei)
   adopts the current file parent or Home in the background.
 - The unified/count candidate passed independent lead review with no P0/P1
   findings. Lead review rejected the first lazy-materialization commit
-  `5a5fb3a` on the ordinary-sidebar P1; follow-up `1d0b81a` is maker-verified
-  and awaiting independent re-review plus native manual acceptance. Main
-  integration remains held.
+  `5a5fb3a` on the ordinary-sidebar P1 and rejected correction `1d0b81a` on the
+  UI-thread regroup/sort P1. Follow-up `5d421dc` is maker-verified and awaiting
+  independent re-review plus native manual acceptance. Main integration
+  remains held.
 - Do not merge, push, tag, release, or deploy without a new explicit request.
 
 ## Verification evidence
@@ -318,6 +333,23 @@ Last reconciled: 2026-07-15 (Asia/Taipei)
   warning in `tests/ipc_protocol.rs`. The rebuilt manual-test binary is
   `/private/tmp/mdv-full-mindmap-protect-target/debug/rmdv` with SHA-256
   `3bf11d125fac4eb857485f3c0d87dd1a00c47740b1784321bbc302149b497b13`.
+- Despite those green gates, lead review rejected `1d0b81a` on one P1: each
+  ordinary Files-sidebar flatten rebuilt and sorted a whole-index parent map
+  on the UI thread. The following pre-indexing evidence supersedes `1d0b81a`
+  for review while preserving its sidebar correctness coverage.
+- The exact pre-indexing correction at `5d421dc` passed 36 focused Full Mindmap
+  tests, 9 focused sidebar tests, 10 focused tree tests, all 226 library tests,
+  all 67 integration tests, `cargo check`, `cargo build --bin rmdv`,
+  `rustfmt --edition 2021 --check src/app.rs src/tree.rs
+  src/workspace_mindmap.rs`, and `git diff --check` using
+  `/private/tmp/mdv-full-mindmap-protect-target`. The added structural
+  regression proves repeated flattening reuses the same pre-grouped,
+  sibling-sorted parent slice rather than rebuilding it. The integration run
+  emitted only the pre-existing unused `Section` import warning in
+  `tests/ipc_protocol.rs`. The target was cleaned after generated artifacts
+  filled the volume, then rebuilt successfully. The fresh manual-test binary
+  is `/private/tmp/mdv-full-mindmap-protect-target/debug/rmdv` with SHA-256
+  `aebba39fdf4b5ce34de25019121b1dea09e0d6cabc0ca74bae5ad5f7bdbbfb96`.
 - A fresh independent re-review of `8dc9ead` returned PASS with no P0/P1
   findings after checking both completion orders, stale request rejection,
   dirty and exit intent, and accepted refresh failure fallback.
@@ -421,10 +453,12 @@ Last reconciled: 2026-07-15 (Asia/Taipei)
 
 The Full Mindmap feature is an opt-in, full-window navigation mode, distinct
 from and compatible with the existing document-level `ViewMode::Mindmap`.
-Commits through `eeb9889` remove its visual controls, make folder traversal and
+Commits through `5d421dc` remove its visual controls, make folder traversal and
 file opening keyboard-first, address the manual-acceptance corrections, harden
-large-workspace behavior, unify both entry scenarios around one explorer, and
-add recursive collapsed-folder count labels from the bounded snapshot.
+large-workspace behavior, unify both entry scenarios around one explorer, add
+recursive collapsed-folder count labels from the bounded snapshot, lazily
+materialize expanded-folder files, and preserve the ordinary Files sidebar
+through a pre-grouped bounded path index.
 
 The implementation is recorded in
 `docs/superpowers/specs/2026-07-10-full-mindmap-mode-design.md` and covers
@@ -438,11 +472,11 @@ For the P0 fixes, run Windows CI/cross-target verification when available and
 push local `main` only on an explicit request.
 For Full Mindmap, manually exercise both entry scenarios, recursive
 exact/lower-bound labels, Space/Right/Enter/Left/Esc, hidden refreshes, previews,
-and dirty-document protection with the recorded binary. A/B/C/D/E/G, hidden
-additivity, and Documents discovery were accepted on the prior candidate; the
-new unification/count behavior passed independent automated review but still
-needs native acceptance. Do not integrate main while that gate is held. After
-acceptance,
+dirty-document protection, and ordinary Files-sidebar scrolling/navigation in
+a large workspace with the recorded binary. A/B/C/D/E/G, hidden additivity,
+and Documents discovery were accepted on the prior candidate; the new
+unification/count/lazy-index behavior still needs independent re-review and
+native acceptance. Do not integrate main while that gate is held. After acceptance,
 integrate current
 `main@67564e5`, rebuild and repeat the large-folder interaction; only then
 retarget and review Zoom Controls.
