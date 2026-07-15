@@ -6,8 +6,8 @@ Last reconciled: 2026-07-15 (Asia/Taipei)
 
 - Actual checkout: `/Users/liminchen/Documents/GitHub/mdv`
 - Legacy non-repo path: `/Users/liminchen/Documents/GitHub/mdv-main`
-- Active branch: `feat/full-mindmap-mode`; its latest accepted-fix candidate is
-  `8dc9ead` (`fix: serialize full mindmap refresh outcomes`).
+- Active branch: `feat/full-mindmap-mode`; its latest implementation candidate
+  is `eeb9889` (`feat: unify full mindmap explorer`).
 - Local `main` is at `67564e5`, eleven commits ahead of `origin/main`: Windows
   IPC fix `6fa6450`, CJK emphasis fix `0df1fe2`, reviewed CJK repair `d97370e`,
   the six-commit reviewed Zen feature/repair line `1199455..f2b0519`, and Zen
@@ -71,6 +71,12 @@ Last reconciled: 2026-07-15 (Asia/Taipei)
    across navigation, returning from a chooser cannot expose a stale Files
    sidebar, and ordinary home folders are ordered and positioned ahead of
    optional dot entries.
+11. **Full Mindmap unified explorer candidate** is committed as `eeb9889`.
+   It removes the user-visible chooser/workspace phase split, adopts the
+   current file parent or Home through the background workspace loader when no
+   project exists, makes Enter re-root folders, gives Right one-step
+   expand-and-first-child behavior, and records per-folder recursive counts in
+   the existing single bounded scan.
 
 ## Current state
 
@@ -130,12 +136,13 @@ Last reconciled: 2026-07-15 (Asia/Taipei)
 - Its committed performance hardening pass makes workspace tree and file-finder
   data come from one pass capped at 12 levels, 5,000
   supported files, and 10,000 examined entries. Full Mindmap project changes
-  run that pass off the UI thread with stale-result protection; folder counts
-  use a safe 100 ms debounce; cached workspace graphs and node vectors are
-  shared by `Arc` instead of cloned each frame. Partial indexes render an
-  explicit **More files not indexed** node.
-- The feature source and design record are cleanly isolated through `8dc9ead`;
-  this status reconciliation is intentionally separate bookkeeping.
+  run that pass off the UI thread with stale-result protection. At `eeb9889`,
+  that same pass also stores recursive exact/lower-bound/unavailable counts on
+  directory nodes; there are no Full-Mindmap-local per-folder scans. Cached
+  workspace graphs and node vectors are shared by `Arc` instead of cloned each
+  frame. Partial indexes render an explicit **More files not indexed** node.
+- The feature source and design record are cleanly isolated through `eeb9889`;
+  this status reconciliation remains separate bookkeeping.
 - Manual acceptance on 2026-07-15 passed A/B/C/D/E/G for entry/exit, preview,
   file open, dirty-edit protection, folder choice/count, and root-parent
   traversal. Commits through `8dc9ead` implement the four requested
@@ -145,23 +152,20 @@ Last reconciled: 2026-07-15 (Asia/Taipei)
   chooser. Targeted manual retest of these four corrections is still pending;
   main integration remains held.
 - Follow-up manual testing accepted hidden-entry additivity and
-  `/Users/liminchen/Documents` discovery. The Space retest was not reported.
-  Root count retention works, but the user now requests recursive supported-
-  file counts on collapsed non-root folders; expanded folders should use plain
-  labels. This is not implemented yet.
-- A read-only `luna_subagent` investigation found that the current root-only
-  count is an intentional data-model limitation: `WorkspaceSnapshot` owns one
-  global count and `tree::Node` owns none. It recommends computing exact or
-  lower-bound per-subtree counts during the existing single bounded background
-  scan, without additional filesystem walks.
-- The same investigation recommends replacing the user-visible
-  `ChooseFolder`/`Workspace` split with one folder-rooted explorer: `Space`
-  always folds, `Enter` opens a file or makes a folder the new root, root `←`
-  loads its filesystem parent, and `Esc` exits. One product decision remains:
-  when no project exists, whether entry may automatically adopt the current
-  file's parent (otherwise Home) as the app workspace. Luna recommends yes;
-  implementation is held for this decision and must not be mixed with main
-  integration.
+  `/Users/liminchen/Documents` discovery. The user approved Luna's YES
+  recommendation for no-project auto-adoption, and `eeb9889` implements the
+  requested recursive collapsed-folder counts plus one folder-rooted explorer.
+  Expanded folders use plain labels; collapsed exact folders show `N files`,
+  interrupted folders show `N+ files`, zero-before-interruption shows `scan
+  limit reached`, and unreadable folders show `count unavailable`.
+- `eeb9889` removes Full Mindmap's `ChooseFolder` phase and chooser-local count
+  requests. Space always folds without moving selection; Right expands and
+  selects the first child; Enter opens a file or loads a folder as the new
+  root; root Left loads the filesystem parent; Esc exits. Existing-project
+  entry uses the accepted snapshot immediately. No-project entry indexes and
+  adopts the current file parent or Home in the background.
+- The unified/count candidate is submitted for independent lead verification
+  and native manual acceptance. Main integration remains held.
 - Do not merge, push, tag, release, or deploy without a new explicit request.
 
 ## Verification evidence
@@ -256,6 +260,16 @@ Last reconciled: 2026-07-15 (Asia/Taipei)
 - A fresh independent re-review of `8dc9ead` returned PASS with no P0/P1
   findings after checking both completion orders, stale request rejection,
   dirty and exit intent, and accepted refresh failure fallback.
+- The exact unified-explorer candidate `eeb9889` passed touched-file
+  `rustfmt --edition 2021 --check`, `git diff --check`, 34 focused Full Mindmap
+  app tests, 5 bounded workspace-snapshot tests, all 7 workspace-graph tests,
+  all 216 library tests, every integration target (67 tests), `cargo check`,
+  and `cargo build` using
+  `/private/tmp/mdv-full-mindmap-protect-target`. The only integration warning
+  remains the pre-existing unused `Section` import in
+  `tests/ipc_protocol.rs`. The fresh manual binary is
+  `/private/tmp/mdv-full-mindmap-protect-target/debug/rmdv` with SHA-256
+  `bb9f1ba7d4db158946032a455d941d386d288b29d6ec21dd354c53de8f0fbf05`.
 - The exact screenshot repair `67564e5` passed 5 focused screenshot tests, all
   187 library tests, `cargo check`, and `git diff --check` using
   `/private/tmp/mdv-zen-fix-target`. A native isolated probe captured 30/30
@@ -337,9 +351,10 @@ Last reconciled: 2026-07-15 (Asia/Taipei)
 
 The Full Mindmap feature is an opt-in, full-window navigation mode, distinct
 from and compatible with the existing document-level `ViewMode::Mindmap`.
-Commits through `8dc9ead` remove its visual controls, make folder traversal and
-file opening keyboard-first, address the manual-acceptance corrections, and
-harden large-workspace behavior.
+Commits through `eeb9889` remove its visual controls, make folder traversal and
+file opening keyboard-first, address the manual-acceptance corrections, harden
+large-workspace behavior, unify both entry scenarios around one explorer, and
+add recursive collapsed-folder count labels from the bounded snapshot.
 
 The implementation is recorded in
 `docs/superpowers/specs/2026-07-10-full-mindmap-mode-design.md` and covers
@@ -351,12 +366,12 @@ picker/tree/file-finder paths, and focused tests.
 
 For the P0 fixes, run Windows CI/cross-target verification when available and
 push local `main` only on an explicit request.
-For Full Mindmap, first settle whether no-project entry may automatically adopt
-the current-file parent/Home as the workspace. Then give one maker serial
-ownership of per-folder bounded counts plus the unified explorer, independently
-verify it, and collect the remaining Space/count/unification manual acceptance.
-A/B/C/D/E/G, hidden additivity, and Documents discovery are otherwise
-accepted. Do not integrate main while that gate is held. After acceptance,
+For Full Mindmap, independently verify `eeb9889`, then manually exercise both
+entry scenarios, recursive exact/lower-bound labels, Space/Right/Enter/Left/Esc,
+hidden refreshes, previews, and dirty-document protection with the recorded
+binary. A/B/C/D/E/G, hidden additivity, and Documents discovery were accepted
+on the prior candidate; the new unification/count behavior still needs native
+acceptance. Do not integrate main while that gate is held. After acceptance,
 integrate current
 `main@67564e5`, rebuild and repeat the large-folder interaction; only then
 retarget and review Zoom Controls.
