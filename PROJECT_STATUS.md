@@ -7,7 +7,7 @@ Last reconciled: 2026-07-15 (Asia/Taipei)
 - Actual checkout: `/Users/liminchen/Documents/GitHub/mdv`
 - Legacy non-repo path: `/Users/liminchen/Documents/GitHub/mdv-main`
 - Active branch: `feat/full-mindmap-mode`; its latest implementation candidate
-  is `5d421dc` (`perf: preindex files sidebar rows`).
+  is `1317a06` (`fix: discover interrupted mindmap branches`).
 - Local `main` is at `67564e5`, eleven commits ahead of `origin/main`: Windows
   IPC fix `6fa6450`, CJK emphasis fix `0df1fe2`, reviewed CJK repair `d97370e`,
   the six-commit reviewed Zen feature/repair line `1199455..f2b0519`, and Zen
@@ -95,17 +95,28 @@ Last reconciled: 2026-07-15 (Asia/Taipei)
    flattening now traverses only visible folder nodes and performs parent-local
    lookups, preserving the restored sidebar rows without per-call whole-index
    regrouping, permanent file `Node`s, or changes to Full Mindmap lazy loading.
+15. **Full Mindmap native discovery correction** is committed as `1317a06`.
+   Exact-empty subtrees are pruned even when an unrelated branch truncates.
+   Expanding an interrupted/unreadable or lazily discovered shell starts one
+   bounded background pass and retains only shallow immediate counted folders,
+   immediate supported files, and truthful status; exact retained branches
+   reuse the pre-grouped sidebar index without another filesystem scan.
+   Collapse still evicts the branch, and exact request/root/filter/expansion/
+   mode identity rejects stale completion.
 
 ## Current state
 
-- **Full Mindmap native correctness correction is in progress under one serial
-  maker.** The clean baseline was `3e2b3fd` with `main...HEAD = 9/30` before
-  this bookkeeping commit. Scope is limited to bounded background lazy
-  discovery for interrupted branches, pruning determinably exact-empty
-  subtrees, and ancestor discovery of useful late/wide siblings while
-  preserving stale rejection, collapse eviction, ordinary Files/Cmd+P,
-  document safety, and the unified keyboard contract. No production files are
-  modified yet; main integration and Zoom retargeting remain prohibited.
+- **Full Mindmap native correctness correction is maker-SUBMITTED at
+  `1317a06`, not independently accepted.** The bounded retry lets a
+  `scan limit reached` shell reveal useful immediate folders/files without
+  re-rooting, or a stable local truncation/error status when discovery remains
+  incomplete. Both initial and lazy exact-empty folders disappear; a lazy
+  exact-empty selection normalizes safely. A wide simulated home scan proves a
+  Documents-like late sibling remains reachable from an ancestor. Ordinary
+  Files/Cmd+P, hidden/dirty safety, count labels, unified keyboard behavior,
+  collapse eviction, and stale rejection remain covered. Main integration and
+  Zoom retargeting remain prohibited pending independent review and native
+  acceptance.
 
 - **Zen UI polish is implemented, verified, committed, and merged into local
   `main` as `68fc8d0`.** Zen editor vertical padding is removed; toast feedback
@@ -136,7 +147,7 @@ Last reconciled: 2026-07-15 (Asia/Taipei)
 - `feat/full-mindmap-mode` and `feat/mindmap-zoom-controls` still follow the old
   `0df1fe2` line and do not contain repair `d97370e`, the Zen feature, or the
   screenshot repair. Full Mindmap is 9 main-only commits behind and contains
-  31 branch-only commits; Zoom Controls is 9 main-only commits
+  33 branch-only commits; Zoom Controls is 9 main-only commits
   behind and has 10 branch-only commits. The Full Mindmap refinement is
   protected at `82afd5a`; integrate current
   `main@67564e5` only after the requested manual acceptance, then retest.
@@ -192,7 +203,16 @@ Last reconciled: 2026-07-15 (Asia/Taipei)
   the visible folder skeleton and uses average O(1) parent-local lookups; the
   ordinary sidebar correctness restored by `1d0b81a` and Full Mindmap lazy
   ownership remain unchanged.
-- The feature source and design record are cleanly isolated through `5d421dc`;
+- At `1317a06`, the expanded-folder request owns shallow branch discovery in
+  addition to immediate files. Initial pruning now removes every determinably
+  `Exact(0)` subtree even if another branch exhausted the shared scan. A
+  lower-bound/unreadable shell remains visible and, when expanded, receives a
+  fresh bounded background count/tree pass; only its immediate folder nodes
+  and files survive. A complete lazy `Exact(0)` result removes the shell,
+  whereas an incomplete zero result renders **More items not indexed**.
+  Already-exact retained nodes reuse their counted direct children and the
+  pre-grouped sidebar paths without extra filesystem work.
+- The feature source and design record are cleanly isolated through `1317a06`;
   this status reconciliation remains separate bookkeeping.
 - Manual acceptance on 2026-07-15 passed A/B/C/D/E/G for entry/exit, preview,
   file open, dirty-edit protection, folder choice/count, and root-parent
@@ -219,7 +239,9 @@ Last reconciled: 2026-07-15 (Asia/Taipei)
   findings. Lead review rejected the first lazy-materialization commit
   `5a5fb3a` on the ordinary-sidebar P1 and rejected correction `1d0b81a` on the
   UI-thread regroup/sort P1. Follow-up `5d421dc` passed independent lead
-  re-review with no remaining P0/P1 findings and awaits native manual
+  re-review with no remaining P0/P1 findings. Native testing then exposed the
+  interrupted-shell, exact-empty, and ancestor-discovery failures; `1317a06`
+  is the maker-verified correction awaiting independent re-review and native
   acceptance. Main integration remains held.
 - Do not merge, push, tag, release, or deploy without a new explicit request.
 
@@ -370,6 +392,23 @@ Last reconciled: 2026-07-15 (Asia/Taipei)
   with only the same pre-existing unused `Section` warning. The current manual
   binary SHA-256 is
   `885ab832225d71d48821419065a034ac49f58e084a5285ea5bcaccc2610058f1`.
+- The exact native-discovery correction at `1317a06` passed 38 focused Full
+  Mindmap app tests, 14 workspace-graph tests, 12 tree tests, 9 focused sidebar
+  tests, all 235 library tests, and all 67 integration tests. `cargo check`,
+  `cargo build --bin rmdv`, `rustfmt --edition 2021 --check src/app.rs
+  src/tree.rs src/workspace_mindmap.rs`, and `git diff --check` passed using
+  `/private/tmp/mdv-full-mindmap-protect-target`. Regressions cover
+  exact-empty pruning under unrelated truncation, lazy exact-empty selection
+  normalization, interrupted-zero expansion yielding useful folders/files or
+  a truthful terminal status, a wide Documents-like late sibling recovered
+  from an ancestor shell, exact retained-index reuse, collapse/re-expand
+  eviction, and stale completion across hidden filter, root, exit/re-entry,
+  and request generations. Existing hidden/dirty and ordinary-sidebar tests
+  remain green. The integration run emitted only the pre-existing unused
+  `Section` import warning in `tests/ipc_protocol.rs`. The target was cleaned
+  of 7.0 GiB generated artifacts and rebuilt fresh; the manual binary is
+  `/private/tmp/mdv-full-mindmap-protect-target/debug/rmdv` with SHA-256
+  `d281e3970ffc9b979e210103e236e4a1b244429fb20af6f1782679f247464853`.
 - A fresh independent re-review of `8dc9ead` returned PASS with no P0/P1
   findings after checking both completion orders, stale request rejection,
   dirty and exit intent, and accepted refresh failure fallback.
@@ -473,12 +512,14 @@ Last reconciled: 2026-07-15 (Asia/Taipei)
 
 The Full Mindmap feature is an opt-in, full-window navigation mode, distinct
 from and compatible with the existing document-level `ViewMode::Mindmap`.
-Commits through `5d421dc` remove its visual controls, make folder traversal and
+Commits through `1317a06` remove its visual controls, make folder traversal and
 file opening keyboard-first, address the manual-acceptance corrections, harden
 large-workspace behavior, unify both entry scenarios around one explorer, add
 recursive collapsed-folder count labels from the bounded snapshot, lazily
 materialize expanded-folder files, and preserve the ordinary Files sidebar
-through a pre-grouped bounded path index.
+through a pre-grouped bounded path index. Interrupted folder shells can also
+acquire shallow counted children through branch-local bounded background
+discovery, while exact-empty subtrees are omitted.
 
 The implementation is recorded in
 `docs/superpowers/specs/2026-07-10-full-mindmap-mode-design.md` and covers
@@ -493,10 +534,12 @@ push local `main` only on an explicit request.
 For Full Mindmap, manually exercise both entry scenarios, recursive
 exact/lower-bound labels, Space/Right/Enter/Left/Esc, hidden refreshes, previews,
 dirty-document protection, and ordinary Files-sidebar scrolling/navigation in
-a large workspace with the recorded binary. A/B/C/D/E/G, hidden additivity,
-and Documents discovery were accepted on the prior candidate; the new
-unification/count/lazy-index behavior passed independent automated review and
-still needs native acceptance. Do not integrate main while that gate is held.
+a large workspace with the recorded binary. Specifically verify that a
+`scan limit reached` folder never expands blank, exact-empty folders are absent,
+and nested folders beneath Documents are reachable from Home or an ancestor
+without first making Documents the root. A/B/C/D/E/G and hidden additivity were
+accepted on earlier candidates; `1317a06` still needs independent automated
+review and native acceptance. Do not integrate main while that gate is held.
 After acceptance,
 integrate current
 `main@67564e5`, rebuild and repeat the large-folder interaction; only then
