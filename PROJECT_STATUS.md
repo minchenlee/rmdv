@@ -209,9 +209,9 @@ Last reconciled: 2026-07-15 (Asia/Taipei)
 - The unified/count candidate passed independent lead review with no P0/P1
   findings. Lead review rejected the first lazy-materialization commit
   `5a5fb3a` on the ordinary-sidebar P1 and rejected correction `1d0b81a` on the
-  UI-thread regroup/sort P1. Follow-up `5d421dc` is maker-verified and awaiting
-  independent re-review plus native manual acceptance. Main integration
-  remains held.
+  UI-thread regroup/sort P1. Follow-up `5d421dc` passed independent lead
+  re-review with no remaining P0/P1 findings and awaits native manual
+  acceptance. Main integration remains held.
 - Do not merge, push, tag, release, or deploy without a new explicit request.
 
 ## Verification evidence
@@ -350,6 +350,17 @@ Last reconciled: 2026-07-15 (Asia/Taipei)
   filled the volume, then rebuilt successfully. The fresh manual-test binary
   is `/private/tmp/mdv-full-mindmap-protect-target/debug/rmdv` with SHA-256
   `aebba39fdf4b5ce34de25019121b1dea09e0d6cabc0ca74bae5ad5f7bdbbfb96`.
+- A fresh lead-side review accepted `5a5fb3a..5d421dc` after verifying the
+  folder-only snapshot, lazy file request/eviction generations, the separate
+  depth-8 finder and depth-12 sidebar indexes, every ordinary Files consumer,
+  and the private pre-grouped sidebar hot-path API. The lead independently
+  reran 36 Full Mindmap, 9 sidebar, 10 tree, and 9 workspace-graph focused
+  tests, all 226 library tests, every integration target (67 tests), `cargo
+  check`, `cargo build --bin rmdv`, touched-file rustfmt, both implementation
+  and status `git diff --check` ranges, and a fresh binary build. All passed
+  with only the same pre-existing unused `Section` warning. The current manual
+  binary SHA-256 is
+  `885ab832225d71d48821419065a034ac49f58e084a5285ea5bcaccc2610058f1`.
 - A fresh independent re-review of `8dc9ead` returned PASS with no P0/P1
   findings after checking both completion orders, stale request rejection,
   dirty and exit intent, and accepted refresh failure fallback.
@@ -475,8 +486,9 @@ exact/lower-bound labels, Space/Right/Enter/Left/Esc, hidden refreshes, previews
 dirty-document protection, and ordinary Files-sidebar scrolling/navigation in
 a large workspace with the recorded binary. A/B/C/D/E/G, hidden additivity,
 and Documents discovery were accepted on the prior candidate; the new
-unification/count/lazy-index behavior still needs independent re-review and
-native acceptance. Do not integrate main while that gate is held. After acceptance,
+unification/count/lazy-index behavior passed independent automated review and
+still needs native acceptance. Do not integrate main while that gate is held.
+After acceptance,
 integrate current
 `main@67564e5`, rebuild and repeat the large-folder interaction; only then
 retarget and review Zoom Controls.
