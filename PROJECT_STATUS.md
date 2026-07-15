@@ -8,15 +8,16 @@ Last reconciled: 2026-07-15 (Asia/Taipei)
 - Legacy non-repo path: `/Users/liminchen/Documents/GitHub/mdv-main`
 - Active branch: `feat/full-mindmap-mode`; its latest feature commit is
   `82afd5a` (`feat: refine full mindmap navigation`).
-- Local `main` is at `68fc8d0`, ten commits ahead of `origin/main`: Windows
+- Local `main` is at `67564e5`, eleven commits ahead of `origin/main`: Windows
   IPC fix `6fa6450`, CJK emphasis fix `0df1fe2`, reviewed CJK repair `d97370e`,
   the six-commit reviewed Zen feature/repair line `1199455..f2b0519`, and Zen
-  editor/toast polish `68fc8d0`.
+  editor/toast polish `68fc8d0`, followed by reliable CLI screenshots
+  `67564e5`.
   `origin/main` and released tag `v0.4.0` remain at `34d352d`.
 - Three worktrees are currently registered: the active checkout above, the
   clean `feat/mindmap-zoom-controls` worktree, and
-  `.claude/worktrees/zen-ui-polish` on `codex/zen-ui-polish`, now aligned with
-  `main@68fc8d0` after the requested toast and editor-spacing refinements.
+  `.claude/worktrees/zen-ui-polish` on `codex/zen-ui-polish`, clean at
+  `68fc8d0` and one commit behind local `main` after the screenshot repair.
 
 ## Completed and committed
 
@@ -58,6 +59,11 @@ Last reconciled: 2026-07-15 (Asia/Taipei)
    background workspace indexing and folder counts, stale-result rejection,
    shared graph allocations, explicit truncation status, read-only previews,
    direct parent-workspace navigation, and the reviewed keyboard-first flow.
+9. **Reliable CLI screenshots** are committed as `67564e5`
+   (`fix: make CLI screenshots reliable`) and fast-forwarded into local
+   `main`. The fix waits for a render settle, preserves IPC request identity,
+   rejects overlapping captures, validates near-black frames, retries three
+   times, and reports explicit failure instead of writing a blank PNG.
 
 ## Current state
 
@@ -83,10 +89,21 @@ Last reconciled: 2026-07-15 (Asia/Taipei)
   marker selection. `d97370e` fixes all four issues, passed the final review,
   and was fast-forwarded only after the exact candidate passed its test gates.
   Nothing was pushed.
+- **CLI screenshot reliability is accepted on local `main@67564e5`.** The
+  isolated maker commit received a fresh lead review, deterministic tests, and
+  a native 30-capture probe. The temporary worktree was removed after the
+  fast-forward; branch `codex/fix-cli-screenshots` remains as a clean reference.
 - `feat/full-mindmap-mode` and `feat/mindmap-zoom-controls` still follow the old
-  `0df1fe2` line and do not contain repair `d97370e` or the Zen feature. The
-  Full Mindmap refinement is now protected at `82afd5a`; integrate current
-  `main@68fc8d0` only through a deliberate merge/rebase and retest afterward.
+  `0df1fe2` line and do not contain repair `d97370e`, the Zen feature, or the
+  screenshot repair. Full Mindmap is 9 main-only commits behind and has 11
+  branch-only commits; Zoom Controls is 9 main-only commits behind and has 10
+  branch-only commits. The Full Mindmap refinement is protected at `82afd5a`;
+  integrate current
+  `main@67564e5` only after the requested manual acceptance, then retest.
+- **Mindmap Zoom Controls remains clean at `46e3a6b` but is blocked from a
+  direct rebase onto `main`.** Its commit directly uses Full Mindmap state and
+  canvas APIs that do not exist on `main`; retarget it only after main is
+  integrated into the protected Full Mindmap branch. No rebase was performed.
 
 - **Full Mindmap Mode is committed as `ae0b4a8`.** It uses
   `FullMindmapState` and path-based `WorkspaceNodeId`s to keep project
@@ -192,6 +209,19 @@ Last reconciled: 2026-07-15 (Asia/Taipei)
   using `/private/tmp/mdv-full-mindmap-protect-target`. The integration run
   emitted only the pre-existing unused `Section` import warning in
   `tests/ipc_protocol.rs`.
+- The exact screenshot repair `67564e5` passed 5 focused screenshot tests, all
+  187 library tests, `cargo check`, and `git diff --check` using
+  `/private/tmp/mdv-zen-fix-target`. A native isolated probe captured 30/30
+  valid 2048x1536 non-black frames; sampled dark frames had 17,435 colors and
+  mean intensity 0.400521, and an immediate One Light transition captured the
+  light UI. Evidence remains in
+  `/private/tmp/rmdv-cli-screenshot-probe-output`. Repository-wide
+  `rustfmt --check` still reports the pre-existing `src/app.rs` baseline debt;
+  no new screenshot or test region appears in that output.
+- Remaining screenshot limitation: Iced's offscreen capture can omit Zen
+  `text_editor` content while retaining the app background/footer. This is not
+  the intermittent black-frame defect and is tracked below rather than hidden
+  as completed work.
 - `cargo build --release --target-dir
   /private/tmp/mdv-full-mindmap-refine-target -q` passed; the optimized local
   binary is `/private/tmp/mdv-full-mindmap-refine-target/release/rmdv`.
@@ -215,12 +245,41 @@ Last reconciled: 2026-07-15 (Asia/Taipei)
   static checks above are complete; perform a manual browser pass before a
   public site deployment if one is requested.
 
+## Prioritized backlog
+
+1. **P1 — Windows build verification.** Run `6fa6450` through a pushed Windows
+   CI candidate before the next release. Local verification was static only,
+   and `.github/workflows/release.yml` currently marks the Windows job
+   `continue-on-error`.
+2. **P1 — Search/highlight memory bounds.** Implement a fresh capped-search and
+   highlight byte-budget pass after current feature integration. `find_all` /
+   `find_in_blocks` currently collect unbounded match vectors, while `HlCache`
+   caps entry count but not source bytes or total memory. Do not cherry-pick the
+   stale archived memory branch wholesale.
+3. **P2 — Image-only PDF feedback.** Detect successful PDF extraction with
+   empty text and show clear OCR-disabled guidance instead of a blank document;
+   adding OCR is not part of this item.
+4. **P2 — Full Mindmap discoverability.** After manual acceptance and merge,
+   add Full Mindmap to the README feature/shortcut tables and the in-app
+   shortcut overlay. Do not publish it as shipped before acceptance.
+5. **P2 — Zen editor screenshot coverage.** Investigate the Iced offscreen
+   `text_editor` omission separately from black-frame retry reliability.
+6. **P2 — Stale documentation reconciliation.** Correct the Zoom worktree
+   status that still calls `46e3a6b` uncommitted, the resolved fullscreen-exit
+   note in the KB-hints spec, and the outdated measured-height statement in
+   `docs/benchmarks.md` as their owning branches are next touched.
+7. **P3 — Repository formatting/Clippy debt.** Keep as non-blocking hygiene.
+   README already tracks PDF/HTML export and additional tree-sitter grammars;
+   do not create duplicate backlog entries for them.
+
 ## Deferred by explicit scope
 
-1. Integrate current local `main` at `68fc8d0` into `feat/full-mindmap-mode`, then
-   re-review and merge that feature only after its dirty working tree is clean
-   or safely protected.
-2. Push the branch, tag a release, publish artifacts, or deploy the site.
+1. Integrate current local `main` at `67564e5` into `feat/full-mindmap-mode`
+   only after the user's manual Full Mindmap acceptance, then re-review and
+   retest that feature.
+2. Rebase/retarget `feat/mindmap-zoom-controls` onto the resulting updated Full
+   Mindmap tip, then review and retest it. Direct rebase onto `main` is invalid.
+3. Push the branch, tag a release, publish artifacts, or deploy the site.
 
 ## Protected Full Mindmap refinement — awaiting main integration
 
@@ -239,8 +298,10 @@ picker/tree/file-finder paths, and focused tests.
 
 For the P0 fixes, run Windows CI/cross-target verification when available and
 push local `main` only on an explicit request.
-For Full Mindmap, integrate current `main` at `68fc8d0`, then build and repeat
-the large-folder interaction that previously became unresponsive.
+For Full Mindmap, collect the user's A-H manual acceptance result first. Do not
+integrate main while that gate is held. After acceptance, integrate current
+`main@67564e5`, rebuild and repeat the large-folder interaction; only then
+retarget and review Zoom Controls.
 If the user instead asks to merge or release, first re-check
 the branch against the then-current `main`, rerun appropriate verification, and
 follow the release workflow rather than relying on this historical snapshot.
