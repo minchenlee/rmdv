@@ -164,8 +164,9 @@ Last reconciled: 2026-07-15 (Asia/Taipei)
   root; root Left loads the filesystem parent; Esc exits. Existing-project
   entry uses the accepted snapshot immediately. No-project entry indexes and
   adopts the current file parent or Home in the background.
-- The unified/count candidate is submitted for independent lead verification
-  and native manual acceptance. Main integration remains held.
+- The unified/count candidate passed independent lead review with no P0/P1
+  findings and is awaiting native manual acceptance. Main integration remains
+  held.
 - Do not merge, push, tag, release, or deploy without a new explicit request.
 
 ## Verification evidence
@@ -270,6 +271,15 @@ Last reconciled: 2026-07-15 (Asia/Taipei)
   `tests/ipc_protocol.rs`. The fresh manual binary is
   `/private/tmp/mdv-full-mindmap-protect-target/debug/rmdv` with SHA-256
   `bb9f1ba7d4db158946032a455d941d386d288b29d6ec21dd354c53de8f0fbf05`.
+- A fresh lead-side review of `76e8db3..eeb9889` found no P0/P1 issues after
+  checking both entry paths, single-pass recursive count propagation, exact and
+  lower-bound labels, background request identity, hidden refresh completion
+  orderings, workspace re-rooting, previews, and dirty-document guards. The
+  lead independently reran the 34 Full Mindmap app tests, 5 bounded-snapshot
+  tests, 7 workspace-graph tests, all 216 library tests, every integration
+  target (67 tests), `cargo check`, `cargo build`, touched-file rustfmt, both
+  feature/status `git diff --check` ranges, and the binary SHA-256; all passed
+  with only the same pre-existing unused `Section` warning.
 - The exact screenshot repair `67564e5` passed 5 focused screenshot tests, all
   187 library tests, `cargo check`, and `git diff --check` using
   `/private/tmp/mdv-zen-fix-target`. A native isolated probe captured 30/30
@@ -366,12 +376,13 @@ picker/tree/file-finder paths, and focused tests.
 
 For the P0 fixes, run Windows CI/cross-target verification when available and
 push local `main` only on an explicit request.
-For Full Mindmap, independently verify `eeb9889`, then manually exercise both
-entry scenarios, recursive exact/lower-bound labels, Space/Right/Enter/Left/Esc,
-hidden refreshes, previews, and dirty-document protection with the recorded
-binary. A/B/C/D/E/G, hidden additivity, and Documents discovery were accepted
-on the prior candidate; the new unification/count behavior still needs native
-acceptance. Do not integrate main while that gate is held. After acceptance,
+For Full Mindmap, manually exercise both entry scenarios, recursive
+exact/lower-bound labels, Space/Right/Enter/Left/Esc, hidden refreshes, previews,
+and dirty-document protection with the recorded binary. A/B/C/D/E/G, hidden
+additivity, and Documents discovery were accepted on the prior candidate; the
+new unification/count behavior passed independent automated review but still
+needs native acceptance. Do not integrate main while that gate is held. After
+acceptance,
 integrate current
 `main@67564e5`, rebuild and repeat the large-folder interaction; only then
 retarget and review Zoom Controls.
