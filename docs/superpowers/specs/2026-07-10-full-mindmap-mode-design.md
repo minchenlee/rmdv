@@ -227,7 +227,8 @@ collide with a same-path request in a new navigation session.
 
 Hidden-file changes in workspace phase rebuild through the same background,
 request-identified snapshot path. A newer toggle rejects an older completion;
-the accepted refresh preserves any still-valid selection and expansion. Scan
+the accepted refresh replaces only workspace snapshot data and preserves any
+still-valid selection, expansion, preview request, and file-open request. Scan
 ordering considers ordinary entries before optional dot entries and discovers
 shallow siblings before descending, so hidden caches cannot consume the budget
 before ordinary top-level folders admitted by the directory-entry budget are
@@ -235,8 +236,10 @@ represented. A directory with more than 10,000 immediate entries remains an
 explicitly truncated edge case rather than triggering an unbounded read.
 
 If the filter changes in the chooser while an older workspace still backs the
-hidden Files sidebar, returning to Files first refreshes that snapshot on the
-same worker and exits only after the matching result is accepted.
+hidden Files sidebar, every normal exit first refreshes that snapshot on the
+same worker and exits only after the matching result is accepted. `Esc` and
+`⌘⇧M` restore the prior surface; Return to Files additionally opens the Files
+sidebar.
 
 Workspace expansion is separate from `App::expanded` (the sidebar tree) and
 from `App::mindmap_collapsed` (the current document). The only synchronization
