@@ -235,11 +235,22 @@ before ordinary top-level folders admitted by the directory-entry budget are
 represented. A directory with more than 10,000 immediate entries remains an
 explicitly truncated edge case rather than triggering an unbounded read.
 
+Activating a file while a hidden-filter refresh is pending supersedes that
+refresh with a new request carrying the file as `open_after`. The accepted
+snapshot therefore starts the file read, and neither completion order can exit
+the navigator before the sidebar snapshot matches the filter. A refresh failure
+reverts the filter to the last accepted snapshot value and keeps its error
+visible.
+
 If the filter changes in the chooser while an older workspace still backs the
 hidden Files sidebar, every normal exit first refreshes that snapshot on the
 same worker and exits only after the matching result is accepted. `Esc` and
 `⌘⇧M` restore the prior surface; Return to Files additionally opens the Files
 sidebar.
+
+If exit reconciliation fails, the exit still completes: the hidden-file filter
+reverts to the last accepted snapshot value and the failure is promoted to the
+application error surface before Full Mindmap state is removed.
 
 Workspace expansion is separate from `App::expanded` (the sidebar tree) and
 from `App::mindmap_collapsed` (the current document). The only synchronization

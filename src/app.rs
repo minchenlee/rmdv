@@ -1137,6 +1137,10 @@ impl App {
                 );
             }
         }
+        self.finish_full_mindmap_exit(return_to_files)
+    }
+
+    fn finish_full_mindmap_exit(&mut self, return_to_files: bool) -> Task<Message> {
         self.full_mindmap = None;
         if return_to_files {
             self.sidebar_open = true;
@@ -1337,6 +1341,30 @@ impl App {
         }
         if self.full_mindmap.is_none() {
             return self.load_file_unless_dirty(path);
+        }
+        let pending_refresh = self
+            .full_mindmap
+            .as_ref()
+            .and_then(|full| full.pending_workspace_load.clone())
+            .filter(|request| request.preserve_navigation);
+        if let Some(request) = pending_refresh {
+            // A hidden-filter refresh and file read must not race: accepting
+            // the file first would exit Full Mindmap and make the snapshot
+            // completion stale. Supersede the spawned refresh with a new
+            // request whose accepted completion starts the file read.
+            if request.exit_after_refresh {
+                // Esc/toggle/Return to Files already owns the terminal intent.
+                // A queued activation must not turn that exit into a file open.
+                return Task::none();
+            }
+            return self.begin_full_mindmap_workspace_load(
+                request.path,
+                request.select_root,
+                Some(path),
+                true,
+                request.return_to_files_after,
+                false,
+            );
         }
         self.full_mindmap_request_seq = self.full_mindmap_request_seq.wrapping_add(1);
         let request = PendingFullMindmapOpen {
@@ -3676,24 +3704,43 @@ impl App {
                             }
                             self.invalidate_full_mindmap_layout();
                         }
-                        if let Some(file) = open_after {
-                            followup = self.begin_full_mindmap_open(file);
+                        if !request.exit_after_refresh {
+                            if let Some(file) = open_after {
+                                followup = self.begin_full_mindmap_open(file);
+                            }
                         }
                     }
                     Ok((path, _)) => {
-                        if let Some(full) = self.full_mindmap.as_mut() {
+                        let message = format!("Indexed unexpected folder: {}", path.display());
+                        if request.preserve_navigation {
+                            self.show_hidden = self.workspace_snapshot_show_hidden;
+                        }
+                        if request.exit_after_refresh {
+                            self.error = Some(message);
+                            followup = self.finish_full_mindmap_exit(request.return_to_files_after);
+                        } else if let Some(full) = self.full_mindmap.as_mut() {
                             full.pending_workspace_load = None;
-                            full.load_error =
-                                Some(format!("Indexed unexpected folder: {}", path.display()));
+                            full.load_error = Some(message);
                         }
                     }
                     Err(error) => {
-                        if let Some(full) = self.full_mindmap.as_mut() {
+                        let message = format!("Couldn't index {}: {error}", request.path.display());
+                        // The existing workspace snapshot is still filtered
+                        // under the previous value. Revert the UI preference so
+                        // every accepted failure leaves those two facts aligned.
+                        if request.preserve_navigation {
+                            self.show_hidden = self.workspace_snapshot_show_hidden;
+                        }
+                        if request.exit_after_refresh {
+                            // Exit is terminal user intent. Do not trap the user
+                            // in Full Mindmap merely because reconciliation
+                            // failed; promote the error before removing its
+                            // navigator-local error surface.
+                            self.error = Some(message);
+                            followup = self.finish_full_mindmap_exit(request.return_to_files_after);
+                        } else if let Some(full) = self.full_mindmap.as_mut() {
                             full.pending_workspace_load = None;
-                            full.load_error = Some(format!(
-                                "Couldn't index {}: {error}",
-                                request.path.display()
-                            ));
+                            full.load_error = Some(message);
                         }
                     }
                 }
@@ -10044,52 +10091,236 @@ mod tests {
     }
 
     #[test]
-    fn full_mindmap_hidden_refresh_preserves_pending_open_and_completion() {
-        let dir = full_mindmap_test_dir("workspace-hidden-open-race");
+    fn full_mindmap_hidden_refresh_serializes_open_in_both_completion_orders() {
+        for stale_first in [true, false] {
+            let label = if stale_first {
+                "workspace-hidden-open-stale-first"
+            } else {
+                "workspace-hidden-open-current-first"
+            };
+            let dir = full_mindmap_test_dir(label);
+            let file = dir.join("open.md");
+            let hidden = dir.join(".hidden.md");
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(&file, "# Open\n").unwrap();
+            std::fs::write(&hidden, "# Hidden\n").unwrap();
+
+            let mut app = App::default();
+            app.set_workspace(dir.clone(), false);
+            let mut full = full_workspace_state(&dir);
+            full.selected = Some(WorkspaceNodeId::File(file.clone()));
+            app.full_mindmap = Some(full);
+            let _ = app.update(Message::ToggleHidden);
+            let stale_refresh = app
+                .full_mindmap
+                .as_ref()
+                .unwrap()
+                .pending_workspace_load
+                .clone()
+                .unwrap();
+
+            let _ = app.update(Message::FullMindmapActivate);
+            let accepted_refresh = app
+                .full_mindmap
+                .as_ref()
+                .unwrap()
+                .pending_workspace_load
+                .clone()
+                .expect("activation should supersede the filter refresh");
+            assert_ne!(stale_refresh, accepted_refresh);
+            assert_eq!(accepted_refresh.open_after.as_ref(), Some(&file));
+            assert!(app.full_mindmap.as_ref().unwrap().pending_open.is_none());
+
+            let hidden_snapshot = tree::build_workspace(&dir, true).unwrap();
+            if stale_first {
+                let _ = app.update(Message::FullMindmapWorkspaceLoaded {
+                    request: stale_refresh.clone(),
+                    result: Ok((dir.clone(), hidden_snapshot.clone())),
+                });
+                assert_eq!(
+                    app.full_mindmap.as_ref().unwrap().pending_workspace_load,
+                    Some(accepted_refresh.clone())
+                );
+                assert!(app.full_mindmap.as_ref().unwrap().pending_open.is_none());
+            }
+
+            let _ = app.update(Message::FullMindmapWorkspaceLoaded {
+                request: accepted_refresh,
+                result: Ok((dir.clone(), hidden_snapshot.clone())),
+            });
+            let open_request = app
+                .full_mindmap
+                .as_ref()
+                .unwrap()
+                .pending_open
+                .clone()
+                .expect("file read starts only after the snapshot is accepted");
+            assert!(app.workspace_snapshot_show_hidden);
+            assert!(app.workspace_files.contains(&hidden));
+
+            if !stale_first {
+                let _ = app.update(Message::FullMindmapWorkspaceLoaded {
+                    request: stale_refresh,
+                    result: Ok((dir.clone(), hidden_snapshot)),
+                });
+                assert_eq!(
+                    app.full_mindmap.as_ref().unwrap().pending_open,
+                    Some(open_request.clone())
+                );
+            }
+
+            let _ = app.update(Message::FullMindmapFileLoaded {
+                request: open_request,
+                result: Ok((file.clone(), "# Open\n".into())),
+            });
+            assert!(app.full_mindmap.is_none());
+            assert_eq!(app.file.as_deref(), Some(file.as_path()));
+            assert_eq!(app.source, "# Open\n");
+            assert!(app.workspace_snapshot_show_hidden);
+            assert!(app.workspace_files.contains(&hidden));
+
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+
+    #[test]
+    fn full_mindmap_refresh_open_respects_dirty_guard_and_pending_exit() {
+        let dir = full_mindmap_test_dir("workspace-hidden-open-guards");
         let file = dir.join("open.md");
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(&file, "# Open\n").unwrap();
         std::fs::write(dir.join(".hidden.md"), "# Hidden\n").unwrap();
 
-        let mut app = App::default();
-        app.set_workspace(dir.clone(), false);
-        app.full_mindmap = Some(full_workspace_state(&dir));
-        let _ = app.update(Message::ToggleHidden);
-        let workspace_request = app
+        let mut dirty_app = App::default();
+        dirty_app.set_workspace(dir.clone(), false);
+        let mut dirty_full = full_workspace_state(&dir);
+        dirty_full.selected = Some(WorkspaceNodeId::File(file.clone()));
+        dirty_app.full_mindmap = Some(dirty_full);
+        dirty_app.dirty = true;
+        let _ = dirty_app.update(Message::ToggleHidden);
+        let refresh = dirty_app
             .full_mindmap
             .as_ref()
             .unwrap()
             .pending_workspace_load
             .clone()
             .unwrap();
-        let _ = app.begin_full_mindmap_open(file.clone());
-        let open_request = app
+        let _ = dirty_app.update(Message::FullMindmapActivate);
+        let dirty_full = dirty_app.full_mindmap.as_ref().unwrap();
+        assert_eq!(dirty_full.pending_workspace_load, Some(refresh));
+        assert!(dirty_full.pending_open.is_none());
+        assert!(dirty_app.toast.is_some());
+
+        let mut exiting_app = App::default();
+        exiting_app.set_workspace(dir.clone(), false);
+        let mut exiting_full = full_workspace_state(&dir);
+        exiting_full.selected = Some(WorkspaceNodeId::File(file));
+        exiting_app.full_mindmap = Some(exiting_full);
+        let _ = exiting_app.update(Message::ToggleHidden);
+        let _ = exiting_app.update(Message::ExitFullMindmap);
+        let exit_refresh = exiting_app
             .full_mindmap
             .as_ref()
             .unwrap()
-            .pending_open
+            .pending_workspace_load
+            .clone()
+            .unwrap();
+        assert!(exit_refresh.exit_after_refresh);
+        let _ = exiting_app.update(Message::FullMindmapActivate);
+        let exiting_full = exiting_app.full_mindmap.as_ref().unwrap();
+        assert_eq!(
+            exiting_full.pending_workspace_load,
+            Some(exit_refresh.clone())
+        );
+        assert!(exiting_full.pending_open.is_none());
+        assert!(exit_refresh.open_after.is_none());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn full_mindmap_hidden_refresh_failure_reverts_filter_and_remains_visible() {
+        let dir = full_mindmap_test_dir("workspace-hidden-refresh-failure");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("visible.md"), "# Visible\n").unwrap();
+
+        let mut app = App::default();
+        app.set_workspace(dir.clone(), false);
+        app.full_mindmap = Some(full_workspace_state(&dir));
+        let _ = app.update(Message::ToggleHidden);
+        let request = app
+            .full_mindmap
+            .as_ref()
+            .unwrap()
+            .pending_workspace_load
             .clone()
             .unwrap();
 
-        let snapshot = tree::build_workspace(&dir, true).unwrap();
         let _ = app.update(Message::FullMindmapWorkspaceLoaded {
-            request: workspace_request,
-            result: Ok((dir.clone(), snapshot)),
+            request,
+            result: Err("permission denied".into()),
         });
-        assert_eq!(
-            app.full_mindmap.as_ref().unwrap().pending_open,
-            Some(open_request.clone())
-        );
 
-        let _ = app.update(Message::FullMindmapFileLoaded {
-            request: open_request,
-            result: Ok((file.clone(), "# Open\n".into())),
-        });
-        assert!(app.full_mindmap.is_none());
-        assert_eq!(app.file.as_deref(), Some(file.as_path()));
-        assert_eq!(app.source, "# Open\n");
+        let full = app
+            .full_mindmap
+            .as_ref()
+            .expect("ordinary failure stays open");
+        assert!(full.pending_workspace_load.is_none());
+        assert!(full
+            .load_error
+            .as_deref()
+            .is_some_and(|error| error.contains("permission denied")));
+        assert_eq!(app.show_hidden, app.workspace_snapshot_show_hidden);
+        assert!(!app.show_hidden);
+        assert!(app.error.is_none());
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn full_mindmap_exit_refresh_failure_never_traps_and_surfaces_error() {
+        for (label, exit_message, expect_files) in [
+            ("exit-error", Message::ExitFullMindmap, false),
+            ("toggle-exit-error", Message::ToggleFullMindmap, false),
+            ("files-exit-error", Message::FullMindmapReturnToFiles, true),
+        ] {
+            let dir = full_mindmap_test_dir(label);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join("visible.md"), "# Visible\n").unwrap();
+
+            let mut app = App::default();
+            app.set_workspace(dir.clone(), false);
+            app.full_mindmap = Some(full_workspace_state(&dir));
+            let _ = app.update(Message::ToggleHidden);
+            let _ = app.update(exit_message);
+            let request = app
+                .full_mindmap
+                .as_ref()
+                .unwrap()
+                .pending_workspace_load
+                .clone()
+                .expect("exit should wait for reconciliation");
+            assert!(request.exit_after_refresh);
+
+            let _ = app.update(Message::FullMindmapWorkspaceLoaded {
+                request,
+                result: Err("workspace disappeared".into()),
+            });
+
+            assert!(app.full_mindmap.is_none());
+            assert_eq!(app.show_hidden, app.workspace_snapshot_show_hidden);
+            assert!(!app.show_hidden);
+            assert!(app
+                .error
+                .as_deref()
+                .is_some_and(|error| error.contains("workspace disappeared")));
+            assert_eq!(app.sidebar_open, expect_files);
+            if expect_files {
+                assert_eq!(app.sidebar_tab, SidebarTab::Files);
+            }
+
+            let _ = std::fs::remove_dir_all(&dir);
+        }
     }
 
     #[test]
