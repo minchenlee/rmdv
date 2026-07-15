@@ -7,7 +7,7 @@ Last reconciled: 2026-07-15 (Asia/Taipei)
 - Actual checkout: `/Users/liminchen/Documents/GitHub/mdv`
 - Legacy non-repo path: `/Users/liminchen/Documents/GitHub/mdv-main`
 - Active branch: `feat/full-mindmap-mode`; its latest implementation candidate
-  is `5a5fb3a` (`feat: lazily materialize mindmap files`).
+  is `1d0b81a` (`fix: preserve files sidebar rows`).
 - Local `main` is at `67564e5`, eleven commits ahead of `origin/main`: Windows
   IPC fix `6fa6450`, CJK emphasis fix `0df1fe2`, reviewed CJK repair `d97370e`,
   the six-commit reviewed Zen feature/repair line `1199455..f2b0519`, and Zen
@@ -83,6 +83,12 @@ Last reconciled: 2026-07-15 (Asia/Taipei)
    available to Cmd+P. Expanded folders load only their immediate supported
    files on a bounded background worker; collapse evicts the branch, and exact
    request/workspace/filter/expansion identity rejects stale results.
+13. **Folder-only snapshot sidebar correction** is committed as `1d0b81a`.
+   The ordinary Files sidebar transiently combines the folder skeleton with a
+   second bounded path list from the same scan. This restores root/nested file
+   rows, ordering, expansion visibility, cursor activation, dirty guarding,
+   current-file reveal, and hidden refreshes without restoring retained file
+   `Node`s or broadening the shallower Cmd+P/vault-search index.
 
 ## Current state
 
@@ -115,7 +121,7 @@ Last reconciled: 2026-07-15 (Asia/Taipei)
 - `feat/full-mindmap-mode` and `feat/mindmap-zoom-controls` still follow the old
   `0df1fe2` line and do not contain repair `d97370e`, the Zen feature, or the
   screenshot repair. Full Mindmap is 9 main-only commits behind and contains
-  23 branch-only commits; Zoom Controls is 9 main-only commits
+  25 branch-only commits; Zoom Controls is 9 main-only commits
   behind and has 10 branch-only commits. The Full Mindmap refinement is
   protected at `82afd5a`; integrate current
   `main@67564e5` only after the requested manual acceptance, then retest.
@@ -155,7 +161,15 @@ Last reconciled: 2026-07-15 (Asia/Taipei)
   pending materialization for the entire branch, and re-expansion creates a new
   request. Current-file reveal completes only after the parent listing accepts
   the file. Cmd+P continues to use the flat bounded file index.
-- The feature source and design record are cleanly isolated through `5a5fb3a`;
+- Lead review rejected `5a5fb3a` as-is because the shared ordinary Files
+  sidebar still flattened only `workspace_tree`; once that tree became
+  folder-only, file rows disappeared. `1d0b81a` closes the P1 with
+  `workspace_sidebar_files`, a bounded lightweight path list through the
+  historical tree depth, and `tree::flatten_with_files`. The sidebar creates
+  transient file rows beneath visible/expanded parents. Cmd+P and vault search
+  remain on the historical file-index depth, and Full Mindmap lazy ownership
+  is unchanged.
+- The feature source and design record are cleanly isolated through `1d0b81a`;
   this status reconciliation remains separate bookkeeping.
 - Manual acceptance on 2026-07-15 passed A/B/C/D/E/G for entry/exit, preview,
   file open, dirty-edit protection, folder choice/count, and root-parent
@@ -179,9 +193,10 @@ Last reconciled: 2026-07-15 (Asia/Taipei)
   entry uses the accepted snapshot immediately. No-project entry indexes and
   adopts the current file parent or Home in the background.
 - The unified/count candidate passed independent lead review with no P0/P1
-  findings. The subsequent lazy-materialization candidate is independently
-  verified by automated gates and is awaiting lead review plus native manual
-  acceptance. Main integration remains held.
+  findings. Lead review rejected the first lazy-materialization commit
+  `5a5fb3a` on the ordinary-sidebar P1; follow-up `1d0b81a` is maker-verified
+  and awaiting independent re-review plus native manual acceptance. Main
+  integration remains held.
 - Do not merge, push, tag, release, or deploy without a new explicit request.
 
 ## Verification evidence
@@ -286,6 +301,23 @@ Last reconciled: 2026-07-15 (Asia/Taipei)
   import warning in `tests/ipc_protocol.rs`. The rebuilt manual-test binary is
   `/private/tmp/mdv-full-mindmap-protect-target/debug/rmdv` with SHA-256
   `240431cb09c36767d8ea5f6af6f79f32c2d79b5ec896099f727c6accd75089bc`.
+- Despite those green gates, lead review rejected `5a5fb3a` on one P1: the
+  folder-only retained tree removed every normal Files-sidebar file row because
+  that shared consumer still used `tree::flatten` without the bounded flat
+  files. The following correction evidence supersedes `5a5fb3a` for review.
+- The exact sidebar correction at `1d0b81a` passed 36 focused Full Mindmap
+  tests, 8 focused sidebar tests, 9 focused tree tests, all 225 library tests,
+  all 67 integration tests, `cargo check`, `cargo build --bin rmdv`,
+  `rustfmt --edition 2021 --check src/app.rs src/tree.rs
+  src/workspace_mindmap.rs`, and `git diff --check` using
+  `/private/tmp/mdv-full-mindmap-protect-target`. Regressions prove root and
+  nested standard-sidebar file rows, collapsed hiding, historical folder/file
+  ordering, keyboard activation through the dirty guard, hidden refresh, and
+  distinct tree-depth sidebar versus shallower Cmd+P depth contracts. The
+  integration run emitted only the pre-existing unused `Section` import
+  warning in `tests/ipc_protocol.rs`. The rebuilt manual-test binary is
+  `/private/tmp/mdv-full-mindmap-protect-target/debug/rmdv` with SHA-256
+  `3bf11d125fac4eb857485f3c0d87dd1a00c47740b1784321bbc302149b497b13`.
 - A fresh independent re-review of `8dc9ead` returned PASS with no P0/P1
   findings after checking both completion orders, stale request rejection,
   dirty and exit intent, and accepted refresh failure fallback.
