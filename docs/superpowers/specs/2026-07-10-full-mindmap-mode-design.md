@@ -230,7 +230,13 @@ request-identified snapshot path. A newer toggle rejects an older completion;
 the accepted refresh preserves any still-valid selection and expansion. Scan
 ordering considers ordinary entries before optional dot entries and discovers
 shallow siblings before descending, so hidden caches cannot consume the budget
-before ordinary top-level folders are represented.
+before ordinary top-level folders admitted by the directory-entry budget are
+represented. A directory with more than 10,000 immediate entries remains an
+explicitly truncated edge case rather than triggering an unbounded read.
+
+If the filter changes in the chooser while an older workspace still backs the
+hidden Files sidebar, returning to Files first refreshes that snapshot on the
+same worker and exits only after the matching result is accepted.
 
 Workspace expansion is separate from `App::expanded` (the sidebar tree) and
 from `App::mindmap_collapsed` (the current document). The only synchronization

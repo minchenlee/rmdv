@@ -87,6 +87,9 @@ pub struct PendingFullMindmapWorkspaceLoad {
     /// Hidden-entry refreshes keep the user's current expansion and selection
     /// after the background snapshot replaces the tree.
     pub preserve_navigation: bool,
+    /// Returning from a chooser with a changed hidden-file filter waits for
+    /// this snapshot, then reveals the refreshed Files sidebar directly.
+    pub return_to_files_after: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -623,6 +626,9 @@ pub struct App {
     /// Bounded supported-file count produced by the workspace snapshot itself.
     /// Full Mindmap uses it on the selected project root without rescanning.
     pub workspace_supported_file_count: Option<picker::SupportedFileCount>,
+    /// Filter used to produce the stored workspace snapshot. The chooser may
+    /// change `show_hidden` without immediately rebuilding the hidden sidebar.
+    pub workspace_snapshot_show_hidden: bool,
     /// True when the bounded workspace index stopped at its entry/file budget.
     pub workspace_truncated: bool,
     /// Whether dot-prefixed dirs/files appear in the tree, picker, and
@@ -828,6 +834,7 @@ impl Default for App {
             workspace_files: Vec::new(),
             workspace_tree: None,
             workspace_supported_file_count: None,
+            workspace_snapshot_show_hidden: false,
             workspace_truncated: false,
             show_hidden: false,
             expanded: HashSet::new(),
@@ -1198,6 +1205,7 @@ impl App {
         self.workspace_files = snapshot.files;
         self.workspace_tree = Some(snapshot.root);
         self.workspace_supported_file_count = Some(snapshot.supported_file_count);
+        self.workspace_snapshot_show_hidden = self.show_hidden;
         self.workspace_truncated = snapshot.truncated;
         self.expanded.clear();
         if let Some(tree) = &self.workspace_tree {
@@ -1239,6 +1247,7 @@ impl App {
         select_root: bool,
         open_after: Option<PathBuf>,
         preserve_navigation: bool,
+        return_to_files_after: bool,
     ) -> Task<Message> {
         if self.full_mindmap.is_none() {
             self.set_workspace(path, true);
@@ -1250,6 +1259,7 @@ impl App {
                     && pending.select_root == select_root
                     && pending.open_after == open_after
                     && pending.preserve_navigation == preserve_navigation
+                    && pending.return_to_files_after == return_to_files_after
             })
         });
         if already_pending {
@@ -1262,6 +1272,7 @@ impl App {
             select_root,
             open_after,
             preserve_navigation,
+            return_to_files_after,
         };
         let full = self.full_mindmap.as_mut().expect("checked above");
         full.pending_workspace_load = Some(request.clone());
@@ -1331,7 +1342,17 @@ impl App {
         if let Some(full) = self.full_mindmap.as_mut() {
             full.selected = Some(id);
             full.panel_open = true;
-            full.pending_workspace_load = None;
+            // A background hidden-entry refresh describes the same workspace
+            // and intentionally captures navigation at completion time. Keep
+            // it alive across ordinary selection changes; project switches
+            // and parent loads still retain their existing cancellation path.
+            if full
+                .pending_workspace_load
+                .as_ref()
+                .is_some_and(|request| !request.preserve_navigation)
+            {
+                full.pending_workspace_load = None;
+            }
             full.load_error = None;
         }
         Task::batch([
@@ -2680,7 +2701,7 @@ impl App {
                 // A workspace selected through Full Mindmap Mode should not
                 // silently alter the hidden sidebar's open/closed preference.
                 if self.full_mindmap.is_some() {
-                    self.begin_full_mindmap_workspace_load(p, false, None, false)
+                    self.begin_full_mindmap_workspace_load(p, false, None, false, false)
                 } else {
                     self.set_workspace(p, true);
                     Task::none()
@@ -3275,7 +3296,7 @@ impl App {
                         FullMindmapPhase::Workspace => None,
                     });
                 if let Some(path) = path {
-                    return self.begin_full_mindmap_workspace_load(path, false, None, false);
+                    return self.begin_full_mindmap_workspace_load(path, false, None, false, false);
                 }
                 Task::none()
             }
@@ -3295,7 +3316,7 @@ impl App {
                     .flatten()
                 });
                 if let Some(path) = path {
-                    return self.begin_full_mindmap_workspace_load(path, false, None, false);
+                    return self.begin_full_mindmap_workspace_load(path, false, None, false, false);
                 }
                 Task::none()
             }
@@ -3396,7 +3417,7 @@ impl App {
                 let Some(parent) = root.parent().map(PathBuf::from) else {
                     return Task::none();
                 };
-                self.begin_full_mindmap_workspace_load(parent, true, None, false)
+                self.begin_full_mindmap_workspace_load(parent, true, None, false, false)
             }
             Message::FullMindmapChangeFolder => {
                 let picker = Picker::new(
@@ -3425,6 +3446,19 @@ impl App {
                 self.begin_full_mindmap_folder_count(Some(chooser_root))
             }
             Message::FullMindmapReturnToFiles => {
+                let stale_workspace = self.full_mindmap.as_ref().is_some_and(|full| {
+                    matches!(&full.phase, FullMindmapPhase::ChooseFolder(_))
+                        && self.workspace_snapshot_show_hidden != self.show_hidden
+                });
+                if stale_workspace {
+                    if let Some(path) = self.workspace.clone() {
+                        // Keep the chooser visible while the hidden sidebar is
+                        // refreshed off-thread. The matching completion exits
+                        // directly to Files; failures remain recoverable here.
+                        return self
+                            .begin_full_mindmap_workspace_load(path, false, None, true, true);
+                    }
+                }
                 self.full_mindmap = None;
                 self.sidebar_open = true;
                 self.sidebar_tab = SidebarTab::Files;
@@ -3602,7 +3636,13 @@ impl App {
                             })
                             .flatten();
                         self.apply_workspace_snapshot(path.clone(), snapshot, false);
-                        if let Some((selected, mut expanded)) = preserved_navigation {
+                        if request.return_to_files_after {
+                            self.full_mindmap = None;
+                            self.sidebar_open = true;
+                            self.sidebar_tab = SidebarTab::Files;
+                            self.reveal_current_file();
+                            followup = self.restore_body_scroll();
+                        } else if let Some((selected, mut expanded)) = preserved_navigation {
                             expanded.insert(path.clone());
                             if let Some(full) = self.full_mindmap.as_mut() {
                                 full.selected = selected;
@@ -4136,6 +4176,7 @@ impl App {
                             false,
                             Some(path),
                             false,
+                            false,
                         );
                     }
                     return self.begin_full_mindmap_open(path);
@@ -4557,6 +4598,7 @@ impl App {
                                 self.workspace_tree = Some(snapshot.root);
                                 self.workspace_supported_file_count =
                                     Some(snapshot.supported_file_count);
+                                self.workspace_snapshot_show_hidden = self.show_hidden;
                                 self.workspace_truncated = snapshot.truncated;
                             }
                             Err(error) => {
@@ -4595,7 +4637,7 @@ impl App {
                 };
                 let workspace_refresh = if full_workspace_active {
                     workspace.map_or_else(Task::none, |path| {
-                        self.begin_full_mindmap_workspace_load(path, false, None, true)
+                        self.begin_full_mindmap_workspace_load(path, false, None, true, false)
                     })
                 } else {
                     Task::none()
@@ -9727,6 +9769,45 @@ mod tests {
     }
 
     #[test]
+    fn full_mindmap_return_to_files_refreshes_stale_hidden_sidebar_off_thread() {
+        let dir = full_mindmap_test_dir("chooser-return-hidden-refresh");
+        let visible = dir.join("visible.md");
+        let hidden = dir.join(".hidden.md");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(&visible, "# Visible\n").unwrap();
+        std::fs::write(&hidden, "# Hidden\n").unwrap();
+
+        let mut app = App::default();
+        app.set_workspace(dir.clone(), false);
+        app.full_mindmap = Some(full_workspace_state(&dir));
+        let _ = app.update(Message::FullMindmapChangeFolder);
+        let _ = app.update(Message::ToggleHidden);
+        assert!(app.show_hidden);
+        assert!(!app.workspace_files.contains(&hidden));
+        assert!(!app.workspace_snapshot_show_hidden);
+
+        let _ = app.update(Message::FullMindmapReturnToFiles);
+        let request = app
+            .full_mindmap
+            .as_ref()
+            .and_then(|full| full.pending_workspace_load.clone())
+            .expect("return should wait for a background sidebar refresh");
+        assert!(request.return_to_files_after);
+        assert!(app.full_mindmap.is_some());
+        assert!(!app.workspace_files.contains(&hidden));
+
+        complete_full_mindmap_workspace_load(&mut app);
+        assert!(app.full_mindmap.is_none());
+        assert!(app.sidebar_open);
+        assert_eq!(app.sidebar_tab, SidebarTab::Files);
+        assert!(app.workspace_files.contains(&visible));
+        assert!(app.workspace_files.contains(&hidden));
+        assert!(app.workspace_snapshot_show_hidden);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn full_mindmap_hidden_workspace_refresh_is_background_additive_and_stale_safe() {
         let dir = full_mindmap_test_dir("workspace-hidden-refresh");
         let visible = dir.join("visible.md");
@@ -9794,6 +9875,57 @@ mod tests {
         assert_eq!(
             app.full_mindmap.as_ref().unwrap().selected,
             Some(WorkspaceNodeId::File(visible))
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn full_mindmap_hidden_refresh_survives_selection_and_keeps_latest_valid_node() {
+        let dir = full_mindmap_test_dir("workspace-hidden-selection-race");
+        let first = dir.join("first.md");
+        let second = dir.join("second.md");
+        let hidden = dir.join(".secret.md");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(&first, "# First\n").unwrap();
+        std::fs::write(&second, "# Second\n").unwrap();
+        std::fs::write(&hidden, "# Hidden\n").unwrap();
+
+        let mut app = App::default();
+        app.set_workspace(dir.clone(), false);
+        let mut full = full_workspace_state(&dir);
+        full.selected = Some(WorkspaceNodeId::File(first.clone()));
+        app.full_mindmap = Some(full);
+
+        let _ = app.update(Message::ToggleHidden);
+        let request = app
+            .full_mindmap
+            .as_ref()
+            .unwrap()
+            .pending_workspace_load
+            .clone()
+            .unwrap();
+        let _ = app.update(Message::FullMindmapSelectNode(WorkspaceNodeId::File(
+            second.clone(),
+        )));
+        assert_eq!(
+            app.full_mindmap.as_ref().unwrap().pending_workspace_load,
+            Some(request.clone())
+        );
+
+        let snapshot = tree::build_workspace(&dir, true).unwrap();
+        let _ = app.update(Message::FullMindmapWorkspaceLoaded {
+            request,
+            result: Ok((dir.clone(), snapshot)),
+        });
+
+        let graph = app.full_mindmap_graph().unwrap();
+        assert!(graph.node(&WorkspaceNodeId::File(first)).is_some());
+        assert!(graph.node(&WorkspaceNodeId::File(second.clone())).is_some());
+        assert!(graph.node(&WorkspaceNodeId::File(hidden)).is_some());
+        assert_eq!(
+            app.full_mindmap.as_ref().unwrap().selected,
+            Some(WorkspaceNodeId::File(second))
         );
 
         let _ = std::fs::remove_dir_all(&dir);
@@ -10216,7 +10348,7 @@ mod tests {
         app.full_mindmap = Some(App::new_full_mindmap_state(FullMindmapPhase::ChooseFolder(
             Picker::new(Some(dir.clone()), PickerMode::Folder, false),
         )));
-        let _ = app.begin_full_mindmap_workspace_load(first.clone(), false, None, false);
+        let _ = app.begin_full_mindmap_workspace_load(first.clone(), false, None, false, false);
         let stale = app
             .full_mindmap
             .as_ref()
@@ -10224,7 +10356,7 @@ mod tests {
             .pending_workspace_load
             .clone()
             .unwrap();
-        let _ = app.begin_full_mindmap_workspace_load(second.clone(), false, None, false);
+        let _ = app.begin_full_mindmap_workspace_load(second.clone(), false, None, false, false);
         let current = app
             .full_mindmap
             .as_ref()

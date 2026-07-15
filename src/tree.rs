@@ -165,9 +165,10 @@ fn fill_bounded(
         });
     }
 
-    // Ordinary entries always precede optional dot entries. In particular, a
-    // large hidden cache must not consume the global scan budget before a
-    // sibling such as Documents is even considered.
+    // Among entries admitted by the hard read budget, ordinary entries always
+    // precede optional dot entries. This prevents traversal of an admitted
+    // hidden cache from consuming the remaining budget before Documents. A
+    // directory with >10k immediate entries is still explicitly truncated.
     entries.sort_by(|a, b| {
         a.is_hidden
             .cmp(&b.is_hidden)
