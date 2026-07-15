@@ -8,7 +8,7 @@ use crate::mindmap::{self, MNode};
 use crate::tree::{Node, RecursiveFileCount};
 use iced::Size;
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -28,6 +28,16 @@ pub enum WorkspaceNodeId {
     Folder(PathBuf),
     File(PathBuf),
     Status(PathBuf, WorkspaceStatus),
+}
+
+impl WorkspaceNodeId {
+    /// Return the filesystem path represented by this graph identity.
+    pub fn path(&self) -> &Path {
+        match self {
+            Self::Root(path) | Self::Folder(path) | Self::File(path) => path,
+            Self::Status(path, _) => path,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -99,6 +109,35 @@ impl WorkspaceGraph {
         let idx = self.index_of(id)?;
         let parent = self.parent_indices().get(idx).copied().flatten()?;
         self.nodes.get(parent)?.id.clone()
+    }
+
+    /// Find the closest visible folder/root ancestor for a path that was
+    /// removed from the accepted graph (for example, an unknown shell that a
+    /// bounded retry proved exactly empty). The graph, rather than the source
+    /// tree, is authoritative here: omitted exact-empty ancestors are skipped
+    /// and the workspace root is returned only when it is the first visible
+    /// ancestor.
+    pub fn nearest_visible_ancestor(&self, path: &Path) -> Option<WorkspaceNodeId> {
+        let root_path = self.node(&self.root)?.path.as_deref()?;
+        let mut ancestor = path.parent();
+        while let Some(candidate) = ancestor {
+            if !candidate.starts_with(root_path) {
+                break;
+            }
+            let id = if candidate == root_path {
+                self.root.clone()
+            } else {
+                WorkspaceNodeId::Folder(candidate.to_path_buf())
+            };
+            if self.node(&id).is_some() {
+                return Some(id);
+            }
+            if candidate == root_path {
+                break;
+            }
+            ancestor = candidate.parent();
+        }
+        None
     }
 
     pub fn first_child(&self, id: &WorkspaceNodeId) -> Option<WorkspaceNodeId> {
@@ -834,6 +873,63 @@ mod tests {
         assert!(graph
             .node(&WorkspaceNodeId::Folder(PathBuf::from("/vault/unknown")))
             .is_none());
+    }
+
+    #[test]
+    fn removed_shell_uses_nearest_visible_ancestor_before_root_fallback() {
+        let shell_path = PathBuf::from("/vault/Documents/Shopee");
+        let documents_path = PathBuf::from("/vault/Documents");
+        let mut shell = node(shell_path.to_str().unwrap(), true, vec![]);
+        shell.recursive_supported_file_count = Some(RecursiveFileCount::LowerBound(0));
+        let mut documents = node(documents_path.to_str().unwrap(), true, vec![shell.clone()]);
+        documents.recursive_supported_file_count = Some(RecursiveFileCount::LowerBound(0));
+        let mut root = node("/vault", true, vec![documents]);
+        root.recursive_supported_file_count = Some(RecursiveFileCount::LowerBound(0));
+        let materialized = HashMap::from([(
+            shell_path.clone(),
+            MaterializedFolder::Loaded {
+                folders: Arc::new(Vec::new()),
+                files: Arc::new(Vec::new()),
+                recursive_supported_file_count: RecursiveFileCount::Exact(0),
+                truncated: false,
+            },
+        )]);
+        let graph = from_tree(
+            &root,
+            &HashSet::from([PathBuf::from("/vault"), documents_path.clone(), shell_path]),
+            &materialized,
+            &HashSet::new(),
+            true,
+        );
+        assert_eq!(
+            graph.nearest_visible_ancestor(PathBuf::from("/vault/Documents/Shopee").as_path()),
+            Some(WorkspaceNodeId::Folder(documents_path.clone()))
+        );
+
+        let mut direct_shell = node("/vault/direct", true, vec![]);
+        direct_shell.recursive_supported_file_count = Some(RecursiveFileCount::LowerBound(0));
+        let mut direct_root = node("/vault", true, vec![direct_shell]);
+        direct_root.recursive_supported_file_count = Some(RecursiveFileCount::LowerBound(0));
+        let direct_materialized = HashMap::from([(
+            PathBuf::from("/vault/direct"),
+            MaterializedFolder::Loaded {
+                folders: Arc::new(Vec::new()),
+                files: Arc::new(Vec::new()),
+                recursive_supported_file_count: RecursiveFileCount::Exact(0),
+                truncated: false,
+            },
+        )]);
+        let direct_graph = from_tree(
+            &direct_root,
+            &HashSet::from([PathBuf::from("/vault"), PathBuf::from("/vault/direct")]),
+            &direct_materialized,
+            &HashSet::new(),
+            true,
+        );
+        assert_eq!(
+            direct_graph.nearest_visible_ancestor(PathBuf::from("/vault/direct").as_path()),
+            Some(direct_graph.root_id())
+        );
     }
 
     #[test]

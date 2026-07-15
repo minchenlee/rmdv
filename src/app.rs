@@ -1173,10 +1173,16 @@ impl App {
             .full_mindmap
             .as_ref()
             .and_then(|full| full.deferred_file_selection.as_ref());
+        let deferred_file = selected
+            .as_ref()
+            .is_some_and(|id| matches!(id, WorkspaceNodeId::File(path) if deferred == Some(path)));
         let next = selected
-            .filter(|id| {
-                graph.node(id).is_some()
-                    || matches!(id, WorkspaceNodeId::File(path) if deferred == Some(path))
+            .clone()
+            .filter(|id| graph.node(id).is_some() || deferred_file)
+            .or_else(|| {
+                selected
+                    .as_ref()
+                    .and_then(|id| graph.nearest_visible_ancestor(id.path()))
             })
             .unwrap_or_else(|| graph.root_id());
         if let Some(full) = self.full_mindmap.as_mut() {
@@ -9602,6 +9608,57 @@ mod tests {
         assert_eq!(
             app.full_mindmap.as_ref().unwrap().selected,
             Some(WorkspaceNodeId::Root(dir.clone()))
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn full_mindmap_lazy_exact_empty_nested_shell_selects_nearest_ancestor() {
+        let dir = full_mindmap_test_dir("lazy-empty-nested-shell");
+        let documents = dir.join("Documents");
+        let shell = documents.join("Shopee");
+        std::fs::create_dir_all(&shell).unwrap();
+        std::fs::write(documents.join("guide.md"), "# Guide\n").unwrap();
+
+        let mut app = App::default();
+        app.set_workspace(dir.clone(), false);
+        let tree = app.workspace_tree.as_mut().unwrap();
+        let documents_node = tree
+            .children
+            .iter_mut()
+            .find(|node| node.path == documents)
+            .unwrap();
+        documents_node.children.push(Node {
+            path: shell.clone(),
+            name: "Shopee".into(),
+            is_dir: true,
+            children: Vec::new(),
+            recursive_supported_file_count: Some(tree::RecursiveFileCount::LowerBound(0)),
+        });
+        documents_node.recursive_supported_file_count =
+            Some(tree::RecursiveFileCount::LowerBound(0));
+        tree.recursive_supported_file_count = Some(tree::RecursiveFileCount::LowerBound(0));
+        app.workspace_truncated = true;
+        app.full_mindmap = Some(App::new_full_mindmap_state());
+        {
+            let full = app.full_mindmap.as_mut().unwrap();
+            full.expanded.insert(dir.clone());
+            full.expanded.insert(documents.clone());
+            full.selected = Some(WorkspaceNodeId::Folder(shell.clone()));
+        }
+
+        let _ = app.update(Message::FullMindmapToggleSelected);
+        complete_full_mindmap_folder_loads(&mut app);
+
+        let graph = app.full_mindmap_graph().unwrap();
+        assert!(graph.node(&WorkspaceNodeId::Folder(shell)).is_none());
+        assert!(graph
+            .node(&WorkspaceNodeId::Folder(documents.clone()))
+            .is_some());
+        assert_eq!(
+            app.full_mindmap.as_ref().unwrap().selected,
+            Some(WorkspaceNodeId::Folder(documents))
         );
 
         let _ = std::fs::remove_dir_all(&dir);

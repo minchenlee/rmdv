@@ -1168,6 +1168,50 @@ mod tests {
         nodes
     }
 
+    fn nested_shell_graph(shell: bool) -> Vec<MNode<PathId>> {
+        let mut nodes = vec![
+            MNode {
+                id: Some(PathId("/Users/me".into())),
+                label: "me".into(),
+                full_label: "me".into(),
+                truncated: false,
+                level: 0,
+                children: vec![1],
+                has_hidden_children: false,
+                x: 0.0,
+                y: 0.0,
+            },
+            MNode {
+                id: Some(PathId("/Users/me/Documents".into())),
+                label: "Documents".into(),
+                full_label: "Documents".into(),
+                truncated: false,
+                level: 1,
+                children: Vec::new(),
+                has_hidden_children: false,
+                x: 0.0,
+                y: 0.0,
+            },
+        ];
+        if shell {
+            nodes[1].children.push(2);
+            nodes.push(MNode {
+                id: Some(PathId("/Users/me/Documents/Shopee".into())),
+                label: "Shopee".into(),
+                full_label: "Shopee".into(),
+                truncated: false,
+                level: 2,
+                children: Vec::new(),
+                has_hidden_children: false,
+                x: 0.0,
+                y: 0.0,
+            });
+        }
+        let mut y_cursor = PAD;
+        layout(&mut nodes, 0, &mut y_cursor);
+        nodes
+    }
+
     #[test]
     fn full_mindmap_async_expansion_refocuses_selected_folder_after_relayout() {
         let root = PathId("/Users/me".into());
@@ -1314,6 +1358,68 @@ mod tests {
         assert_ne!(
             pan_target, root_target,
             "Right must focus the accepted first child"
+        );
+    }
+
+    #[test]
+    fn full_mindmap_exact_empty_shell_relayout_focuses_nearest_ancestor() {
+        let root = PathId("/Users/me".into());
+        let documents = PathId("/Users/me/Documents".into());
+        let shell = PathId("/Users/me/Documents/Shopee".into());
+        let bounds = Rectangle::new(Point::ORIGIN, Size::new(1000.0, 800.0));
+        let initial = canvas_program(nested_shell_graph(true), shell, 1);
+        let mut state = MindmapState::default();
+        state.zoom = 1.0;
+        initial.sync_anim(&mut state);
+        initial.sync_focus_pan(&mut state, bounds);
+        for anim in state.anim.values_mut() {
+            anim.current_x = anim.target_x;
+            anim.current_y = anim.target_y;
+            anim.done = true;
+        }
+        state.pan_anim = None;
+
+        let accepted = canvas_program(nested_shell_graph(false), documents, 2);
+        accepted.sync_anim(&mut state);
+        accepted.sync_focus_pan(&mut state, bounds);
+
+        let selected_idx = accepted
+            .nodes
+            .iter()
+            .position(|node| node.id.as_ref() == accepted.selected.as_ref())
+            .unwrap();
+        let pan_target = state
+            .pan_anim
+            .expect("ancestor should receive relayout focus")
+            .target;
+        let ancestor_target = accepted.focus_target_for_node(
+            &state,
+            selected_idx,
+            bounds,
+            bounds.width,
+            false,
+            false,
+            true,
+        );
+        assert_eq!(pan_target, ancestor_target);
+
+        let root_idx = accepted
+            .nodes
+            .iter()
+            .position(|node| node.id.as_ref() == Some(&root))
+            .unwrap();
+        let root_target = accepted.focus_target_for_node(
+            &state,
+            root_idx,
+            bounds,
+            bounds.width,
+            false,
+            false,
+            true,
+        );
+        assert_ne!(
+            pan_target, root_target,
+            "removing a nested shell must not refocus the workspace root"
         );
     }
 }
