@@ -144,6 +144,24 @@ Last reconciled: 2026-07-15 (Asia/Taipei)
   refresh, and `/Users/liminchen/Documents` is discoverable from the home
   chooser. Targeted manual retest of these four corrections is still pending;
   main integration remains held.
+- Follow-up manual testing accepted hidden-entry additivity and
+  `/Users/liminchen/Documents` discovery. The Space retest was not reported.
+  Root count retention works, but the user now requests recursive supported-
+  file counts on collapsed non-root folders; expanded folders should use plain
+  labels. This is not implemented yet.
+- A read-only `luna_subagent` investigation found that the current root-only
+  count is an intentional data-model limitation: `WorkspaceSnapshot` owns one
+  global count and `tree::Node` owns none. It recommends computing exact or
+  lower-bound per-subtree counts during the existing single bounded background
+  scan, without additional filesystem walks.
+- The same investigation recommends replacing the user-visible
+  `ChooseFolder`/`Workspace` split with one folder-rooted explorer: `Space`
+  always folds, `Enter` opens a file or makes a folder the new root, root `←`
+  loads its filesystem parent, and `Esc` exits. One product decision remains:
+  when no project exists, whether entry may automatically adopt the current
+  file's parent (otherwise Home) as the app workspace. Luna recommends yes;
+  implementation is held for this decision and must not be mixed with main
+  integration.
 - Do not merge, push, tag, release, or deploy without a new explicit request.
 
 ## Verification evidence
@@ -333,9 +351,13 @@ picker/tree/file-finder paths, and focused tests.
 
 For the P0 fixes, run Windows CI/cross-target verification when available and
 push local `main` only on an explicit request.
-For Full Mindmap, collect the user's targeted four-correction manual retest
-first; A/B/C/D/E/G are otherwise accepted. Do not integrate main while that
-gate is held. After acceptance, integrate current
+For Full Mindmap, first settle whether no-project entry may automatically adopt
+the current-file parent/Home as the workspace. Then give one maker serial
+ownership of per-folder bounded counts plus the unified explorer, independently
+verify it, and collect the remaining Space/count/unification manual acceptance.
+A/B/C/D/E/G, hidden additivity, and Documents discovery are otherwise
+accepted. Do not integrate main while that gate is held. After acceptance,
+integrate current
 `main@67564e5`, rebuild and repeat the large-folder interaction; only then
 retarget and review Zoom Controls.
 If the user instead asks to merge or release, first re-check
