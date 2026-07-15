@@ -7,7 +7,7 @@ Last reconciled: 2026-07-15 (Asia/Taipei)
 - Actual checkout: `/Users/liminchen/Documents/GitHub/mdv`
 - Legacy non-repo path: `/Users/liminchen/Documents/GitHub/mdv-main`
 - Active branch: `feat/full-mindmap-mode`; its latest implementation candidate
-  is `1317a06` (`fix: discover interrupted mindmap branches`).
+  is `400e41b` (`fix: preserve full mindmap child focus`).
 - Local `main` is at `67564e5`, eleven commits ahead of `origin/main`: Windows
   IPC fix `6fa6450`, CJK emphasis fix `0df1fe2`, reviewed CJK repair `d97370e`,
   the six-commit reviewed Zen feature/repair line `1199455..f2b0519`, and Zen
@@ -103,11 +103,16 @@ Last reconciled: 2026-07-15 (Asia/Taipei)
    reuse the pre-grouped sidebar index without another filesystem scan.
    Collapse still evicts the branch, and exact request/root/filter/expansion/
    mode identity rejects stale completion.
+16. **Full Mindmap child-focus correction** is committed as `400e41b`.
+   Full Mindmap now publishes a graph-layout generation to the shared canvas,
+   so async folder discovery recenters the acted-on folder or accepted first
+   child at its final layout position instead of a transient parent/root seed.
+   Document Mindmap leaves the generation unset and retains its prior behavior.
 
 ## Current state
 
-- **Full Mindmap child-focus correction is maker-SUBMITTED** at implementation
-  commit `400e41b` on `feat/full-mindmap-mode`. It adds a Full Mindmap
+- **Full Mindmap child-focus correction is independently accepted** at
+  implementation commit `400e41b` with no P0/P1 findings. It adds a Full Mindmap
   graph-generation focus signal to the shared canvas and deterministic
   regressions for async expansion and Loading-to-first-child replacement. The
   old transition was: selection stayed on the acted-on path while the graph
@@ -115,7 +120,7 @@ Last reconciled: 2026-07-15 (Asia/Taipei)
   child was also seeded at its parent animation position. The candidate now
   targets the rebuilt node layout and animates the transform with node motion.
   Main integration, Zoom retargeting, and release actions remain out of scope;
-  native/manual acceptance is still pending.
+  native/manual acceptance of the corrected pan behavior is still pending.
 
 - **Full Mindmap native correctness correction is independently accepted at
   `1317a06` with no P0/P1 findings.** The bounded retry lets a
@@ -157,7 +162,7 @@ Last reconciled: 2026-07-15 (Asia/Taipei)
 - `feat/full-mindmap-mode` and `feat/mindmap-zoom-controls` still follow the old
   `0df1fe2` line and do not contain repair `d97370e`, the Zen feature, or the
   screenshot repair. Full Mindmap is 9 main-only commits behind and contains
-  33 branch-only commits; Zoom Controls is 9 main-only commits
+  37 branch-only commits; Zoom Controls is 9 main-only commits
   behind and has 10 branch-only commits. The Full Mindmap refinement is
   protected at `82afd5a`; integrate current
   `main@67564e5` only after the requested manual acceptance, then retest.
@@ -222,7 +227,7 @@ Last reconciled: 2026-07-15 (Asia/Taipei)
   whereas an incomplete zero result renders **More items not indexed**.
   Already-exact retained nodes reuse their counted direct children and the
   pre-grouped sidebar paths without extra filesystem work.
-- The feature source and design record are cleanly isolated through `1317a06`;
+- The feature source and design record are cleanly isolated through `400e41b`;
   this status reconciliation remains separate bookkeeping.
 - Manual acceptance on 2026-07-15 passed A/B/C/D/E/G for entry/exit, preview,
   file open, dirty-edit protection, folder choice/count, and root-parent
@@ -419,7 +424,7 @@ Last reconciled: 2026-07-15 (Asia/Taipei)
   of 7.0 GiB generated artifacts and rebuilt fresh; the manual binary is
   `/private/tmp/mdv-full-mindmap-protect-target/debug/rmdv` with SHA-256
   `d281e3970ffc9b979e210103e236e4a1b244429fb20af6f1782679f247464853`.
-- The maker-SUBMITTED child-focus candidate passes 34 shared-canvas mindmap
+- The exact child-focus candidate at `400e41b` passes 34 shared-canvas mindmap
   tests, 40 focused Full Mindmap app tests, all 237 library tests, all 67
   integration tests, `cargo check`, a fresh `cargo build --bin rmdv`, touched-
   file rustfmt, and `git diff --check` using
@@ -431,6 +436,13 @@ Last reconciled: 2026-07-15 (Asia/Taipei)
   `a6767e77ac2b58b0d6b78cd84760220696128452060ec72ddefdd9b1c0d57437`.
   Native/manual acceptance remains pending; do not integrate to main or
   release until that gate is complete.
+- A fresh lead-side review of `473170f..400e41b` found no P0/P1 issue after
+  checking Full-Mindmap-only generation ownership, final-layout focus targets,
+  one-shot generation bookkeeping, pan/node animation synchronization, and the
+  unchanged document-Mindmap path. The lead independently reran 34 canvas/
+  mindmap, 40 Full Mindmap, 14 workspace-graph, and 9 sidebar tests plus
+  touched-file rustfmt, implementation/status diff checks, worktree cleanliness,
+  and the final binary SHA-256. All passed.
 - A fresh lead-side static review of `3e2b3fd..1317a06` found no P0/P1 issue
   after checking exact-empty pruning, branch-local shallow ownership, bounded
   background execution, exact request/root/filter/expansion/mode rejection,
@@ -544,7 +556,7 @@ Last reconciled: 2026-07-15 (Asia/Taipei)
 
 The Full Mindmap feature is an opt-in, full-window navigation mode, distinct
 from and compatible with the existing document-level `ViewMode::Mindmap`.
-Commits through `1317a06` remove its visual controls, make folder traversal and
+Commits through `400e41b` remove its visual controls, make folder traversal and
 file opening keyboard-first, address the manual-acceptance corrections, harden
 large-workspace behavior, unify both entry scenarios around one explorer, add
 recursive collapsed-folder count labels from the bounded snapshot, lazily
@@ -569,9 +581,12 @@ dirty-document protection, and ordinary Files-sidebar scrolling/navigation in
 a large workspace with the recorded binary. Specifically verify that a
 `scan limit reached` folder never expands blank, exact-empty folders are absent,
 and nested folders beneath Documents are reachable from Home or an ancestor
-without first making Documents the root. A/B/C/D/E/G and hidden additivity were
-accepted on earlier candidates; `1317a06` passed independent automated review
-and still needs native acceptance. Do not integrate main while that gate is held.
+without first making Documents the root. Expand a child beneath Documents with
+Space and Right and confirm the viewport remains focused on that folder/child
+after Loading completes rather than jumping to the user root. A/B/C/D/E/G and
+hidden additivity were accepted on earlier candidates; `1317a06` and `400e41b`
+passed independent automated review and still need native acceptance. Do not
+integrate main while that gate is held.
 After acceptance,
 integrate current
 `main@67564e5`, rebuild and repeat the large-folder interaction; only then
