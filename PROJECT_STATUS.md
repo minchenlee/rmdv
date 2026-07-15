@@ -111,6 +111,23 @@ Last reconciled: 2026-07-15 (Asia/Taipei)
 
 ## Current state
 
+- **Full Mindmap `/Shopee backroom` lazy-discovery investigation stopped without
+  a source change** on `feat/full-mindmap-mode`. The real path is
+  `/Users/liminchen/Documents/Shopee Backroom`. A read-only production scan of
+  its parent retained the folder as `LowerBound(0)` because the bounded
+  ancestor scan was truncated; the same production `load_expanded_folder`
+  retry returned `folders=0`, `files=0`, `Exact(0)`, `truncated=false` with
+  hidden files both off and on. Metadata-only inspection found 20 directories,
+  34 files, and no files in the current supported scope (`md`, `markdown`,
+  `tex`, `json`, `yaml`, `yml`, `toml`, or feature-enabled `pdf`); excluded
+  repository metadata accounts for the remaining entries. The lazy removal is
+  therefore truthful exact-empty pruning, so the approved empty-folder rule
+  and STOP condition apply. Keeping the folder would require a supported-file
+  policy change; no focus or scanner fix was made, and the existing
+  graph-generation, Space/Right, bounds, stale-safety, sidebar, finder, and
+  document Mindmap behavior remain unchanged. Main/Zoom integration, release,
+  and native acceptance remain out of scope.
+
 - **Full Mindmap child-focus correction is independently accepted** at
   implementation commit `400e41b` with no P0/P1 findings. It adds a Full Mindmap
   graph-generation focus signal to the shared canvas and deterministic
