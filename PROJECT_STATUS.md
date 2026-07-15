@@ -121,7 +121,7 @@ Last reconciled: 2026-07-15 (Asia/Taipei)
 - `feat/full-mindmap-mode` and `feat/mindmap-zoom-controls` still follow the old
   `0df1fe2` line and do not contain repair `d97370e`, the Zen feature, or the
   screenshot repair. Full Mindmap is 9 main-only commits behind and contains
-  25 branch-only commits; Zoom Controls is 9 main-only commits
+  27 branch-only commits; Zoom Controls is 9 main-only commits
   behind and has 10 branch-only commits. The Full Mindmap refinement is
   protected at `82afd5a`; integrate current
   `main@67564e5` only after the requested manual acceptance, then retest.
