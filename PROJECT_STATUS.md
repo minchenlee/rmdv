@@ -106,6 +106,17 @@ Last reconciled: 2026-07-15 (Asia/Taipei)
 
 ## Current state
 
+- **Full Mindmap child-focus correction is maker-SUBMITTED** at implementation
+  commit `400e41b` on `feat/full-mindmap-mode`. It adds a Full Mindmap
+  graph-generation focus signal to the shared canvas and deterministic
+  regressions for async expansion and Loading-to-first-child replacement. The
+  old transition was: selection stayed on the acted-on path while the graph
+  rebuilt, so selection bookkeeping suppressed auto-center; a newly accepted
+  child was also seeded at its parent animation position. The candidate now
+  targets the rebuilt node layout and animates the transform with node motion.
+  Main integration, Zoom retargeting, and release actions remain out of scope;
+  native/manual acceptance is still pending.
+
 - **Full Mindmap native correctness correction is independently accepted at
   `1317a06` with no P0/P1 findings.** The bounded retry lets a
   `scan limit reached` shell reveal useful immediate folders/files without
@@ -408,6 +419,18 @@ Last reconciled: 2026-07-15 (Asia/Taipei)
   of 7.0 GiB generated artifacts and rebuilt fresh; the manual binary is
   `/private/tmp/mdv-full-mindmap-protect-target/debug/rmdv` with SHA-256
   `d281e3970ffc9b979e210103e236e4a1b244429fb20af6f1782679f247464853`.
+- The maker-SUBMITTED child-focus candidate passes 34 shared-canvas mindmap
+  tests, 40 focused Full Mindmap app tests, all 237 library tests, all 67
+  integration tests, `cargo check`, a fresh `cargo build --bin rmdv`, touched-
+  file rustfmt, and `git diff --check` using
+  `/private/tmp/mdv-full-mindmap-protect-target`. Regressions cover a selected
+  folder surviving async pending-to-accepted relayout and a Right-driven
+  Loading status replacement focusing the accepted first child instead of the
+  workspace root. The fresh binary is
+  `/private/tmp/mdv-full-mindmap-protect-target/debug/rmdv` with SHA-256
+  `a6767e77ac2b58b0d6b78cd84760220696128452060ec72ddefdd9b1c0d57437`.
+  Native/manual acceptance remains pending; do not integrate to main or
+  release until that gate is complete.
 - A fresh lead-side static review of `3e2b3fd..1317a06` found no P0/P1 issue
   after checking exact-empty pruning, branch-local shallow ownership, bounded
   background execution, exact request/root/filter/expansion/mode rejection,
