@@ -76,11 +76,11 @@ pub struct PendingFullMindmapWorkspaceLoad {
     pub exit_after_refresh: bool,
 }
 
-/// Identity for one expanded folder's bounded, immediate file listing. The
+/// Identity for one expanded folder's bounded branch-local discovery. The
 /// workspace/filter tuple prevents a late completion from another explorer
 /// generation from repopulating a collapsed or replaced branch.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PendingFullMindmapFolderFiles {
+pub struct PendingFullMindmapFolderLoad {
     pub id: u64,
     pub workspace_root: PathBuf,
     pub folder: PathBuf,
@@ -122,8 +122,8 @@ pub struct FullMindmapState {
     pub pending_open: Option<PendingFullMindmapOpen>,
     pub pending_preview: Option<PendingFullMindmapPreview>,
     pub pending_workspace_load: Option<PendingFullMindmapWorkspaceLoad>,
-    pub pending_folder_file_loads: HashMap<PathBuf, PendingFullMindmapFolderFiles>,
-    pub materialized_folder_files: HashMap<PathBuf, workspace_mindmap::MaterializedFolderFiles>,
+    pub pending_folder_loads: HashMap<PathBuf, PendingFullMindmapFolderLoad>,
+    pub materialized_folders: HashMap<PathBuf, workspace_mindmap::MaterializedFolder>,
     /// A current or previously selected file is selected only after its parent
     /// listing proves that the file is still visible under the accepted filter.
     pub deferred_file_selection: Option<PathBuf>,
@@ -517,9 +517,9 @@ pub enum Message {
         request: PendingFullMindmapWorkspaceLoad,
         result: Result<(PathBuf, tree::WorkspaceSnapshot), String>,
     },
-    FullMindmapFolderFilesLoaded {
-        request: PendingFullMindmapFolderFiles,
-        result: Result<(PathBuf, tree::ImmediateFilesSnapshot), String>,
+    FullMindmapFolderLoaded {
+        request: PendingFullMindmapFolderLoad,
+        result: Result<(PathBuf, tree::ExpandedFolderSnapshot), String>,
     },
     WindowResized(iced::window::Id, iced::Size),
     RefreshWindowMode(iced::window::Id),
@@ -1023,8 +1023,8 @@ impl App {
             pending_open: None,
             pending_preview: None,
             pending_workspace_load: None,
-            pending_folder_file_loads: HashMap::new(),
-            materialized_folder_files: HashMap::new(),
+            pending_folder_loads: HashMap::new(),
+            materialized_folders: HashMap::new(),
             deferred_file_selection: None,
             preview: FullMindmapPreview::None,
             load_error: None,
@@ -1048,8 +1048,8 @@ impl App {
         let graph = std::sync::Arc::new(workspace_mindmap::from_tree(
             self.workspace_tree.as_ref()?,
             &full.expanded,
-            &full.materialized_folder_files,
-            &full.pending_folder_file_loads.keys().cloned().collect(),
+            &full.materialized_folders,
+            &full.pending_folder_loads.keys().cloned().collect(),
             self.workspace_truncated,
         ));
         *full.layout_cache.borrow_mut() = Some(std::sync::Arc::clone(&graph));
@@ -1140,8 +1140,8 @@ impl App {
             full.pending_open = None;
             full.pending_preview = None;
             full.pending_workspace_load = None;
-            full.pending_folder_file_loads.clear();
-            full.materialized_folder_files.clear();
+            full.pending_folder_loads.clear();
+            full.materialized_folders.clear();
             full.deferred_file_selection = current_file;
             full.preview = FullMindmapPreview::None;
             full.load_error = None;
@@ -1272,8 +1272,8 @@ impl App {
         } else {
             full.deferred_file_selection = None;
         }
-        full.pending_folder_file_loads.clear();
-        full.materialized_folder_files.clear();
+        full.pending_folder_loads.clear();
+        full.materialized_folders.clear();
         full.pending_open = None;
         full.pending_preview = None;
         full.load_error = None;
@@ -1295,48 +1295,92 @@ impl App {
         Task::batch(
             folders
                 .into_iter()
-                .map(|folder| self.begin_full_mindmap_folder_file_load(folder)),
+                .map(|folder| self.begin_full_mindmap_folder_load(folder)),
         )
     }
 
-    fn begin_full_mindmap_folder_file_load(&mut self, folder: PathBuf) -> Task<Message> {
+    fn begin_full_mindmap_folder_load(&mut self, folder: PathBuf) -> Task<Message> {
         let Some(workspace_root) = self.workspace.clone() else {
             return Task::none();
         };
         let eligible = self.full_mindmap.as_ref().is_some_and(|full| {
             full.expanded.contains(&folder)
                 && folder.starts_with(&workspace_root)
-                && !full.materialized_folder_files.contains_key(&folder)
-                && !full.pending_folder_file_loads.contains_key(&folder)
+                && !full.materialized_folders.contains_key(&folder)
+                && !full.pending_folder_loads.contains_key(&folder)
         });
         if !eligible || self.workspace_snapshot_show_hidden != self.show_hidden {
             return Task::none();
         }
 
+        // An exact retained node already owns complete folder structure and
+        // the standard sidebar's pre-grouped immediate paths. Reuse those
+        // bounded in-memory facts; only interrupted/unreadable or lazily
+        // discovered shallow nodes need another filesystem pass.
+        let retained_snapshot = self
+            .workspace_tree
+            .as_ref()
+            .and_then(|root| tree::find_folder(root, &folder))
+            .filter(|node| {
+                matches!(
+                    node.recursive_supported_file_count,
+                    Some(tree::RecursiveFileCount::Exact(_))
+                )
+            })
+            .map(|node| {
+                let folders = node
+                    .children
+                    .iter()
+                    .cloned()
+                    .map(|mut child| {
+                        child.children.clear();
+                        child
+                    })
+                    .collect();
+                let files = self.workspace_sidebar_files.files_for(&folder).to_vec();
+                let count = node
+                    .recursive_supported_file_count
+                    .expect("filtered exact retained folder");
+                (folders, files, count)
+            });
+
         self.full_mindmap_request_seq = self.full_mindmap_request_seq.wrapping_add(1);
-        let request = PendingFullMindmapFolderFiles {
+        let request = PendingFullMindmapFolderLoad {
             id: self.full_mindmap_request_seq,
             workspace_root,
             folder: folder.clone(),
             show_hidden: self.show_hidden,
         };
         let full = self.full_mindmap.as_mut().expect("eligible Full Mindmap");
-        full.pending_folder_file_loads
+        full.pending_folder_loads
             .insert(folder.clone(), request.clone());
-        full.materialized_folder_files.remove(&folder);
+        full.materialized_folders.remove(&folder);
         self.invalidate_full_mindmap_layout();
-        Task::perform(
-            load_full_mindmap_folder_files(folder, request.show_hidden),
-            move |result| Message::FullMindmapFolderFilesLoaded { request, result },
-        )
+        if let Some((folders, files, recursive_supported_file_count)) = retained_snapshot {
+            let result = Ok((
+                folder,
+                tree::ExpandedFolderSnapshot {
+                    folders,
+                    files,
+                    recursive_supported_file_count,
+                    truncated: false,
+                },
+            ));
+            Task::done(Message::FullMindmapFolderLoaded { request, result })
+        } else {
+            Task::perform(
+                load_full_mindmap_folder(folder, request.show_hidden),
+                move |result| Message::FullMindmapFolderLoaded { request, result },
+            )
+        }
     }
 
-    fn evict_full_mindmap_folder_files(&mut self, folder: &std::path::Path) {
+    fn evict_full_mindmap_folder(&mut self, folder: &std::path::Path) {
         if let Some(full) = self.full_mindmap.as_mut() {
             full.expanded.retain(|path| !path.starts_with(folder));
-            full.pending_folder_file_loads
+            full.pending_folder_loads
                 .retain(|path, _| !path.starts_with(folder));
-            full.materialized_folder_files
+            full.materialized_folders
                 .retain(|path, _| !path.starts_with(folder));
             if full
                 .deferred_file_selection
@@ -3149,12 +3193,10 @@ impl App {
                 }
                 self.invalidate_full_mindmap_layout();
                 if let Some(path) = collapse {
-                    self.evict_full_mindmap_folder_files(&path);
+                    self.evict_full_mindmap_folder(&path);
                     Task::none()
                 } else {
-                    load.map_or_else(Task::none, |path| {
-                        self.begin_full_mindmap_folder_file_load(path)
-                    })
+                    load.map_or_else(Task::none, |path| self.begin_full_mindmap_folder_load(path))
                 }
             }
             Message::FullMindmapSelectNode(id) => self.select_full_mindmap_node(id),
@@ -3237,7 +3279,7 @@ impl App {
                             full.expanded.insert(path.clone());
                         }
                         self.invalidate_full_mindmap_layout();
-                        let load = self.begin_full_mindmap_folder_file_load(path);
+                        let load = self.begin_full_mindmap_folder_load(path);
                         let select = self
                             .full_mindmap_graph()
                             .and_then(|expanded| expanded.first_child(&id))
@@ -3476,14 +3518,14 @@ impl App {
                 }
                 Task::none()
             }
-            Message::FullMindmapFolderFilesLoaded { request, result } => {
+            Message::FullMindmapFolderLoaded { request, result } => {
                 let current = self.workspace.as_ref() == Some(&request.workspace_root)
                     && self.show_hidden == request.show_hidden
                     && self.workspace_snapshot_show_hidden == request.show_hidden
                     && self.full_mindmap.as_ref().is_some_and(|full| {
                         full.expanded.contains(&request.folder)
                             && full
-                                .pending_folder_file_loads
+                                .pending_folder_loads
                                 .get(&request.folder)
                                 .is_some_and(|pending| pending == &request)
                     });
@@ -3491,15 +3533,24 @@ impl App {
                     return Task::none();
                 }
 
+                let mut accepted_exact_empty = false;
                 let accepted_files = match result {
                     Ok((path, snapshot)) if path == request.folder => {
+                        accepted_exact_empty = matches!(
+                            snapshot.recursive_supported_file_count,
+                            tree::RecursiveFileCount::Exact(0)
+                        );
+                        let folders = std::sync::Arc::new(snapshot.folders);
                         let files = std::sync::Arc::new(snapshot.files);
                         if let Some(full) = self.full_mindmap.as_mut() {
-                            full.pending_folder_file_loads.remove(&request.folder);
-                            full.materialized_folder_files.insert(
+                            full.pending_folder_loads.remove(&request.folder);
+                            full.materialized_folders.insert(
                                 request.folder.clone(),
-                                workspace_mindmap::MaterializedFolderFiles::Loaded {
+                                workspace_mindmap::MaterializedFolder::Loaded {
+                                    folders,
                                     files: std::sync::Arc::clone(&files),
+                                    recursive_supported_file_count: snapshot
+                                        .recursive_supported_file_count,
                                     truncated: snapshot.truncated,
                                 },
                             );
@@ -3508,10 +3559,10 @@ impl App {
                     }
                     Ok((path, _)) => {
                         if let Some(full) = self.full_mindmap.as_mut() {
-                            full.pending_folder_file_loads.remove(&request.folder);
-                            full.materialized_folder_files.insert(
+                            full.pending_folder_loads.remove(&request.folder);
+                            full.materialized_folders.insert(
                                 request.folder.clone(),
-                                workspace_mindmap::MaterializedFolderFiles::Error(format!(
+                                workspace_mindmap::MaterializedFolder::Error(format!(
                                     "Loaded unexpected folder: {}",
                                     path.display()
                                 )),
@@ -3521,16 +3572,21 @@ impl App {
                     }
                     Err(error) => {
                         if let Some(full) = self.full_mindmap.as_mut() {
-                            full.pending_folder_file_loads.remove(&request.folder);
-                            full.materialized_folder_files.insert(
+                            full.pending_folder_loads.remove(&request.folder);
+                            full.materialized_folders.insert(
                                 request.folder.clone(),
-                                workspace_mindmap::MaterializedFolderFiles::Error(error),
+                                workspace_mindmap::MaterializedFolder::Error(error),
                             );
                         }
                         None
                     }
                 };
                 self.invalidate_full_mindmap_layout();
+                if accepted_exact_empty {
+                    // A formerly unknown shell is no longer a valid visible
+                    // selection once its bounded retry proves it exact-empty.
+                    self.normalize_full_mindmap_workspace();
+                }
 
                 let deferred = self.full_mindmap.as_ref().and_then(|full| {
                     full.deferred_file_selection
@@ -8367,16 +8423,15 @@ async fn load_full_mindmap_workspace(
     Ok((path, snapshot))
 }
 
-async fn load_full_mindmap_folder_files(
+async fn load_full_mindmap_folder(
     path: PathBuf,
     show_hidden: bool,
-) -> Result<(PathBuf, tree::ImmediateFilesSnapshot), String> {
+) -> Result<(PathBuf, tree::ExpandedFolderSnapshot), String> {
     let scan_path = path.clone();
-    let snapshot = tokio::task::spawn_blocking(move || {
-        tree::load_immediate_supported_files(&scan_path, show_hidden)
-    })
-    .await
-    .map_err(|error| error.to_string())??;
+    let snapshot =
+        tokio::task::spawn_blocking(move || tree::load_expanded_folder(&scan_path, show_hidden))
+            .await
+            .map_err(|error| error.to_string())??;
     Ok((path, snapshot))
 }
 
@@ -9200,11 +9255,13 @@ mod tests {
 
     fn full_workspace_state(root: &std::path::Path) -> FullMindmapState {
         fn materialize(path: &std::path::Path, state: &mut FullMindmapState) {
-            if let Ok(snapshot) = tree::load_immediate_supported_files(path, true) {
-                state.materialized_folder_files.insert(
+            if let Ok(snapshot) = tree::load_expanded_folder(path, true) {
+                state.materialized_folders.insert(
                     path.to_path_buf(),
-                    workspace_mindmap::MaterializedFolderFiles::Loaded {
+                    workspace_mindmap::MaterializedFolder::Loaded {
+                        folders: std::sync::Arc::new(snapshot.folders),
                         files: std::sync::Arc::new(snapshot.files),
+                        recursive_supported_file_count: snapshot.recursive_supported_file_count,
                         truncated: snapshot.truncated,
                     },
                 );
@@ -9257,7 +9314,7 @@ mod tests {
                 .full_mindmap
                 .as_ref()
                 .map(|full| {
-                    full.pending_folder_file_loads
+                    full.pending_folder_loads
                         .values()
                         .cloned()
                         .collect::<Vec<_>>()
@@ -9268,9 +9325,8 @@ mod tests {
             }
             for request in requests {
                 let snapshot =
-                    tree::load_immediate_supported_files(&request.folder, request.show_hidden)
-                        .unwrap();
-                let _ = app.update(Message::FullMindmapFolderFilesLoaded {
+                    tree::load_expanded_folder(&request.folder, request.show_hidden).unwrap();
+                let _ = app.update(Message::FullMindmapFolderLoaded {
                     request: request.clone(),
                     result: Ok((request.folder.clone(), snapshot)),
                 });
@@ -9432,6 +9488,114 @@ mod tests {
     }
 
     #[test]
+    fn full_mindmap_expands_interrupted_shell_without_rerooting() {
+        let dir = full_mindmap_test_dir("lazy-interrupted-shell");
+        let documents = dir.join("Documents");
+        let notes = documents.join("Notes");
+        let guide = notes.join("guide.md");
+        let overview = documents.join("overview.md");
+        std::fs::create_dir_all(&notes).unwrap();
+        std::fs::write(&guide, "# Guide\n").unwrap();
+        std::fs::write(&overview, "# Overview\n").unwrap();
+
+        let mut app = App::default();
+        app.set_workspace(dir.clone(), false);
+        let tree = app.workspace_tree.as_mut().unwrap();
+        let documents_node = tree
+            .children
+            .iter_mut()
+            .find(|node| node.path == documents)
+            .unwrap();
+        documents_node.children.clear();
+        documents_node.recursive_supported_file_count =
+            Some(tree::RecursiveFileCount::LowerBound(0));
+        tree.recursive_supported_file_count = Some(tree::RecursiveFileCount::LowerBound(0));
+        app.workspace_truncated = true;
+        app.full_mindmap = Some(App::new_full_mindmap_state());
+        {
+            let full = app.full_mindmap.as_mut().unwrap();
+            full.expanded.insert(dir.clone());
+            full.selected = Some(WorkspaceNodeId::Folder(documents.clone()));
+        }
+
+        let _ = app.update(Message::FullMindmapToggleSelected);
+        assert_eq!(app.workspace.as_deref(), Some(dir.as_path()));
+        assert!(app
+            .full_mindmap
+            .as_ref()
+            .unwrap()
+            .pending_folder_loads
+            .contains_key(&documents));
+        assert!(app
+            .full_mindmap_graph()
+            .unwrap()
+            .node(&WorkspaceNodeId::Status(
+                documents.clone(),
+                workspace_mindmap::WorkspaceStatus::LoadingFiles,
+            ))
+            .is_some());
+
+        complete_full_mindmap_folder_loads(&mut app);
+        let graph = app.full_mindmap_graph().unwrap();
+        assert!(graph
+            .node(&WorkspaceNodeId::Folder(notes.clone()))
+            .is_some());
+        assert!(graph
+            .node(&WorkspaceNodeId::File(overview.clone()))
+            .is_some());
+        assert_eq!(app.workspace.as_deref(), Some(dir.as_path()));
+
+        let _ = app.update(Message::FullMindmapNavigate(MindmapDir::Right));
+        assert_eq!(
+            app.full_mindmap.as_ref().unwrap().selected,
+            Some(WorkspaceNodeId::Folder(notes))
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn full_mindmap_lazy_exact_empty_shell_is_pruned_and_selection_normalized() {
+        let dir = full_mindmap_test_dir("lazy-empty-shell");
+        let empty = dir.join("empty");
+        std::fs::create_dir_all(&empty).unwrap();
+
+        let mut app = App::default();
+        app.set_workspace(dir.clone(), false);
+        let tree = app.workspace_tree.as_mut().unwrap();
+        tree.children.push(Node {
+            path: empty.clone(),
+            name: "empty".into(),
+            is_dir: true,
+            children: Vec::new(),
+            recursive_supported_file_count: Some(tree::RecursiveFileCount::LowerBound(0)),
+        });
+        tree.recursive_supported_file_count = Some(tree::RecursiveFileCount::LowerBound(0));
+        app.workspace_truncated = true;
+        app.full_mindmap = Some(App::new_full_mindmap_state());
+        {
+            let full = app.full_mindmap.as_mut().unwrap();
+            full.expanded.insert(dir.clone());
+            full.selected = Some(WorkspaceNodeId::Folder(empty.clone()));
+        }
+
+        let _ = app.update(Message::FullMindmapToggleSelected);
+        complete_full_mindmap_folder_loads(&mut app);
+
+        assert!(app
+            .full_mindmap_graph()
+            .unwrap()
+            .node(&WorkspaceNodeId::Folder(empty))
+            .is_none());
+        assert_eq!(
+            app.full_mindmap.as_ref().unwrap().selected,
+            Some(WorkspaceNodeId::Root(dir.clone()))
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn full_mindmap_collapse_evicts_branch_and_rejects_pre_reexpand_result() {
         let dir = full_mindmap_test_dir("lazy-collapse-stale");
         let folder = dir.join("notes");
@@ -9450,7 +9614,7 @@ mod tests {
             .full_mindmap
             .as_ref()
             .unwrap()
-            .pending_folder_file_loads
+            .pending_folder_loads
             .get(&folder)
             .cloned()
             .unwrap();
@@ -9465,21 +9629,21 @@ mod tests {
 
         let _ = app.update(Message::FullMindmapToggleNode(folder_id.clone()));
         let full = app.full_mindmap.as_ref().unwrap();
-        assert!(!full.pending_folder_file_loads.contains_key(&folder));
-        assert!(!full.materialized_folder_files.contains_key(&folder));
+        assert!(!full.pending_folder_loads.contains_key(&folder));
+        assert!(!full.materialized_folders.contains_key(&folder));
 
         let _ = app.update(Message::FullMindmapToggleNode(folder_id));
         let second = app
             .full_mindmap
             .as_ref()
             .unwrap()
-            .pending_folder_file_loads
+            .pending_folder_loads
             .get(&folder)
             .cloned()
             .unwrap();
         assert_ne!(first, second);
-        let snapshot = tree::load_immediate_supported_files(&folder, false).unwrap();
-        let _ = app.update(Message::FullMindmapFolderFilesLoaded {
+        let snapshot = tree::load_expanded_folder(&folder, false).unwrap();
+        let _ = app.update(Message::FullMindmapFolderLoaded {
             request: first,
             result: Ok((folder.clone(), snapshot.clone())),
         });
@@ -9487,7 +9651,7 @@ mod tests {
             app.full_mindmap
                 .as_ref()
                 .unwrap()
-                .pending_folder_file_loads
+                .pending_folder_loads
                 .get(&folder),
             Some(&second)
         );
@@ -9495,10 +9659,10 @@ mod tests {
             .full_mindmap
             .as_ref()
             .unwrap()
-            .materialized_folder_files
+            .materialized_folders
             .contains_key(&folder));
 
-        let _ = app.update(Message::FullMindmapFolderFilesLoaded {
+        let _ = app.update(Message::FullMindmapFolderLoaded {
             request: second,
             result: Ok((folder, snapshot)),
         });
@@ -9518,13 +9682,13 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::create_dir_all(&other).unwrap();
         std::fs::write(dir.join("a.md"), "# A\n").unwrap();
-        let snapshot = tree::load_immediate_supported_files(&dir, false).unwrap();
+        let snapshot = tree::load_expanded_folder(&dir, false).unwrap();
 
         let pending_root = |app: &App| {
             app.full_mindmap
                 .as_ref()
                 .unwrap()
-                .pending_folder_file_loads
+                .pending_folder_loads
                 .get(&dir)
                 .cloned()
                 .unwrap()
@@ -9535,7 +9699,7 @@ mod tests {
         let _ = hidden_app.enter_full_mindmap();
         let hidden_stale = pending_root(&hidden_app);
         let _ = hidden_app.update(Message::ToggleHidden);
-        let _ = hidden_app.update(Message::FullMindmapFolderFilesLoaded {
+        let _ = hidden_app.update(Message::FullMindmapFolderLoaded {
             request: hidden_stale,
             result: Ok((dir.clone(), snapshot.clone())),
         });
@@ -9543,7 +9707,7 @@ mod tests {
             .full_mindmap
             .as_ref()
             .unwrap()
-            .materialized_folder_files
+            .materialized_folders
             .contains_key(&dir));
 
         let mut root_app = App::default();
@@ -9557,7 +9721,7 @@ mod tests {
             .unwrap()
             .pending_workspace_load
             .clone();
-        let _ = root_app.update(Message::FullMindmapFolderFilesLoaded {
+        let _ = root_app.update(Message::FullMindmapFolderLoaded {
             request: root_stale,
             result: Ok((dir.clone(), snapshot.clone())),
         });
@@ -9573,7 +9737,7 @@ mod tests {
             .full_mindmap
             .as_ref()
             .unwrap()
-            .materialized_folder_files
+            .materialized_folders
             .contains_key(&dir));
 
         let mut reentry_app = App::default();
@@ -9584,7 +9748,7 @@ mod tests {
         let _ = reentry_app.enter_full_mindmap();
         let replacement = pending_root(&reentry_app);
         assert_ne!(reentry_stale, replacement);
-        let _ = reentry_app.update(Message::FullMindmapFolderFilesLoaded {
+        let _ = reentry_app.update(Message::FullMindmapFolderLoaded {
             request: reentry_stale,
             result: Ok((dir.clone(), snapshot)),
         });
@@ -9593,7 +9757,7 @@ mod tests {
                 .full_mindmap
                 .as_ref()
                 .unwrap()
-                .pending_folder_file_loads
+                .pending_folder_loads
                 .get(&dir),
             Some(&replacement)
         );

@@ -11,7 +11,7 @@ pub const WORKSPACE_MAX_FILES: usize = 5_000;
 /// bypassing the file cap and monopolizing the UI or a background worker.
 pub const WORKSPACE_MAX_ENTRIES: usize = 10_000;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Node {
     pub path: PathBuf,
     pub name: String,
@@ -94,79 +94,77 @@ impl SidebarFileIndex {
     }
 }
 
-/// A bounded, non-recursive file listing for one expanded explorer folder.
-/// Folder structure and recursive counts remain owned by `WorkspaceSnapshot`;
-/// these paths are short-lived UI materialization only.
+/// Bounded branch-local discovery for one expanded explorer folder. Immediate
+/// files and shallow immediate folder nodes are retained only while that branch
+/// is expanded; recursive work is used solely to produce truthful child counts.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ImmediateFilesSnapshot {
+pub struct ExpandedFolderSnapshot {
+    pub folders: Vec<Node>,
     pub files: Vec<PathBuf>,
+    pub recursive_supported_file_count: RecursiveFileCount,
     pub truncated: bool,
 }
 
-pub fn load_immediate_supported_files(
+pub fn load_expanded_folder(
     folder: &Path,
     show_hidden: bool,
-) -> Result<ImmediateFilesSnapshot, String> {
-    load_immediate_supported_files_with_limits(
+) -> Result<ExpandedFolderSnapshot, String> {
+    load_expanded_folder_with_limits(
         folder,
         show_hidden,
+        WORKSPACE_TREE_MAX_DEPTH,
+        WORKSPACE_FILE_INDEX_MAX_DEPTH,
         WORKSPACE_MAX_FILES,
         WORKSPACE_MAX_ENTRIES,
     )
 }
 
-fn load_immediate_supported_files_with_limits(
+fn load_expanded_folder_with_limits(
     folder: &Path,
     show_hidden: bool,
+    tree_max_depth: usize,
+    file_index_max_depth: usize,
     max_files: usize,
     max_entries: usize,
-) -> Result<ImmediateFilesSnapshot, String> {
-    let read_dir = std::fs::read_dir(folder).map_err(|error| error.to_string())?;
-    let mut files = Vec::new();
-    let mut truncated = false;
-
-    for (examined, entry) in read_dir.enumerate() {
-        if examined >= max_entries {
-            truncated = true;
-            break;
-        }
-        let entry = match entry {
-            Ok(entry) => entry,
-            Err(_) => {
-                truncated = true;
-                continue;
-            }
-        };
-        let name = entry.file_name().to_string_lossy().into_owned();
-        if !show_hidden && name.starts_with('.') {
-            continue;
-        }
-        let path = entry.path();
-        if path.is_dir() || !is_markdown_path(&path) {
-            continue;
-        }
-        if files.len() >= max_files {
-            truncated = true;
-            break;
-        }
-        files.push(path);
+) -> Result<ExpandedFolderSnapshot, String> {
+    let snapshot = build_workspace_with_limits(
+        folder,
+        show_hidden,
+        tree_max_depth,
+        file_index_max_depth,
+        max_files,
+        max_entries,
+    )?;
+    let files = snapshot.sidebar_files.files_for(folder).to_vec();
+    let recursive_supported_file_count = snapshot
+        .root
+        .recursive_supported_file_count
+        .unwrap_or(RecursiveFileCount::Unavailable);
+    let mut folders = snapshot.root.children;
+    // Descendants are deliberately not retained. Expanding one of these
+    // shallow children starts a new bounded request owned by that branch.
+    for child in &mut folders {
+        child.children.clear();
     }
+    Ok(ExpandedFolderSnapshot {
+        folders,
+        files,
+        recursive_supported_file_count,
+        truncated: snapshot.truncated,
+    })
+}
 
-    files.sort_by(|a, b| {
-        let a_name = a
-            .file_name()
-            .map(|name| name.to_string_lossy().into_owned())
-            .unwrap_or_else(|| a.to_string_lossy().into_owned());
-        let b_name = b
-            .file_name()
-            .map(|name| name.to_string_lossy().into_owned())
-            .unwrap_or_else(|| b.to_string_lossy().into_owned());
-        a_name
-            .to_lowercase()
-            .cmp(&b_name.to_lowercase())
-            .then_with(|| a_name.cmp(&b_name))
-    });
-    Ok(ImmediateFilesSnapshot { files, truncated })
+pub fn find_folder<'a>(node: &'a Node, path: &Path) -> Option<&'a Node> {
+    if node.path == path {
+        return node.is_dir.then_some(node);
+    }
+    if !path.starts_with(&node.path) {
+        return None;
+    }
+    node.children
+        .iter()
+        .filter(|child| path.starts_with(&child.path))
+        .find_map(|child| find_folder(child, path))
 }
 
 pub fn build(root: &Path, show_hidden: bool) -> Node {
@@ -229,12 +227,10 @@ fn build_workspace_with_limits(
         &mut files,
         &mut sidebar_files,
     )?;
-    // When the budget ends, retain already-discovered directories even if we
-    // could not inspect their descendants. This keeps shallow, ordinary
-    // folders discoverable instead of falsely presenting them as absent.
-    if !budget.truncated {
-        prune(&mut root_node);
-    }
+    // Exact-empty subtrees are safe to remove even when an unrelated branch
+    // exhausted the global budget. Unknown lower bounds and unreadable folders
+    // remain visible so interrupted discovery is never presented as empty.
+    prune(&mut root_node);
     files.sort();
     let sidebar_files = SidebarFileIndex::from_paths(sidebar_files);
     Ok(WorkspaceSnapshot {
@@ -610,7 +606,7 @@ mod tests {
     }
 
     #[test]
-    fn immediate_file_load_is_non_recursive_hidden_aware_and_bounded() {
+    fn expanded_folder_load_is_shallow_hidden_aware_and_bounded() {
         let root = test_dir("immediate");
         std::fs::create_dir_all(root.join("nested")).unwrap();
         std::fs::write(root.join("b.md"), "# B\n").unwrap();
@@ -619,16 +615,23 @@ mod tests {
         std::fs::write(root.join("ignored.txt"), "nope\n").unwrap();
         std::fs::write(root.join("nested/deep.md"), "# Deep\n").unwrap();
 
-        let visible = load_immediate_supported_files_with_limits(&root, false, 10, 10).unwrap();
+        let visible = load_expanded_folder_with_limits(&root, false, 12, 8, 10, 10).unwrap();
         assert_eq!(visible.files, vec![root.join("a.md"), root.join("b.md")]);
+        let visible_folders = &visible.folders;
+        assert_eq!(visible_folders.len(), 1);
+        assert!(visible_folders[0].children.is_empty());
+        assert_eq!(
+            visible_folders[0].recursive_supported_file_count,
+            Some(RecursiveFileCount::Exact(1))
+        );
         assert!(!visible.truncated);
 
-        let hidden = load_immediate_supported_files_with_limits(&root, true, 10, 10).unwrap();
+        let hidden = load_expanded_folder_with_limits(&root, true, 12, 8, 10, 10).unwrap();
         assert_eq!(hidden.files.len(), 3);
         assert!(hidden.files.contains(&root.join(".secret.md")));
         assert!(!hidden.files.contains(&root.join("nested/deep.md")));
 
-        let bounded = load_immediate_supported_files_with_limits(&root, true, 1, 10).unwrap();
+        let bounded = load_expanded_folder_with_limits(&root, true, 12, 8, 1, 10).unwrap();
         assert_eq!(bounded.files.len(), 1);
         assert!(bounded.truncated);
 
@@ -867,5 +870,86 @@ mod tests {
         assert!(hidden_on.truncated);
 
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn truncated_workspace_prunes_exact_empty_subtrees_but_keeps_unknowns() {
+        let root = test_dir("truncated-prune");
+        let empty = root.join("a-empty");
+        let unknown = root.join("b-unknown");
+        std::fs::create_dir_all(&empty).unwrap();
+        std::fs::create_dir_all(&unknown).unwrap();
+        std::fs::write(unknown.join("one.bin"), "").unwrap();
+        std::fs::write(unknown.join("two.bin"), "").unwrap();
+
+        let snapshot = build_workspace_with_limits(&root, false, 12, 8, 100, 3).unwrap();
+
+        assert!(snapshot.truncated);
+        assert!(snapshot.root.children.iter().all(|node| node.path != empty));
+        assert_eq!(
+            snapshot
+                .root
+                .children
+                .iter()
+                .find(|node| node.path == unknown)
+                .and_then(|node| node.recursive_supported_file_count),
+            Some(RecursiveFileCount::LowerBound(0))
+        );
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn expanded_folder_recovers_documents_like_children_missed_from_ancestor_scan() {
+        let root = test_dir("late-documents");
+        let home = root.join("liminchen");
+        let early = home.join("a-heavy");
+        let documents = home.join("Documents");
+        let notes = documents.join("Notes");
+        let empty = documents.join("Empty");
+        std::fs::create_dir_all(&early).unwrap();
+        std::fs::create_dir_all(&notes).unwrap();
+        std::fs::create_dir_all(&empty).unwrap();
+        for index in 0..24 {
+            std::fs::create_dir_all(home.join(format!("a-sibling-{index:02}"))).unwrap();
+        }
+        std::fs::write(early.join("one.bin"), "").unwrap();
+        std::fs::write(early.join("two.bin"), "").unwrap();
+        std::fs::write(notes.join("guide.md"), "# Guide\n").unwrap();
+
+        // Admit every wide immediate sibling, then exhaust the shared budget
+        // inside the first subtree before Documents is visited recursively.
+        let ancestor = build_workspace_with_limits(&root, false, 12, 8, 100, 28).unwrap();
+        let home_node = ancestor
+            .root
+            .children
+            .iter()
+            .find(|node| node.path == home)
+            .unwrap();
+        let documents_shell = home_node
+            .children
+            .iter()
+            .find(|node| node.path == documents)
+            .unwrap();
+        assert_eq!(
+            documents_shell.recursive_supported_file_count,
+            Some(RecursiveFileCount::LowerBound(0))
+        );
+        assert!(documents_shell.children.is_empty());
+
+        let expanded =
+            load_expanded_folder_with_limits(&documents, false, 12, 8, 100, 100).unwrap();
+        assert!(!expanded.truncated);
+        let expanded_folders = &expanded.folders;
+        assert_eq!(expanded_folders.len(), 1);
+        assert_eq!(expanded_folders[0].path, notes);
+        assert_eq!(
+            expanded_folders[0].recursive_supported_file_count,
+            Some(RecursiveFileCount::Exact(1))
+        );
+        assert!(expanded_folders[0].children.is_empty());
+        assert!(expanded_folders.iter().all(|folder| folder.path != empty));
+
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

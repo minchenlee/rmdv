@@ -263,12 +263,14 @@ across a redraw. Filesystem nodes never enter the document
 `mindmap_collapsed`, `mindmap_selected`, or document panel maps.
 
 The module exposes a pure adapter from the retained folder skeleton plus Full
-Mindmap-owned accepted/pending immediate-file materialization into a
-`WorkspaceGraph`. It respects expansion, uses count metadata already present
-on each folder node, exposes files only beneath their expanded parent, and
-renders stable loading/error/local-truncation status children while a bounded
-folder load is pending or incomplete. The global bounded-scan truncation status
-remains distinct.
+Mindmap-owned accepted/pending branch-local materialization into a
+`WorkspaceGraph`. A bounded background expansion may replace an interrupted
+folder shell with shallow immediate folder children carrying recursive counts,
+plus immediate supported files. It respects expansion, exposes files only
+beneath their expanded parent, prunes determinably exact-empty folders, retains
+lower-bound/unreadable unknowns, and renders stable loading/error/local-
+truncation status children while a folder load is pending or incomplete. The
+global bounded-scan truncation status remains distinct.
 
 It also exposes pure parent/sibling/child navigation helpers and node lookup by
 `WorkspaceNodeId`. `app.rs` owns actions and async tasks; the module never opens
@@ -477,12 +479,16 @@ The approved design is implemented as follows:
 - `src/mindmap.rs` now shares a generic canvas/layout adapter while its default
   type remains the existing document `BlockId` path.
 - `src/app.rs` owns Full Mindmap selection, expansion, panel, preview,
-  immediate-file materialization, and request-identity state; a successful
+  branch-local materialization, and request-identity state; a successful
   file open exits back to normal reading. Collapse evicts the branch's accepted
   and pending materialization, so re-expansion always owns a new request.
 - `src/tree.rs` performs one bounded pass for the folder skeleton, recursive
   counts, and flat file-finder index. Expanded folders request a separate
-  bounded, non-recursive immediate-file listing off the UI thread.
+  bounded background pass; only its shallow immediate folder nodes and
+  immediate supported files are retained. This lets an interrupted shell
+  discover useful children without re-rooting, while each newly expanded child
+  owns another bounded request. Exact-empty subtrees are pruned even when an
+  unrelated branch truncated; lower-bound and unreadable unknowns remain.
   `src/workspace_mindmap.rs` shares cached graphs/nodes by `Arc`, keeps file
   nodes out of collapsed branches, and renders explicit loading/error/
   truncation nodes.
