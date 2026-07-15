@@ -6,8 +6,8 @@ Last reconciled: 2026-07-15 (Asia/Taipei)
 
 - Actual checkout: `/Users/liminchen/Documents/GitHub/mdv`
 - Legacy non-repo path: `/Users/liminchen/Documents/GitHub/mdv-main`
-- Active branch: `feat/full-mindmap-mode`; its latest feature commit is
-  `82afd5a` (`feat: refine full mindmap navigation`).
+- Active branch: `feat/full-mindmap-mode`; its latest accepted-fix candidate is
+  `8dc9ead` (`fix: serialize full mindmap refresh outcomes`).
 - Local `main` is at `67564e5`, eleven commits ahead of `origin/main`: Windows
   IPC fix `6fa6450`, CJK emphasis fix `0df1fe2`, reviewed CJK repair `d97370e`,
   the six-commit reviewed Zen feature/repair line `1199455..f2b0519`, and Zen
@@ -64,6 +64,13 @@ Last reconciled: 2026-07-15 (Asia/Taipei)
    `main`. The fix waits for a render settle, preserves IPC request identity,
    rejects overlapping captures, validates near-black frames, retries three
    times, and reports explicit failure instead of writing a blank PNG.
+10. **Full Mindmap manual-acceptance corrections** are committed as `972ebe2`,
+   `888b1c6`, `a303d25`, and `8dc9ead`. Workspace Space now toggles the
+   selected folder without moving selection, the workspace root retains its
+   bounded supported-file count, hidden refreshes are additive and stale-safe
+   across navigation, returning from a chooser cannot expose a stale Files
+   sidebar, and ordinary home folders are ordered and positioned ahead of
+   optional dot entries.
 
 ## Current state
 
@@ -96,7 +103,7 @@ Last reconciled: 2026-07-15 (Asia/Taipei)
 - `feat/full-mindmap-mode` and `feat/mindmap-zoom-controls` still follow the old
   `0df1fe2` line and do not contain repair `d97370e`, the Zen feature, or the
   screenshot repair. Full Mindmap is 9 main-only commits behind and contains
-  its independent feature/status line; Zoom Controls is 9 main-only commits
+  17 branch-only commits; Zoom Controls is 9 main-only commits
   behind and has 10 branch-only commits. The Full Mindmap refinement is
   protected at `82afd5a`; integrate current
   `main@67564e5` only after the requested manual acceptance, then retest.
@@ -111,10 +118,12 @@ Last reconciled: 2026-07-15 (Asia/Taipei)
   collapse, and document-layout state.
 - The committed keyboard-first refinement removes the Full Mindmap
   toolbar and action buttons, gives selected files a read-only async content
-  preview, makes `Space` descend folders, makes `Enter` choose a folder in the
-  chooser (or open a workspace file), makes a selected chooser folder show a
-  background supported-file count capped at 5,000 files / 10,000 entries,
-  labels unreadable counts as unavailable rather than reporting a false empty
+  preview, makes chooser `Space` descend while workspace `Space` toggles the
+  selected folder without moving selection, makes `Enter` choose a folder in
+  the chooser (or open a workspace file), makes a selected chooser folder show
+  a background supported-file count capped at 5,000 files / 10,000 entries,
+  keeps that bounded count on the selected workspace root, labels unreadable
+  counts as unavailable rather than reporting a false empty
   folder, moves a workspace root’s `←` directly to its parent workspace graph
   without touching a dirty document, and gives Full Mindmap its own `⌘⌥W`
   panel-width cycle.
@@ -125,8 +134,16 @@ Last reconciled: 2026-07-15 (Asia/Taipei)
   use a safe 100 ms debounce; cached workspace graphs and node vectors are
   shared by `Arc` instead of cloned each frame. Partial indexes render an
   explicit **More files not indexed** node.
-- The feature source and design record are cleanly isolated in `82afd5a`; this
-  status reconciliation is intentionally separate bookkeeping.
+- The feature source and design record are cleanly isolated through `8dc9ead`;
+  this status reconciliation is intentionally separate bookkeeping.
+- Manual acceptance on 2026-07-15 passed A/B/C/D/E/G for entry/exit, preview,
+  file open, dirty-edit protection, folder choice/count, and root-parent
+  traversal. Commits through `8dc9ead` implement the four requested
+  corrections: workspace Space toggles expansion, the root retains its count,
+  hidden-on remains additive even if navigation occurs during its background
+  refresh, and `/Users/liminchen/Documents` is discoverable from the home
+  chooser. Targeted manual retest of these four corrections is still pending;
+  main integration remains held.
 - Do not merge, push, tag, release, or deploy without a new explicit request.
 
 ## Verification evidence
@@ -209,6 +226,18 @@ Last reconciled: 2026-07-15 (Asia/Taipei)
   using `/private/tmp/mdv-full-mindmap-protect-target`. The integration run
   emitted only the pre-existing unused `Section` import warning in
   `tests/ipc_protocol.rs`.
+- The exact manual-correction candidate at `8dc9ead` passed
+  `rustfmt --edition 2021 --check src/app.rs src/picker.rs src/tree.rs
+  src/workspace_mindmap.rs`, `git diff --check`, 38 focused
+  `full_mindmap_` tests, all 223 library tests, every integration target, and
+  `cargo check` using `/private/tmp/mdv-full-mindmap-protect-target`. The
+  integration run emitted only the pre-existing unused `Section` import
+  warning in `tests/ipc_protocol.rs`. The rebuilt manual-test binary is
+  `/private/tmp/mdv-full-mindmap-protect-target/debug/rmdv` with SHA-256
+  `3098217566425624e52d8b516bc87c229717c0638bd20b8100f3d6becca293d4`.
+- A fresh independent re-review of `8dc9ead` returned PASS with no P0/P1
+  findings after checking both completion orders, stale request rejection,
+  dirty and exit intent, and accepted refresh failure fallback.
 - The exact screenshot repair `67564e5` passed 5 focused screenshot tests, all
   187 library tests, `cargo check`, and `git diff --check` using
   `/private/tmp/mdv-zen-fix-target`. A native isolated probe captured 30/30
@@ -268,7 +297,12 @@ Last reconciled: 2026-07-15 (Asia/Taipei)
    status that still calls `46e3a6b` uncommitted, the resolved fullscreen-exit
    note in the KB-hints spec, and the outdated measured-height statement in
    `docs/benchmarks.md` as their owning branches are next touched.
-7. **P3 — Repository formatting/Clippy debt.** Keep as non-blocking hygiene.
+7. **P2 — Extremely wide directory discovery.** A directory with more than
+   10,000 immediate entries is explicitly truncated before sorting, so a later
+   ordinary sibling is not guaranteed to enter the bounded snapshot. The real
+   `/Users/liminchen` home currently has 116 immediate entries and is not
+   affected; revisit only if broader guarantees are required.
+8. **P3 — Repository formatting/Clippy debt.** Keep as non-blocking hygiene.
    README already tracks PDF/HTML export and additional tree-sitter grammars;
    do not create duplicate backlog entries for them.
 
@@ -285,8 +319,9 @@ Last reconciled: 2026-07-15 (Asia/Taipei)
 
 The Full Mindmap feature is an opt-in, full-window navigation mode, distinct
 from and compatible with the existing document-level `ViewMode::Mindmap`.
-Commit `82afd5a` removes its visual controls and makes folder traversal and
-file opening keyboard-first while hardening large-workspace behavior.
+Commits through `8dc9ead` remove its visual controls, make folder traversal and
+file opening keyboard-first, address the manual-acceptance corrections, and
+harden large-workspace behavior.
 
 The implementation is recorded in
 `docs/superpowers/specs/2026-07-10-full-mindmap-mode-design.md` and covers
@@ -298,8 +333,9 @@ picker/tree/file-finder paths, and focused tests.
 
 For the P0 fixes, run Windows CI/cross-target verification when available and
 push local `main` only on an explicit request.
-For Full Mindmap, collect the user's A-H manual acceptance result first. Do not
-integrate main while that gate is held. After acceptance, integrate current
+For Full Mindmap, collect the user's targeted four-correction manual retest
+first; A/B/C/D/E/G are otherwise accepted. Do not integrate main while that
+gate is held. After acceptance, integrate current
 `main@67564e5`, rebuild and repeat the large-folder interaction; only then
 retarget and review Zoom Controls.
 If the user instead asks to merge or release, first re-check
