@@ -111,8 +111,9 @@ Last reconciled: 2026-07-15 (Asia/Taipei)
 
 ## Current state
 
-- **Full Mindmap `/Shopee backroom` lazy-discovery investigation stopped without
-  a source change** on `feat/full-mindmap-mode`. The real path is
+- **Full Mindmap nearest-ancestor focus correction is maker-SUBMITTED** at
+  implementation commit `6f05ecf` after the metadata-only `/Shopee backroom`
+  investigation on `feat/full-mindmap-mode`. The real path is
   `/Users/liminchen/Documents/Shopee Backroom`. A read-only production scan of
   its parent retained the folder as `LowerBound(0)` because the bounded
   ancestor scan was truncated; the same production `load_expanded_folder`
@@ -120,13 +121,22 @@ Last reconciled: 2026-07-15 (Asia/Taipei)
   hidden files both off and on. Metadata-only inspection found 20 directories,
   34 files, and no files in the current supported scope (`md`, `markdown`,
   `tex`, `json`, `yaml`, `yml`, `toml`, or feature-enabled `pdf`); excluded
-  repository metadata accounts for the remaining entries. The lazy removal is
-  therefore truthful exact-empty pruning, so the approved empty-folder rule
-  and STOP condition apply. Keeping the folder would require a supported-file
-  policy change; no focus or scanner fix was made, and the existing
-  graph-generation, Space/Right, bounds, stale-safety, sidebar, finder, and
-  document Mindmap behavior remain unchanged. Main/Zoom integration, release,
-  and native acceptance remain out of scope.
+  repository metadata accounts for the remaining entries. Exact-empty pruning
+  therefore remains correct; keeping that folder would require a separate
+  supported-file policy change. The candidate now walks the accepted graph's
+  path ancestors after a selected shell is removed, preserving Documents when
+  visible and using root only as final fallback. It adds app, graph, and canvas
+  regressions while preserving graph-generation, Space/Right, bounds,
+  stale-safety, sidebar, finder, and document Mindmap behavior. Focused gates
+  pass: 36 canvas, 15 workspace-graph, 12 tree, 39 Full Mindmap app, and 9
+  sidebar tests; all 240 library tests and all 67 integration tests also pass,
+  alongside `cargo check`, fresh `cargo build --bin rmdv`, touched-file
+  rustfmt, and `git diff --check` using
+  `/private/tmp/mdv-full-mindmap-protect-target`. The fresh binary is
+  `/private/tmp/mdv-full-mindmap-protect-target/debug/rmdv` with SHA-256
+  `a5c8f0d39b9c4ae61749531b11c3cf4787c65d4da138ac84e37d6808adc86434`.
+  Main/Zoom integration, release, and native acceptance remain out of scope;
+  maker submission is complete but native/manual acceptance is pending.
 
 - **Full Mindmap child-focus correction is independently accepted** at
   implementation commit `400e41b` with no P0/P1 findings. It adds a Full Mindmap
