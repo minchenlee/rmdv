@@ -106,8 +106,8 @@ Last reconciled: 2026-07-15 (Asia/Taipei)
 
 ## Current state
 
-- **Full Mindmap native correctness correction is maker-SUBMITTED at
-  `1317a06`, not independently accepted.** The bounded retry lets a
+- **Full Mindmap native correctness correction is independently accepted at
+  `1317a06` with no P0/P1 findings.** The bounded retry lets a
   `scan limit reached` shell reveal useful immediate folders/files without
   re-rooting, or a stable local truncation/error status when discovery remains
   incomplete. Both initial and lazy exact-empty folders disappear; a lazy
@@ -115,8 +115,7 @@ Last reconciled: 2026-07-15 (Asia/Taipei)
   Documents-like late sibling remains reachable from an ancestor. Ordinary
   Files/Cmd+P, hidden/dirty safety, count labels, unified keyboard behavior,
   collapse eviction, and stale rejection remain covered. Main integration and
-  Zoom retargeting remain prohibited pending independent review and native
-  acceptance.
+  Zoom retargeting remain prohibited pending native acceptance.
 
 - **Zen UI polish is implemented, verified, committed, and merged into local
   `main` as `68fc8d0`.** Zen editor vertical padding is removed; toast feedback
@@ -241,8 +240,8 @@ Last reconciled: 2026-07-15 (Asia/Taipei)
   UI-thread regroup/sort P1. Follow-up `5d421dc` passed independent lead
   re-review with no remaining P0/P1 findings. Native testing then exposed the
   interrupted-shell, exact-empty, and ancestor-discovery failures; `1317a06`
-  is the maker-verified correction awaiting independent re-review and native
-  acceptance. Main integration remains held.
+  is the independently accepted correction awaiting native acceptance. Main
+  integration remains held.
 - Do not merge, push, tag, release, or deploy without a new explicit request.
 
 ## Verification evidence
@@ -409,6 +408,16 @@ Last reconciled: 2026-07-15 (Asia/Taipei)
   of 7.0 GiB generated artifacts and rebuilt fresh; the manual binary is
   `/private/tmp/mdv-full-mindmap-protect-target/debug/rmdv` with SHA-256
   `d281e3970ffc9b979e210103e236e4a1b244429fb20af6f1782679f247464853`.
+- A fresh lead-side static review of `3e2b3fd..1317a06` found no P0/P1 issue
+  after checking exact-empty pruning, branch-local shallow ownership, bounded
+  background execution, exact request/root/filter/expansion/mode rejection,
+  collapse eviction, selection normalization, and preservation of the
+  pre-grouped sidebar and Cmd+P indexes. The lead independently reran 38 Full
+  Mindmap, 14 workspace-graph, 12 tree, and 9 sidebar focused tests, all 235
+  library tests, every integration target (67 tests), `cargo check`, `cargo
+  build --bin rmdv`, touched-file rustfmt, implementation/status diff checks,
+  worktree cleanliness, and the binary SHA-256. All passed with only the same
+  pre-existing unused `Section` warning.
 - A fresh independent re-review of `8dc9ead` returned PASS with no P0/P1
   findings after checking both completion orders, stale request rejection,
   dirty and exit intent, and accepted refresh failure fallback.
@@ -538,8 +547,8 @@ a large workspace with the recorded binary. Specifically verify that a
 `scan limit reached` folder never expands blank, exact-empty folders are absent,
 and nested folders beneath Documents are reachable from Home or an ancestor
 without first making Documents the root. A/B/C/D/E/G and hidden additivity were
-accepted on earlier candidates; `1317a06` still needs independent automated
-review and native acceptance. Do not integrate main while that gate is held.
+accepted on earlier candidates; `1317a06` passed independent automated review
+and still needs native acceptance. Do not integrate main while that gate is held.
 After acceptance,
 integrate current
 `main@67564e5`, rebuild and repeat the large-folder interaction; only then
