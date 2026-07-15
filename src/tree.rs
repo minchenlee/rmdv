@@ -1,5 +1,6 @@
 use crate::picker::is_markdown_path;
-use std::collections::HashSet;
+use std::borrow::Cow;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 pub const WORKSPACE_TREE_MAX_DEPTH: usize = 12;
@@ -46,7 +47,13 @@ impl RecursiveFileCount {
 #[derive(Debug, Clone)]
 pub struct WorkspaceSnapshot {
     pub root: Node,
+    /// File-finder/vault-search index, limited by
+    /// `WORKSPACE_FILE_INDEX_MAX_DEPTH` as before.
     pub files: Vec<PathBuf>,
+    /// Lightweight file paths for the standard Files sidebar across the full
+    /// retained tree depth. This remains bounded by the same global scan and
+    /// replaces permanent file `Node`s without reducing sidebar coverage.
+    pub sidebar_files: Vec<PathBuf>,
     pub truncated: bool,
 }
 
@@ -166,6 +173,7 @@ fn build_workspace_with_limits(
 ) -> Result<WorkspaceSnapshot, String> {
     let mut root_node = empty_root(root);
     let mut files = Vec::new();
+    let mut sidebar_files = Vec::new();
     let mut budget = ScanBudget {
         examined_entries: 0,
         supported_files: 0,
@@ -182,6 +190,7 @@ fn build_workspace_with_limits(
         show_hidden,
         &mut budget,
         &mut files,
+        &mut sidebar_files,
     )?;
     // When the budget ends, retain already-discovered directories even if we
     // could not inspect their descendants. This keeps shallow, ordinary
@@ -190,9 +199,11 @@ fn build_workspace_with_limits(
         prune(&mut root_node);
     }
     files.sort();
+    sidebar_files.sort();
     Ok(WorkspaceSnapshot {
         root: root_node,
         files,
+        sidebar_files,
         truncated: budget.truncated,
     })
 }
@@ -216,6 +227,7 @@ fn fill_bounded(
     show_hidden: bool,
     budget: &mut ScanBudget,
     indexed_files: &mut Vec<PathBuf>,
+    sidebar_files: &mut Vec<PathBuf>,
 ) -> Result<(), String> {
     if depth >= tree_max_depth {
         node.recursive_supported_file_count = Some(RecursiveFileCount::LowerBound(0));
@@ -308,6 +320,7 @@ fn fill_bounded(
             }
             budget.supported_files += 1;
             local_supported_files += 1;
+            sidebar_files.push(entry.path.clone());
             if depth < file_index_max_depth {
                 indexed_files.push(entry.path.clone());
             }
@@ -331,6 +344,7 @@ fn fill_bounded(
             show_hidden,
             budget,
             indexed_files,
+            sidebar_files,
         )?;
         let child_count = child
             .recursive_supported_file_count
@@ -381,7 +395,10 @@ pub fn flatten<'a>(root: &'a Node, expanded: &HashSet<PathBuf>) -> Vec<Row<'a>> 
 }
 
 fn push<'a>(node: &'a Node, depth: usize, expanded: &HashSet<PathBuf>, out: &mut Vec<Row<'a>>) {
-    out.push(Row { node, depth });
+    out.push(Row {
+        node: RowNode::Retained(node),
+        depth,
+    });
     if node.is_dir && expanded.contains(&node.path) {
         for c in &node.children {
             push(c, depth + 1, expanded, out);
@@ -389,10 +406,115 @@ fn push<'a>(node: &'a Node, depth: usize, expanded: &HashSet<PathBuf>, out: &mut
     }
 }
 
+/// Flatten the retained folder skeleton for the standard Files sidebar and
+/// splice bounded indexed file paths beneath their visible parent. This keeps
+/// Full Mindmap's retained tree folder-only without removing ordinary sidebar
+/// file rows or allocating a second permanent file-node tree.
+pub fn flatten_with_files<'a>(
+    root: &'a Node,
+    files: &'a [PathBuf],
+    expanded: &HashSet<PathBuf>,
+) -> Vec<Row<'a>> {
+    let mut files_by_parent: HashMap<&'a Path, Vec<&'a Path>> = HashMap::new();
+    for file in files {
+        if let Some(parent) = file.parent() {
+            files_by_parent.entry(parent).or_default().push(file);
+        }
+    }
+    for siblings in files_by_parent.values_mut() {
+        siblings.sort_by(|a, b| sidebar_file_order(a, b));
+    }
+
+    let mut out = Vec::new();
+    for child in &root.children {
+        push_with_files(child, 0, expanded, &files_by_parent, &mut out);
+    }
+    append_indexed_files(&root.path, 0, &files_by_parent, &mut out);
+    out
+}
+
+fn push_with_files<'a>(
+    node: &'a Node,
+    depth: usize,
+    expanded: &HashSet<PathBuf>,
+    files_by_parent: &HashMap<&'a Path, Vec<&'a Path>>,
+    out: &mut Vec<Row<'a>>,
+) {
+    out.push(Row {
+        node: RowNode::Retained(node),
+        depth,
+    });
+    if node.is_dir && expanded.contains(&node.path) {
+        for child in &node.children {
+            push_with_files(child, depth + 1, expanded, files_by_parent, out);
+        }
+        append_indexed_files(&node.path, depth + 1, files_by_parent, out);
+    }
+}
+
+fn append_indexed_files<'a>(
+    parent: &Path,
+    depth: usize,
+    files_by_parent: &HashMap<&'a Path, Vec<&'a Path>>,
+    out: &mut Vec<Row<'a>>,
+) {
+    if let Some(files) = files_by_parent.get(parent) {
+        out.extend(files.iter().map(|path| Row {
+            node: RowNode::IndexedFile(path),
+            depth,
+        }));
+    }
+}
+
+fn sidebar_file_order(a: &Path, b: &Path) -> std::cmp::Ordering {
+    let a_name = a
+        .file_name()
+        .map(|name| name.to_string_lossy())
+        .unwrap_or_else(|| a.as_os_str().to_string_lossy());
+    let b_name = b
+        .file_name()
+        .map(|name| name.to_string_lossy())
+        .unwrap_or_else(|| b.as_os_str().to_string_lossy());
+    a_name
+        .starts_with('.')
+        .cmp(&b_name.starts_with('.'))
+        .then_with(|| a_name.to_lowercase().cmp(&b_name.to_lowercase()))
+        .then_with(|| a_name.cmp(&b_name))
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct Row<'a> {
-    pub node: &'a Node,
+    pub node: RowNode<'a>,
     pub depth: usize,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum RowNode<'a> {
+    Retained(&'a Node),
+    IndexedFile(&'a Path),
+}
+
+impl<'a> RowNode<'a> {
+    pub fn path(self) -> &'a Path {
+        match self {
+            Self::Retained(node) => &node.path,
+            Self::IndexedFile(path) => path,
+        }
+    }
+
+    pub fn name(self) -> Cow<'a, str> {
+        match self {
+            Self::Retained(node) => Cow::Borrowed(&node.name),
+            Self::IndexedFile(path) => path
+                .file_name()
+                .map(|name| name.to_string_lossy())
+                .unwrap_or_else(|| path.as_os_str().to_string_lossy()),
+        }
+    }
+
+    pub fn is_dir(self) -> bool {
+        matches!(self, Self::Retained(node) if node.is_dir)
+    }
 }
 
 /// Set containing every ancestor path (within root) needed to reveal `target`.
@@ -484,6 +606,92 @@ mod tests {
         let bounded = load_immediate_supported_files_with_limits(&root, true, 1, 10).unwrap();
         assert_eq!(bounded.files.len(), 1);
         assert!(bounded.truncated);
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn sidebar_rows_splice_indexed_files_under_only_visible_parents() {
+        let root = test_dir("sidebar-rows");
+        std::fs::create_dir_all(root.join("docs")).unwrap();
+        std::fs::create_dir_all(root.join(".hidden")).unwrap();
+        std::fs::write(root.join("b.md"), "# B\n").unwrap();
+        std::fs::write(root.join("a.md"), "# A\n").unwrap();
+        std::fs::write(root.join(".secret.md"), "# Secret\n").unwrap();
+        std::fs::write(root.join("docs/nested.md"), "# Nested\n").unwrap();
+        std::fs::write(root.join(".hidden/inside.md"), "# Inside\n").unwrap();
+
+        let visible = build_workspace(&root, false).unwrap();
+        assert!(visible.root.children.iter().all(|node| node.is_dir));
+        let collapsed = flatten_with_files(
+            &visible.root,
+            &visible.sidebar_files,
+            &HashSet::from([root.clone()]),
+        );
+        assert_eq!(
+            collapsed
+                .iter()
+                .map(|row| row.node.name().into_owned())
+                .collect::<Vec<_>>(),
+            vec!["docs", "a.md", "b.md"]
+        );
+        assert!(!collapsed
+            .iter()
+            .any(|row| row.node.path() == root.join("docs/nested.md")));
+
+        let expanded = flatten_with_files(
+            &visible.root,
+            &visible.sidebar_files,
+            &HashSet::from([root.clone(), root.join("docs")]),
+        );
+        assert_eq!(
+            expanded
+                .iter()
+                .map(|row| (row.node.name().into_owned(), row.depth))
+                .collect::<Vec<_>>(),
+            vec![
+                ("docs".into(), 0),
+                ("nested.md".into(), 1),
+                ("a.md".into(), 0),
+                ("b.md".into(), 0),
+            ]
+        );
+
+        let shown = build_workspace(&root, true).unwrap();
+        let shown_rows = flatten_with_files(
+            &shown.root,
+            &shown.sidebar_files,
+            &HashSet::from([root.clone()]),
+        );
+        assert!(shown_rows
+            .iter()
+            .any(|row| row.node.path() == root.join(".hidden")));
+        assert!(shown_rows
+            .iter()
+            .any(|row| row.node.path() == root.join(".secret.md")));
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn sidebar_paths_keep_tree_depth_without_broadening_file_finder_depth() {
+        let root = test_dir("sidebar-depth");
+        let deep_folder = root.join("one/two");
+        let deep_file = deep_folder.join("deep.md");
+        std::fs::create_dir_all(&deep_folder).unwrap();
+        std::fs::write(&deep_file, "# Deep\n").unwrap();
+
+        let snapshot = build_workspace_with_limits(&root, false, 4, 2, 100, 100).unwrap();
+        assert!(!snapshot.files.contains(&deep_file));
+        assert!(snapshot.sidebar_files.contains(&deep_file));
+        assert!(snapshot.root.children.iter().all(|node| node.is_dir));
+
+        let rows = flatten_with_files(
+            &snapshot.root,
+            &snapshot.sidebar_files,
+            &HashSet::from([root.clone(), root.join("one"), deep_folder.clone()]),
+        );
+        assert!(rows.iter().any(|row| row.node.path() == deep_file));
 
         std::fs::remove_dir_all(root).unwrap();
     }

@@ -609,6 +609,10 @@ pub struct App {
     pub search_open: bool,
     pub workspace: Option<PathBuf>,
     pub workspace_files: Vec<PathBuf>,
+    /// Bounded lightweight paths used only to reconstruct ordinary Files
+    /// sidebar rows across the full retained tree depth. Cmd+P and vault search
+    /// continue to use `workspace_files` and its historical shallower depth.
+    pub workspace_sidebar_files: Vec<PathBuf>,
     pub workspace_tree: Option<Node>,
     /// Filter used to produce the stored workspace snapshot. Full Mindmap may
     /// change `show_hidden` while the Files sidebar remains obscured.
@@ -816,6 +820,7 @@ impl Default for App {
             search_open: false,
             workspace: None,
             workspace_files: Vec::new(),
+            workspace_sidebar_files: Vec::new(),
             workspace_tree: None,
             workspace_snapshot_show_hidden: false,
             workspace_truncated: false,
@@ -1175,6 +1180,7 @@ impl App {
 
     fn replace_workspace_snapshot(&mut self, path: PathBuf, snapshot: tree::WorkspaceSnapshot) {
         self.workspace_files = snapshot.files;
+        self.workspace_sidebar_files = snapshot.sidebar_files;
         self.workspace_tree = Some(snapshot.root);
         self.workspace_snapshot_show_hidden = self.show_hidden;
         self.workspace_truncated = snapshot.truncated;
@@ -4540,6 +4546,7 @@ impl App {
                         match tree::build_workspace(&ws, self.show_hidden) {
                             Ok(snapshot) => {
                                 self.workspace_files = snapshot.files;
+                                self.workspace_sidebar_files = snapshot.sidebar_files;
                                 self.workspace_tree = Some(snapshot.root);
                                 self.workspace_snapshot_show_hidden = self.show_hidden;
                                 self.workspace_truncated = snapshot.truncated;
@@ -4597,7 +4604,9 @@ impl App {
                 let Some(root) = &self.workspace_tree else {
                     return Task::none();
                 };
-                let len = tree::flatten(root, &self.expanded).len();
+                let len =
+                    tree::flatten_with_files(root, &self.workspace_sidebar_files, &self.expanded)
+                        .len();
                 if len == 0 {
                     return Task::none();
                 }
@@ -4609,18 +4618,19 @@ impl App {
                 let Some(root) = &self.workspace_tree else {
                     return Task::none();
                 };
-                let rows = tree::flatten(root, &self.expanded);
+                let rows =
+                    tree::flatten_with_files(root, &self.workspace_sidebar_files, &self.expanded);
                 let Some(r) = rows.get(self.tree_cursor) else {
                     return Task::none();
                 };
-                if r.node.is_dir {
-                    let p = r.node.path.clone();
+                if r.node.is_dir() {
+                    let p = r.node.path().to_path_buf();
                     if !self.expanded.remove(&p) {
                         self.expanded.insert(p);
                     }
                     Task::none()
                 } else {
-                    let p = r.node.path.clone();
+                    let p = r.node.path().to_path_buf();
                     self.load_file_unless_dirty(p)
                 }
             }
@@ -4645,12 +4655,13 @@ impl App {
                 let Some(root) = &self.workspace_tree else {
                     return Task::none();
                 };
-                let rows = tree::flatten(root, &self.expanded);
+                let rows =
+                    tree::flatten_with_files(root, &self.workspace_sidebar_files, &self.expanded);
                 let Some(r) = rows.get(self.tree_cursor) else {
                     return Task::none();
                 };
-                if r.node.is_dir {
-                    let p = r.node.path.clone();
+                if r.node.is_dir() {
+                    let p = r.node.path().to_path_buf();
                     if !self.expanded.remove(&p) {
                         self.expanded.insert(p);
                     }
@@ -4661,11 +4672,12 @@ impl App {
                 let Some(root) = &self.workspace_tree else {
                     return Task::none();
                 };
-                let rows = tree::flatten(root, &self.expanded);
+                let rows =
+                    tree::flatten_with_files(root, &self.workspace_sidebar_files, &self.expanded);
                 let Some(r) = rows.get(self.tree_cursor) else {
                     return Task::none();
                 };
-                let path = r.node.path.display().to_string();
+                let path = r.node.path().display().to_string();
                 let toast = self.show_toast("Path copied".into());
                 Task::batch([iced::clipboard::write::<Message>(path), toast])
             }
@@ -6689,7 +6701,7 @@ fn sidebar_files_body<'a>(
     let mut list = Column::new().spacing(0).padding(Padding::from([4, 4]));
     let mut content_w = app.sidebar_width - 12.0; // minus scrollbar gutter
     if let Some(tree_root) = &app.workspace_tree {
-        let rows = tree::flatten(tree_root, &app.expanded);
+        let rows = tree::flatten_with_files(tree_root, &app.workspace_sidebar_files, &app.expanded);
         let current = app.file.as_ref();
         let cursor = app.tree_cursor;
         for r in rows.iter() {
@@ -6851,26 +6863,28 @@ fn sidebar_resize_handle<'a>(pal: Palette) -> Element<'a, Message> {
 /// horizontal scroll kicks in when names overflow. Approximation uses an
 /// average advance for Inter @ 13px; exact metrics aren't worth the cost of a
 /// glyph-shaping pass on every render.
-fn tree_row_width(node: &Node, depth: usize) -> f32 {
+fn tree_row_width(node: tree::RowNode<'_>, depth: usize) -> f32 {
     const CHAR_ADVANCE: f32 = 7.0;
     let indent = TREE_INDENT * depth as f32;
     let chevron = 14.0;
     let leaf = 13.0 + 4.0 + 7.0; // icon + gap before + gap after
-    let label = node.name.chars().count() as f32 * CHAR_ADVANCE;
+    let label = node.name().chars().count() as f32 * CHAR_ADVANCE;
     let padding_h = 16.0; // button padding 8 each side
     indent + chevron + leaf + label + padding_h
 }
 
 fn tree_row<'a>(
-    node: &'a Node,
+    node: tree::RowNode<'a>,
     depth: usize,
     expanded: &HashSet<PathBuf>,
     current: Option<&'a PathBuf>,
     is_cursor: bool,
     pal: Palette,
 ) -> Element<'a, Message> {
-    let is_current = !node.is_dir && current.map(|c| c == &node.path).unwrap_or(false);
-    let path = node.path.clone();
+    let is_dir = node.is_dir();
+    let node_path = node.path();
+    let is_current = !is_dir && current.map(|c| c.as_path() == node_path).unwrap_or(false);
+    let path = node_path.to_path_buf();
 
     // Indent area with vertical guides per ancestor level.
     let mut indent = iced::widget::Row::new();
@@ -6878,8 +6892,8 @@ fn tree_row<'a>(
         indent = indent.push(indent_guide(pal));
     }
 
-    let chevron: Element<'a, Message> = if node.is_dir {
-        let open = expanded.contains(&node.path);
+    let chevron: Element<'a, Message> = if is_dir {
+        let open = expanded.contains(node_path);
         let g = if open {
             ic::CHEVRON_DOWN
         } else {
@@ -6892,26 +6906,26 @@ fn tree_row<'a>(
 
     let label_color = if is_current {
         pal.fg
-    } else if node.is_dir {
+    } else if is_dir {
         pal.fg
     } else {
         pal.muted
     };
-    let label_weight = if node.is_dir {
+    let label_weight = if is_dir {
         iced::font::Weight::Medium
     } else {
         iced::font::Weight::Normal
     };
     let mut label_font = iced::Font::with_name("Inter");
     label_font.weight = label_weight;
-    let label = text(node.name.as_str())
+    let label = text(node.name().into_owned())
         .size(13)
         .color(label_color)
         .font(label_font)
         .wrapping(text::Wrapping::None);
 
-    let leaf_icon: Element<'a, Message> = if node.is_dir {
-        let open = expanded.contains(&node.path);
+    let leaf_icon: Element<'a, Message> = if is_dir {
+        let open = expanded.contains(node_path);
         let g = if open { ic::FOLDER_OPEN } else { ic::FOLDER };
         icon::glyph(g, 13.0, pal.subtle).into()
     } else {
@@ -6928,7 +6942,7 @@ fn tree_row<'a>(
     .align_y(iced::Alignment::Center)
     .spacing(0);
 
-    let on_press = if node.is_dir {
+    let on_press = if is_dir {
         Message::TreeToggle(path)
     } else {
         Message::Open(path)
@@ -8662,6 +8676,79 @@ mod tests {
             assert_eq!(sidebar_titlebar_reserve_for_fullscreen(true), 0.0);
             assert_eq!(sidebar_titlebar_reserve_for_fullscreen(false), 0.0);
         }
+    }
+
+    #[test]
+    fn folder_only_snapshot_sidebar_activates_indexed_file_through_dirty_guard() {
+        let dir = full_mindmap_test_dir("sidebar-indexed-activate");
+        let target = dir.join("target.md");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(&target, "# Target\n").unwrap();
+
+        let mut app = App::default();
+        app.set_workspace(dir.clone(), false);
+        assert!(app
+            .workspace_tree
+            .as_ref()
+            .unwrap()
+            .children
+            .iter()
+            .all(|node| node.is_dir));
+        let rows = tree::flatten_with_files(
+            app.workspace_tree.as_ref().unwrap(),
+            &app.workspace_sidebar_files,
+            &app.expanded,
+        );
+        app.tree_cursor = rows
+            .iter()
+            .position(|row| row.node.path() == target)
+            .expect("indexed root file should remain a standard sidebar row");
+        app.file = Some(dir.join("current.md"));
+        app.source = "unsaved current".into();
+        app.saved_source = "saved current".into();
+        app.dirty = true;
+
+        let _ = app.update(Message::TreeActivate);
+
+        assert_eq!(app.source, "unsaved current");
+        assert_eq!(app.file.as_deref(), Some(dir.join("current.md").as_path()));
+        assert!(app.dirty);
+        assert!(app
+            .toast
+            .as_ref()
+            .is_some_and(|toast| toast.text.contains("unsaved")));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn standard_sidebar_rows_follow_hidden_snapshot_refresh() {
+        let dir = full_mindmap_test_dir("sidebar-hidden-refresh");
+        let visible = dir.join("visible.md");
+        let hidden = dir.join(".hidden.md");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(&visible, "# Visible\n").unwrap();
+        std::fs::write(&hidden, "# Hidden\n").unwrap();
+
+        let mut app = App::default();
+        app.set_workspace(dir.clone(), false);
+        let before = tree::flatten_with_files(
+            app.workspace_tree.as_ref().unwrap(),
+            &app.workspace_sidebar_files,
+            &app.expanded,
+        );
+        assert!(before.iter().any(|row| row.node.path() == visible));
+        assert!(!before.iter().any(|row| row.node.path() == hidden));
+
+        let _ = app.update(Message::ToggleHidden);
+        let after = tree::flatten_with_files(
+            app.workspace_tree.as_ref().unwrap(),
+            &app.workspace_sidebar_files,
+            &app.expanded,
+        );
+        assert!(after.iter().any(|row| row.node.path() == visible));
+        assert!(after.iter().any(|row| row.node.path() == hidden));
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     fn editor_key_press(
