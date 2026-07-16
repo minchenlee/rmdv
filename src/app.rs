@@ -14,6 +14,10 @@ use iced::widget::{
 use iced::{Background, Border, Color, Element, Length, Padding, Task, Theme};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
+use std::sync::{
+    atomic::{AtomicU64, Ordering},
+    Arc, OnceLock,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ViewMode {
@@ -200,9 +204,20 @@ pub struct FullMindmapState {
     pub preview_window: crate::virt::VirtWindow,
     pub preview_viewport: Option<iced::widget::scrollable::Viewport>,
     pub preview_height_cache: crate::virt::HeightCache,
+    /// At most one preview measurement operation may be in flight. Scroll
+    /// events can arrive faster than widget-tree operations complete; the
+    /// guard coalesces those events instead of queueing an unbounded stream.
+    pub preview_measurement_pending: bool,
+    /// Materialized display range captured when the pending measurement was
+    /// dispatched. If scrolling moves to a different range before completion,
+    /// the accepted result schedules one follow-up for that current range.
+    pub preview_measurement_range: Option<(usize, usize)>,
     /// Monotonic identity for preview selection/parse/layout work. Height
     /// measurements carry it so a late operation cannot alter a new file.
     pub preview_generation: u64,
+    /// Cooperative cancellation for stale preview reads/parses. The worker
+    /// checks this token between bounded chunks and before expensive parsing.
+    pub preview_work_epoch: Arc<AtomicU64>,
     pub load_error: Option<String>,
     /// Visible workspace graphs are rebuilt only after their source/expansion
     /// changes, not every `view()` frame.
@@ -351,10 +366,12 @@ const MIND_PANEL_MAX: f32 = 900.0;
 const MIND_PANEL_FRACS: [f32; 3] = [1.0 / 3.0, 0.5, 0.6];
 const MIND_PANEL_MAX_BLOCKS: usize = 80;
 const MIND_PANEL_MAX_TEXT_BYTES: usize = 24 * 1024;
-/// Small previews are parsed inline so the existing lightweight message
-/// contract stays immediate; larger complete files move parsing and syntax
-/// highlighting to a blocking worker before they enter the panel.
-const FULL_MINDMAP_PREVIEW_PARSE_ASYNC_BYTES: usize = 64 * 1024;
+/// Kept only for the stale-worker regression fixture. Runtime preview parsing
+/// is always dispatched to the guarded worker, regardless of source length.
+#[cfg(test)]
+const FULL_MINDMAP_PREVIEW_STALE_SOURCE_BYTES: usize = 64 * 1024;
+const FULL_MINDMAP_PREVIEW_CANCELLED: &str = "full mindmap preview superseded";
+const FULL_MINDMAP_PREVIEW_READ_CHUNK_BYTES: usize = 64 * 1024;
 /// The document Mindmap panel keeps its existing rendered-content debounce
 /// cadence, while Full Mindmap previews use a longer quiet window so rapid
 /// workspace navigation does not start unnecessary reads.
@@ -1155,7 +1172,10 @@ impl App {
             preview_window: crate::virt::VirtWindow::default(),
             preview_viewport: None,
             preview_height_cache: crate::virt::HeightCache::default(),
+            preview_measurement_pending: false,
+            preview_measurement_range: None,
             preview_generation: 0,
+            preview_work_epoch: Arc::new(AtomicU64::new(0)),
             load_error: None,
             layout_cache: std::cell::RefCell::new(None),
             layout_generation: 0,
@@ -1587,6 +1607,10 @@ impl App {
         self.overlay = Overlay::None;
         if self.full_mindmap.is_some() {
             self.cancel_full_mindmap_verification();
+            // Re-entry replaces the navigator state. Bump the preview epoch
+            // before dropping the old state so any active read/parse exits at
+            // its next cooperative checkpoint instead of blocking new work.
+            self.reset_full_mindmap_preview_window();
         }
         self.full_mindmap = Some(Self::new_full_mindmap_state());
         if forced_start.is_none() && self.workspace_tree.is_some() {
@@ -1645,6 +1669,7 @@ impl App {
 
     fn finish_full_mindmap_exit(&mut self, return_to_files: bool) -> Task<Message> {
         self.cancel_full_mindmap_verification();
+        self.reset_full_mindmap_preview_window();
         self.full_mindmap = None;
         if return_to_files {
             self.sidebar_open = true;
@@ -2196,17 +2221,52 @@ impl App {
             id: self.full_mindmap_request_seq,
             path: path.clone(),
         };
+        let (preview_work_epoch, preview_work_cancel) = self
+            .full_mindmap
+            .as_ref()
+            .map(|full| {
+                (
+                    full.preview_work_epoch.load(Ordering::Acquire),
+                    Arc::clone(&full.preview_work_epoch),
+                )
+            })
+            .expect("checked above");
         let full = self.full_mindmap.as_mut().expect("checked above");
         full.pending_preview_settle = None;
         full.pending_preview = Some(request.clone());
         full.preview = FullMindmapPreview::Loading(path.clone());
-        Task::perform(load_full_mindmap_preview(path), move |result| {
-            Message::FullMindmapPreviewLoaded { request, result }
-        })
+        Task::perform(
+            load_full_mindmap_preview_guarded(path, preview_work_cancel, preview_work_epoch),
+            move |result| Message::FullMindmapPreviewLoaded { request, result },
+        )
     }
 
-    fn build_full_mindmap_preview(&mut self, path: PathBuf, source: String) -> FullMindmapPreview {
-        parse_full_mindmap_preview_blocking(path, source)
+    /// Start parsing an already-open document for the initial Full Mindmap
+    /// preview without doing parser/highlighter work on the update thread.
+    /// Unlike selection-driven previews this intentionally skips the 200 ms
+    /// settle because the document is already the accepted current file.
+    fn begin_full_mindmap_preview_source(
+        &mut self,
+        path: PathBuf,
+        source: String,
+    ) -> Task<Message> {
+        let Some(full) = self.full_mindmap.as_mut() else {
+            return Task::none();
+        };
+        self.full_mindmap_request_seq = self.full_mindmap_request_seq.wrapping_add(1);
+        let request = PendingFullMindmapPreview {
+            id: self.full_mindmap_request_seq,
+            path: path.clone(),
+        };
+        let epoch = full.preview_work_epoch.load(Ordering::Acquire);
+        let cancel = Arc::clone(&full.preview_work_epoch);
+        full.pending_preview_settle = None;
+        full.pending_preview = Some(request.clone());
+        full.preview = FullMindmapPreview::Loading(path);
+        Task::perform(
+            parse_full_mindmap_preview_guarded(request.path.clone(), source, cancel, epoch),
+            move |result| Message::FullMindmapPreviewParsed { request, result },
+        )
     }
 
     /// Drop only Full Mindmap preview layout/scroll ownership. The document
@@ -2219,6 +2279,9 @@ impl App {
             full.preview_window = crate::virt::VirtWindow::default();
             full.preview_viewport = None;
             full.preview_height_cache.clear();
+            full.preview_measurement_pending = false;
+            full.preview_measurement_range = None;
+            full.preview_work_epoch.fetch_add(1, Ordering::AcqRel);
         }
     }
 
@@ -2258,7 +2321,10 @@ impl App {
 
     fn refresh_full_mindmap_preview_heights(&mut self) -> Task<Message> {
         if let Some(full) = self.full_mindmap.as_mut() {
+            full.preview_generation = full.preview_generation.wrapping_add(1);
             full.preview_height_cache.clear();
+            full.preview_measurement_pending = false;
+            full.preview_measurement_range = None;
         }
         self.rebuild_full_mindmap_preview_here();
         self.measure_full_mindmap_preview_heights()
@@ -2267,14 +2333,14 @@ impl App {
     /// Dispatch a widget operation that measures only the materialized
     /// preview blocks. The path and generation travel with the result so a
     /// late operation cannot feed the document cache or a newer selection.
-    fn measure_full_mindmap_preview_heights(&self) -> Task<Message> {
-        let Some(full) = self.full_mindmap.as_ref() else {
+    fn measure_full_mindmap_preview_heights(&mut self) -> Task<Message> {
+        let Some(full) = self.full_mindmap.as_mut() else {
             return Task::none();
         };
         let FullMindmapPreview::Document { path, blocks, .. } = &full.preview else {
             return Task::none();
         };
-        if !full.preview_window.active {
+        if !full.preview_window.active || full.preview_measurement_pending {
             return Task::none();
         }
         let (start, end) = full.preview_window.range;
@@ -2283,8 +2349,14 @@ impl App {
                 ..end.min(full.preview_window.display.len())]
             .iter()
             .filter_map(|&idx| blocks.get(idx).map(|(id, _)| *id))
+            .filter(|id| !full.preview_height_cache.is_measured(*id))
             .map(|id| (crate::render::block_anchor_id(id), id))
             .collect();
+        if targets.is_empty() {
+            return Task::none();
+        }
+        full.preview_measurement_pending = true;
+        full.preview_measurement_range = Some(full.preview_window.range);
         measure_full_mindmap_preview_block_heights(
             path.clone(),
             full.preview_generation,
@@ -3078,6 +3150,8 @@ impl App {
                         self.hovered_heading,
                         &self.diagram_cache,
                         self.diagram_theme_id,
+                        true,
+                        (0, 0),
                     ));
                     if truncated {
                         col = col.push(
@@ -3237,6 +3311,7 @@ impl App {
         let selected_path = selected.and_then(|node| node.path.as_ref());
         let selected_is_file = full.pending_workspace_load.is_none()
             && selected.is_some_and(|node| node.kind == WorkspaceNodeKind::File);
+        let preview_widget_generation = (self.full_mindmap_request_seq, full.preview_generation);
         let content: Element<'_, Message> =
             if let Some(load) = &full.pending_workspace_load {
                 container(
@@ -3276,6 +3351,8 @@ impl App {
                             None,
                             &self.diagram_cache,
                             self.diagram_theme_id,
+                            false,
+                            preview_widget_generation,
                         )
                         .map(|_| Message::Noop);
                         let mut preview = Column::new().push(rendered);
@@ -4301,25 +4378,22 @@ impl App {
                 }
                 match result {
                     Ok((path, source)) if path == request.path => {
-                        if source.len() >= FULL_MINDMAP_PREVIEW_PARSE_ASYNC_BYTES {
-                            // Keep parsing and syntax highlighting off the
-                            // update thread for complete, genuinely large
-                            // previews. The read request remains the owner
-                            // until this second request-identified completion.
-                            return Task::perform(
-                                parse_full_mindmap_preview(path, source),
-                                move |result| Message::FullMindmapPreviewParsed { request, result },
-                            );
-                        }
-                        let preview = self.build_full_mindmap_preview(path, source);
-                        if let Some(full) = self.full_mindmap.as_mut() {
-                            if full.pending_preview.as_ref() == Some(&request) {
-                                full.pending_preview = None;
-                                full.preview = preview;
-                            }
-                        }
-                        self.rebuild_full_mindmap_preview_here();
-                        return self.measure_full_mindmap_preview_heights();
+                        // Every Markdown parse/highlight runs away from the
+                        // update thread. A short file can still contain
+                        // hundreds of blocks; byte size is not a safe proxy
+                        // for parser cost or widget-tree size.
+                        let Some((epoch, cancel)) = self.full_mindmap.as_ref().map(|full| {
+                            (
+                                full.preview_work_epoch.load(Ordering::Acquire),
+                                Arc::clone(&full.preview_work_epoch),
+                            )
+                        }) else {
+                            return Task::none();
+                        };
+                        return Task::perform(
+                            parse_full_mindmap_preview_guarded(path, source, cancel, epoch),
+                            move |result| Message::FullMindmapPreviewParsed { request, result },
+                        );
                     }
                     Ok((path, _)) => {
                         if let Some(full) = self.full_mindmap.as_mut() {
@@ -4336,6 +4410,13 @@ impl App {
                         }
                     }
                     Err(error) => {
+                        if error == FULL_MINDMAP_PREVIEW_CANCELLED {
+                            // A newer selection already invalidated the
+                            // request in normal operation. Keep this guard so
+                            // a cooperative worker cancellation can never
+                            // replace a current loading state with an error.
+                            return Task::none();
+                        }
                         if let Some(full) = self.full_mindmap.as_mut() {
                             if full.pending_preview.as_ref() == Some(&request) {
                                 full.pending_preview = None;
@@ -4373,6 +4454,9 @@ impl App {
                         self.measure_full_mindmap_preview_heights()
                     }
                     Err(error) => {
+                        if error == FULL_MINDMAP_PREVIEW_CANCELLED {
+                            return Task::none();
+                        }
                         if let Some(full) = self.full_mindmap.as_mut() {
                             if full.pending_preview.as_ref() == Some(&request) {
                                 full.pending_preview = None;
@@ -4476,18 +4560,11 @@ impl App {
                             full.panel_open = true;
                         }
                         if self.file.as_ref() == Some(&path) {
-                            let preview =
-                                self.build_full_mindmap_preview(path.clone(), self.source.clone());
-                            if let Some(full) = self.full_mindmap.as_mut() {
-                                full.pending_preview_settle = None;
-                                full.preview = preview;
-                                full.pending_preview = None;
-                            }
-                            self.rebuild_full_mindmap_preview_here();
-                            return Task::batch([
-                                followup,
-                                self.measure_full_mindmap_preview_heights(),
-                            ]);
+                            let preview = self.begin_full_mindmap_preview_source(
+                                path.clone(),
+                                self.source.clone(),
+                            );
+                            return Task::batch([followup, preview]);
                         }
                         return Task::batch([
                             followup,
@@ -4558,6 +4635,7 @@ impl App {
                         }
                         if request.exit_after_refresh {
                             self.cancel_full_mindmap_verification();
+                            self.reset_full_mindmap_preview_window();
                             self.full_mindmap = None;
                             if request.return_to_files_after {
                                 self.sidebar_open = true;
@@ -5731,7 +5809,10 @@ impl App {
                 });
                 if bounds_changed {
                     if let Some(full) = self.full_mindmap.as_mut() {
+                        full.preview_generation = full.preview_generation.wrapping_add(1);
                         full.preview_height_cache.clear();
+                        full.preview_measurement_pending = false;
+                        full.preview_measurement_range = None;
                     }
                 }
                 if let Some(full) = self.full_mindmap.as_mut() {
@@ -5952,6 +6033,9 @@ impl App {
                     // this result must not touch either preview state.
                     return Task::none();
                 }
+                if let Some(full) = self.full_mindmap.as_mut() {
+                    full.preview_measurement_pending = false;
+                }
                 let body_off = self
                     .full_mindmap
                     .as_ref()
@@ -5960,7 +6044,10 @@ impl App {
                 let offset_stable = (body_off - at_offset).abs() <= 1.0;
                 let mut delta_above = 0.0f32;
                 let mut any = false;
+                let mut range_changed = false;
                 if let Some(full) = self.full_mindmap.as_mut() {
+                    range_changed =
+                        full.preview_measurement_range.take() != Some(full.preview_window.range);
                     let (start, end) = full.preview_window.range;
                     let display = full.preview_window.display.clone();
                     let blocks = match &full.preview {
@@ -5980,7 +6067,15 @@ impl App {
                         let Some(&dpos) = by_id.get(&id) else {
                             continue;
                         };
+                        if !height.is_finite() || height <= 0.0 {
+                            continue;
+                        }
                         let old = full.preview_window.block_height(dpos);
+                        // Record every finite layout result even when it is
+                        // already close to the estimate; otherwise an
+                        // accurate estimate is repeatedly redispatched after
+                        // each window rebuild.
+                        full.preview_height_cache.set_measured(id, height);
                         if (height - old).abs() <= 0.5 {
                             continue;
                         }
@@ -5992,19 +6087,33 @@ impl App {
                     }
                 }
                 if !any {
-                    return Task::none();
+                    return if range_changed {
+                        // The operation completed for an older materialized
+                        // range while the viewport moved. Re-measure the
+                        // current range once; the pending guard prevents a
+                        // completion loop when the widget tree has no IDs.
+                        self.measure_full_mindmap_preview_heights()
+                    } else {
+                        Task::none()
+                    };
                 }
                 self.rebuild_full_mindmap_preview_here();
+                let followup = if range_changed {
+                    self.measure_full_mindmap_preview_heights()
+                } else {
+                    Task::none()
+                };
                 if offset_stable && delta_above.abs() > 0.5 {
-                    return iced::widget::operation::scroll_by(
+                    let scroll = iced::widget::operation::scroll_by(
                         Self::full_mindmap_preview_scroll_id(),
                         iced::widget::scrollable::AbsoluteOffset {
                             x: 0.0,
                             y: delta_above,
                         },
                     );
+                    return Task::batch([scroll, followup]);
                 }
-                Task::none()
+                followup
             }
             Message::Noop => Task::none(),
             Message::ToggleAutoFocusOnNav => {
@@ -6753,6 +6862,8 @@ impl App {
                         self.hovered_heading,
                         &self.diagram_cache,
                         self.diagram_theme_id,
+                        true,
+                        (0, 0),
                     )
                 }
             } else {
@@ -6768,6 +6879,8 @@ impl App {
                     self.hovered_heading,
                     &self.diagram_cache,
                     self.diagram_theme_id,
+                    true,
+                    (0, 0),
                 )
             };
             if self.view_mode == ViewMode::Raw || self.view_mode == ViewMode::Mindmap {
@@ -7513,18 +7626,14 @@ fn measure_full_mindmap_preview_block_heights(
         }
 
         fn finish(&self) -> iced::advanced::widget::operation::Outcome<Message> {
-            if self.out.is_empty() {
-                iced::advanced::widget::operation::Outcome::None
-            } else {
-                iced::advanced::widget::operation::Outcome::Some(
-                    Message::FullMindmapPreviewBlockHeightsMeasured {
-                        path: self.path.clone(),
-                        generation: self.generation,
-                        measured: self.out.clone(),
-                        at_offset: self.at_offset,
-                    },
-                )
-            }
+            iced::advanced::widget::operation::Outcome::Some(
+                Message::FullMindmapPreviewBlockHeightsMeasured {
+                    path: self.path.clone(),
+                    generation: self.generation,
+                    measured: self.out.clone(),
+                    at_offset: self.at_offset,
+                },
+            )
         }
     }
 
@@ -9568,13 +9677,132 @@ fn parse_full_mindmap_preview_blocking(path: PathBuf, source: String) -> FullMin
     }
 }
 
-async fn parse_full_mindmap_preview(
+fn full_mindmap_preview_work_gate() -> &'static tokio::sync::Semaphore {
+    static GATE: OnceLock<tokio::sync::Semaphore> = OnceLock::new();
+    GATE.get_or_init(|| tokio::sync::Semaphore::const_new(1))
+}
+
+fn preview_work_is_current(cancel: &AtomicU64, epoch: u64) -> bool {
+    cancel.load(Ordering::Acquire) == epoch
+}
+
+async fn acquire_full_mindmap_preview_work(
+    cancel: &Arc<AtomicU64>,
+    epoch: u64,
+) -> Result<tokio::sync::SemaphorePermit<'static>, String> {
+    loop {
+        if !preview_work_is_current(cancel, epoch) {
+            return Err(FULL_MINDMAP_PREVIEW_CANCELLED.to_string());
+        }
+        match full_mindmap_preview_work_gate().try_acquire() {
+            Ok(permit) => return Ok(permit),
+            Err(tokio::sync::TryAcquireError::NoPermits) => {
+                tokio::time::sleep(std::time::Duration::from_millis(8)).await;
+            }
+            Err(tokio::sync::TryAcquireError::Closed) => {
+                return Err("preview worker gate closed".to_string());
+            }
+        }
+    }
+}
+
+fn read_full_mindmap_preview_source_blocking(
+    path: PathBuf,
+    max_bytes: Option<usize>,
+    cancel: Option<Arc<AtomicU64>>,
+    epoch: u64,
+) -> Result<String, String> {
+    use std::io::Read;
+
+    let mut file = std::fs::File::open(path).map_err(|error| error.to_string())?;
+    let mut bytes = Vec::new();
+    let mut chunk = vec![0u8; FULL_MINDMAP_PREVIEW_READ_CHUNK_BYTES];
+    loop {
+        if cancel
+            .as_ref()
+            .is_some_and(|token| !preview_work_is_current(token, epoch))
+        {
+            return Err(FULL_MINDMAP_PREVIEW_CANCELLED.to_string());
+        }
+        let read = file.read(&mut chunk).map_err(|error| error.to_string())?;
+        if read == 0 {
+            break;
+        }
+        bytes.extend_from_slice(&chunk[..read]);
+        if let Some(limit) = max_bytes {
+            if bytes.len() >= limit {
+                bytes.truncate(limit);
+                break;
+            }
+        }
+    }
+    if cancel
+        .as_ref()
+        .is_some_and(|token| !preview_work_is_current(token, epoch))
+    {
+        return Err(FULL_MINDMAP_PREVIEW_CANCELLED.to_string());
+    }
+    Ok(String::from_utf8_lossy(&bytes).into_owned())
+}
+
+/// Complete read with a single cooperative worker. A newer selection bumps
+/// the token; stale queued work exits before taking the gate and an active
+/// read checks between bounded chunks, so rapid navigation cannot retain a
+/// backlog of large sources.
+async fn load_full_mindmap_preview_guarded(
+    path: PathBuf,
+    cancel: Arc<AtomicU64>,
+    epoch: u64,
+) -> Result<(PathBuf, String), String> {
+    #[cfg(feature = "pdf")]
+    if path
+        .extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| e.eq_ignore_ascii_case("pdf"))
+    {
+        return Err("PDF preview unavailable — press Enter to open".to_string());
+    }
+    let _permit = acquire_full_mindmap_preview_work(&cancel, epoch).await?;
+    let max_bytes = data_lang_for(Some(&path)).map(|_| MIND_PANEL_MAX_TEXT_BYTES + 1);
+    let read_path = path.clone();
+    let read_cancel = Arc::clone(&cancel);
+    let source = tokio::task::spawn_blocking(move || {
+        read_full_mindmap_preview_source_blocking(read_path, max_bytes, Some(read_cancel), epoch)
+    })
+    .await
+    .map_err(|error| error.to_string())??;
+    if !preview_work_is_current(&cancel, epoch) {
+        return Err(FULL_MINDMAP_PREVIEW_CANCELLED.to_string());
+    }
+    Ok((path, source))
+}
+
+/// Parse and highlight off the update thread, with the same latest-only gate
+/// as the read. The token check before parsing is important: a queue of stale
+/// long sources must not turn into a queue of expensive parser invocations.
+async fn parse_full_mindmap_preview_guarded(
     path: PathBuf,
     source: String,
+    cancel: Arc<AtomicU64>,
+    epoch: u64,
 ) -> Result<FullMindmapPreview, String> {
-    tokio::task::spawn_blocking(move || parse_full_mindmap_preview_blocking(path, source))
-        .await
-        .map_err(|error| error.to_string())
+    let _permit = acquire_full_mindmap_preview_work(&cancel, epoch).await?;
+    if !preview_work_is_current(&cancel, epoch) {
+        return Err(FULL_MINDMAP_PREVIEW_CANCELLED.to_string());
+    }
+    let parse_cancel = Arc::clone(&cancel);
+    tokio::task::spawn_blocking(move || {
+        if !preview_work_is_current(&parse_cancel, epoch) {
+            return Err(FULL_MINDMAP_PREVIEW_CANCELLED.to_string());
+        }
+        let preview = parse_full_mindmap_preview_blocking(path, source);
+        if !preview_work_is_current(&parse_cancel, epoch) {
+            return Err(FULL_MINDMAP_PREVIEW_CANCELLED.to_string());
+        }
+        Ok(preview)
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 async fn load_file(p: PathBuf) -> Result<(PathBuf, String), String> {
@@ -9597,6 +9825,7 @@ async fn load_file(p: PathBuf) -> Result<(PathBuf, String), String> {
 
 /// Read the complete Full Mindmap side-panel source on a worker. PDFs remain
 /// openable with Enter but are intentionally not converted just for a preview.
+#[cfg(test)]
 async fn load_full_mindmap_preview(p: PathBuf) -> Result<(PathBuf, String), String> {
     #[cfg(feature = "pdf")]
     if p.extension()
@@ -11042,6 +11271,23 @@ mod tests {
             .expect("settled preview should own a read request")
     }
 
+    fn accept_full_mindmap_preview(
+        app: &mut App,
+        request: &PendingFullMindmapPreview,
+        path: PathBuf,
+        source: String,
+    ) {
+        let parsed = parse_full_mindmap_preview_blocking(path.clone(), source.clone());
+        let _ = app.update(Message::FullMindmapPreviewLoaded {
+            request: request.clone(),
+            result: Ok((path.clone(), source)),
+        });
+        let _ = app.update(Message::FullMindmapPreviewParsed {
+            request: request.clone(),
+            result: Ok(parsed),
+        });
+    }
+
     #[test]
     fn full_mindmap_without_workspace_adopts_home_in_background() {
         let mut app = App::default();
@@ -11076,6 +11322,16 @@ mod tests {
             Some(dir.as_path())
         );
         complete_full_mindmap_workspace_load(&mut app);
+        let preview_request = app
+            .full_mindmap
+            .as_ref()
+            .and_then(|full| full.pending_preview.clone())
+            .expect("current-file preview should own a parse request");
+        let parsed = parse_full_mindmap_preview_blocking(file.clone(), app.source.clone());
+        let _ = app.update(Message::FullMindmapPreviewParsed {
+            request: preview_request,
+            result: Ok(parsed),
+        });
 
         assert_eq!(app.workspace.as_deref(), Some(dir.as_path()));
         assert!(!app.sidebar_open);
@@ -12245,10 +12501,12 @@ mod tests {
             Some(preview_request.clone())
         );
 
-        let _ = app.update(Message::FullMindmapPreviewLoaded {
-            request: preview_request,
-            result: Ok((file.clone(), "# Preview\n".into())),
-        });
+        accept_full_mindmap_preview(
+            &mut app,
+            &preview_request,
+            file.clone(),
+            "# Preview\n".into(),
+        );
         assert!(app.full_mindmap.as_ref().unwrap().pending_preview.is_none());
         assert!(matches!(
             &app.full_mindmap.as_ref().unwrap().preview,
@@ -12563,10 +12821,12 @@ mod tests {
             FullMindmapPreview::Loading(_)
         ));
 
-        let _ = app.update(Message::FullMindmapPreviewLoaded {
-            request,
-            result: Ok((preview_file.clone(), "# Preview\n\nContent\n".into())),
-        });
+        accept_full_mindmap_preview(
+            &mut app,
+            &request,
+            preview_file.clone(),
+            "# Preview\n\nContent\n".into(),
+        );
 
         assert!(matches!(
             app.full_mindmap.as_ref().unwrap().preview,
@@ -12623,10 +12883,12 @@ mod tests {
             .unwrap()
             .pending_preview_settle
             .is_none());
-        let _ = app.update(Message::FullMindmapPreviewLoaded {
-            request: preview_request,
-            result: Ok((file.clone(), "# Preview\n".into())),
-        });
+        accept_full_mindmap_preview(
+            &mut app,
+            &preview_request,
+            file.clone(),
+            "# Preview\n".into(),
+        );
         assert!(matches!(
             app.full_mindmap.as_ref().unwrap().preview,
             FullMindmapPreview::Document { ref path, .. } if path == &file
@@ -12738,10 +13000,7 @@ mod tests {
             first.clone(),
         )));
         let first_request = settle_full_mindmap_preview(&mut app);
-        let _ = app.update(Message::FullMindmapPreviewLoaded {
-            request: first_request,
-            result: Ok((first.clone(), "# First\n".into())),
-        });
+        accept_full_mindmap_preview(&mut app, &first_request, first.clone(), "# First\n".into());
         app.full_mindmap
             .as_mut()
             .unwrap()
@@ -12760,10 +13019,7 @@ mod tests {
         );
 
         let current = settle_full_mindmap_preview(&mut app);
-        let _ = app.update(Message::FullMindmapPreviewLoaded {
-            request: current.clone(),
-            result: Ok((second.clone(), "# Second\n".into())),
-        });
+        accept_full_mindmap_preview(&mut app, &current, second.clone(), "# Second\n".into());
         let generation = app.full_mindmap.as_ref().unwrap().preview_generation;
         let _ = app.update(Message::FullMindmapPreviewBlockHeightsMeasured {
             path: first,
@@ -12855,7 +13111,7 @@ mod tests {
         let first_request = settle_full_mindmap_preview(&mut app);
         let large_source = format!(
             "# First\n\n{}",
-            "x".repeat(FULL_MINDMAP_PREVIEW_PARSE_ASYNC_BYTES)
+            "x".repeat(FULL_MINDMAP_PREVIEW_STALE_SOURCE_BYTES)
         );
         let _ = app.update(Message::FullMindmapPreviewLoaded {
             request: first_request.clone(),
@@ -12889,6 +13145,164 @@ mod tests {
             FullMindmapPreview::Loading(path) if path == &second
         ));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn full_mindmap_preview_loaded_defers_parse_for_short_source() {
+        let dir = full_mindmap_test_dir("preview-parse-deferred");
+        let file = dir.join("preview.md");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(&file, "# Preview\n").unwrap();
+
+        let mut app = App::default();
+        app.set_workspace(dir.clone(), false);
+        app.full_mindmap = Some(full_workspace_state(&dir));
+        let _ = app.update(Message::FullMindmapSelectNode(WorkspaceNodeId::File(
+            file.clone(),
+        )));
+        let request = settle_full_mindmap_preview(&mut app);
+        let source = "# Preview\n".to_string();
+
+        // Loaded only hands source ownership to the worker. It must not parse
+        // or materialize blocks synchronously on the update thread.
+        let _ = app.update(Message::FullMindmapPreviewLoaded {
+            request: request.clone(),
+            result: Ok((file.clone(), source.clone())),
+        });
+        assert_eq!(
+            app.full_mindmap
+                .as_ref()
+                .and_then(|full| full.pending_preview.as_ref()),
+            Some(&request)
+        );
+        assert!(matches!(
+            app.full_mindmap.as_ref().unwrap().preview,
+            FullMindmapPreview::Loading(ref path) if path == &file
+        ));
+
+        let parsed = parse_full_mindmap_preview_blocking(file.clone(), source);
+        let _ = app.update(Message::FullMindmapPreviewParsed {
+            request,
+            result: Ok(parsed),
+        });
+        assert!(matches!(
+            app.full_mindmap.as_ref().unwrap().preview,
+            FullMindmapPreview::Document { ref path, .. } if path == &file
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn full_mindmap_preview_measurement_coalesces_and_releases_empty_result() {
+        let root = PathBuf::from("/preview-measurement-coalesced");
+        let file = root.join("preview.md");
+        let blocks = (0..320u64)
+            .map(|index| {
+                (
+                    BlockId(index),
+                    Block::Paragraph(vec![crate::ast::Inline::Text("x".into())]),
+                )
+            })
+            .collect();
+        let mut full = App::new_full_mindmap_state();
+        full.selected = Some(WorkspaceNodeId::File(file.clone()));
+        full.preview = FullMindmapPreview::Document {
+            path: file.clone(),
+            blocks,
+            truncated: false,
+        };
+        let mut app = App::default();
+        app.full_mindmap = Some(full);
+        app.rebuild_full_mindmap_preview_here();
+        assert!(app.full_mindmap.as_ref().unwrap().preview_window.active);
+
+        let _first = app.measure_full_mindmap_preview_heights();
+        assert!(
+            app.full_mindmap
+                .as_ref()
+                .unwrap()
+                .preview_measurement_pending
+        );
+        let _second = app.measure_full_mindmap_preview_heights();
+        assert!(
+            app.full_mindmap
+                .as_ref()
+                .unwrap()
+                .preview_measurement_pending
+        );
+
+        let generation = app.full_mindmap.as_ref().unwrap().preview_generation;
+        let _ = app.update(Message::FullMindmapPreviewBlockHeightsMeasured {
+            path: file.clone(),
+            generation,
+            measured: vec![(BlockId(0), 24.0)],
+            at_offset: 0.0,
+        });
+        assert!(app
+            .full_mindmap
+            .as_ref()
+            .unwrap()
+            .preview_height_cache
+            .is_measured(BlockId(0)));
+        assert!(
+            !app.full_mindmap
+                .as_ref()
+                .unwrap()
+                .preview_measurement_pending
+        );
+
+        // A later operation may find no new IDs (for example while the
+        // widget tree is being replaced); its empty completion still clears
+        // the guard without creating a dispatch loop.
+        let _third = app.measure_full_mindmap_preview_heights();
+        assert!(
+            app.full_mindmap
+                .as_ref()
+                .unwrap()
+                .preview_measurement_pending
+        );
+        let generation = app.full_mindmap.as_ref().unwrap().preview_generation;
+        let file = app
+            .full_mindmap
+            .as_ref()
+            .and_then(|full| match &full.preview {
+                FullMindmapPreview::Document { path, .. } => Some(path.clone()),
+                _ => None,
+            })
+            .unwrap();
+        let range = app.full_mindmap.as_ref().unwrap().preview_window.range;
+        assert_eq!(
+            app.full_mindmap.as_ref().unwrap().preview_measurement_range,
+            Some(range)
+        );
+        let _ = app.update(Message::FullMindmapPreviewBlockHeightsMeasured {
+            path: file,
+            generation,
+            measured: Vec::new(),
+            at_offset: 0.0,
+        });
+        assert!(
+            !app.full_mindmap
+                .as_ref()
+                .unwrap()
+                .preview_measurement_pending
+        );
+    }
+
+    #[test]
+    fn full_mindmap_stale_preview_worker_exits_before_parsing() {
+        let cancel = Arc::new(AtomicU64::new(7));
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let result = runtime.block_on(parse_full_mindmap_preview_guarded(
+            PathBuf::from("/does-not-exist.md"),
+            "# stale".into(),
+            cancel,
+            6,
+        ));
+        assert!(matches!(
+            result,
+            Err(error) if error == FULL_MINDMAP_PREVIEW_CANCELLED
+        ));
     }
 
     #[test]
@@ -13054,6 +13468,16 @@ mod tests {
 
         let _ = app.enter_full_mindmap();
         complete_full_mindmap_folder_loads(&mut app);
+        let preview_request = app
+            .full_mindmap
+            .as_ref()
+            .and_then(|full| full.pending_preview.clone())
+            .expect("entry preview should own a parse request");
+        let parsed = parse_full_mindmap_preview_blocking(file.clone(), app.source.clone());
+        let _ = app.update(Message::FullMindmapPreviewParsed {
+            request: preview_request,
+            result: Ok(parsed),
+        });
 
         let full = app.full_mindmap.as_ref().unwrap();
         assert_eq!(full.selected, Some(WorkspaceNodeId::File(file.clone())));

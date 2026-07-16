@@ -69,6 +69,13 @@ impl HeightCache {
         *self.measured.get(&id).unwrap_or(&estimate_height(b))
     }
 
+    /// Whether this block has a layout measurement for the current viewport
+    /// shape. Callers use this to avoid redispatching identical measurement
+    /// operations while the scroll viewport is stable.
+    pub fn is_measured(&self, id: BlockId) -> bool {
+        self.measured.contains_key(&id)
+    }
+
     pub fn set_measured(&mut self, id: BlockId, h: f32) {
         self.measured.insert(id, h);
     }

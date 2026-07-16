@@ -33,6 +33,8 @@ pub fn render<'a>(
     hovered_heading: Option<BlockId>,
     diagram_cache: &'a DiagramCache,
     diagram_theme_id: u32,
+    keyed_widget_reuse: bool,
+    keyed_widget_generation: (u64, u64),
 ) -> Element<'a, Message> {
     let img_ctx = ImgCtx {
         cache: image_cache,
@@ -53,10 +55,11 @@ pub fn render<'a>(
             (local_display.as_slice(), (0, n))
         }
     };
-    // Rows are keyed (content-stable BlockId) and the column is wrapped in
-    // `KeyedBody`, whose diff moves widget state with the key — blocks that
-    // stay in the window when it slides keep their shaped paragraphs instead
-    // of re-shaping per shift (the historical virtualization jank).
+    // Rows are always wrapped in `KeyedBody`. Normal document callers retain
+    // state by BlockId; preview callers use fresh-diff mode, which clears the
+    // inner child trees only when this materialized range/document namespace
+    // changes. That keeps the tag-checked boundary while avoiding state reuse
+    // across rapid preview transitions.
     let mut keys: Vec<RowKey> = Vec::with_capacity(end - start + 2);
     let mut col = Column::with_capacity(end - start + 2).spacing(crate::virt::BLOCK_GAP_PX);
     if let Some(h) = virt.and_then(|w| w.top_spacer()) {
@@ -89,7 +92,12 @@ pub fn render<'a>(
 
     // Reading column cap: 780px (rmdv design system READING_MAX, render.rs).
     let _ = typ.measure_ch;
-    container(KeyedBody::new(keys, col)).max_width(780.0).into()
+    let body: Element<'a, Message> = if keyed_widget_reuse {
+        KeyedBody::new(keys, col).into()
+    } else {
+        KeyedBody::new_fresh(keys, col, keyed_widget_generation).into()
+    };
+    container(body).max_width(780.0).into()
 }
 
 fn render_heading_with_chevron<'a>(

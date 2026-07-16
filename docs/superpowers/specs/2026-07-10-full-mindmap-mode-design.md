@@ -479,7 +479,10 @@ may directly assign `file`, `source`, `saved_source`, `dirty`, or `editor`.
     virtual range with spacers instead of the old 24 KiB/80-block truncation.
     Selection changes reset only this preview state and return its scroll to the
     top. Late parse/measurement results carrying an older path or generation
-    are ignored. Data previews and PDF open behavior remain unchanged.
+    are ignored; parsing is always off-main, and stale work is gated and
+    cancelled cooperatively. Measurements are unmeasured-only and coalesced,
+    while preview range/file transitions use a fresh keyed tree. Data previews
+    and PDF open behavior remain unchanged.
 
 ### Shared canvas regression tests (`mindmap.rs`)
 
@@ -572,6 +575,16 @@ none of those are borrowed from or written into the document reader. Selection
 resets that state and scrolls the panel to the top. Height feedback is applied
 only when its selected path and generation still match. Data previews continue
 to use their existing owned data renderer, and PDFs remain Enter-only.
+
+Preview safety is part of this contract: every preview read, Markdown parse,
+and syntax-highlight pass runs off the Iced update thread. A single latest-only
+worker gate plus a cooperative epoch cancels stale chunked reads and prevents
+rapid navigation from queueing obsolete work. Height operations are
+coalesced, target only rows not already in the preview cache, and may schedule
+at most one follow-up when the materialized range changes before completion.
+Preview rows retain the keyed wrapper's tag-checked tree boundary, but use a
+fresh-diff namespace on file/range changes so stateful child trees are rebuilt
+instead of being reused across unrelated materialized content.
 
 ### Verification after implementation
 
