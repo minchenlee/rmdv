@@ -4,6 +4,24 @@ Last reconciled: 2026-07-15 (Asia/Taipei)
 
 ## Active work
 
+- **Submitted locally (serial maker, 2026-07-16):** commit `7e038ba` closes the
+  delayed-reveal lifecycle gaps. Newly materialized `LowerBound(0)` children
+  stay hidden in a deferred set without changing an active wave denominator;
+  the current wave starts a fresh fixed follow-up after it drains. Collapsing a
+  branch re-snapshots the other expanded frontier in the same update. Wave
+  verification now retains only recursive count/status (`Verified`), while
+  explicit expansion owns child/file materialization. Added regressions for
+  deferred exact-empty pruning, fixed-cap overflow, collapse restart, stale
+  prior-wave completion, and count-only verification. Focused gates pass:
+  Full Mindmap app 47, workspace graph 17, all library 250, all integration
+  tests 67, `cargo check`, touched-file rustfmt, and `git diff --check`. The
+  fresh protected binary is `/private/tmp/mdv-full-mindmap-protect-target/debug/rmdv`
+  with SHA-256
+  `4f36fbc26f4ab1f52d6d3ad4d0f03a77d936fc0f835ff5baf023fcc2a2018298`.
+  Native/manual acceptance remains pending; main/Zoom integration and release
+  actions stay out of scope. This is submitted for parent review, not
+  self-accepted.
+
 - **Completed locally (serial maker, 2026-07-16):** commit `56b44cb` adds the
   fixed four-worker/256-candidate delayed-reveal wave, strict
   request/root/filter/mode/parent-expansion identity, truthful exact /
@@ -133,6 +151,12 @@ Last reconciled: 2026-07-15 (Asia/Taipei)
    exact-positive, lower-bound, interrupted, unavailable, and exact-empty
    outcomes are truthful. A separate neutral determinate progress toast tracks
    checked/total/remaining without replacing ordinary attention/error toasts.
+19. **Full Mindmap delayed-reveal lifecycle and count-only correction** is
+   submitted at `7e038ba`. Branch loads defer newly visible unresolved shells
+   behind a fixed follow-up wave, collapse re-snapshots remaining expanded
+   parents, and verification retains only recursive count/status until a
+   folder owns its explicit branch load. Native/manual acceptance is still
+   pending; no main integration, push, tag, release, or deploy was performed.
 
 ## Current state
 
