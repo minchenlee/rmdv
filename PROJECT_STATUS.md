@@ -4,6 +4,28 @@ Last reconciled: 2026-07-16 (Asia/Taipei)
 
 ## Active work
 
+- **Crash/stutter correction independently accepted locally (serial maker +
+  lead, 2026-07-16; implementation/spec commit `070ef02`):** manual testing of
+  `c81f4ae` exposed severe long-preview navigation freezes, scroll stutter, and
+  a main-thread abort recorded in
+  `~/Library/Logs/DiagnosticReports/rmdv-2026-07-16-201504.ips`. Root causes
+  included sub-64-KiB Markdown still parsing synchronously on the Iced update
+  thread, unbounded stale preview work/measurement dispatch, and unsafe widget
+  child-state reuse across preview range transitions. All preview reads/parses
+  now run behind one latest-only background gate with cooperative epoch
+  cancellation; height measurement is coalesced and unmeasured-only; preview
+  range/file changes retain a tag-checked `KeyedBody` boundary but rebuild fresh
+  child trees. Regressions cover short-source off-main parsing, stale-worker
+  cancellation, measurement coalescing/cache completion, and mixed stateful/
+  stateless fresh-tree diff without panic. Lead gates pass: 3 keyed-tree tests,
+  67 focused Full Mindmap tests, all 272 library tests, all integration targets,
+  `cargo check`, touched-file rustfmt, and `git diff --check`. Current-source
+  protected binary `/private/tmp/mdv-full-mindmap-crash-fix-target/debug/rmdv`
+  has UUID `0A168985-414E-3F70-886B-4FC27C22B5DE` and SHA-256
+  `b19effa3410cbe30c152e84585c6dbc8c260149310f535c148f0598169cb760a`.
+  Native/manual re-acceptance remains pending; main/Zoom integration and push,
+  tag, release, and deploy actions remain out of scope.
+
 - **Independently accepted locally (serial maker + lead, 2026-07-16;
   implementation/spec commit `c81f4ae`):** Full Mindmap Markdown previews now
   read and retain complete selected files instead of the former 24 KiB/80-block
@@ -20,7 +42,8 @@ Last reconciled: 2026-07-16 (Asia/Taipei)
   binary `/private/tmp/mdv-full-mindmap-protect-target/debug/rmdv` has SHA-256
   `d4a334f944647966dfdf41df847d83e21ad19e82999b41bab80faf900e66b5c5`.
   Native/manual acceptance remains pending; main/Zoom integration and push,
-  tag, release, and deploy actions remain out of scope. No P0/P1 issue was found.
+  tag, release, and deploy actions remain out of scope. This acceptance was
+  superseded by the manual crash/stutter finding and correction `070ef02`.
 
 - **Independently accepted locally (serial maker + lead, 2026-07-16; implementation/spec commit `84cd355`):** the
   Full Mindmap preview settle is now 200 ms so rapid file navigation avoids
