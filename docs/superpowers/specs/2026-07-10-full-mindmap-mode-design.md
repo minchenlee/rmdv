@@ -513,6 +513,21 @@ set and a new fixed wave starts after the active denominator drains. Collapsing
 one branch cancels and re-snapshots the remaining expanded frontier in the same
 update, so unresolved siblings never flash into the graph.
 
+### 6. Unified document/workspace navigation (2026-07-16)
+
+Full Mindmap file activation remains a background, request-identified open, but
+an accepted file always returns to the document-level `ViewMode::Mindmap` and
+focuses its first content child through the normal document load path. Dirty
+guards, stale file completions, previews, and workspace ownership remain
+unchanged. In the opposite direction, `Left` from a document top-level heading
+(or the document-root/no-selection boundary) enters Full Mindmap with the
+current file deferred until its expanded folder listing is accepted. An
+existing workspace is preserved when it contains that file; otherwise the
+current file's parent (or Home) is adopted through the existing background
+workspace loader. `Left` from a nested heading continues to select its real
+heading parent. The document mindmap's selection/collapse state and the Full
+Mindmap navigator remain separate throughout both transitions.
+
 ### Verification after implementation
 
 The approved design is implemented as follows:

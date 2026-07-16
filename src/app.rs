@@ -1524,19 +1524,50 @@ impl App {
     }
 
     fn enter_full_mindmap(&mut self) -> Task<Message> {
+        self.enter_full_mindmap_at(None)
+    }
+
+    /// Enter Full Mindmap, optionally forcing a fresh workspace root. The
+    /// document-Mindmap boundary uses the override when the current file is
+    /// outside the existing workspace; ordinary Full Mindmap entry preserves
+    /// its already-indexed workspace exactly as before.
+    fn enter_full_mindmap_at(&mut self, forced_start: Option<PathBuf>) -> Task<Message> {
         self.overlay = Overlay::None;
+        if self.full_mindmap.is_some() {
+            self.cancel_full_mindmap_verification();
+        }
         self.full_mindmap = Some(Self::new_full_mindmap_state());
-        if self.workspace_tree.is_some() {
+        if forced_start.is_none() && self.workspace_tree.is_some() {
             self.reset_full_mindmap_workspace();
             let verification = self.begin_full_mindmap_verification_wave();
             let expanded = self.begin_full_mindmap_expanded_folder_loads();
             Task::batch([verification, expanded])
         } else {
-            let start = self.full_mindmap_start_folder().or_else(Picker::home);
+            let start = forced_start
+                .or_else(|| self.full_mindmap_start_folder())
+                .or_else(Picker::home);
             start.map_or_else(Task::none, |path| {
                 self.begin_full_mindmap_workspace_load(path, false, None, false, false, false)
             })
         }
+    }
+
+    /// Return to the workspace navigator from document-level Mindmap. Keep an
+    /// existing workspace when it contains the current file; otherwise adopt
+    /// the file's parent (or Home) through the same background workspace-load
+    /// path used by every other Full Mindmap root change.
+    fn enter_full_mindmap_for_current_file(&mut self) -> Task<Message> {
+        let Some(file) = self.file.clone() else {
+            return Task::none();
+        };
+        let in_workspace = self
+            .workspace
+            .as_ref()
+            .is_some_and(|root| file.starts_with(root));
+        let forced_start = (!in_workspace)
+            .then(|| file.parent().map(PathBuf::from).or_else(Picker::home))
+            .flatten();
+        self.enter_full_mindmap_at(forced_start)
     }
 
     /// Exit Full Mindmap without exposing a workspace snapshot built under a
@@ -3966,7 +3997,12 @@ impl App {
                         // so a late completion cannot discard an intervening
                         // editor change. Clearing the navigator only after the
                         // request was accepted preserves its dirty safety.
+                        self.cancel_full_mindmap_verification();
                         self.full_mindmap = None;
+                        // Full Mindmap file activation always hands the file
+                        // back to the document mindmap, whose normal load path
+                        // then focuses the first content child.
+                        self.view_mode = ViewMode::Mindmap;
                         self.update(Message::FileLoaded(Ok((path, source))))
                     }
                     Ok((path, _)) => {
@@ -4319,8 +4355,20 @@ impl App {
                             .and_then(|root| root.children.first().copied())
                     });
                 let Some(cur_idx) = cur else {
+                    if dir == MindmapDir::Left {
+                        return self.enter_full_mindmap_for_current_file();
+                    }
                     return Task::none();
                 };
+                // The document root is represented by an unselectable node
+                // (`id == None`). Left at that boundary (including the
+                // no-selection/root semantic above) hands navigation to the
+                // current file's Full Mindmap workspace.
+                if dir == MindmapDir::Left
+                    && parents[cur_idx].map_or(true, |parent| nodes[parent].id.is_none())
+                {
+                    return self.enter_full_mindmap_for_current_file();
+                }
                 let next_idx: Option<usize> = match dir {
                     MindmapDir::Down | MindmapDir::Up => (|| -> Option<usize> {
                         let parent = parents[cur_idx]?;
@@ -11075,6 +11123,294 @@ mod tests {
             app.full_mindmap.as_ref().unwrap().selected,
             Some(WorkspaceNodeId::Root(parent))
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn full_mindmap_file_enter_opens_document_mindmap_and_focuses_first_child() {
+        let dir = full_mindmap_test_dir("file-enter-document-mindmap");
+        let file = dir.join("guide.md");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(&file, "# Guide\n## Details\n").unwrap();
+
+        let mut app = App::default();
+        app.set_workspace(dir.clone(), false);
+        let mut full = full_workspace_state(&dir);
+        full.selected = Some(WorkspaceNodeId::File(file.clone()));
+        app.full_mindmap = Some(full);
+        assert_eq!(app.view_mode, ViewMode::Rendered);
+
+        let _ = app.update(Message::FullMindmapActivate);
+        let request = app
+            .full_mindmap
+            .as_ref()
+            .and_then(|full| full.pending_open.clone())
+            .expect("Enter should own a background file request");
+        let _ = app.update(Message::FullMindmapFileLoaded {
+            request,
+            result: Ok((file.clone(), "# Guide\n## Details\n".into())),
+        });
+
+        assert!(app.full_mindmap.is_none());
+        assert_eq!(app.view_mode, ViewMode::Mindmap);
+        assert_eq!(app.file.as_deref(), Some(file.as_path()));
+        let first_heading = app
+            .ast
+            .iter()
+            .find_map(|(id, block)| matches!(block, Block::Heading { .. }).then_some(*id));
+        assert_eq!(app.mindmap_selected, first_heading);
+        assert!(app.mindmap_panel_open);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn full_mindmap_dirty_file_enter_still_blocks_open() {
+        let dir = full_mindmap_test_dir("file-enter-dirty");
+        let file = dir.join("guide.md");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(&file, "# Guide\n").unwrap();
+
+        let mut app = App::default();
+        app.set_workspace(dir.clone(), false);
+        let mut full = full_workspace_state(&dir);
+        full.selected = Some(WorkspaceNodeId::File(file));
+        app.full_mindmap = Some(full);
+        app.source = "unsaved current".into();
+        app.saved_source = "saved current".into();
+        app.dirty = true;
+
+        let _ = app.update(Message::FullMindmapActivate);
+        assert!(app.full_mindmap.as_ref().unwrap().pending_open.is_none());
+        assert!(app.full_mindmap.is_some());
+        assert!(app
+            .toast
+            .as_ref()
+            .is_some_and(|toast| toast.text.contains("unsaved edits")));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn document_mindmap_root_left_returns_and_focuses_current_file() {
+        let dir = full_mindmap_test_dir("document-root-left");
+        let file = dir.join("guide.md");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(&file, "# Guide\n## Details\n").unwrap();
+
+        let mut app = App::default();
+        app.set_workspace(dir.clone(), false);
+        app.file = Some(file.clone());
+        app.source = "# Guide\n## Details\n".into();
+        app.saved_source = app.source.clone();
+        app.view_mode = ViewMode::Mindmap;
+        app.load_ast_from_source();
+        app.mindmap_focus_first_child();
+        let top_heading = app
+            .mindmap_selected
+            .expect("first heading should be selected");
+
+        let _ = app.update(Message::MindmapNavigate(MindmapDir::Left));
+        assert!(app.full_mindmap.is_some());
+        assert_eq!(app.view_mode, ViewMode::Mindmap);
+        assert_eq!(app.workspace.as_deref(), Some(dir.as_path()));
+        // Document and Full Mindmap selections are intentionally distinct; the
+        // underlying document heading remains selected while the workspace
+        // bridge takes ownership of the visible navigator.
+        assert_eq!(app.mindmap_selected, Some(top_heading));
+
+        complete_full_mindmap_folder_loads(&mut app);
+        assert_eq!(
+            app.full_mindmap.as_ref().unwrap().selected,
+            Some(WorkspaceNodeId::File(file.clone()))
+        );
+        assert!(app
+            .full_mindmap_graph()
+            .unwrap()
+            .node(&WorkspaceNodeId::File(file))
+            .is_some());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn document_mindmap_root_left_adopts_current_file_parent_outside_workspace() {
+        let dir = full_mindmap_test_dir("document-root-left-adopt");
+        let old_root = dir.join("old-root");
+        let current_root = dir.join("current-root");
+        let file = current_root.join("guide.md");
+        std::fs::create_dir_all(&old_root).unwrap();
+        std::fs::create_dir_all(&current_root).unwrap();
+        std::fs::write(&file, "# Guide\n").unwrap();
+
+        let mut app = App::default();
+        app.set_workspace(old_root.clone(), false);
+        app.file = Some(file.clone());
+        app.source = "# Guide\n".into();
+        app.saved_source = app.source.clone();
+        app.view_mode = ViewMode::Mindmap;
+        app.load_ast_from_source();
+        app.mindmap_focus_first_child();
+
+        let _ = app.update(Message::MindmapNavigate(MindmapDir::Left));
+        let request = app
+            .full_mindmap
+            .as_ref()
+            .and_then(|full| full.pending_workspace_load.as_ref())
+            .expect("outside-workspace return should adopt the current parent");
+        assert_eq!(request.path, current_root);
+
+        complete_full_mindmap_workspace_load(&mut app);
+        assert_eq!(app.workspace.as_deref(), Some(current_root.as_path()));
+        assert_eq!(
+            app.full_mindmap.as_ref().unwrap().selected,
+            Some(WorkspaceNodeId::File(file.clone()))
+        );
+        assert!(app
+            .full_mindmap_graph()
+            .unwrap()
+            .node(&WorkspaceNodeId::File(file))
+            .is_some());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn document_mindmap_nested_left_remains_document_navigation() {
+        let file = PathBuf::from("/nested-left.md");
+        let mut app = App::default();
+        app.file = Some(file);
+        app.source = "# Top\n## Nested\n".into();
+        app.saved_source = app.source.clone();
+        app.view_mode = ViewMode::Mindmap;
+        app.load_ast_from_source();
+        let headings = app
+            .ast
+            .iter()
+            .filter_map(|(id, block)| matches!(block, Block::Heading { .. }).then_some(*id))
+            .collect::<Vec<_>>();
+        assert_eq!(headings.len(), 2);
+        app.mindmap_selected = Some(headings[1]);
+
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        runtime.block_on(async {
+            let _ = app.update(Message::MindmapNavigate(MindmapDir::Left));
+        });
+        assert!(app.full_mindmap.is_none());
+        assert_eq!(app.view_mode, ViewMode::Mindmap);
+        assert_eq!(app.mindmap_selected, Some(headings[0]));
+    }
+
+    #[test]
+    fn document_root_left_has_consistent_no_selection_boundary() {
+        let dir = full_mindmap_test_dir("document-root-left-no-selection");
+        let file = dir.join("guide.md");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(&file, "# Guide\n").unwrap();
+
+        let mut app = App::default();
+        app.file = Some(file);
+        app.source = "# Guide\n".into();
+        app.saved_source = app.source.clone();
+        app.view_mode = ViewMode::Mindmap;
+        app.load_ast_from_source();
+        app.mindmap_selected = None;
+
+        let _ = app.update(Message::MindmapNavigate(MindmapDir::Left));
+        assert!(app.full_mindmap.is_some());
+        assert_eq!(app.view_mode, ViewMode::Mindmap);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn stale_full_mindmap_file_and_workspace_loads_cannot_switch_modes() {
+        let dir = full_mindmap_test_dir("document-bridge-stale");
+        let old_root = dir.join("old-root");
+        let current_root = dir.join("current-root");
+        let next_root = dir.join("next-root");
+        let first = old_root.join("first.md");
+        let second = old_root.join("second.md");
+        let current = current_root.join("current.md");
+        std::fs::create_dir_all(&old_root).unwrap();
+        std::fs::create_dir_all(&current_root).unwrap();
+        std::fs::create_dir_all(&next_root).unwrap();
+        std::fs::write(&first, "# First\n").unwrap();
+        std::fs::write(&second, "# Second\n").unwrap();
+        std::fs::write(&current, "# Current\n").unwrap();
+
+        let mut app = App::default();
+        app.set_workspace(old_root.clone(), false);
+        app.full_mindmap = Some(full_workspace_state(&old_root));
+        app.full_mindmap.as_mut().unwrap().selected = Some(WorkspaceNodeId::File(first.clone()));
+        let _ = app.update(Message::FullMindmapActivate);
+        let stale_file = app
+            .full_mindmap
+            .as_ref()
+            .unwrap()
+            .pending_open
+            .clone()
+            .unwrap();
+        let _ = app.begin_full_mindmap_open(second.clone());
+        let current_file_request = app
+            .full_mindmap
+            .as_ref()
+            .unwrap()
+            .pending_open
+            .clone()
+            .unwrap();
+        let _ = app.update(Message::FullMindmapFileLoaded {
+            request: stale_file,
+            result: Ok((first, "# Stale\n".into())),
+        });
+        assert!(app.full_mindmap.is_some());
+        assert_eq!(app.view_mode, ViewMode::Rendered);
+        assert_eq!(app.file, None);
+        assert_eq!(
+            app.full_mindmap.as_ref().unwrap().pending_open,
+            Some(current_file_request.clone())
+        );
+        let _ = app.update(Message::FullMindmapFileLoaded {
+            request: current_file_request,
+            result: Ok((second.clone(), "# Second\n".into())),
+        });
+        assert!(app.full_mindmap.is_none());
+        assert_eq!(app.view_mode, ViewMode::Mindmap);
+        assert_eq!(app.file.as_deref(), Some(second.as_path()));
+
+        // A separate stale workspace completion must not strand the bridge or
+        // alter the document mode while a newer root request owns Full Mindmap.
+        let mut bridge = App::default();
+        bridge.set_workspace(old_root.clone(), false);
+        bridge.file = Some(current.clone());
+        bridge.source = "# Current\n".into();
+        bridge.saved_source = bridge.source.clone();
+        bridge.view_mode = ViewMode::Mindmap;
+        bridge.load_ast_from_source();
+        bridge.mindmap_focus_first_child();
+        let _ = bridge.update(Message::MindmapNavigate(MindmapDir::Left));
+        let stale_workspace = bridge
+            .full_mindmap
+            .as_ref()
+            .and_then(|full| full.pending_workspace_load.clone())
+            .unwrap();
+        let _ = bridge.update(Message::FullMindmapSetRoot(next_root.clone()));
+        let replacement = bridge
+            .full_mindmap
+            .as_ref()
+            .and_then(|full| full.pending_workspace_load.clone())
+            .unwrap();
+        let stale_snapshot = tree::build_workspace(&stale_workspace.path, false).unwrap();
+        let _ = bridge.update(Message::FullMindmapWorkspaceLoaded {
+            request: stale_workspace,
+            result: Ok((replacement.path.clone(), stale_snapshot)),
+        });
+        assert_eq!(
+            bridge
+                .full_mindmap
+                .as_ref()
+                .and_then(|full| full.pending_workspace_load.clone()),
+            Some(replacement)
+        );
+        assert!(bridge.full_mindmap.is_some());
+        assert_eq!(bridge.view_mode, ViewMode::Mindmap);
+        assert_eq!(bridge.workspace.as_deref(), Some(old_root.as_path()));
+
         let _ = std::fs::remove_dir_all(&dir);
     }
 
