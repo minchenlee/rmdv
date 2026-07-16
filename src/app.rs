@@ -55,6 +55,16 @@ pub struct PendingFullMindmapPreview {
     pub path: PathBuf,
 }
 
+/// Identity for the short settle window before a selected Full Mindmap file
+/// starts its bounded read-only preview. This is separate from
+/// `PendingFullMindmapPreview`: no file read owns the navigator until this
+/// debounce message is accepted.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingFullMindmapPreviewSettle {
+    pub id: u64,
+    pub path: PathBuf,
+}
+
 /// Identity for a bounded workspace index requested by Full Mindmap. The
 /// result is applied only while this exact request still owns the navigator.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -162,6 +172,7 @@ pub struct FullMindmapState {
     pub panel_step: usize,
     pub panel_drag: Option<(f32, Option<f32>)>,
     pub pending_open: Option<PendingFullMindmapOpen>,
+    pub pending_preview_settle: Option<PendingFullMindmapPreviewSettle>,
     pub pending_preview: Option<PendingFullMindmapPreview>,
     pub pending_workspace_load: Option<PendingFullMindmapWorkspaceLoad>,
     pub pending_folder_loads: HashMap<PathBuf, PendingFullMindmapFolderLoad>,
@@ -330,6 +341,10 @@ const MIND_PANEL_MAX: f32 = 900.0;
 const MIND_PANEL_FRACS: [f32; 3] = [1.0 / 3.0, 0.5, 0.6];
 const MIND_PANEL_MAX_BLOCKS: usize = 80;
 const MIND_PANEL_MAX_TEXT_BYTES: usize = 24 * 1024;
+/// Keep Full Mindmap preview settling aligned with the document Mindmap
+/// panel's rendered-content debounce cadence.
+const MINDMAP_PANEL_SETTLE_MS: u64 = 75;
+const FULL_MINDMAP_PREVIEW_SETTLE_MS: u64 = MINDMAP_PANEL_SETTLE_MS;
 /// Delayed-reveal verification is deliberately small and fixed. Four bounded
 /// filesystem workers keep the UI responsive; the candidate cap bounds both
 /// queue memory and total extra scans. Candidates beyond the cap stay visible
@@ -572,6 +587,9 @@ pub enum Message {
     FullMindmapFileLoaded {
         request: PendingFullMindmapOpen,
         result: Result<(PathBuf, String), String>,
+    },
+    FullMindmapPreviewSettle {
+        request: PendingFullMindmapPreviewSettle,
     },
     FullMindmapPreviewLoaded {
         request: PendingFullMindmapPreview,
@@ -1094,6 +1112,7 @@ impl App {
             panel_step: 0,
             panel_drag: None,
             pending_open: None,
+            pending_preview_settle: None,
             pending_preview: None,
             pending_workspace_load: None,
             pending_folder_loads: HashMap::new(),
@@ -1633,6 +1652,7 @@ impl App {
             // in-flight file read from the prior workspace must not later exit
             // the navigator into that old document.
             full.pending_open = None;
+            full.pending_preview_settle = None;
             full.pending_preview = None;
             full.pending_workspace_load = None;
             full.pending_folder_loads.clear();
@@ -1679,6 +1699,7 @@ impl App {
             .unwrap_or_else(|| graph.root_id());
         if let Some(full) = self.full_mindmap.as_mut() {
             if full.selected.as_ref() != Some(&next) {
+                full.pending_preview_settle = None;
                 full.pending_preview = None;
                 full.preview = FullMindmapPreview::None;
             }
@@ -1787,6 +1808,7 @@ impl App {
         full.pending_folder_loads.clear();
         full.materialized_folders.clear();
         full.pending_open = None;
+        full.pending_preview_settle = None;
         full.pending_preview = None;
         full.load_error = None;
         full.preview = FullMindmapPreview::None;
@@ -1919,6 +1941,17 @@ impl App {
         self.invalidate_full_mindmap_layout();
     }
 
+    /// Drop logical ownership of any Full Mindmap preview work. The spawned
+    /// timer/read cannot always be aborted, so its request identity remains
+    /// the final stale-result guard in the message handlers.
+    fn cancel_full_mindmap_preview(&mut self) {
+        if let Some(full) = self.full_mindmap.as_mut() {
+            full.pending_preview_settle = None;
+            full.pending_preview = None;
+            full.preview = FullMindmapPreview::None;
+        }
+    }
+
     /// Full Mindmap-only file load. The wrapper retains request identity so a
     /// late result cannot close the navigator after a newer request supersedes
     /// it, and its error has a navigator-local home instead of `App::error`.
@@ -1929,6 +1962,9 @@ impl App {
         if self.full_mindmap.is_none() {
             return self.load_file_unless_dirty(path);
         }
+        // Enter is deliberate activation: cancel any read-only preview settle
+        // or in-flight preview before the guarded file-open path takes over.
+        self.cancel_full_mindmap_preview();
         let pending_refresh = self
             .full_mindmap
             .as_ref()
@@ -1966,7 +2002,7 @@ impl App {
         })
     }
 
-    /// Select a workspace node and independently request a bounded, read-only
+    /// Select a workspace node and independently settle a bounded, read-only
     /// preview when it is a file. Preview loads deliberately bypass the dirty
     /// guard because they never alter the current document.
     fn select_full_mindmap_node(&mut self, id: WorkspaceNodeId) -> Task<Message> {
@@ -2012,12 +2048,68 @@ impl App {
             }
             full.load_error = None;
         }
-        self.begin_full_mindmap_preview(preview_path)
+        self.schedule_full_mindmap_preview(preview_path)
+    }
+
+    /// Queue a short settle window for a file selected by keyboard or canvas.
+    /// The preview remains in a neutral loading state while the user is still
+    /// moving; only the accepted settle message starts the bounded filesystem
+    /// read and parser. Every newer selection replaces this identity, so a
+    /// timer that cannot be aborted is harmless when it eventually fires.
+    fn schedule_full_mindmap_preview(&mut self, path: Option<PathBuf>) -> Task<Message> {
+        let Some(path) = path else {
+            self.cancel_full_mindmap_preview();
+            return Task::none();
+        };
+        let Some(full) = self.full_mindmap.as_ref() else {
+            return Task::none();
+        };
+        let already_owned = full
+            .pending_preview_settle
+            .as_ref()
+            .is_some_and(|pending| pending.path == path)
+            || full
+                .pending_preview
+                .as_ref()
+                .is_some_and(|pending| pending.path == path);
+        let already_ready = full.pending_preview.is_none()
+            && matches!(
+                &full.preview,
+                FullMindmapPreview::Document { path: current, .. }
+                    | FullMindmapPreview::Data { path: current, .. }
+                    if current == &path
+            );
+        if already_owned || already_ready {
+            return Task::none();
+        }
+
+        self.full_mindmap_request_seq = self.full_mindmap_request_seq.wrapping_add(1);
+        let request = PendingFullMindmapPreviewSettle {
+            id: self.full_mindmap_request_seq,
+            path: path.clone(),
+        };
+        let full = self.full_mindmap.as_mut().expect("checked above");
+        // A different selection supersedes both an older timer and an older
+        // read. The old future may still complete, but its request no longer
+        // matches `pending_preview` and is ignored.
+        full.pending_preview_settle = Some(request.clone());
+        full.pending_preview = None;
+        full.preview = FullMindmapPreview::Loading(path);
+        Task::perform(
+            async move {
+                tokio::time::sleep(std::time::Duration::from_millis(
+                    FULL_MINDMAP_PREVIEW_SETTLE_MS,
+                ))
+                .await;
+            },
+            move |_| Message::FullMindmapPreviewSettle { request },
+        )
     }
 
     fn begin_full_mindmap_preview(&mut self, path: Option<PathBuf>) -> Task<Message> {
         let Some(path) = path else {
             if let Some(full) = self.full_mindmap.as_mut() {
+                full.pending_preview_settle = None;
                 full.pending_preview = None;
                 full.preview = FullMindmapPreview::None;
             }
@@ -2047,6 +2139,7 @@ impl App {
             path: path.clone(),
         };
         let full = self.full_mindmap.as_mut().expect("checked above");
+        full.pending_preview_settle = None;
         full.pending_preview = Some(request.clone());
         full.preview = FullMindmapPreview::Loading(path.clone());
         Task::perform(load_full_mindmap_preview(path), move |result| {
@@ -3706,6 +3799,7 @@ impl App {
                 if let Some(full) = self.full_mindmap.as_mut() {
                     full.selected = Some(id);
                     full.panel_open = true;
+                    full.pending_preview_settle = None;
                     full.pending_preview = None;
                     full.preview = FullMindmapPreview::None;
                     full.load_error = None;
@@ -3746,6 +3840,7 @@ impl App {
                     full.selected = None;
                     full.panel_open = false;
                     full.panel_drag = None;
+                    full.pending_preview_settle = None;
                     full.pending_preview = None;
                     full.preview = FullMindmapPreview::None;
                 }
@@ -4022,6 +4117,24 @@ impl App {
                     }
                 }
             }
+            Message::FullMindmapPreviewSettle { request } => {
+                let current = self.full_mindmap.as_ref().is_some_and(|full| {
+                    full.pending_preview_settle.as_ref() == Some(&request)
+                        && matches!(
+                            full.selected.as_ref(),
+                            Some(WorkspaceNodeId::File(path)) if path == &request.path
+                        )
+                });
+                if !current {
+                    // A newer selection, folder/root/filter change, or mode
+                    // exit superseded this timer. No read may begin here.
+                    return Task::none();
+                }
+                if let Some(full) = self.full_mindmap.as_mut() {
+                    full.pending_preview_settle = None;
+                }
+                self.begin_full_mindmap_preview(Some(request.path))
+            }
             Message::FullMindmapPreviewLoaded { request, result } => {
                 let current = self.full_mindmap.as_ref().is_some_and(|full| {
                     full.pending_preview
@@ -4165,6 +4278,7 @@ impl App {
                             let preview =
                                 self.build_full_mindmap_preview(path.clone(), self.source.clone());
                             if let Some(full) = self.full_mindmap.as_mut() {
+                                full.pending_preview_settle = None;
                                 full.preview = preview;
                                 full.pending_preview = None;
                             }
@@ -4252,6 +4366,7 @@ impl App {
                                 full.expanded.clear();
                                 full.expanded.insert(path);
                                 full.pending_open = None;
+                                full.pending_preview_settle = None;
                                 full.pending_preview = None;
                                 full.preview = FullMindmapPreview::None;
                             }
@@ -4424,7 +4539,9 @@ impl App {
                             self.mindmap_panel_settle_gen.wrapping_add(1);
                         let settle_gen = self.mindmap_panel_settle_gen;
                         return Task::perform(
-                            tokio::time::sleep(std::time::Duration::from_millis(75)),
+                            tokio::time::sleep(std::time::Duration::from_millis(
+                                MINDMAP_PANEL_SETTLE_MS,
+                            )),
                             move |_| Message::MindmapPanelSettle(settle_gen),
                         );
                     }
@@ -10506,6 +10623,19 @@ mod tests {
         }
     }
 
+    fn settle_full_mindmap_preview(app: &mut App) -> PendingFullMindmapPreview {
+        let request = app
+            .full_mindmap
+            .as_ref()
+            .and_then(|full| full.pending_preview_settle.clone())
+            .expect("expected a pending Full Mindmap preview settle");
+        let _ = app.update(Message::FullMindmapPreviewSettle { request });
+        app.full_mindmap
+            .as_ref()
+            .and_then(|full| full.pending_preview.clone())
+            .expect("settled preview should own a read request")
+    }
+
     #[test]
     fn full_mindmap_without_workspace_adopts_home_in_background() {
         let mut app = App::default();
@@ -11697,13 +11827,7 @@ mod tests {
         let _ = app.update(Message::FullMindmapSelectNode(WorkspaceNodeId::File(
             file.clone(),
         )));
-        let preview_request = app
-            .full_mindmap
-            .as_ref()
-            .unwrap()
-            .pending_preview
-            .clone()
-            .unwrap();
+        let preview_request = settle_full_mindmap_preview(&mut app);
 
         let snapshot = tree::build_workspace(&dir, true).unwrap();
         let _ = app.update(Message::FullMindmapWorkspaceLoaded {
@@ -12020,13 +12144,14 @@ mod tests {
         let _ = app.update(Message::FullMindmapSelectNode(WorkspaceNodeId::File(
             preview_file.clone(),
         )));
-        let request = app
+        assert!(app.full_mindmap.as_ref().unwrap().pending_preview.is_none());
+        assert!(app
             .full_mindmap
             .as_ref()
             .unwrap()
-            .pending_preview
-            .clone()
-            .unwrap();
+            .pending_preview_settle
+            .is_some());
+        let request = settle_full_mindmap_preview(&mut app);
         assert!(matches!(
             app.full_mindmap.as_ref().unwrap().preview,
             FullMindmapPreview::Loading(_)
@@ -12048,6 +12173,257 @@ mod tests {
         assert_eq!(app.source, "unsaved current document");
         assert!(app.dirty);
         let _preview_view = app.view();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn full_mindmap_preview_selection_waits_for_settle_before_read() {
+        let dir = full_mindmap_test_dir("preview-settle");
+        let file = dir.join("preview.md");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(&file, "# Preview\n").unwrap();
+
+        let mut app = App::default();
+        app.set_workspace(dir.clone(), false);
+        app.full_mindmap = Some(full_workspace_state(&dir));
+
+        let _ = app.update(Message::FullMindmapSelectNode(WorkspaceNodeId::File(
+            file.clone(),
+        )));
+        let settle = app
+            .full_mindmap
+            .as_ref()
+            .unwrap()
+            .pending_preview_settle
+            .clone()
+            .expect("file selection should own a settle timer");
+        assert!(app.full_mindmap.as_ref().unwrap().pending_preview.is_none());
+        assert!(matches!(
+            app.full_mindmap.as_ref().unwrap().preview,
+            FullMindmapPreview::Loading(ref path) if path == &file
+        ));
+
+        let _ = app.update(Message::FullMindmapPreviewSettle { request: settle });
+        let preview_request = app
+            .full_mindmap
+            .as_ref()
+            .unwrap()
+            .pending_preview
+            .clone()
+            .expect("settle should start the bounded read");
+        assert!(app
+            .full_mindmap
+            .as_ref()
+            .unwrap()
+            .pending_preview_settle
+            .is_none());
+        let _ = app.update(Message::FullMindmapPreviewLoaded {
+            request: preview_request,
+            result: Ok((file.clone(), "# Preview\n".into())),
+        });
+        assert!(matches!(
+            app.full_mindmap.as_ref().unwrap().preview,
+            FullMindmapPreview::Document { ref path, .. } if path == &file
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn full_mindmap_stale_preview_settle_after_new_selection_is_ignored() {
+        let dir = full_mindmap_test_dir("preview-settle-stale");
+        let first = dir.join("first.md");
+        let second = dir.join("second.md");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(&first, "# First\n").unwrap();
+        std::fs::write(&second, "# Second\n").unwrap();
+
+        let mut app = App::default();
+        app.set_workspace(dir.clone(), false);
+        app.full_mindmap = Some(full_workspace_state(&dir));
+        let _ = app.update(Message::FullMindmapSelectNode(WorkspaceNodeId::File(first)));
+        let stale = app
+            .full_mindmap
+            .as_ref()
+            .unwrap()
+            .pending_preview_settle
+            .clone()
+            .unwrap();
+        let _ = app.update(Message::FullMindmapSelectNode(WorkspaceNodeId::File(
+            second.clone(),
+        )));
+        let current = app
+            .full_mindmap
+            .as_ref()
+            .unwrap()
+            .pending_preview_settle
+            .clone()
+            .unwrap();
+        assert_ne!(stale, current);
+
+        let _ = app.update(Message::FullMindmapPreviewSettle { request: stale });
+        assert_eq!(
+            app.full_mindmap
+                .as_ref()
+                .and_then(|full| full.pending_preview_settle.clone()),
+            Some(current.clone())
+        );
+        assert!(app.full_mindmap.as_ref().unwrap().pending_preview.is_none());
+
+        let _ = app.update(Message::FullMindmapPreviewSettle { request: current });
+        assert_eq!(
+            app.full_mindmap
+                .as_ref()
+                .and_then(|full| full.pending_preview.as_ref().map(|request| &request.path)),
+            Some(&second)
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn full_mindmap_preview_settle_cancels_on_folder_selection_and_exit() {
+        let dir = full_mindmap_test_dir("preview-settle-cancel");
+        let file = dir.join("preview.md");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(&file, "# Preview\n").unwrap();
+
+        let mut folder_app = App::default();
+        folder_app.set_workspace(dir.clone(), false);
+        folder_app.full_mindmap = Some(full_workspace_state(&dir));
+        let _ = folder_app.update(Message::FullMindmapSelectNode(WorkspaceNodeId::File(
+            file.clone(),
+        )));
+        let stale_folder = folder_app
+            .full_mindmap
+            .as_ref()
+            .unwrap()
+            .pending_preview_settle
+            .clone()
+            .unwrap();
+        let _ = folder_app.update(Message::FullMindmapSelectNode(WorkspaceNodeId::Root(
+            dir.clone(),
+        )));
+        assert!(folder_app
+            .full_mindmap
+            .as_ref()
+            .unwrap()
+            .pending_preview_settle
+            .is_none());
+        let _ = folder_app.update(Message::FullMindmapPreviewSettle {
+            request: stale_folder,
+        });
+        assert!(folder_app
+            .full_mindmap
+            .as_ref()
+            .unwrap()
+            .pending_preview
+            .is_none());
+
+        let mut exit_app = App::default();
+        exit_app.set_workspace(dir.clone(), false);
+        exit_app.full_mindmap = Some(full_workspace_state(&dir));
+        let _ = exit_app.update(Message::FullMindmapSelectNode(WorkspaceNodeId::File(
+            file.clone(),
+        )));
+        let stale_exit = exit_app
+            .full_mindmap
+            .as_ref()
+            .unwrap()
+            .pending_preview_settle
+            .clone()
+            .unwrap();
+        let _ = exit_app.update(Message::ExitFullMindmap);
+        assert!(exit_app.full_mindmap.is_none());
+        let _ = exit_app.update(Message::FullMindmapPreviewSettle {
+            request: stale_exit,
+        });
+        assert!(exit_app.full_mindmap.is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn full_mindmap_enter_bypasses_preview_settle_and_opens_immediately() {
+        let dir = full_mindmap_test_dir("preview-settle-enter");
+        let file = dir.join("open.md");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(&file, "# Open\n").unwrap();
+
+        let mut app = App::default();
+        app.set_workspace(dir.clone(), false);
+        let mut full = full_workspace_state(&dir);
+        full.selected = Some(WorkspaceNodeId::File(file.clone()));
+        app.full_mindmap = Some(full);
+        let _ = app.update(Message::FullMindmapSelectNode(WorkspaceNodeId::File(
+            file.clone(),
+        )));
+        let stale_settle = app
+            .full_mindmap
+            .as_ref()
+            .unwrap()
+            .pending_preview_settle
+            .clone()
+            .unwrap();
+
+        let _ = app.update(Message::FullMindmapActivate);
+        let open_request = app
+            .full_mindmap
+            .as_ref()
+            .and_then(|full| full.pending_open.clone())
+            .expect("Enter should start file activation immediately");
+        assert!(app
+            .full_mindmap
+            .as_ref()
+            .unwrap()
+            .pending_preview_settle
+            .is_none());
+        assert!(app.full_mindmap.as_ref().unwrap().pending_preview.is_none());
+        let _ = app.update(Message::FullMindmapPreviewSettle {
+            request: stale_settle,
+        });
+        assert_eq!(
+            app.full_mindmap
+                .as_ref()
+                .and_then(|full| full.pending_open.clone()),
+            Some(open_request.clone())
+        );
+        let _ = app.update(Message::FullMindmapFileLoaded {
+            request: open_request,
+            result: Ok((file.clone(), "# Open\n".into())),
+        });
+        assert!(app.full_mindmap.is_none());
+        assert_eq!(app.view_mode, ViewMode::Mindmap);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn full_mindmap_ready_preview_selection_does_not_duplicate_request() {
+        let dir = full_mindmap_test_dir("preview-ready");
+        let file = dir.join("ready.md");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(&file, "# Ready\n").unwrap();
+
+        let mut app = App::default();
+        app.set_workspace(dir.clone(), false);
+        let mut full = full_workspace_state(&dir);
+        full.selected = Some(WorkspaceNodeId::File(file.clone()));
+        full.preview = FullMindmapPreview::Document {
+            path: file.clone(),
+            blocks: Vec::new(),
+            truncated: false,
+        };
+        app.full_mindmap = Some(full);
+        app.full_mindmap_request_seq = 41;
+
+        let _ = app.update(Message::FullMindmapSelectNode(WorkspaceNodeId::File(
+            file.clone(),
+        )));
+        let full = app.full_mindmap.as_ref().unwrap();
+        assert_eq!(app.full_mindmap_request_seq, 41);
+        assert!(full.pending_preview_settle.is_none());
+        assert!(full.pending_preview.is_none());
+        assert!(matches!(
+            &full.preview,
+            FullMindmapPreview::Document { path, .. } if path == &file
+        ));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -12092,23 +12468,11 @@ mod tests {
         let _ = app.update(Message::FullMindmapSelectNode(WorkspaceNodeId::File(
             first.clone(),
         )));
-        let stale = app
-            .full_mindmap
-            .as_ref()
-            .unwrap()
-            .pending_preview
-            .clone()
-            .unwrap();
+        let stale = settle_full_mindmap_preview(&mut app);
         let _ = app.update(Message::FullMindmapSelectNode(WorkspaceNodeId::File(
             second.clone(),
         )));
-        let current = app
-            .full_mindmap
-            .as_ref()
-            .unwrap()
-            .pending_preview
-            .clone()
-            .unwrap();
+        let current = settle_full_mindmap_preview(&mut app);
 
         let _ = app.update(Message::FullMindmapPreviewLoaded {
             request: stale,

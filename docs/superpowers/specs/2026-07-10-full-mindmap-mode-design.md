@@ -142,14 +142,16 @@ document-mindmap handlers. Global commands such as theme, save, hidden files,
 | `⌘O` / `⌘P` | Open the existing folder picker / file finder as fallback overlays. |
 
 Keyboard selection immediately updates the selection ring. The detail panel
-updates directly for cheap filesystem metadata; it does not reuse the document
-panel's 75 ms rendered-Markdown debounce.
+shows a neutral loading state while a selected file settles for 75 ms, matching
+the document Mindmap panel cadence; only then does its bounded read-only
+preview begin. Enter bypasses that settle window for deliberate activation.
 
 ## Mouse behavior
 
 - Clicking a folder selects it and toggles expansion.
-- Clicking a file selects it and starts the read-only preview. It does not
-  immediately replace the document; `Enter` is the deliberate activation step.
+- Clicking a file selects it and starts the same 75 ms-settled read-only
+  preview. It does not immediately replace the document; `Enter` is the
+  deliberate activation step and bypasses the preview delay.
 - Drag-to-pan, wheel zoom, auto-center, hover tooltips, node animation, and
   click-empty-to-deselect reuse current canvas behavior where compatible.
 
@@ -165,6 +167,7 @@ pub struct FullMindmapState {
     pub panel_width: f32,
     pub panel_step: usize,
     pub pending_open: Option<PendingFullMindmapOpen>,
+    pub pending_preview_settle: Option<PendingFullMindmapPreviewSettle>,
     pub pending_preview: Option<PendingFullMindmapPreview>,
     pub pending_workspace_load: Option<PendingFullMindmapWorkspaceLoad>,
     pub preview: FullMindmapPreview,
@@ -460,6 +463,10 @@ may directly assign `file`, `source`, `saved_source`, `dirty`, or `editor`.
     ignored and pending file opens are cancelled immediately.
 13. Standard picker file fallback waits for its parent workspace index before
     opening, and cached graphs reuse the same graph/node allocations.
+14. File selection settles for 75 ms before starting a preview; stale settle
+    messages, folder/root/filter changes, and exits cancel ownership. Enter
+    bypasses the delay, ready previews are reused, and dirty/stale preview
+    behavior remains read-only and request-identified.
 
 ### Shared canvas regression tests (`mindmap.rs`)
 
@@ -527,6 +534,18 @@ current file's parent (or Home) is adopted through the existing background
 workspace loader. `Left` from a nested heading continues to select its real
 heading parent. The document mindmap's selection/collapse state and the Full
 Mindmap navigator remain separate throughout both transitions.
+
+### 7. Full Mindmap preview settle (2026-07-16)
+
+File selection by arrow navigation or the canvas owns a named 75 ms settle
+request before it starts the existing bounded preview read/parse. The panel
+renders `Loading preview…` during that window, and the update thread never
+performs a synchronous filesystem read. A newer file or folder selection,
+collapse, workspace root/filter change, Full Mindmap exit, or accepted mode
+transition clears the settle/read ownership; late timer and preview messages
+are rejected by their request identities. Enter cancels any pending preview
+work and starts the guarded file-open request immediately. A preview already
+ready for the selected path is reused without another read.
 
 ### Verification after implementation
 
