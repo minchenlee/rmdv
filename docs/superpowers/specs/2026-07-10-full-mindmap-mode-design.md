@@ -470,6 +470,39 @@ may directly assign `file`, `source`, `saved_source`, `dirty`, or `editor`.
    workspace trees.
 4. Document branch/leaf callback mapping remains toggle/select respectively.
 
+### 5. Delayed reveal and verification feedback (2026-07-16)
+
+The bounded workspace snapshot can contain a folder shell whose recursive
+count is `LowerBound(0)`: the scan stopped before proving whether the folder
+contains a supported file. Full Mindmap must not flash such a shell and then
+remove it (the unsupported-only `Shopee Backroom` case is the motivating
+example). A fixed delayed-reveal wave therefore snapshots only unresolved
+zero-lower-bound folders currently visible below expanded parents, hides those
+folders immediately, and verifies them on blocking workers before revealing
+them.
+
+The wave owns a fixed candidate denominator and a small worker window (four
+requests in flight, at most 256 candidates). Candidates beyond that cap remain
+visible with the truthful `scan limit reached` label; no candidate is silently
+dropped. A result is accepted only when its request id, wave id, workspace root,
+hidden-file filter, Full Mindmap ownership, parent path, and parent expansion
+generation still match. Collapse, root/filter changes, and exit clear the wave
+ownership; late futures cannot reveal stale nodes. Explicitly expanding a shell
+keeps the selected parent visible with its existing `Loading files…` status and
+starts a new fixed wave for the newly visible frontier.
+
+Accepted `Exact(0)` folders are pruned and never rendered. Exact positive and
+positive lower-bound counts use the normal count labels. A scan-limit result
+keeps a lower-bound/status node, while an unreadable or otherwise unverifiable
+result is shown as `count unavailable` with an explicit error status.
+
+While a wave is active, Full Mindmap shows one persistent neutral toast with a
+determinate bar and `checked/total` plus remaining text. The counter advances
+only for accepted results, so it is monotonic and the denominator never grows.
+Completion or cancellation removes this progress toast. It is rendered below
+the existing attention/error toast layer, so blocked-action and failure copy
+retain their own priority and expiry timing; no ordinary toast is overwritten.
+
 ### Verification after implementation
 
 The approved design is implemented as follows:

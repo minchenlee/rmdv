@@ -257,6 +257,10 @@ fn effective_folder_count(
             recursive_supported_file_count,
             ..
         }) => Some(*recursive_supported_file_count),
+        // A branch-local verification that cannot read its folder is still a
+        // visible folder with an unavailable count. Do not let the retained
+        // LowerBound(0) shell continue to masquerade as "scan limit reached".
+        Some(MaterializedFolder::Error(_)) => Some(RecursiveFileCount::Unavailable),
         _ => node.recursive_supported_file_count,
     }
 }
@@ -269,11 +273,15 @@ fn should_show_folder(node: &Node, materialized: &HashMap<PathBuf, MaterializedF
         )
 }
 
-fn workspace_folder_label(node: &Node, expanded: bool) -> String {
+fn workspace_folder_label(
+    node: &Node,
+    expanded: bool,
+    materialized: &HashMap<PathBuf, MaterializedFolder>,
+) -> String {
     if expanded {
         return node.name.clone();
     }
-    match node.recursive_supported_file_count {
+    match effective_folder_count(node, materialized) {
         Some(RecursiveFileCount::Exact(count)) => {
             let noun = if count == 1 { "file" } else { "files" };
             format!("{} · {count} {noun}", node.name)
@@ -294,11 +302,34 @@ fn workspace_folder_label(node: &Node, expanded: bool) -> String {
 /// Adapt the existing prebuilt workspace tree. The caller owns expansion;
 /// folders outside `expanded` remain present but contribute no visible children
 /// and advertise their hidden descendants to the shared canvas.
+/// Adapt the retained workspace tree without delayed verification hiding.
+/// Kept as the compatibility entry point for document/sidebar tests and
+/// callers that do not own Full Mindmap verification state.
 pub fn from_tree(
     tree_root: &Node,
     expanded: &HashSet<PathBuf>,
     materialized: &HashMap<PathBuf, MaterializedFolder>,
     pending: &HashSet<PathBuf>,
+    truncated: bool,
+) -> WorkspaceGraph {
+    from_tree_with_hidden(
+        tree_root,
+        expanded,
+        materialized,
+        pending,
+        &HashSet::new(),
+        truncated,
+    )
+}
+
+/// Adapt the retained workspace tree while omitting unresolved LowerBound(0)
+/// folders owned by a fixed Full Mindmap verification wave.
+pub fn from_tree_with_hidden(
+    tree_root: &Node,
+    expanded: &HashSet<PathBuf>,
+    materialized: &HashMap<PathBuf, MaterializedFolder>,
+    pending: &HashSet<PathBuf>,
+    hidden_unverified: &HashSet<PathBuf>,
     truncated: bool,
 ) -> WorkspaceGraph {
     let mut builder = Builder {
@@ -307,7 +338,7 @@ pub fn from_tree(
     };
     let root_id = WorkspaceNodeId::Root(tree_root.path.clone());
     let root_expanded = expanded.contains(&tree_root.path);
-    let root_label = workspace_folder_label(tree_root, root_expanded);
+    let root_label = workspace_folder_label(tree_root, root_expanded, materialized);
     let root_idx = builder.push(
         root_id.clone(),
         WorkspaceNodeKind::Root,
@@ -326,6 +357,7 @@ pub fn from_tree(
                 expanded,
                 materialized,
                 pending,
+                hidden_unverified,
                 1,
             );
         }
@@ -378,10 +410,16 @@ fn append_tree_node(
     expanded: &HashSet<PathBuf>,
     materialized: &HashMap<PathBuf, MaterializedFolder>,
     pending: &HashSet<PathBuf>,
+    hidden_unverified: &HashSet<PathBuf>,
     level: u8,
 ) {
-    debug_assert!(node.is_dir, "workspace skeleton must contain folders only");
-    if !should_show_folder(node, materialized) {
+    // Production snapshots retain folders only, but test/fallback snapshots
+    // may still carry a file child. Ignore it here rather than manufacturing a
+    // folder identity or panicking while a user expands that branch.
+    if !node.is_dir {
+        return;
+    }
+    if !should_show_folder(node, materialized) || hidden_unverified.contains(&node.path) {
         return;
     }
     let id = WorkspaceNodeId::Folder(node.path.clone());
@@ -392,7 +430,7 @@ fn append_tree_node(
         id,
         kind,
         Some(node.path.clone()),
-        workspace_folder_label(node, is_expanded),
+        workspace_folder_label(node, is_expanded, materialized),
         level,
         has_hidden_children,
     );
@@ -406,6 +444,7 @@ fn append_tree_node(
                 expanded,
                 materialized,
                 pending,
+                hidden_unverified,
                 level.saturating_add(1),
             );
         }
@@ -846,6 +885,63 @@ mod tests {
         assert!(graph
             .node(&WorkspaceNodeId::Folder(PathBuf::from("/vault/unknown")))
             .is_some());
+    }
+
+    #[test]
+    fn delayed_reveal_hides_only_unresolved_zero_lower_bounds() {
+        let mut pending = node("/vault/pending", true, vec![]);
+        pending.recursive_supported_file_count = Some(RecursiveFileCount::LowerBound(0));
+        let mut positive = node("/vault/positive", true, vec![]);
+        positive.recursive_supported_file_count = Some(RecursiveFileCount::LowerBound(2));
+        let mut unavailable = node("/vault/unavailable", true, vec![]);
+        unavailable.recursive_supported_file_count = Some(RecursiveFileCount::Unavailable);
+        let root = node("/vault", true, vec![pending, positive, unavailable]);
+        let hidden = HashSet::from([PathBuf::from("/vault/pending")]);
+
+        let graph = from_tree_with_hidden(
+            &root,
+            &HashSet::from([PathBuf::from("/vault")]),
+            &HashMap::new(),
+            &HashSet::new(),
+            &hidden,
+            false,
+        );
+
+        assert!(graph
+            .node(&WorkspaceNodeId::Folder(PathBuf::from("/vault/pending")))
+            .is_none());
+        assert_eq!(
+            graph
+                .node(&WorkspaceNodeId::Folder(PathBuf::from("/vault/positive")))
+                .map(|node| node.kind.clone()),
+            Some(WorkspaceNodeKind::Folder)
+        );
+        assert!(graph
+            .node(&WorkspaceNodeId::Folder(PathBuf::from(
+                "/vault/unavailable"
+            )))
+            .is_some());
+    }
+
+    #[test]
+    fn verification_error_relabels_zero_lower_bound_as_unavailable() {
+        let mut shell = node("/vault/locked", true, vec![]);
+        shell.recursive_supported_file_count = Some(RecursiveFileCount::LowerBound(0));
+        let root = node("/vault", true, vec![shell]);
+        let materialized = HashMap::from([(
+            PathBuf::from("/vault/locked"),
+            MaterializedFolder::Error("permission denied".into()),
+        )]);
+        let graph = from_tree(
+            &root,
+            &HashSet::from([PathBuf::from("/vault")]),
+            &materialized,
+            &HashSet::new(),
+            false,
+        );
+        let id = WorkspaceNodeId::Folder(PathBuf::from("/vault/locked"));
+        let idx = graph.index_of(&id).expect("error folder remains visible");
+        assert_eq!(graph.nodes[idx].full_label, "locked · count unavailable");
     }
 
     #[test]

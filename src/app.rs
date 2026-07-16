@@ -87,6 +87,48 @@ pub struct PendingFullMindmapFolderLoad {
     pub show_hidden: bool,
 }
 
+/// Identity for one candidate in a fixed delayed-reveal verification wave.
+/// Unlike ordinary expanded-folder materialization, these requests are owned
+/// by both the wave and the parent expansion generation. A result from a
+/// collapsed/re-rooted/refiltered navigator therefore cannot reveal a shell
+/// in a newer graph.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingFullMindmapVerification {
+    pub id: u64,
+    pub wave_id: u64,
+    pub workspace_root: PathBuf,
+    pub parent: PathBuf,
+    pub parent_expansion_generation: u64,
+    pub folder: PathBuf,
+    pub show_hidden: bool,
+}
+
+/// Fixed, bounded verification ownership. `candidates` is snapshotted at wave
+/// start, so `total` never grows while completions arrive. At most
+/// `FULL_MINDMAP_VERIFICATION_CONCURRENCY` requests are in flight and the
+/// candidate cap leaves excess LowerBound(0) shells visible with their truthful
+/// scan-limit label instead of silently dropping them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FullMindmapVerificationWave {
+    pub id: u64,
+    pub workspace_root: PathBuf,
+    pub show_hidden: bool,
+    pub parent_expansion_generation: u64,
+    pub candidates: Vec<PathBuf>,
+    pub parent_by_candidate: HashMap<PathBuf, PathBuf>,
+    pub next_index: usize,
+    pub in_flight: HashSet<PathBuf>,
+    pub request_ids: HashMap<PathBuf, u64>,
+    pub checked: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FullMindmapProgress {
+    pub wave_id: u64,
+    pub checked: usize,
+    pub total: usize,
+}
+
 #[derive(Debug, Clone)]
 pub enum FullMindmapPreview {
     None,
@@ -123,6 +165,14 @@ pub struct FullMindmapState {
     pub pending_preview: Option<PendingFullMindmapPreview>,
     pub pending_workspace_load: Option<PendingFullMindmapWorkspaceLoad>,
     pub pending_folder_loads: HashMap<PathBuf, PendingFullMindmapFolderLoad>,
+    /// One fixed delayed-reveal wave owns unresolved LowerBound(0) shells at
+    /// the currently visible expanded frontier. The wave is canceled whenever
+    /// expansion/root/filter/mode ownership changes.
+    pub verification_wave: Option<FullMindmapVerificationWave>,
+    pub verification_hidden: HashSet<PathBuf>,
+    /// Increments whenever the expanded frontier changes. Verification
+    /// requests carry the parent generation to reject stale completions.
+    pub expansion_generation: u64,
     pub materialized_folders: HashMap<PathBuf, workspace_mindmap::MaterializedFolder>,
     /// A current or previously selected file is selected only after its parent
     /// listing proves that the file is still visible under the accepted filter.
@@ -276,6 +326,12 @@ const MIND_PANEL_MAX: f32 = 900.0;
 const MIND_PANEL_FRACS: [f32; 3] = [1.0 / 3.0, 0.5, 0.6];
 const MIND_PANEL_MAX_BLOCKS: usize = 80;
 const MIND_PANEL_MAX_TEXT_BYTES: usize = 24 * 1024;
+/// Delayed-reveal verification is deliberately small and fixed. Four bounded
+/// filesystem workers keep the UI responsive; the candidate cap bounds both
+/// queue memory and total extra scans. Candidates beyond the cap stay visible
+/// with their `scan limit reached` lower-bound label.
+const FULL_MINDMAP_VERIFICATION_CONCURRENCY: usize = 4;
+const FULL_MINDMAP_VERIFICATION_MAX_CANDIDATES: usize = 256;
 
 fn mindmap_panel_width_for_step(step: usize, window_size: Option<iced::Size>) -> f32 {
     let target = window_size
@@ -525,6 +581,10 @@ pub enum Message {
         request: PendingFullMindmapFolderLoad,
         result: Result<(PathBuf, tree::ExpandedFolderSnapshot), String>,
     },
+    FullMindmapVerificationLoaded {
+        request: PendingFullMindmapVerification,
+        result: Result<(PathBuf, tree::ExpandedFolderSnapshot), String>,
+    },
     WindowResized(iced::window::Id, iced::Size),
     RefreshWindowMode(iced::window::Id),
     RefreshWindowModeSettled(iced::window::Id),
@@ -687,6 +747,10 @@ pub struct App {
     pub(crate) height_cache: crate::virt::HeightCache,
     pub toast: Option<Toast>,
     pub toast_seq: u64,
+    /// Persistent neutral progress feedback for the active Full Mindmap
+    /// verification wave. Kept separate from attention/error toasts so a
+    /// blocked action never loses its own priority or expiry timing.
+    pub full_mindmap_progress: Option<FullMindmapProgress>,
     pub custom_themes: Vec<crate::theme_load::CustomTheme>,
     pub theme_id: crate::theme::ThemeId,
     pub image_cache: ImageCache,
@@ -866,6 +930,7 @@ impl Default for App {
             height_cache: crate::virt::HeightCache::default(),
             toast: None,
             toast_seq: 0,
+            full_mindmap_progress: None,
             custom_themes: Vec::new(),
             theme_id: crate::theme::ThemeId::Preset(preset),
             image_cache: ImageCache::default(),
@@ -1028,6 +1093,9 @@ impl App {
             pending_preview: None,
             pending_workspace_load: None,
             pending_folder_loads: HashMap::new(),
+            verification_wave: None,
+            verification_hidden: HashSet::new(),
+            expansion_generation: 0,
             materialized_folders: HashMap::new(),
             deferred_file_selection: None,
             preview: FullMindmapPreview::None,
@@ -1050,11 +1118,12 @@ impl App {
         if let Some(graph) = full.layout_cache.borrow().as_ref() {
             return Some(std::sync::Arc::clone(graph));
         }
-        let graph = std::sync::Arc::new(workspace_mindmap::from_tree(
+        let graph = std::sync::Arc::new(workspace_mindmap::from_tree_with_hidden(
             self.workspace_tree.as_ref()?,
             &full.expanded,
             &full.materialized_folders,
             &full.pending_folder_loads.keys().cloned().collect(),
+            &full.verification_hidden,
             self.workspace_truncated,
         ));
         *full.layout_cache.borrow_mut() = Some(std::sync::Arc::clone(&graph));
@@ -1071,12 +1140,329 @@ impl App {
         }
     }
 
+    /// Cancel all delayed-reveal ownership. The spawned filesystem futures
+    /// cannot be force-stopped by Iced, so clearing the wave and hidden set is
+    /// the cancellation boundary; completion handlers then fail the strict
+    /// identity check and cannot reveal stale nodes.
+    fn cancel_full_mindmap_verification(&mut self) {
+        let had_hidden = self.full_mindmap.as_ref().is_some_and(|full| {
+            full.verification_wave.is_some() || !full.verification_hidden.is_empty()
+        });
+        if let Some(full) = self.full_mindmap.as_mut() {
+            full.verification_wave = None;
+            full.verification_hidden.clear();
+        }
+        self.full_mindmap_progress = None;
+        if had_hidden {
+            self.invalidate_full_mindmap_layout();
+        }
+    }
+
+    fn bump_full_mindmap_expansion_generation(&mut self) {
+        if let Some(full) = self.full_mindmap.as_mut() {
+            full.expansion_generation = full.expansion_generation.wrapping_add(1);
+        }
+    }
+
+    fn full_mindmap_folder_count(
+        &self,
+        path: &std::path::Path,
+    ) -> Option<tree::RecursiveFileCount> {
+        let full = self.full_mindmap.as_ref()?;
+        if let Some(materialized) = full.materialized_folders.get(path) {
+            return Some(match materialized {
+                workspace_mindmap::MaterializedFolder::Loaded {
+                    recursive_supported_file_count,
+                    ..
+                } => *recursive_supported_file_count,
+                workspace_mindmap::MaterializedFolder::Error(_) => {
+                    tree::RecursiveFileCount::Unavailable
+                }
+            });
+        }
+        // A lazily expanded parent owns shallow child skeletons that are no
+        // longer reachable through the retained workspace tree. Resolve the
+        // child's count from that in-memory branch before giving up.
+        for materialized in full.materialized_folders.values() {
+            if let workspace_mindmap::MaterializedFolder::Loaded { folders, .. } = materialized {
+                if let Some(node) = folders.iter().find(|node| node.path == path) {
+                    return node.recursive_supported_file_count;
+                }
+            }
+        }
+        self.workspace_tree
+            .as_ref()
+            .and_then(|root| tree::find_folder(root, path))
+            .and_then(|node| node.recursive_supported_file_count)
+    }
+
+    /// Snapshot unresolved LowerBound(0) folders that are actually visible
+    /// beneath an expanded parent. The graph is authoritative: collapsed
+    /// descendants and folders hidden by an older wave never enter the queue.
+    fn full_mindmap_verification_candidates(&self) -> (Vec<PathBuf>, HashMap<PathBuf, PathBuf>) {
+        let Some(full) = self.full_mindmap.as_ref() else {
+            return (Vec::new(), HashMap::new());
+        };
+        let Some(graph) = self.full_mindmap_graph() else {
+            return (Vec::new(), HashMap::new());
+        };
+        let expanded = full.expanded.clone();
+        let mut candidates = Vec::new();
+        let mut parent_by_candidate = HashMap::new();
+        for node in graph.nodes.iter() {
+            let Some(WorkspaceNodeId::Folder(path)) = node.id.as_ref() else {
+                continue;
+            };
+            // The acted-on folder itself stays visible while its explicit
+            // expansion owns a branch-local load. Delayed verification is for
+            // unresolved children on the newly expanded frontier; hiding the
+            // parent would remove the user's selection and suppress its
+            // Loading files status.
+            if expanded.contains(path) {
+                continue;
+            }
+            if !matches!(
+                self.full_mindmap_folder_count(path),
+                Some(tree::RecursiveFileCount::LowerBound(0))
+            ) {
+                continue;
+            }
+            let Some(parent) = graph.parent(&WorkspaceNodeId::Folder(path.clone())) else {
+                continue;
+            };
+            if !matches!(
+                parent,
+                WorkspaceNodeId::Root(_) | WorkspaceNodeId::Folder(_)
+            ) || !expanded.contains(parent.path())
+            {
+                continue;
+            }
+            if parent_by_candidate
+                .insert(path.clone(), parent.path().to_path_buf())
+                .is_none()
+            {
+                candidates.push(path.clone());
+            }
+        }
+        // Graph order is stable and follows the user's visible tree. Keep the
+        // first fixed prefix; excess candidates remain visible with the
+        // retained scan-limit label rather than being silently dropped.
+        candidates.truncate(FULL_MINDMAP_VERIFICATION_MAX_CANDIDATES);
+        parent_by_candidate.retain(|path, _| candidates.contains(path));
+        (candidates, parent_by_candidate)
+    }
+
+    /// Start one fixed wave. The denominator is frozen before any worker is
+    /// launched and therefore cannot change when a result exposes new shells.
+    fn begin_full_mindmap_verification_wave(&mut self) -> Task<Message> {
+        let Some(workspace_root) = self.workspace.clone() else {
+            self.cancel_full_mindmap_verification();
+            return Task::none();
+        };
+        if self.workspace_snapshot_show_hidden != self.show_hidden {
+            self.cancel_full_mindmap_verification();
+            return Task::none();
+        }
+        // Rebuild the candidate snapshot from the currently visible frontier,
+        // never from a graph whose old wave still hides shells.
+        self.cancel_full_mindmap_verification();
+        let (candidates, parent_by_candidate) = self.full_mindmap_verification_candidates();
+        if candidates.is_empty() {
+            return Task::none();
+        }
+        self.full_mindmap_request_seq = self.full_mindmap_request_seq.wrapping_add(1);
+        let wave_id = self.full_mindmap_request_seq;
+        let show_hidden = self.show_hidden;
+        let parent_expansion_generation = self
+            .full_mindmap
+            .as_ref()
+            .map(|full| full.expansion_generation)
+            .unwrap_or_default();
+        let total = candidates.len();
+        if let Some(full) = self.full_mindmap.as_mut() {
+            full.verification_hidden = candidates.iter().cloned().collect();
+            full.verification_wave = Some(FullMindmapVerificationWave {
+                id: wave_id,
+                workspace_root,
+                show_hidden,
+                parent_expansion_generation,
+                candidates,
+                parent_by_candidate,
+                next_index: 0,
+                in_flight: HashSet::new(),
+                request_ids: HashMap::new(),
+                checked: 0,
+            });
+        }
+        self.full_mindmap_progress = Some(FullMindmapProgress {
+            wave_id,
+            checked: 0,
+            total,
+        });
+        self.invalidate_full_mindmap_layout();
+        self.launch_full_mindmap_verification_tasks()
+    }
+
+    /// Fill the fixed worker window from the wave's immutable candidate queue.
+    fn launch_full_mindmap_verification_tasks(&mut self) -> Task<Message> {
+        let mut tasks = Vec::new();
+        loop {
+            let next = {
+                let Some(full) = self.full_mindmap.as_mut() else {
+                    break;
+                };
+                let Some(wave) = full.verification_wave.as_mut() else {
+                    break;
+                };
+                if wave.in_flight.len() >= FULL_MINDMAP_VERIFICATION_CONCURRENCY
+                    || wave.next_index >= wave.candidates.len()
+                {
+                    break;
+                }
+                let folder = wave.candidates[wave.next_index].clone();
+                wave.next_index += 1;
+                wave.in_flight.insert(folder.clone());
+                Some((
+                    wave.id,
+                    wave.workspace_root.clone(),
+                    wave.show_hidden,
+                    wave.parent_expansion_generation,
+                    wave.parent_by_candidate
+                        .get(&folder)
+                        .cloned()
+                        .unwrap_or_else(|| wave.workspace_root.clone()),
+                    folder,
+                ))
+            };
+            let Some((
+                wave_id,
+                workspace_root,
+                show_hidden,
+                parent_expansion_generation,
+                parent,
+                folder,
+            )) = next
+            else {
+                break;
+            };
+            self.full_mindmap_request_seq = self.full_mindmap_request_seq.wrapping_add(1);
+            let request = PendingFullMindmapVerification {
+                id: self.full_mindmap_request_seq,
+                wave_id,
+                workspace_root,
+                parent,
+                parent_expansion_generation,
+                folder: folder.clone(),
+                show_hidden,
+            };
+            if let Some(full) = self.full_mindmap.as_mut() {
+                if let Some(wave) = full.verification_wave.as_mut() {
+                    wave.request_ids.insert(folder.clone(), request.id);
+                }
+            }
+            tasks.push(Task::perform(
+                load_full_mindmap_folder(folder, show_hidden),
+                move |result| Message::FullMindmapVerificationLoaded { request, result },
+            ));
+        }
+        Task::batch(tasks)
+    }
+
+    fn handle_full_mindmap_verification_loaded(
+        &mut self,
+        request: PendingFullMindmapVerification,
+        result: Result<(PathBuf, tree::ExpandedFolderSnapshot), String>,
+    ) -> Task<Message> {
+        let current = self.workspace.as_ref() == Some(&request.workspace_root)
+            && self.show_hidden == request.show_hidden
+            && self.workspace_snapshot_show_hidden == request.show_hidden
+            && self.full_mindmap.as_ref().is_some_and(|full| {
+                full.expansion_generation == request.parent_expansion_generation
+                    && full.expanded.contains(&request.parent)
+                    && full.verification_wave.as_ref().is_some_and(|wave| {
+                        wave.id == request.wave_id
+                            && wave.workspace_root == request.workspace_root
+                            && wave.show_hidden == request.show_hidden
+                            && wave.parent_expansion_generation
+                                == request.parent_expansion_generation
+                            && wave.candidates.contains(&request.folder)
+                            && wave.in_flight.contains(&request.folder)
+                            && wave.request_ids.get(&request.folder) == Some(&request.id)
+                    })
+            });
+        if !current {
+            return Task::none();
+        }
+
+        let mut accepted_exact_empty = false;
+        let materialized = match result {
+            Ok((path, snapshot)) if path == request.folder => {
+                accepted_exact_empty = matches!(
+                    snapshot.recursive_supported_file_count,
+                    tree::RecursiveFileCount::Exact(0)
+                );
+                workspace_mindmap::MaterializedFolder::Loaded {
+                    folders: std::sync::Arc::new(snapshot.folders),
+                    files: std::sync::Arc::new(snapshot.files),
+                    recursive_supported_file_count: snapshot.recursive_supported_file_count,
+                    truncated: snapshot.truncated,
+                }
+            }
+            Ok((path, _)) => workspace_mindmap::MaterializedFolder::Error(format!(
+                "Verified unexpected folder: {}",
+                path.display()
+            )),
+            Err(error) => workspace_mindmap::MaterializedFolder::Error(error),
+        };
+
+        let done = if let Some(full) = self.full_mindmap.as_mut() {
+            full.verification_hidden.remove(&request.folder);
+            full.materialized_folders
+                .insert(request.folder.clone(), materialized);
+            let wave = full
+                .verification_wave
+                .as_mut()
+                .expect("verified request owns a wave");
+            wave.in_flight.remove(&request.folder);
+            wave.request_ids.remove(&request.folder);
+            // Each accepted result advances exactly once. This monotonic
+            // counter drives both the determinate bar and remaining label.
+            wave.checked = wave.checked.saturating_add(1);
+            let done = wave.checked >= wave.candidates.len() && wave.in_flight.is_empty();
+            if done {
+                full.verification_wave = None;
+                full.verification_hidden.clear();
+                self.full_mindmap_progress = None;
+            } else {
+                self.full_mindmap_progress = Some(FullMindmapProgress {
+                    wave_id: wave.id,
+                    checked: wave.checked,
+                    total: wave.candidates.len(),
+                });
+            }
+            done
+        } else {
+            return Task::none();
+        };
+        self.invalidate_full_mindmap_layout();
+        if accepted_exact_empty {
+            self.normalize_full_mindmap_workspace();
+        }
+        if done {
+            Task::none()
+        } else {
+            self.launch_full_mindmap_verification_tasks()
+        }
+    }
+
     fn enter_full_mindmap(&mut self) -> Task<Message> {
         self.overlay = Overlay::None;
         self.full_mindmap = Some(Self::new_full_mindmap_state());
         if self.workspace_tree.is_some() {
             self.reset_full_mindmap_workspace();
-            self.begin_full_mindmap_expanded_folder_loads()
+            let verification = self.begin_full_mindmap_verification_wave();
+            let expanded = self.begin_full_mindmap_expanded_folder_loads();
+            Task::batch([verification, expanded])
         } else {
             let start = self.full_mindmap_start_folder().or_else(Picker::home);
             start.map_or_else(Task::none, |path| {
@@ -1107,6 +1493,7 @@ impl App {
     }
 
     fn finish_full_mindmap_exit(&mut self, return_to_files: bool) -> Task<Message> {
+        self.cancel_full_mindmap_verification();
         self.full_mindmap = None;
         if return_to_files {
             self.sidebar_open = true;
@@ -1150,6 +1537,9 @@ impl App {
             full.pending_preview = None;
             full.pending_workspace_load = None;
             full.pending_folder_loads.clear();
+            full.verification_wave = None;
+            full.verification_hidden.clear();
+            full.expansion_generation = full.expansion_generation.wrapping_add(1);
             full.materialized_folders.clear();
             full.deferred_file_selection = current_file;
             full.preview = FullMindmapPreview::None;
@@ -1157,6 +1547,8 @@ impl App {
             full.layout_generation = full.layout_generation.wrapping_add(1);
             *full.layout_cache.borrow_mut() = None;
         }
+        self.full_mindmap_progress = None;
+        self.invalidate_full_mindmap_layout();
     }
 
     /// Keep a Full Mindmap selection valid after rebuilding the source tree
@@ -1269,6 +1661,10 @@ impl App {
         if already_pending {
             return Task::none();
         }
+        // Root/filter changes supersede every delayed-reveal worker. The
+        // request identity check also guards futures that cannot be aborted.
+        self.cancel_full_mindmap_verification();
+        self.bump_full_mindmap_expansion_generation();
         self.full_mindmap_request_seq = self.full_mindmap_request_seq.wrapping_add(1);
         let request = PendingFullMindmapWorkspaceLoad {
             id: self.full_mindmap_request_seq,
@@ -1324,6 +1720,10 @@ impl App {
                 && folder.starts_with(&workspace_root)
                 && !full.materialized_folders.contains_key(&folder)
                 && !full.pending_folder_loads.contains_key(&folder)
+                // A delayed-reveal wave owns unresolved shells, including an
+                // expanded ancestor. Avoid a duplicate branch scan whose
+                // completion could race the fixed wave's result.
+                && !full.verification_hidden.contains(&folder)
         });
         if !eligible || self.workspace_snapshot_show_hidden != self.show_hidden {
             return Task::none();
@@ -1393,6 +1793,7 @@ impl App {
 
     fn evict_full_mindmap_folder(&mut self, folder: &std::path::Path) {
         if let Some(full) = self.full_mindmap.as_mut() {
+            full.expansion_generation = full.expansion_generation.wrapping_add(1);
             full.expanded.retain(|path| !path.starts_with(folder));
             full.pending_folder_loads
                 .retain(|path, _| !path.starts_with(folder));
@@ -3199,7 +3600,7 @@ impl App {
                     full.pending_preview = None;
                     full.preview = FullMindmapPreview::None;
                     full.load_error = None;
-                    if let Some(path) = workspace_path {
+                    if let Some(path) = workspace_path.clone() {
                         if full.expanded.contains(&path) {
                             collapse = Some(path);
                         } else {
@@ -3208,12 +3609,22 @@ impl App {
                         }
                     }
                 }
+                if workspace_path.is_some() {
+                    self.cancel_full_mindmap_verification();
+                    if load.is_some() {
+                        self.bump_full_mindmap_expansion_generation();
+                    }
+                }
                 self.invalidate_full_mindmap_layout();
                 if let Some(path) = collapse {
                     self.evict_full_mindmap_folder(&path);
                     Task::none()
                 } else {
-                    load.map_or_else(Task::none, |path| self.begin_full_mindmap_folder_load(path))
+                    load.map_or_else(Task::none, |path| {
+                        let verification = self.begin_full_mindmap_verification_wave();
+                        let branch = self.begin_full_mindmap_folder_load(path);
+                        Task::batch([verification, branch])
+                    })
                 }
             }
             Message::FullMindmapSelectNode(id) => self.select_full_mindmap_node(id),
@@ -3292,10 +3703,13 @@ impl App {
                 }
                 let child = if node.has_hidden_children {
                     if let Some(path) = node.path.clone() {
+                        self.cancel_full_mindmap_verification();
                         if let Some(full) = self.full_mindmap.as_mut() {
                             full.expanded.insert(path.clone());
+                            full.expansion_generation = full.expansion_generation.wrapping_add(1);
                         }
                         self.invalidate_full_mindmap_layout();
+                        let verification = self.begin_full_mindmap_verification_wave();
                         let load = self.begin_full_mindmap_folder_load(path);
                         let select = self
                             .full_mindmap_graph()
@@ -3303,7 +3717,7 @@ impl App {
                             .map_or_else(Task::none, |child| {
                                 self.update(Message::FullMindmapSelectNode(child))
                             });
-                        return Task::batch([load, select]);
+                        return Task::batch([verification, load, select]);
                     } else {
                         None
                     }
@@ -3659,6 +4073,9 @@ impl App {
                 }
                 Task::none()
             }
+            Message::FullMindmapVerificationLoaded { request, result } => {
+                self.handle_full_mindmap_verification_loaded(request, result)
+            }
             Message::FullMindmapWorkspaceLoaded { request, result } => {
                 let current = self.full_mindmap.as_ref().is_some_and(|full| {
                     full.pending_workspace_load
@@ -3689,6 +4106,7 @@ impl App {
                             self.apply_workspace_snapshot(path.clone(), snapshot, false);
                         }
                         if request.exit_after_refresh {
+                            self.cancel_full_mindmap_verification();
                             self.full_mindmap = None;
                             if request.return_to_files_after {
                                 self.sidebar_open = true;
@@ -3712,11 +4130,17 @@ impl App {
                                 followup = self.begin_full_mindmap_open(file);
                             }
                         }
-                        if !request.exit_after_refresh && open_after.is_none() {
-                            followup = Task::batch([
-                                followup,
-                                self.begin_full_mindmap_expanded_folder_loads(),
-                            ]);
+                        if !request.exit_after_refresh {
+                            let verification = self.begin_full_mindmap_verification_wave();
+                            followup = if open_after.is_none() {
+                                Task::batch([
+                                    followup,
+                                    verification,
+                                    self.begin_full_mindmap_expanded_folder_loads(),
+                                ])
+                            } else {
+                                Task::batch([followup, verification])
+                            };
                         }
                     }
                     Ok((path, _)) => {
@@ -5946,11 +6370,20 @@ impl App {
             Some(t) => toast_overlay(&t.text, pal),
             None => Space::new().into(),
         };
+        // Progress has its own neutral layer and never replaces the ordinary
+        // toast. The stack order keeps attention/error feedback above this
+        // persistent status while preserving each toast's expiry timing.
+        let progress_layer: Element<'_, Message> = match &self.full_mindmap_progress {
+            Some(progress) if self.full_mindmap.is_some() => {
+                full_mindmap_progress_overlay(progress, pal)
+            }
+            _ => Space::new().into(),
+        };
         let update_layer: Element<'_, Message> = match &self.pending_update {
             Some(u) => update_banner(&u.version, pal),
             None => Space::new().into(),
         };
-        iced::widget::stack![base, toast_layer, update_layer].into()
+        iced::widget::stack![base, progress_layer, toast_layer, update_layer].into()
     }
 }
 
@@ -6068,6 +6501,80 @@ fn toast_overlay<'a>(text: &str, pal: Palette) -> Element<'a, Message> {
             text_color: Some(pal.fg),
             ..Default::default()
         });
+    container(bubble)
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .padding([18, 0])
+        .align_x(iced::alignment::Horizontal::Center)
+        .align_y(iced::alignment::Vertical::Top)
+        .into()
+}
+
+/// Persistent, neutral Full Mindmap verification feedback. It intentionally
+/// shares the toast position but sits beneath the ordinary toast layer, so a
+/// blocked/error toast remains readable and keeps its own expiry deadline.
+fn full_mindmap_progress_overlay<'a>(
+    progress: &FullMindmapProgress,
+    pal: Palette,
+) -> Element<'a, Message> {
+    use iced::widget::{container, text as text_w};
+    let total = progress.total.max(1);
+    let checked = progress.checked.min(progress.total);
+    let remaining = progress.total.saturating_sub(checked);
+    let ratio = (checked as f32 / total as f32).clamp(0.0, 1.0);
+    let filled = ((ratio * 1000.0).round() as u16).max(if ratio > 0.0 { 1 } else { 0 });
+    let unfilled = 1000u16.saturating_sub(filled);
+    let bar = irow![
+        container(Space::new())
+            .width(Length::FillPortion(filled))
+            .height(Length::Fixed(4.0))
+            .style(move |_| container::Style {
+                background: Some(pal.muted.into()),
+                ..Default::default()
+            }),
+        container(Space::new())
+            .width(Length::FillPortion(unfilled.max(1)))
+            .height(Length::Fixed(4.0))
+            .style(move |_| container::Style {
+                background: Some(pal.rule.into()),
+                ..Default::default()
+            }),
+    ]
+    .spacing(0);
+    let bubble = container(
+        column![
+            text_w(format!(
+                "Verifying folders · {checked}/{} checked · {remaining} remaining",
+                progress.total
+            ))
+            .size(13.0)
+            .color(pal.fg),
+            container(bar)
+                .width(Length::Fill)
+                .clip(true)
+                .style(move |_| container::Style {
+                    background: Some(pal.rule.into()),
+                    border: Border {
+                        radius: 999.0.into(),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                }),
+        ]
+        .spacing(6),
+    )
+    .width(Length::Fixed(320.0))
+    .padding([8, 14])
+    .style(move |_| container::Style {
+        background: Some(pal.surface.into()),
+        border: Border {
+            color: pal.rule,
+            width: 1.0,
+            radius: 8.0.into(),
+        },
+        text_color: Some(pal.fg),
+        ..Default::default()
+    });
     container(bubble)
         .width(Length::Fill)
         .height(Length::Fill)
@@ -9309,6 +9816,217 @@ mod tests {
             "rmdv-full-mindmap-{label}-{}-{stamp}",
             std::process::id()
         ))
+    }
+
+    fn verification_test_app(
+        candidate_count: usize,
+    ) -> (App, std::path::PathBuf, Vec<std::path::PathBuf>) {
+        let root = std::path::PathBuf::from("/verification-root");
+        let candidates = (0..candidate_count)
+            .map(|index| root.join(format!("candidate-{index}")))
+            .collect::<Vec<_>>();
+        let children = candidates
+            .iter()
+            .map(|path| Node {
+                path: path.clone(),
+                name: path.file_name().unwrap().to_string_lossy().into_owned(),
+                is_dir: true,
+                children: Vec::new(),
+                recursive_supported_file_count: Some(tree::RecursiveFileCount::LowerBound(0)),
+            })
+            .collect();
+        let root_node = Node {
+            path: root.clone(),
+            name: "verification-root".into(),
+            is_dir: true,
+            children,
+            recursive_supported_file_count: Some(tree::RecursiveFileCount::LowerBound(0)),
+        };
+        let mut app = App::default();
+        app.workspace = Some(root.clone());
+        app.workspace_tree = Some(root_node);
+        app.workspace_snapshot_show_hidden = false;
+        let mut full = App::new_full_mindmap_state();
+        full.expanded.insert(root.clone());
+        full.selected = Some(WorkspaceNodeId::Root(root.clone()));
+        app.full_mindmap = Some(full);
+        (app, root, candidates)
+    }
+
+    fn verification_request_for(
+        app: &App,
+        folder: &std::path::Path,
+    ) -> PendingFullMindmapVerification {
+        let full = app.full_mindmap.as_ref().unwrap();
+        let wave = full.verification_wave.as_ref().unwrap();
+        PendingFullMindmapVerification {
+            id: *wave.request_ids.get(folder).unwrap(),
+            wave_id: wave.id,
+            workspace_root: wave.workspace_root.clone(),
+            parent: wave
+                .parent_by_candidate
+                .get(folder)
+                .cloned()
+                .unwrap_or_else(|| wave.workspace_root.clone()),
+            parent_expansion_generation: wave.parent_expansion_generation,
+            folder: folder.to_path_buf(),
+            show_hidden: wave.show_hidden,
+        }
+    }
+
+    #[test]
+    fn full_mindmap_verification_wave_hides_unknowns_and_reveals_positive_counts() {
+        let (mut app, root, candidates) = verification_test_app(1);
+        let _ = app.begin_full_mindmap_verification_wave();
+        assert_eq!(
+            app.full_mindmap_progress,
+            Some(FullMindmapProgress {
+                wave_id: app
+                    .full_mindmap
+                    .as_ref()
+                    .unwrap()
+                    .verification_wave
+                    .as_ref()
+                    .unwrap()
+                    .id,
+                checked: 0,
+                total: 1,
+            })
+        );
+        assert!(app
+            .full_mindmap_graph()
+            .unwrap()
+            .node(&WorkspaceNodeId::Folder(candidates[0].clone()))
+            .is_none());
+
+        let request = verification_request_for(&app, &candidates[0]);
+        let _ = app.update(Message::FullMindmapVerificationLoaded {
+            request,
+            result: Ok((
+                candidates[0].clone(),
+                tree::ExpandedFolderSnapshot {
+                    folders: Vec::new(),
+                    files: vec![candidates[0].join("readme.md"); 3],
+                    recursive_supported_file_count: tree::RecursiveFileCount::Exact(3),
+                    truncated: false,
+                },
+            )),
+        });
+        let graph = app.full_mindmap_graph().unwrap();
+        assert_eq!(
+            graph
+                .nodes
+                .iter()
+                .find(|node| node.id.as_ref()
+                    == Some(&WorkspaceNodeId::Folder(candidates[0].clone())))
+                .map(|node| node.full_label.as_str()),
+            Some("candidate-0 · 3 files")
+        );
+        assert_eq!(app.full_mindmap_progress, None);
+        assert_eq!(app.workspace.as_deref(), Some(root.as_path()));
+    }
+
+    #[test]
+    fn full_mindmap_verification_wave_is_fixed_and_bounded() {
+        let (mut app, _root, candidates) =
+            verification_test_app(FULL_MINDMAP_VERIFICATION_CONCURRENCY + 1);
+        let _ = app.begin_full_mindmap_verification_wave();
+        let wave = app
+            .full_mindmap
+            .as_ref()
+            .unwrap()
+            .verification_wave
+            .as_ref()
+            .unwrap();
+        assert_eq!(
+            wave.candidates.len(),
+            FULL_MINDMAP_VERIFICATION_CONCURRENCY + 1
+        );
+        assert_eq!(wave.in_flight.len(), FULL_MINDMAP_VERIFICATION_CONCURRENCY);
+        assert_eq!(wave.next_index, FULL_MINDMAP_VERIFICATION_CONCURRENCY);
+        assert_eq!(app.full_mindmap_progress.unwrap().total, candidates.len());
+
+        let request = verification_request_for(&app, &candidates[0]);
+        let _ = app.update(Message::FullMindmapVerificationLoaded {
+            request,
+            result: Err("permission denied".into()),
+        });
+        let wave = app
+            .full_mindmap
+            .as_ref()
+            .unwrap()
+            .verification_wave
+            .as_ref()
+            .unwrap();
+        assert_eq!(wave.checked, 1);
+        assert_eq!(wave.next_index, candidates.len());
+        assert_eq!(app.full_mindmap_progress.unwrap().checked, 1);
+        let folder = WorkspaceNodeId::Folder(candidates[0].clone());
+        let graph = app.full_mindmap_graph().unwrap();
+        let index = graph
+            .index_of(&folder)
+            .expect("unavailable folder remains visible");
+        assert_eq!(
+            graph.nodes[index].full_label,
+            "candidate-0 · count unavailable"
+        );
+    }
+
+    #[test]
+    fn full_mindmap_verification_stale_result_cannot_reveal_after_cancel() {
+        let (mut app, _root, candidates) = verification_test_app(1);
+        let _ = app.begin_full_mindmap_verification_wave();
+        let request = verification_request_for(&app, &candidates[0]);
+        app.cancel_full_mindmap_verification();
+        assert!(app
+            .full_mindmap_graph()
+            .unwrap()
+            .node(&WorkspaceNodeId::Folder(candidates[0].clone()))
+            .is_some());
+        let _ = app.update(Message::FullMindmapVerificationLoaded {
+            request,
+            result: Ok((
+                candidates[0].clone(),
+                tree::ExpandedFolderSnapshot {
+                    folders: Vec::new(),
+                    files: Vec::new(),
+                    recursive_supported_file_count: tree::RecursiveFileCount::Exact(4),
+                    truncated: false,
+                },
+            )),
+        });
+        assert!(app.full_mindmap_progress.is_none());
+        assert!(app
+            .full_mindmap_graph()
+            .unwrap()
+            .node(&WorkspaceNodeId::Folder(candidates[0].clone()))
+            .is_some());
+    }
+
+    #[test]
+    fn full_mindmap_verification_rejects_same_wave_wrong_request_id() {
+        let (mut app, _root, candidates) = verification_test_app(1);
+        let _ = app.begin_full_mindmap_verification_wave();
+        let mut request = verification_request_for(&app, &candidates[0]);
+        request.id = request.id.wrapping_add(1);
+        let _ = app.update(Message::FullMindmapVerificationLoaded {
+            request,
+            result: Ok((
+                candidates[0].clone(),
+                tree::ExpandedFolderSnapshot {
+                    folders: Vec::new(),
+                    files: Vec::new(),
+                    recursive_supported_file_count: tree::RecursiveFileCount::Exact(1),
+                    truncated: false,
+                },
+            )),
+        });
+        assert_eq!(app.full_mindmap_progress.unwrap().checked, 0);
+        assert!(app
+            .full_mindmap_graph()
+            .unwrap()
+            .node(&WorkspaceNodeId::Folder(candidates[0].clone()))
+            .is_none());
     }
 
     fn complete_full_mindmap_workspace_load(app: &mut App) -> PendingFullMindmapWorkspaceLoad {
