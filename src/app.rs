@@ -4001,9 +4001,14 @@ impl App {
                         self.full_mindmap = None;
                         // Full Mindmap file activation always hands the file
                         // back to the document mindmap, whose normal load path
-                        // then focuses the first content child.
+                        // then focuses the first content child. Let that path
+                        // clean up a pre-existing Raw/Zen editor first; its
+                        // leave_zen_edit_mode helper restores Rendered, so the
+                        // bridge reapplies Mindmap only after delegation.
+                        let task = self.update(Message::FileLoaded(Ok((path, source))));
                         self.view_mode = ViewMode::Mindmap;
-                        self.update(Message::FileLoaded(Ok((path, source))))
+                        self.mindmap_focus_first_child();
+                        task
                     }
                     Ok((path, _)) => {
                         if let Some(full) = self.full_mindmap.as_mut() {
@@ -11160,6 +11165,59 @@ mod tests {
             .find_map(|(id, block)| matches!(block, Block::Heading { .. }).then_some(*id));
         assert_eq!(app.mindmap_selected, first_heading);
         assert!(app.mindmap_panel_open);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn full_mindmap_file_enter_from_clean_zen_ends_in_document_mindmap() {
+        let dir = full_mindmap_test_dir("file-enter-clean-zen");
+        let old_file = dir.join("old.md");
+        let file = dir.join("guide.md");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(&old_file, "# Old\n").unwrap();
+        std::fs::write(&file, "# Guide\n## Details\n").unwrap();
+
+        let mut app = App::default();
+        app.file = Some(old_file);
+        app.source = "# Old\n".into();
+        app.saved_source = app.source.clone();
+        app.sidebar_open = true;
+        app.show_footer = false;
+        app.search_open = true;
+        let _ = app.enter_zen_edit_mode();
+        assert_eq!(app.view_mode, ViewMode::Raw);
+        assert!(app.editor.is_some());
+        app.set_workspace(dir.clone(), false);
+
+        let mut full = full_workspace_state(&dir);
+        full.selected = Some(WorkspaceNodeId::File(file.clone()));
+        app.full_mindmap = Some(full);
+        app.dirty = false;
+
+        let _ = app.update(Message::FullMindmapActivate);
+        let request = app
+            .full_mindmap
+            .as_ref()
+            .and_then(|full| full.pending_open.clone())
+            .expect("Enter should own a background file request");
+        let _ = app.update(Message::FullMindmapFileLoaded {
+            request,
+            result: Ok((file.clone(), "# Guide\n## Details\n".into())),
+        });
+
+        assert!(app.full_mindmap.is_none());
+        assert_eq!(app.view_mode, ViewMode::Mindmap);
+        assert!(app.editor.is_none());
+        assert!(app.zen_restore.is_none());
+        assert_eq!(app.file.as_deref(), Some(file.as_path()));
+        let first_heading = app
+            .ast
+            .iter()
+            .find_map(|(id, block)| matches!(block, Block::Heading { .. }).then_some(*id));
+        assert_eq!(app.mindmap_selected, first_heading);
+        assert!(app.sidebar_open);
+        assert!(!app.show_footer);
+        assert!(app.search_open);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
