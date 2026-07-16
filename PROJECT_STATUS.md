@@ -4,6 +4,24 @@ Last reconciled: 2026-07-16 (Asia/Taipei)
 
 ## Active work
 
+- **Submitted locally (serial maker, 2026-07-16):** commit `8be499a` adds a
+  75 ms Full Mindmap preview settle aligned with the document Mindmap panel
+  cadence. File selection updates the ring immediately and shows neutral
+  `Loading preview…`; only the accepted settle message starts the existing
+  bounded read/parse. Newer file/folder selection, collapse, root/filter
+  changes, exit, and deliberate Enter activation cancel the timer/read
+  ownership; stale settle and preview messages remain request-guarded. Enter
+  bypasses the delay and opens immediately, while a ready same-path preview is
+  reused without another read. Added five focused regressions and updated the
+  design spec. Gates pass: Full Mindmap app 55, Mindmap 97, all 263 library
+  tests, all 67 integration tests, `cargo check`, touched-file rustfmt, and
+  `git diff --check`. Fresh protected binary
+  `/private/tmp/mdv-full-mindmap-protect-target/debug/rmdv` has SHA-256
+  `24819a72250a85e97a47eaa2b1b77e9517612b6586565829dea29f982073f421`.
+  Native/manual acceptance is pending; main/Zoom integration and push, tag,
+  release, and deploy actions remain out of scope. Submitted for parent review;
+  not self-accepted.
+
 - **Independently accepted locally (serial correction + lead, 2026-07-16):**
   commit `450d8a0`
   preserves the requested document-level Mindmap after Full Mindmap opens a
@@ -217,6 +235,16 @@ Last reconciled: 2026-07-16 (Asia/Taipei)
    Focused/full automated gates and the protected binary hash are recorded
    above. Native/manual acceptance remains pending; no main integration, push,
    tag, release, or deploy was performed.
+22. **Full Mindmap preview settle candidate** is committed as `8be499a`.
+   Arrow/canvas file selection now waits for the named 75 ms settle before
+   starting the existing bounded preview read, while the panel remains in a
+   neutral loading state. Newer selection, folder/collapse, root/filter, exit,
+   and Enter transitions cancel timer/read ownership; Enter opens immediately,
+   ready previews are reused, and stale preview identity checks remain intact.
+   Five focused regressions cover the settle boundary, stale timer, folder/exit
+   cancellation, Enter bypass, and ready-preview reuse alongside existing dirty
+   and stale-preview tests. Native/manual acceptance remains pending; this
+   candidate is submitted for parent review and is not independently accepted.
 
 ## Current state
 
