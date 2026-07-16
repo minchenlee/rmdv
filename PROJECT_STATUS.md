@@ -4,7 +4,8 @@ Last reconciled: 2026-07-16 (Asia/Taipei)
 
 ## Active work
 
-- **Submitted locally (serial correction, 2026-07-16):** commit `450d8a0`
+- **Independently accepted locally (serial correction + lead, 2026-07-16):**
+  commit `450d8a0`
   preserves the requested document-level Mindmap after Full Mindmap opens a
   file while a clean Raw/Zen editor is still present. The bridge now delegates
   through the established FileLoaded path so editor/chrome cleanup still runs,
@@ -16,11 +17,14 @@ Last reconciled: 2026-07-16 (Asia/Taipei)
   `git diff --check`. Fresh protected binary
   `/private/tmp/mdv-full-mindmap-protect-target/debug/rmdv` has SHA-256
   `e0e94b8c4fcedd3c06b18998c55827eba211e3bca670f985d516bd7f1aea505b`.
-  Native/manual acceptance is pending; main/Zoom integration and push, tag,
-  release, and deploy actions remain out of scope. Submitted for parent review;
-  not self-accepted.
+  Lead independently reran 50 focused Full Mindmap tests, 92 Mindmap tests,
+  all 258 library tests, all 67 integration tests, `cargo check`, touched-file
+  rustfmt, `git diff --check`, and the protected-binary hash. Native/manual
+  acceptance is pending; main/Zoom integration and push, tag, release, and
+  deploy actions remain out of scope.
 
-- **Submitted locally (serial maker, 2026-07-16):** commit `676fd0f` bridges
+- **Independently accepted locally (serial maker + lead, 2026-07-16):** commit
+  `676fd0f` bridges
   Full Mindmap file activation into document-level Mindmap (with first-child
   focus) and document-root Left back into the current file's Full Mindmap
   workspace. Existing workspaces are preserved when they contain the file;
@@ -31,9 +35,9 @@ Last reconciled: 2026-07-16 (Asia/Taipei)
   `cargo check`, touched-file rustfmt, and `git diff --check`. Fresh protected
   binary `/private/tmp/mdv-full-mindmap-protect-target/debug/rmdv` has SHA-256
   `cbffed233661adda1fc27351acbe72799700c9bda2c765bf781fa89a8d86545b`.
-  Native/manual acceptance is pending; main/Zoom integration and push, tag,
-  release, and deploy actions remain out of scope. Submitted for parent review;
-  not self-accepted.
+  Lead independently reran the bridge-focused and full automated gates listed
+  above. Native/manual acceptance is pending; main/Zoom integration and push,
+  tag, release, and deploy actions remain out of scope.
 
 - **Independently accepted locally (serial maker + lead, 2026-07-16):** commit
   `7e038ba` closes the delayed-reveal lifecycle gaps. Newly materialized
@@ -74,8 +78,8 @@ Last reconciled: 2026-07-16 (Asia/Taipei)
 - Actual checkout: `/Users/liminchen/Documents/GitHub/mdv`
 - Legacy non-repo path: `/Users/liminchen/Documents/GitHub/mdv-main`
 - Active branch: `feat/full-mindmap-mode`; its latest independently accepted
-  implementation candidate is `7e038ba` (`fix: close delayed reveal lifecycle
-  gaps`).
+  implementation candidate is `450d8a0` (`fix: preserve mindmap mode after zen
+  file activation`).
 - Local `main` is at `67564e5`, eleven commits ahead of `origin/main`: Windows
   IPC fix `6fa6450`, CJK emphasis fix `0df1fe2`, reviewed CJK repair `d97370e`,
   the six-commit reviewed Zen feature/repair line `1199455..f2b0519`, and Zen
@@ -194,7 +198,7 @@ Last reconciled: 2026-07-16 (Asia/Taipei)
    no P0/P1 issues and independently passed the focused/full automated gates.
    Native/manual acceptance is still pending; no main integration, push, tag,
    release, or deploy was performed.
-20. **Full/document Mindmap navigation bridge candidate** is committed as
+20. **Full/document Mindmap navigation bridge** is independently accepted at
    `676fd0f`. Full Mindmap file Enter now returns through the established
    document load path in `ViewMode::Mindmap` and focuses the first content
    child; document-root (and no-selection/root-boundary) Left enters Full
@@ -203,18 +207,35 @@ Last reconciled: 2026-07-16 (Asia/Taipei)
    document navigation. Seven app regressions cover activation, dirty safety,
    workspace adoption, nested/root boundaries, and stale file/workspace loads.
    Automated gates pass as recorded above. Native/manual acceptance remains
-   pending; this candidate is submitted for parent review and is not
-   independently accepted.
-21. **Full Mindmap clean Raw/Zen mode-ordering correction** is committed as
+   pending; no main integration, push, tag, release, or deploy was performed.
+21. **Full Mindmap clean Raw/Zen mode-ordering correction** is independently
+   accepted at
    `450d8a0`. File activation still uses the established load path to clear a
    clean editor and restore its saved chrome, then explicitly reapplies
    document-level Mindmap mode and first-child focus after that cleanup. The
    regression prevents a clean Raw/Zen activation from ending in Rendered mode.
    Focused/full automated gates and the protected binary hash are recorded
-   above. Native/manual acceptance remains pending; this candidate is submitted
-   for parent review and is not independently accepted.
+   above. Native/manual acceptance remains pending; no main integration, push,
+   tag, release, or deploy was performed.
 
 ## Current state
+
+- **Full/document Mindmap navigation bridge is independently accepted** at
+  implementation commits `676fd0f` and `450d8a0`, with no P0/P1 findings.
+  Full Mindmap Enter opens the selected file through the existing guarded load
+  path and leaves the document in `ViewMode::Mindmap`, including clean Zen/raw
+  editor cleanup. Document Mindmap Left at the synthetic-root boundary returns
+  to Full Mindmap and focuses the current file after its folder listing is
+  accepted; nested-heading Left remains ordinary document navigation. Existing
+  workspaces are preserved when they contain the file, otherwise the current
+  file parent/Home background-adoption path is used. Lead evidence: 50 focused
+  Full Mindmap tests, 92 Mindmap tests, all 258 library tests, all 67
+  integration tests, `cargo check`, touched-file rustfmt, `git diff --check`,
+  and protected binary SHA-256 verification. Manual candidate:
+  `/private/tmp/mdv-full-mindmap-protect-target/debug/rmdv`, SHA-256
+  `e0e94b8c4fcedd3c06b18998c55827eba211e3bca670f985d516bd7f1aea505b`.
+  Native/manual acceptance remains pending; main/Zoom integration and release
+  actions remain out of scope.
 
 - **Full Mindmap delayed reveal is independently accepted** at implementation
   commit `7e038ba` with no P0/P1 findings. Unsupported-only `LowerBound(0)`
@@ -715,7 +736,7 @@ Last reconciled: 2026-07-16 (Asia/Taipei)
 
 The Full Mindmap feature is an opt-in, full-window navigation mode, distinct
 from and compatible with the existing document-level `ViewMode::Mindmap`.
-Commits through `7e038ba` remove its visual controls, make folder traversal and
+Commits through `450d8a0` remove its visual controls, make folder traversal and
 file opening keyboard-first, address the manual-acceptance corrections, harden
 large-workspace behavior, unify both entry scenarios around one explorer, add
 recursive collapsed-folder count labels from the bounded snapshot, lazily
@@ -738,7 +759,7 @@ For Full Mindmap, manually exercise both entry scenarios, recursive
 exact/lower-bound labels, Space/Right/Enter/Left/Esc, hidden refreshes, previews,
 dirty-document protection, and ordinary Files-sidebar scrolling/navigation in
 a large workspace with the recorded binary. Specifically verify that a
-unsupported-only folders such as `Shopee Backroom` never flash into the graph,
+unsupported-only folder such as `Shopee Backroom` never flashes into the graph,
 the progress toast advances and disappears, capped unverified excess remains
 truthfully labeled `scan limit reached`, exact-empty folders are absent,
 and nested folders beneath Documents are reachable from Home or an ancestor
@@ -748,8 +769,11 @@ after Loading completes rather than jumping to the user root. A/B/C/D/E/G and
 hidden additivity were accepted on earlier candidates. Expanding
 `Shopee Backroom` should not appear at all because it has no supported
 descendants. Ordinary attention/error toasts must remain readable above the
-progress toast. `1317a06`, `400e41b`, `6f05ecf`, and `7e038ba` passed
-independent automated review and still need native acceptance.
+progress toast. Also verify Full Mindmap file Enter opens the document in
+content Mindmap mode, and document Mindmap Left at the synthetic root returns
+to Full Mindmap with the current file focused; nested heading Left must remain
+document navigation. `1317a06`, `400e41b`, `6f05ecf`, `7e038ba`, `676fd0f`, and
+`450d8a0` passed independent automated review and still need native acceptance.
 Do not integrate main while that gate is held.
 After acceptance,
 integrate current
