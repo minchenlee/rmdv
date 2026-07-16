@@ -345,7 +345,7 @@ const MIND_PANEL_MAX_TEXT_BYTES: usize = 24 * 1024;
 /// cadence, while Full Mindmap previews use a longer quiet window so rapid
 /// workspace navigation does not start unnecessary reads.
 const MINDMAP_PANEL_SETTLE_MS: u64 = 75;
-const FULL_MINDMAP_PREVIEW_SETTLE_MS: u64 = 150;
+const FULL_MINDMAP_PREVIEW_SETTLE_MS: u64 = 200;
 /// Delayed-reveal verification is deliberately small and fixed. Four bounded
 /// filesystem workers keep the UI responsive; the candidate cap bounds both
 /// queue memory and total extra scans. Candidates beyond the cap stay visible
@@ -12230,9 +12230,9 @@ mod tests {
     }
 
     #[test]
-    fn full_mindmap_preview_settle_uses_150ms_without_changing_document_panel() {
+    fn full_mindmap_preview_settle_uses_200ms_without_changing_document_panel() {
         assert_eq!(MINDMAP_PANEL_SETTLE_MS, 75);
-        assert_eq!(FULL_MINDMAP_PREVIEW_SETTLE_MS, 150);
+        assert_eq!(FULL_MINDMAP_PREVIEW_SETTLE_MS, 200);
         assert_ne!(FULL_MINDMAP_PREVIEW_SETTLE_MS, MINDMAP_PANEL_SETTLE_MS);
     }
 
