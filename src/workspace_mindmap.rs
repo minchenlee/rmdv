@@ -53,6 +53,13 @@ pub enum WorkspaceNodeKind {
 
 #[derive(Debug, Clone)]
 pub enum MaterializedFolder {
+    /// A verification result retains only its recursive count/status. The
+    /// immediate children/files are intentionally not cached until this
+    /// folder is explicitly expanded and owns a branch materialization.
+    Verified {
+        recursive_supported_file_count: RecursiveFileCount,
+        truncated: bool,
+    },
     Loaded {
         folders: Arc<Vec<Node>>,
         files: Arc<Vec<PathBuf>>,
@@ -253,6 +260,10 @@ fn effective_folder_count(
     materialized: &HashMap<PathBuf, MaterializedFolder>,
 ) -> Option<RecursiveFileCount> {
     match materialized.get(&node.path) {
+        Some(MaterializedFolder::Verified {
+            recursive_supported_file_count,
+            ..
+        }) => Some(*recursive_supported_file_count),
         Some(MaterializedFolder::Loaded {
             recursive_supported_file_count,
             ..
@@ -464,6 +475,7 @@ fn visible_folder_children<'a>(
     materialized: &'a HashMap<PathBuf, MaterializedFolder>,
 ) -> &'a [Node] {
     match materialized.get(&node.path) {
+        Some(MaterializedFolder::Verified { .. }) => &node.children,
         Some(MaterializedFolder::Loaded { folders, .. }) => folders.as_slice(),
         _ => &node.children,
     }
@@ -521,6 +533,9 @@ fn append_materialized_children(
             );
             builder.attach(parent, child);
         }
+        // Verification intentionally retains only count/status. The branch
+        // loader owns child/file materialization after explicit expansion.
+        Some(MaterializedFolder::Verified { .. }) => {}
         None if pending.contains(folder) => {
             let status = WorkspaceStatus::LoadingFiles;
             let child = builder.push(

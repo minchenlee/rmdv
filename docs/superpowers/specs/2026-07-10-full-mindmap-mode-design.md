@@ -503,6 +503,16 @@ Completion or cancellation removes this progress toast. It is rendered below
 the existing attention/error toast layer, so blocked-action and failure copy
 retain their own priority and expiry timing; no ordinary toast is overwritten.
 
+Verification results retain only the recursive count/status (`Verified`), not
+the scanned child or file listing. A collapsed positive shell therefore gets a
+truthful count without retaining a second branch snapshot; explicit expansion
+evicts that count-only fact and owns the separate child/file materialization.
+When an expanded-folder load introduces new `LowerBound(0)` child shells after
+the current wave was frozen, those children are hidden in a deferred follow-up
+set and a new fixed wave starts after the active denominator drains. Collapsing
+one branch cancels and re-snapshots the remaining expanded frontier in the same
+update, so unresolved siblings never flash into the graph.
+
 ### Verification after implementation
 
 The approved design is implemented as follows:
