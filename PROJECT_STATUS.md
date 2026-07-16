@@ -4,6 +4,21 @@ Last reconciled: 2026-07-16 (Asia/Taipei)
 
 ## Active work
 
+- **Submitted locally (serial maker, 2026-07-16):** commit `676fd0f` bridges
+  Full Mindmap file activation into document-level Mindmap (with first-child
+  focus) and document-root Left back into the current file's Full Mindmap
+  workspace. Existing workspaces are preserved when they contain the file;
+  otherwise the bridge adopts the file's parent or Home through the existing
+  background loader. Dirty/stale requests remain guarded, nested document Left
+  remains unchanged, and the design spec plus seven app regressions document
+  the contract. Evidence: all 257 library tests, all 67 integration tests,
+  `cargo check`, touched-file rustfmt, and `git diff --check`. Fresh protected
+  binary `/private/tmp/mdv-full-mindmap-protect-target/debug/rmdv` has SHA-256
+  `cbffed233661adda1fc27351acbe72799700c9bda2c765bf781fa89a8d86545b`.
+  Native/manual acceptance is pending; main/Zoom integration and push, tag,
+  release, and deploy actions remain out of scope. Submitted for parent review;
+  not self-accepted.
+
 - **Independently accepted locally (serial maker + lead, 2026-07-16):** commit
   `7e038ba` closes the delayed-reveal lifecycle gaps. Newly materialized
   `LowerBound(0)` children
@@ -163,6 +178,17 @@ Last reconciled: 2026-07-16 (Asia/Taipei)
    no P0/P1 issues and independently passed the focused/full automated gates.
    Native/manual acceptance is still pending; no main integration, push, tag,
    release, or deploy was performed.
+20. **Full/document Mindmap navigation bridge candidate** is committed as
+   `676fd0f`. Full Mindmap file Enter now returns through the established
+   document load path in `ViewMode::Mindmap` and focuses the first content
+   child; document-root (and no-selection/root-boundary) Left enters Full
+   Mindmap, preserves a containing workspace, and otherwise adopts the current
+   file parent/Home through the background loader. Nested heading Left remains
+   document navigation. Seven app regressions cover activation, dirty safety,
+   workspace adoption, nested/root boundaries, and stale file/workspace loads.
+   Automated gates pass as recorded above. Native/manual acceptance remains
+   pending; this candidate is submitted for parent review and is not
+   independently accepted.
 
 ## Current state
 
