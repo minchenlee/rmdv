@@ -4,23 +4,18 @@ Last reconciled: 2026-07-15 (Asia/Taipei)
 
 ## Active work
 
-- **In progress (serial maker, 2026-07-16):** delayed Full Mindmap folder
-  reveal and fixed-wave verification progress toast on `feat/full-mindmap-mode`
-  after `cf24fb0`. Production edits are owned by the current maker; keep this
-  branch clean of unrelated changes and record exact tests/commit before handoff.
-
-- **Candidate ready for commit (serial maker, 2026-07-16):** source and design
-  changes implement the fixed four-worker/256-candidate delayed-reveal wave,
-  strict request/root/filter/mode/parent-expansion identity, truthful exact /
+- **Completed locally (serial maker, 2026-07-16):** commit `56b44cb` adds the
+  fixed four-worker/256-candidate delayed-reveal wave, strict
+  request/root/filter/mode/parent-expansion identity, truthful exact /
   lower-bound / unavailable outcomes, and a separate neutral determinate
   progress toast beneath ordinary attention/error toasts. Focused gates pass:
   Full Mindmap app 43, workspace graph 17, all library 246, all integration
-  tests 67, touched-file rustfmt, and `git diff --check`. A fresh protected
-  binary was built at `/private/tmp/mdv-full-mindmap-protect-target/debug/rmdv`
-  with SHA-256
+  tests 67, touched-file rustfmt, and `git diff --check`. The fresh protected
+  binary is `/private/tmp/mdv-full-mindmap-protect-target/debug/rmdv` with
+  SHA-256
   `61febf1b17d884377644816e055fdf1bf24e5386cd76d14f1932821b5168559e`.
-  Next action: commit this candidate, then record the commit and the remaining
-  native/manual acceptance gate here before handoff.
+  Native/manual acceptance remains the next gate; main/Zoom integration and
+  release actions stay out of scope.
 
 ## Read this first
 
