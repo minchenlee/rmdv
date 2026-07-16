@@ -1,11 +1,12 @@
 # rmdv — shared project status
 
-Last reconciled: 2026-07-15 (Asia/Taipei)
+Last reconciled: 2026-07-16 (Asia/Taipei)
 
 ## Active work
 
-- **Submitted locally (serial maker, 2026-07-16):** commit `7e038ba` closes the
-  delayed-reveal lifecycle gaps. Newly materialized `LowerBound(0)` children
+- **Independently accepted locally (serial maker + lead, 2026-07-16):** commit
+  `7e038ba` closes the delayed-reveal lifecycle gaps. Newly materialized
+  `LowerBound(0)` children
   stay hidden in a deferred set without changing an active wave denominator;
   the current wave starts a fresh fixed follow-up after it drains. Collapsing a
   branch re-snapshots the other expanded frontier in the same update. Wave
@@ -18,9 +19,11 @@ Last reconciled: 2026-07-15 (Asia/Taipei)
   fresh protected binary is `/private/tmp/mdv-full-mindmap-protect-target/debug/rmdv`
   with SHA-256
   `4f36fbc26f4ab1f52d6d3ad4d0f03a77d936fc0f835ff5baf023fcc2a2018298`.
+  Lead review found no P0/P1 issues and independently reran 47 focused Full
+  Mindmap tests, 17 workspace-graph tests, all 250 library tests, all 67
+  integration tests, `cargo check`, `git diff --check`, and the binary hash.
   Native/manual acceptance remains pending; main/Zoom integration and release
-  actions stay out of scope. This is submitted for parent review, not
-  self-accepted.
+  actions stay out of scope.
 
 - **Completed locally (serial maker, 2026-07-16):** commit `56b44cb` adds the
   fixed four-worker/256-candidate delayed-reveal wave, strict
@@ -39,8 +42,9 @@ Last reconciled: 2026-07-15 (Asia/Taipei)
 
 - Actual checkout: `/Users/liminchen/Documents/GitHub/mdv`
 - Legacy non-repo path: `/Users/liminchen/Documents/GitHub/mdv-main`
-- Active branch: `feat/full-mindmap-mode`; its latest implementation candidate
-  is `6f05ecf` (`fix: keep nearest ancestor after empty shell`).
+- Active branch: `feat/full-mindmap-mode`; its latest independently accepted
+  implementation candidate is `7e038ba` (`fix: close delayed reveal lifecycle
+  gaps`).
 - Local `main` is at `67564e5`, eleven commits ahead of `origin/main`: Windows
   IPC fix `6fa6450`, CJK emphasis fix `0df1fe2`, reviewed CJK repair `d97370e`,
   the six-commit reviewed Zen feature/repair line `1199455..f2b0519`, and Zen
@@ -152,13 +156,34 @@ Last reconciled: 2026-07-15 (Asia/Taipei)
    outcomes are truthful. A separate neutral determinate progress toast tracks
    checked/total/remaining without replacing ordinary attention/error toasts.
 19. **Full Mindmap delayed-reveal lifecycle and count-only correction** is
-   submitted at `7e038ba`. Branch loads defer newly visible unresolved shells
-   behind a fixed follow-up wave, collapse re-snapshots remaining expanded
-   parents, and verification retains only recursive count/status until a
-   folder owns its explicit branch load. Native/manual acceptance is still
-   pending; no main integration, push, tag, release, or deploy was performed.
+   independently accepted at `7e038ba`. Branch loads defer newly visible
+   unresolved shells behind a fixed follow-up wave, collapse re-snapshots
+   remaining expanded parents, and verification retains only recursive
+   count/status until a folder owns its explicit branch load. Lead review found
+   no P0/P1 issues and independently passed the focused/full automated gates.
+   Native/manual acceptance is still pending; no main integration, push, tag,
+   release, or deploy was performed.
 
 ## Current state
+
+- **Full Mindmap delayed reveal is independently accepted** at implementation
+  commit `7e038ba` with no P0/P1 findings. Unsupported-only `LowerBound(0)`
+  shells are hidden before rendering and exact-empty results never appear.
+  Positive verification retains only recursive count/status; child and file
+  listings are discarded until explicit expansion. Newly materialized child
+  shells wait behind a fresh fixed follow-up wave, collapse re-snapshots other
+  expanded parents without flashing them, and stale prior-wave completions
+  cannot reveal nodes. The four-worker wave remains capped at 256 candidates;
+  unqueued excess remains visible as `scan limit reached`. A separate neutral
+  determinate progress toast shows checked/total/remaining beneath ordinary
+  attention/error toasts. Lead evidence: 47 focused Full Mindmap tests, 17
+  workspace-graph tests, all 250 library tests, all 67 integration tests,
+  `cargo check`, `git diff --check`, and protected-binary SHA-256 verification.
+  The manual candidate is
+  `/private/tmp/mdv-full-mindmap-protect-target/debug/rmdv`, SHA-256
+  `4f36fbc26f4ab1f52d6d3ad4d0f03a77d936fc0f835ff5baf023fcc2a2018298`.
+  Native/manual acceptance remains pending; main/Zoom integration and release
+  actions remain out of scope.
 
 - **Full Mindmap nearest-ancestor focus correction is independently accepted**
   at implementation commit `6f05ecf` with no P0/P1 findings, after the
@@ -239,9 +264,9 @@ Last reconciled: 2026-07-15 (Asia/Taipei)
 - `feat/full-mindmap-mode` and `feat/mindmap-zoom-controls` still follow the old
   `0df1fe2` line and do not contain repair `d97370e`, the Zen feature, or the
   screenshot repair. Full Mindmap is 9 main-only commits behind and contains
-  41 branch-only commits; Zoom Controls is 9 main-only commits
-  behind and has 10 branch-only commits. The Full Mindmap refinement is
-  protected at `82afd5a`; integrate current
+  the accepted implementation line through `7e038ba` plus its status commits;
+  Zoom Controls is 9 main-only commits behind and has 10 branch-only commits.
+  The Full Mindmap refinement is protected through `7e038ba`; integrate current
   `main@67564e5` only after the requested manual acceptance, then retest.
 - **Mindmap Zoom Controls remains clean at `46e3a6b` but is blocked from a
   direct rebase onto `main`.** Its commit directly uses Full Mindmap state and
@@ -640,7 +665,7 @@ Last reconciled: 2026-07-15 (Asia/Taipei)
 
 The Full Mindmap feature is an opt-in, full-window navigation mode, distinct
 from and compatible with the existing document-level `ViewMode::Mindmap`.
-Commits through `6f05ecf` remove its visual controls, make folder traversal and
+Commits through `7e038ba` remove its visual controls, make folder traversal and
 file opening keyboard-first, address the manual-acceptance corrections, harden
 large-workspace behavior, unify both entry scenarios around one explorer, add
 recursive collapsed-folder count labels from the bounded snapshot, lazily
@@ -663,15 +688,18 @@ For Full Mindmap, manually exercise both entry scenarios, recursive
 exact/lower-bound labels, Space/Right/Enter/Left/Esc, hidden refreshes, previews,
 dirty-document protection, and ordinary Files-sidebar scrolling/navigation in
 a large workspace with the recorded binary. Specifically verify that a
-`scan limit reached` folder never expands blank, exact-empty folders are absent,
+unsupported-only folders such as `Shopee Backroom` never flash into the graph,
+the progress toast advances and disappears, capped unverified excess remains
+truthfully labeled `scan limit reached`, exact-empty folders are absent,
 and nested folders beneath Documents are reachable from Home or an ancestor
 without first making Documents the root. Expand a child beneath Documents with
 Space and Right and confirm the viewport remains focused on that folder/child
 after Loading completes rather than jumping to the user root. A/B/C/D/E/G and
 hidden additivity were accepted on earlier candidates. Expanding
-`Shopee Backroom` should still remove it because it has no supported
-descendants, but focus must return to `Documents`, not `liminchen`. `1317a06`, `400e41b`, and
-`6f05ecf` passed independent automated review and still need native acceptance.
+`Shopee Backroom` should not appear at all because it has no supported
+descendants. Ordinary attention/error toasts must remain readable above the
+progress toast. `1317a06`, `400e41b`, `6f05ecf`, and `7e038ba` passed
+independent automated review and still need native acceptance.
 Do not integrate main while that gate is held.
 After acceptance,
 integrate current
