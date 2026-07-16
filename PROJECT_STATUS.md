@@ -127,6 +127,12 @@ Last reconciled: 2026-07-15 (Asia/Taipei)
    When lazy verification removes a selected exact-empty shell, selection and
    canvas focus now walk to the nearest still-visible folder ancestor; the
    workspace root is used only when no closer graph ancestor remains.
+18. **Full Mindmap delayed reveal and verification progress** is committed as
+   `56b44cb`. Unresolved `LowerBound(0)` shells on the visible expanded
+   frontier are hidden during a fixed four-worker/256-candidate wave; accepted
+   exact-positive, lower-bound, interrupted, unavailable, and exact-empty
+   outcomes are truthful. A separate neutral determinate progress toast tracks
+   checked/total/remaining without replacing ordinary attention/error toasts.
 
 ## Current state
 
