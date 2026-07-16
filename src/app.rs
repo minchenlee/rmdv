@@ -341,10 +341,11 @@ const MIND_PANEL_MAX: f32 = 900.0;
 const MIND_PANEL_FRACS: [f32; 3] = [1.0 / 3.0, 0.5, 0.6];
 const MIND_PANEL_MAX_BLOCKS: usize = 80;
 const MIND_PANEL_MAX_TEXT_BYTES: usize = 24 * 1024;
-/// Keep Full Mindmap preview settling aligned with the document Mindmap
-/// panel's rendered-content debounce cadence.
+/// The document Mindmap panel keeps its existing rendered-content debounce
+/// cadence, while Full Mindmap previews use a longer quiet window so rapid
+/// workspace navigation does not start unnecessary reads.
 const MINDMAP_PANEL_SETTLE_MS: u64 = 75;
-const FULL_MINDMAP_PREVIEW_SETTLE_MS: u64 = MINDMAP_PANEL_SETTLE_MS;
+const FULL_MINDMAP_PREVIEW_SETTLE_MS: u64 = 150;
 /// Delayed-reveal verification is deliberately small and fixed. Four bounded
 /// filesystem workers keep the UI responsive; the candidate cap bounds both
 /// queue memory and total extra scans. Candidates beyond the cap stay visible
@@ -12226,6 +12227,13 @@ mod tests {
             FullMindmapPreview::Document { ref path, .. } if path == &file
         ));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn full_mindmap_preview_settle_uses_150ms_without_changing_document_panel() {
+        assert_eq!(MINDMAP_PANEL_SETTLE_MS, 75);
+        assert_eq!(FULL_MINDMAP_PREVIEW_SETTLE_MS, 150);
+        assert_ne!(FULL_MINDMAP_PREVIEW_SETTLE_MS, MINDMAP_PANEL_SETTLE_MS);
     }
 
     #[test]
