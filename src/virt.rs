@@ -59,7 +59,7 @@ fn inline_chars(i: &Inline) -> f32 {
     }
 }
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct HeightCache {
     measured: HashMap<BlockId, f32>,
 }
@@ -130,7 +130,7 @@ fn prefix_sums(blocks: &[(BlockId, Block)], display: &[usize], cache: &HeightCac
 /// The state behind windowed rendering. Rebuilt in `App::update` (never in
 /// `view`) whenever the document, folds, heights, or scroll band change;
 /// `render::render` only reads it.
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct VirtWindow {
     /// Fold-visible block indices into the AST.
     pub display: Vec<usize>,
@@ -248,7 +248,10 @@ impl VirtWindow {
         let hi = offset_y + vh + pad;
         let start = self.prefix[1..].partition_point(|&bottom| bottom < lo);
         let end = self.prefix[..self.display.len()].partition_point(|&top| top <= hi);
-        self.range = (start.min(self.display.len()), end.max(start).min(self.display.len()));
+        self.range = (
+            start.min(self.display.len()),
+            end.max(start).min(self.display.len()),
+        );
         self.band = (offset_y - pad * 0.5, offset_y + pad * 0.5);
     }
 
@@ -331,7 +334,13 @@ mod tests {
     fn small_doc_is_inactive_and_renders_fully() {
         let blocks = make_paragraphs(10);
         let mut w = VirtWindow::default();
-        w.rebuild(&blocks, &HashSet::new(), &HeightCache::default(), 0.0, 800.0);
+        w.rebuild(
+            &blocks,
+            &HashSet::new(),
+            &HeightCache::default(),
+            0.0,
+            800.0,
+        );
         assert!(!w.active);
         assert_eq!(w.range, (0, 10));
         assert_eq!(w.top_spacer(), None);

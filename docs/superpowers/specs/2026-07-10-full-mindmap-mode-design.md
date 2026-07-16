@@ -24,14 +24,14 @@ change, clear, or reinterpret the current document view mode.
 | Exit | `Esc` or `⌘⇧M`. Exit restores the unchanged underlying document/navigation surface; Full Mindmap has no persistent toolbar button. |
 | No workspace yet | Adopt the current file's parent as the app workspace, or Home when no file is open, through the same bounded background workspace loader used by every root change. |
 | Workspace already open | Open the workspace graph immediately, revealing the current file when it belongs to that workspace. |
-| File activation | Selecting a file loads a bounded, read-only content preview in the side panel. Press `Enter` to open it; there is no **Open File** button. A successful load exits Full Mindmap Mode to show the document. |
+| File activation | Selecting a file loads a complete, read-only Markdown preview in the side panel through the shared virtual-scrolling renderer. Press `Enter` to open it; there is no **Open File** button. A successful load exits Full Mindmap Mode to show the document. |
 | Folder activation | `Space` always toggles the selected folder/root without moving selection. `Right` expands a collapsed folder and selects its first child in one step. `Enter` makes a folder the new root or opens a file. |
 | Folder discovery | The one bounded background workspace pass records recursive counts for every discovered folder. Collapsed exact folders show `N files`; interrupted folders show `N+ files`; zero before interruption shows `scan limit reached`; unreadable folders show `count unavailable`. Expanded folders use plain labels. |
 | Workspace indexing | Choosing a project performs one background pass for the tree, file finder, and root supported-file count, capped at 12 levels, 5,000 supported files, and 10,000 examined entries. The UI remains interactive and a truncated status node makes partial results explicit. |
 | Root parent traversal | `←` at a workspace root indexes the filesystem parent in the background, then selects that new root. It changes workspace navigation scope but never loads or replaces the current document. |
 | Panel sizing | `⌘⌥W` cycles the Full Mindmap panel through the existing 1/3, 1/2, and 3/5 window-width steps using Full Mindmap-owned state. |
 | Sidebar/footer/search | Full Mindmap Mode visually owns the main window. Sidebar, reader search bar, and footer are hidden without mutating their stored state. |
-| Detail panel | A separate workspace preview panel. Files show content; folders show only “Select a file to preview its content.” It never reads or writes `mindmap_panel_*`, which remains document-mindmap state. |
+| Detail panel | A separate workspace preview panel. Files show complete content through preview-owned virtualization; data/PDF behavior remains unchanged. Folders show only “Select a file to preview its content.” It never reads or writes `mindmap_panel_*`, which remains document-mindmap state. |
 | Dirty document | A file-open attempt uses the existing dirty guard. If blocked, stay in Full Mindmap Mode with the same selection and show the existing unsaved-edits toast. |
 | Fallback | Existing `⌘O` folder picker and `⌘P` file finder remain available through keyboard shortcuts. |
 
@@ -96,7 +96,7 @@ selected. Otherwise the root starts selected.
 
 Collapsed folder nodes show their recursive count and a hidden-children
 indicator. Expanded folders use plain labels. File nodes are leaves. Selecting
-a file opens a bounded, read-only preview without touching the current
+a file opens a complete, read-only preview without touching the current
 document, editor, or dirty state. Selecting any non-file shows the single hint:
 “Select a file to preview its content.”
 
@@ -143,7 +143,7 @@ document-mindmap handlers. Global commands such as theme, save, hidden files,
 
 Keyboard selection immediately updates the selection ring. The detail panel
 shows a neutral loading state while a selected file settles for 200 ms; only
-then does its bounded read-only preview begin. The document Mindmap panel
+then does its complete read-only preview begin. The document Mindmap panel
 keeps its separate 75 ms rendered-content cadence. Enter bypasses the Full
 Mindmap settle window for deliberate activation.
 
@@ -172,6 +172,10 @@ pub struct FullMindmapState {
     pub pending_preview: Option<PendingFullMindmapPreview>,
     pub pending_workspace_load: Option<PendingFullMindmapWorkspaceLoad>,
     pub preview: FullMindmapPreview,
+    pub preview_window: VirtWindow,
+    pub preview_viewport: Option<Viewport>,
+    pub preview_height_cache: HeightCache,
+    pub preview_generation: u64,
     pub layout_cache: Option<Arc<WorkspaceGraph>>,
 }
 
@@ -469,6 +473,13 @@ may directly assign `file`, `source`, `saved_source`, `dirty`, or `editor`.
     settle messages, folder/root/filter changes, and exits cancel ownership.
     Enter bypasses the delay, ready previews are reused, and dirty/stale
     preview behavior remains read-only and request-identified.
+15. Full Mindmap Markdown previews read and parse the complete selected file;
+    they use the shared `VirtWindow` renderer with a preview-owned viewport,
+    measured-height cache, and scroll identity. Large files activate a bounded
+    virtual range with spacers instead of the old 24 KiB/80-block truncation.
+    Selection changes reset only this preview state and return its scroll to the
+    top. Late parse/measurement results carrying an older path or generation
+    are ignored. Data previews and PDF open behavior remain unchanged.
 
 ### Shared canvas regression tests (`mindmap.rs`)
 
@@ -537,18 +548,30 @@ workspace loader. `Left` from a nested heading continues to select its real
 heading parent. The document mindmap's selection/collapse state and the Full
 Mindmap navigator remain separate throughout both transitions.
 
-### 7. Full Mindmap preview settle (2026-07-16)
+### 7. Full Mindmap preview settle and virtual scrolling (2026-07-16)
 
 File selection by arrow navigation or the canvas owns a named 200 ms settle
-request before it starts the existing bounded preview read/parse. The panel
-renders `Loading preview…` during that window, and the update thread never
-performs a synchronous filesystem read. The document Mindmap panel's separate
+request before it starts the complete preview read/parse. The panel renders
+`Loading preview…` during that window, and the update thread never performs a
+synchronous filesystem read. Large source parsing and syntax highlighting also
+run on a blocking worker; the read request remains owned until its
+path-identified parse result is accepted. The document Mindmap panel's separate
 75 ms rendered-content cadence is unchanged. A newer file or folder selection,
 collapse, workspace root/filter change, Full Mindmap exit, or accepted mode
-transition clears the settle/read ownership; late timer and preview messages
-are rejected by their request identities. Enter cancels any pending preview
-work and starts the guarded file-open request immediately. A preview already
-ready for the selected path is reused without another read.
+transition clears the settle/read/parse ownership; late timer, parse, and
+measurement messages are rejected by their path and preview-generation
+identities. Enter cancels any pending preview work and starts the guarded
+file-open request immediately. A preview already ready for the selected path is
+reused without another read.
+
+Accepted Markdown previews retain every parsed block. They call the same
+`render::render` + `VirtWindow` path as the normal document reader once the
+display list exceeds the shared activation threshold. The preview has its own
+`VirtWindow`, scrollable id, viewport, `HeightCache`, and generation counter;
+none of those are borrowed from or written into the document reader. Selection
+resets that state and scrolls the panel to the top. Height feedback is applied
+only when its selected path and generation still match. Data previews continue
+to use their existing owned data renderer, and PDFs remain Enter-only.
 
 ### Verification after implementation
 
@@ -560,8 +583,11 @@ The approved design is implemented as follows:
   type remains the existing document `BlockId` path.
 - `src/app.rs` owns Full Mindmap selection, expansion, panel, preview,
   branch-local materialization, and request-identity state; a successful
-  file open exits back to normal reading. Collapse evicts the branch's accepted
-  and pending materialization, so re-expansion always owns a new request.
+  file open exits back to normal reading. Markdown previews retain complete
+  content through a preview-owned `VirtWindow`, viewport, height cache, and
+  scroll identity; a stale parse or measurement cannot alter a new selection.
+  Collapse evicts the branch's accepted and pending materialization, so
+  re-expansion always owns a new request.
 - `src/tree.rs` performs one bounded pass for the folder skeleton, recursive
   counts, and flat file-finder index. Expanded folders request a separate
   bounded background pass; only its shallow immediate folder nodes and
