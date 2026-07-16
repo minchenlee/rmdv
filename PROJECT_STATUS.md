@@ -4,6 +4,22 @@ Last reconciled: 2026-07-16 (Asia/Taipei)
 
 ## Active work
 
+- **Submitted locally (serial correction, 2026-07-16):** commit `450d8a0`
+  preserves the requested document-level Mindmap after Full Mindmap opens a
+  file while a clean Raw/Zen editor is still present. The bridge now delegates
+  through the established FileLoaded path so editor/chrome cleanup still runs,
+  then reapplies Mindmap mode and first-child focus after that path can no
+  longer reset it to Rendered. Added a regression covering clean Raw/Zen state,
+  editor cleanup, restored chrome, final Mindmap mode, and first-child focus.
+  Gates pass: focused Full Mindmap app 50, Mindmap 92, all 258 library tests,
+  all 67 integration tests, `cargo check`, touched-file rustfmt, and
+  `git diff --check`. Fresh protected binary
+  `/private/tmp/mdv-full-mindmap-protect-target/debug/rmdv` has SHA-256
+  `e0e94b8c4fcedd3c06b18998c55827eba211e3bca670f985d516bd7f1aea505b`.
+  Native/manual acceptance is pending; main/Zoom integration and push, tag,
+  release, and deploy actions remain out of scope. Submitted for parent review;
+  not self-accepted.
+
 - **Submitted locally (serial maker, 2026-07-16):** commit `676fd0f` bridges
   Full Mindmap file activation into document-level Mindmap (with first-child
   focus) and document-root Left back into the current file's Full Mindmap
@@ -189,6 +205,14 @@ Last reconciled: 2026-07-16 (Asia/Taipei)
    Automated gates pass as recorded above. Native/manual acceptance remains
    pending; this candidate is submitted for parent review and is not
    independently accepted.
+21. **Full Mindmap clean Raw/Zen mode-ordering correction** is committed as
+   `450d8a0`. File activation still uses the established load path to clear a
+   clean editor and restore its saved chrome, then explicitly reapplies
+   document-level Mindmap mode and first-child focus after that cleanup. The
+   regression prevents a clean Raw/Zen activation from ending in Rendered mode.
+   Focused/full automated gates and the protected binary hash are recorded
+   above. Native/manual acceptance remains pending; this candidate is submitted
+   for parent review and is not independently accepted.
 
 ## Current state
 
