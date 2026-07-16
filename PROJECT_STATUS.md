@@ -4,6 +4,24 @@ Last reconciled: 2026-07-16 (Asia/Taipei)
 
 ## Active work
 
+- **Independently accepted locally (serial maker + lead, 2026-07-16;
+  implementation/spec commit `c81f4ae`):** Full Mindmap Markdown previews now
+  read and retain complete selected files instead of the former 24 KiB/80-block
+  caps, render through the shared `VirtWindow`, and own a separate preview
+  window, viewport/scroll id, height cache, and generation guard. Large
+  parsing/highlighting runs on a blocking worker; data previews retain their
+  bounded behavior and PDFs remain Enter-only. Selection, folder, root, exit,
+  and stale parse/measurement transitions reset or reject only preview-owned
+  state; Enter and dirty-document behavior remain unchanged. The selected-file
+  header is fixed outside the preview scrollable, so wrapped paths cannot skew
+  virtual geometry and the body starts at exact offset zero. Lead gates pass:
+  64 focused Full Mindmap tests, all 268 library tests, all integration targets,
+  `cargo check`, touched-file rustfmt, and `git diff --check`. Fresh protected
+  binary `/private/tmp/mdv-full-mindmap-protect-target/debug/rmdv` has SHA-256
+  `d4a334f944647966dfdf41df847d83e21ad19e82999b41bab80faf900e66b5c5`.
+  Native/manual acceptance remains pending; main/Zoom integration and push,
+  tag, release, and deploy actions remain out of scope. No P0/P1 issue was found.
+
 - **Independently accepted locally (serial maker + lead, 2026-07-16; implementation/spec commit `84cd355`):** the
   Full Mindmap preview settle is now 200 ms so rapid file navigation avoids
   unnecessary preview reads; the document Mindmap panel keeps its separate
