@@ -4,6 +4,22 @@ Last reconciled: 2026-07-16 (Asia/Taipei)
 
 ## Active work
 
+- **Independently accepted locally (serial maker + lead, 2026-07-16):** commit `d1c9585`
+  lengthens the Full Mindmap preview settle from 75 ms to 150 ms while
+  keeping the document Mindmap panel's separate 75 ms cadence unchanged.
+  File selection remains immediate and shows neutral `Loading preview…`; only
+  the accepted settle message starts the existing bounded read/parse. Added an
+  exact-duration regression and updated the design spec. Gates pass: Full
+  Mindmap app 60, Mindmap 98, all 264 library tests, all 67 integration tests,
+  `cargo check`, `cargo build --bin rmdv`, touched-file rustfmt, and
+  `git diff --check`. Fresh protected binary
+  `/private/tmp/mdv-full-mindmap-protect-target/debug/rmdv` has SHA-256
+  `7e99f1facc4650b438743419f8dd09cb9cc4d1c8dd8ca39017decffd72fe24a2`.
+  Native/manual acceptance is still pending; main/Zoom integration and push,
+  tag, release, and deploy actions remain out of scope. Lead independently
+  reran the focused/full automated gates and protected-binary hash; no P0/P1
+  issue was found.
+
 - **Independently accepted locally (serial maker + lead, 2026-07-16):** commit `8be499a` adds a
   75 ms Full Mindmap preview settle aligned with the document Mindmap panel
   cadence. File selection updates the ring immediately and shows neutral
@@ -97,7 +113,7 @@ Last reconciled: 2026-07-16 (Asia/Taipei)
 - Actual checkout: `/Users/liminchen/Documents/GitHub/mdv`
 - Legacy non-repo path: `/Users/liminchen/Documents/GitHub/mdv-main`
 - Active branch: `feat/full-mindmap-mode`; its latest independently accepted
-  implementation candidate is `8be499a` (`feat: settle full mindmap previews`).
+  implementation candidate is `d1c9585` (`feat: lengthen full mindmap preview settle`).
 - Local `main` is at `67564e5`, eleven commits ahead of `origin/main`: Windows
   IPC fix `6fa6450`, CJK emphasis fix `0df1fe2`, reviewed CJK repair `d97370e`,
   the six-commit reviewed Zen feature/repair line `1199455..f2b0519`, and Zen
@@ -249,8 +265,33 @@ Last reconciled: 2026-07-16 (Asia/Taipei)
    binary hash; no P0/P1 issue was found. Native/manual acceptance remains
    pending; main integration, Zoom retargeting, push, tag, release, and deploy
    remain out of scope.
+23. **Full Mindmap preview settle lengthening is independently accepted** at
+   `d1c9585`. The named Full Mindmap settle is now 150 ms so rapid file
+   navigation avoids unnecessary preview reads; the document Mindmap panel
+   remains on its separate 75 ms cadence. The exact-duration regression keeps
+   the two contracts decoupled, while the existing stale-settle, cancellation,
+   Enter-bypass, and ready-preview reuse regressions remain unchanged. Lead
+   independently reran 60 focused Full Mindmap tests, 98 Mindmap tests, all 264
+   library tests, all 67 integration tests, `cargo check`, `cargo build --bin
+   rmdv`, touched-file rustfmt, `git diff --check`, and the protected-binary
+   hash; no P0/P1 issue was found. Native/manual acceptance remains pending;
+   main integration, Zoom retargeting, push, tag, release, and deploy remain
+   out of scope.
 
 ## Current state
+
+- **Full Mindmap preview settle lengthening is independently accepted** at `d1c9585`.
+  File selection remains immediate and responsive; the existing bounded
+  read/parse starts only after the named 150 ms settle, with `Loading preview…`
+  shown during the quiet window. The document Mindmap panel keeps its separate
+  75 ms cadence. Enter bypasses the settle and opens through the guarded
+  document-Mindmap bridge. Automated evidence is 60 focused Full Mindmap tests,
+  98 Mindmap tests, all 264 library tests, all 67 integration tests,
+  `cargo check`, `cargo build --bin rmdv`, touched-file rustfmt,
+  `git diff --check`, and protected-binary SHA-256 verification.
+  Native/manual acceptance remains pending; no main/Zoom integration or
+  release action is authorized. No P0/P1 issue was found in independent lead
+  review.
 
 - **Full Mindmap preview settling is independently accepted** at `8be499a`.
   File selection remains immediate and responsive; the existing bounded
@@ -379,10 +420,11 @@ Last reconciled: 2026-07-16 (Asia/Taipei)
 - `feat/full-mindmap-mode` and `feat/mindmap-zoom-controls` still follow the old
   `0df1fe2` line and do not contain repair `d97370e`, the Zen feature, or the
   screenshot repair. Full Mindmap is 9 main-only commits behind and contains
-  the accepted implementation line through `8be499a` plus its status commits;
-  Zoom Controls is 9 main-only commits behind and has 10 branch-only commits.
-  The Full Mindmap refinement is protected through `8be499a`; integrate current
-  `main@67564e5` only after the requested manual acceptance, then retest.
+  the accepted implementation line through `8be499a` plus the follow-up 150 ms
+  candidate `d1c9585` and this maker handoff; Zoom Controls is 9 main-only
+  commits behind and has 10 branch-only commits. The Full Mindmap refinement is
+  protected through `d1c9585`; integrate current `main@67564e5` only after lead
+  and native acceptance, then retest.
 - **Mindmap Zoom Controls remains clean at `46e3a6b` but is blocked from a
   direct rebase onto `main`.** Its commit directly uses Full Mindmap state and
   canvas APIs that do not exist on `main`; retarget it only after main is
@@ -815,14 +857,15 @@ hidden additivity were accepted on earlier candidates. Expanding
 descendants. Ordinary attention/error toasts must remain readable above the
 progress toast. For the preview-settle refinement, rapidly move across several
 files and confirm the selection ring moves immediately while no preview read
-starts until the 75 ms quiet window; stopping on a file loads its preview, and
-Enter opens immediately without waiting. A later stale timer/read must never
-replace the newest selection. Also verify Full Mindmap file Enter opens the
+starts until the 150 ms quiet window; the document Mindmap panel should retain
+its separate 75 ms cadence. Stopping on a file loads its preview, and Enter
+opens immediately without waiting. A later stale timer/read must never replace
+the newest selection. Also verify Full Mindmap file Enter opens the
 document in content Mindmap mode, and document Mindmap Left at the synthetic
 root returns to Full Mindmap with the current file focused; nested heading Left
 must remain document navigation. `1317a06`, `400e41b`, `6f05ecf`, `7e038ba`,
-`676fd0f`, `450d8a0`, and `8be499a` passed independent automated review and
-still need native acceptance.
+`676fd0f`, `450d8a0`, `8be499a`, and `d1c9585` passed independent automated
+review and still need native acceptance.
 Do not integrate main while that gate is held.
 After acceptance,
 integrate current
