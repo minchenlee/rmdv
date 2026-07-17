@@ -47,11 +47,17 @@ fn path_to_name(p: &std::path::Path) -> std::io::Result<interprocess::local_sock
 }
 
 #[cfg(windows)]
-fn path_to_name(p: &std::path::Path) -> std::io::Result<interprocess::local_socket::Name<'_>> {
+fn path_to_name(p: &std::path::Path) -> std::io::Result<interprocess::local_socket::Name<'static>> {
     use interprocess::local_socket::{GenericNamespaced, ToNsName};
-    let s = p.to_string_lossy();
-    let trimmed = s.trim_start_matches(r"\\.\pipe\");
-    trimmed.to_ns_name::<GenericNamespaced>()
+    // Build an *owned* name: `to_ns_name` on a `String` selects the owning impl
+    // (`Cow::Owned`), so the returned `Name` carries its own buffer instead of
+    // borrowing this local, avoiding E0515 (returning a value that borrows a
+    // dropped local).
+    let owned = p
+        .to_string_lossy()
+        .trim_start_matches(r"\\.\pipe\")
+        .to_owned();
+    owned.to_ns_name::<GenericNamespaced>()
 }
 
 fn is_no_listener(e: &std::io::Error) -> bool {
