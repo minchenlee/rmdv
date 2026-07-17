@@ -4,6 +4,12 @@ Last reconciled: 2026-07-17 (Asia/Taipei)
 
 ## Active work
 
+- **Draft PR open (2026-07-17):** branch `feat/full-mindmap-mode` is published
+  as [PR #8](https://github.com/minchenlee/rmdv/pull/8) against `main`. GitHub
+  reports the draft mergeable with a clean merge state; no remote status checks
+  were present immediately after creation. Local validation and native
+  acceptance are recorded below.
+
 - **Accepted manual-bug correction (2026-07-17):** the
   document-Mindmap root `Left` bridge records the current file as its explicit
   Full Mindmap canvas-focus request before the parent listing is accepted, and
