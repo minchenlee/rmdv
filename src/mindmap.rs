@@ -267,6 +267,10 @@ pub struct MindmapState<Id = BlockId> {
     anim: HashMap<Id, Anim>,
     pan_anim: Option<PanAnim>,
     last_selected: Option<Id>,
+    /// The node whose viewport focus is requested by the owning navigator.
+    /// Document mindmaps keep this equal to `selected`; Full Mindmap can keep
+    /// an explicit request while an async graph materializes.
+    last_focus: Option<Id>,
     last_bounds_w: f32,
     last_bounds_h: f32,
     last_panel_open: bool,
@@ -290,6 +294,7 @@ impl<Id> Default for MindmapState<Id> {
             anim: HashMap::new(),
             pan_anim: None,
             last_selected: None,
+            last_focus: None,
             last_bounds_w: 0.0,
             last_bounds_h: 0.0,
             last_panel_open: false,
@@ -311,6 +316,9 @@ pub struct MindmapProgram<'a, Id, Message> {
     pub content_size: Size,
     pub palette: Palette,
     pub selected: Option<Id>,
+    /// Optional viewport-focus request. When omitted, `selected` remains the
+    /// focus target for backwards-compatible document mindmap behavior.
+    pub focus: Option<Id>,
     pub panel_open: bool,
     pub panel_width: f32,
     pub autocenter: bool,
@@ -424,12 +432,15 @@ where
         let bounds_changed = (bounds.width - state.last_bounds_w).abs() > 0.5
             || (bounds.height - state.last_bounds_h).abs() > 0.5;
         let sel_changed = self.selected != state.last_selected;
+        let focus = self.focus.as_ref().or(self.selected.as_ref());
+        let focus_changed = focus != state.last_focus.as_ref();
         let layout_changed = self
             .layout_generation
             .is_some_and(|generation| state.last_layout_generation != Some(generation));
         let panel_just_opened = self.panel_open && !state.last_panel_open;
         let panel_just_closed = !self.panel_open && state.last_panel_open;
         if !sel_changed
+            && !focus_changed
             && !bounds_changed
             && !layout_changed
             && !panel_just_opened
@@ -442,6 +453,7 @@ where
         if !self.autocenter {
             // Keep bookkeeping in sync so re-enable doesn't fire stale change.
             state.last_selected = self.selected.clone();
+            state.last_focus = focus.cloned();
             state.last_bounds_w = bounds.width;
             state.last_bounds_h = bounds.height;
             state.last_panel_open = self.panel_open;
@@ -459,12 +471,12 @@ where
         // immediate snap behavior.
         let snap = panel_just_opened
             || panel_just_closed
-            || (sel_changed && self.panel_open && !layout_changed);
+            || ((sel_changed || focus_changed) && self.panel_open && !layout_changed);
         state.last_panel_open = self.panel_open;
-        if !sel_changed && !layout_changed && self.selected.is_none() {
+        if !sel_changed && !focus_changed && !layout_changed && focus.is_none() {
             return;
         }
-        let Some(sel) = self.selected.as_ref() else {
+        let Some(sel) = focus else {
             return;
         };
         let Some((idx, _)) = self
@@ -473,8 +485,19 @@ where
             .enumerate()
             .find(|(_, n)| n.id.as_ref() == Some(sel))
         else {
+            // An explicit Full Mindmap focus request can arrive before its
+            // file/folder is materialized in the accepted graph. Do not mark
+            // that request consumed yet: doing so poisons `last_focus`, and a
+            // later graph relayout with the same generation would see no
+            // change and leave the canvas centered on the old root. Keep the
+            // previous focus identity until the requested node is actually
+            // present, then the next redraw will center it precisely.
             return;
         };
+        // Only a present node can consume the focus identity. This ordering is
+        // deliberate: stale/partial graph frames cannot make a later accepted
+        // materialization fall through to the workspace root.
+        state.last_focus = focus.cloned();
         let target = self.focus_target_for_node(
             state,
             idx,
@@ -482,7 +505,12 @@ where
             prev_bounds_w,
             panel_just_opened,
             panel_just_closed,
-            layout_changed,
+            // Explicit navigator focus is a precise request, not merely a
+            // selection hint. Use the accepted node's final layout even when
+            // the graph cache generation did not change between a partial
+            // frame and materialization; otherwise the node animation's
+            // parent seed can leave the canvas centered on the root/sibling.
+            layout_changed || (self.focus.is_some() && focus_changed),
         );
         // If already on target, skip.
         if (target.x - state.pan.x).abs() < 0.5 && (target.y - state.pan.y).abs() < 0.5 {
@@ -1090,7 +1118,8 @@ mod tests {
             nodes: std::sync::Arc::new(nodes),
             content_size: Size::new(1200.0, 900.0),
             palette: Palette::ONE_DARK,
-            selected: Some(selected),
+            selected: Some(selected.clone()),
+            focus: Some(selected),
             panel_open: true,
             panel_width: 360.0,
             autocenter: true,
@@ -1278,6 +1307,241 @@ mod tests {
             pan_target, root_target,
             "async relayout must not refocus root"
         );
+    }
+
+    #[test]
+    fn explicit_canvas_focus_request_targets_requested_node() {
+        let root = PathId("/Users/me".into());
+        let child = PathId("/Users/me/Documents".into());
+        let bounds = Rectangle::new(Point::ORIGIN, Size::new(1000.0, 800.0));
+        let mut program = canvas_program(folder_graph(Some(child.clone())), root.clone(), 1);
+        // Selection and viewport focus are separate contracts: an async
+        // navigator may keep its selection ring while explicitly requesting
+        // the newly materialized file/folder as the canvas focus target.
+        program.focus = Some(child.clone());
+        let mut state = MindmapState::default();
+        state.zoom = 1.0;
+        program.sync_anim(&mut state);
+        program.sync_focus_pan(&mut state, bounds);
+
+        let child_idx = program
+            .nodes
+            .iter()
+            .position(|node| node.id.as_ref() == Some(&child))
+            .unwrap();
+        // The first redraw snaps because the canvas panel has just opened;
+        // later redraws animate the same target. Either way the observable
+        // pan must be computed from the explicit focus request.
+        let pan_target = state.pan;
+        let child_target =
+            program.focus_target_for_node(&state, child_idx, bounds, 0.0, true, false, true);
+        assert_eq!(pan_target, child_target);
+
+        let root_idx = program
+            .nodes
+            .iter()
+            .position(|node| node.id.as_ref() == Some(&root))
+            .unwrap();
+        let root_target =
+            program.focus_target_for_node(&state, root_idx, bounds, 0.0, true, false, false);
+        assert_ne!(pan_target, root_target, "focus must not fall back to root");
+    }
+
+    #[test]
+    fn explicit_focus_waits_for_materialized_node_without_poisoning_canvas_state() {
+        let root = PathId("/Users/me".into());
+        let file = PathId("/Users/me/Documents/Notes.md".into());
+        let bounds = Rectangle::new(Point::ORIGIN, Size::new(1000.0, 800.0));
+        let mut state = MindmapState::default();
+        state.zoom = 1.0;
+
+        // The workspace root is rendered first while the accepted branch
+        // listing is still in flight.
+        let initial = canvas_program(folder_graph(None), root.clone(), 1);
+        initial.sync_anim(&mut state);
+        initial.sync_focus_pan(&mut state, bounds);
+        state.pan_anim = None;
+
+        // The navigator has already accepted the file selection/focus intent,
+        // but one transient graph frame still lacks the file node. A focus
+        // request must remain pending rather than being marked as consumed.
+        let pending = canvas_program(folder_graph(None), file.clone(), 1);
+        pending.sync_anim(&mut state);
+        pending.sync_focus_pan(&mut state, bounds);
+
+        // The final accepted graph materializes the exact file without any
+        // additional selection or layout-generation change. This is the
+        // manual root-jump path: the actual pan target must now be the file.
+        let accepted = canvas_program(folder_graph(Some(file.clone())), file.clone(), 1);
+        accepted.sync_anim(&mut state);
+        accepted.sync_focus_pan(&mut state, bounds);
+        let file_idx = accepted
+            .nodes
+            .iter()
+            .position(|node| node.id.as_ref() == Some(&file))
+            .unwrap();
+        let target = accepted.focus_target_for_node(
+            &state,
+            file_idx,
+            bounds,
+            bounds.width,
+            false,
+            false,
+            true,
+        );
+        let pan_target = state.pan_anim.map(|anim| anim.target).unwrap_or(state.pan);
+        assert_eq!(pan_target, target, "accepted file must own the canvas pan");
+
+        let root_idx = accepted
+            .nodes
+            .iter()
+            .position(|node| node.id.as_ref() == Some(&root))
+            .unwrap();
+        let root_target = accepted.focus_target_for_node(
+            &state,
+            root_idx,
+            bounds,
+            bounds.width,
+            false,
+            false,
+            true,
+        );
+        assert_ne!(
+            pan_target, root_target,
+            "a missing-node frame must not poison focus"
+        );
+    }
+
+    #[test]
+    fn full_mindmap_rendered_workspace_graph_focuses_file_after_materialization() {
+        use crate::tree::{Node, RecursiveFileCount};
+        use crate::workspace_mindmap::{self, MaterializedFolder, WorkspaceNodeId};
+        use std::collections::HashMap;
+        use std::path::PathBuf;
+        use std::sync::Arc;
+
+        let root = PathBuf::from("/Users/me/project");
+        let documents = root.join("Documents");
+        let file = documents.join("Notes.md");
+        let tree = Node {
+            path: root.clone(),
+            name: "project".into(),
+            is_dir: true,
+            children: vec![Node {
+                path: documents.clone(),
+                name: "Documents".into(),
+                is_dir: true,
+                children: Vec::new(),
+                recursive_supported_file_count: Some(RecursiveFileCount::Exact(1)),
+            }],
+            recursive_supported_file_count: Some(RecursiveFileCount::Exact(1)),
+        };
+        let expanded = HashSet::from([root.clone(), documents.clone()]);
+        let pending = HashSet::new();
+        let empty_materialized = HashMap::new();
+        let initial_graph = workspace_mindmap::from_tree_with_hidden(
+            &tree,
+            &expanded,
+            &empty_materialized,
+            &pending,
+            &HashSet::new(),
+            false,
+        );
+        let mut accepted_materialized = HashMap::new();
+        accepted_materialized.insert(
+            documents.clone(),
+            MaterializedFolder::Loaded {
+                folders: Arc::new(Vec::new()),
+                files: Arc::new(vec![file.clone()]),
+                recursive_supported_file_count: RecursiveFileCount::Exact(1),
+                truncated: false,
+            },
+        );
+        let accepted_graph = workspace_mindmap::from_tree_with_hidden(
+            &tree,
+            &expanded,
+            &accepted_materialized,
+            &pending,
+            &HashSet::new(),
+            false,
+        );
+        let root_id = WorkspaceNodeId::Root(root);
+        let file_id = WorkspaceNodeId::File(file);
+        let program = |graph: &workspace_mindmap::WorkspaceGraph,
+                       selected: WorkspaceNodeId|
+         -> MindmapProgram<'static, WorkspaceNodeId, ()> {
+            MindmapProgram {
+                nodes: graph.nodes.clone(),
+                content_size: graph.content_size,
+                palette: Palette::ONE_DARK,
+                selected: Some(selected),
+                focus: None,
+                panel_open: true,
+                panel_width: 360.0,
+                autocenter: true,
+                layout_generation: Some(1),
+                on_toggle: Box::new(|_| ()),
+                on_select: Box::new(|_| ()),
+                on_deselect: (),
+            }
+        };
+        let bounds = Rectangle::new(Point::ORIGIN, Size::new(1000.0, 800.0));
+        let mut state = MindmapState::default();
+        state.zoom = 1.0;
+        let initial = program(&initial_graph, root_id.clone());
+        initial.sync_anim(&mut state);
+        initial.sync_focus_pan(&mut state, bounds);
+        state.pan_anim = None;
+
+        // Selection/focus is accepted before one stale graph frame has the
+        // file node. The final graph below is the actual workspace adapter
+        // output rendered by Full Mindmap after branch materialization.
+        let pending_program = {
+            let mut pending = program(&initial_graph, file_id.clone());
+            pending.focus = Some(file_id.clone());
+            pending
+        };
+        pending_program.sync_anim(&mut state);
+        pending_program.sync_focus_pan(&mut state, bounds);
+
+        let accepted_program = {
+            let mut accepted = program(&accepted_graph, file_id.clone());
+            accepted.focus = Some(file_id.clone());
+            accepted
+        };
+        accepted_program.sync_anim(&mut state);
+        accepted_program.sync_focus_pan(&mut state, bounds);
+        let file_idx = accepted_program
+            .nodes
+            .iter()
+            .position(|node| node.id.as_ref() == Some(&file_id))
+            .unwrap();
+        let file_target = accepted_program.focus_target_for_node(
+            &state,
+            file_idx,
+            bounds,
+            bounds.width,
+            false,
+            false,
+            true,
+        );
+        let pan_target = state.pan_anim.map(|anim| anim.target).unwrap_or(state.pan);
+        assert_eq!(pan_target, file_target);
+        let root_idx = accepted_program
+            .nodes
+            .iter()
+            .position(|node| node.id.as_ref() == Some(&root_id))
+            .unwrap();
+        let root_target = accepted_program.focus_target_for_node(
+            &state,
+            root_idx,
+            bounds,
+            bounds.width,
+            false,
+            false,
+            true,
+        );
+        assert_ne!(pan_target, root_target);
     }
 
     #[test]

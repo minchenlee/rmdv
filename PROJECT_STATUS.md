@@ -1,8 +1,119 @@
 # rmdv — shared project status
 
-Last reconciled: 2026-07-16 (Asia/Taipei)
+Last reconciled: 2026-07-17 (Asia/Taipei)
 
 ## Active work
+
+- **Accepted manual-bug correction (2026-07-17):** the
+  document-Mindmap root `Left` bridge records the current file as its explicit
+  Full Mindmap canvas-focus request before the parent listing is accepted, and
+  keeps that request pending until the exact file node is present in the graph
+  actually rendered. A transient partial graph or normalization pass cannot
+  replace it with root focus; the accepted materialization still pans to the
+  file's final layout position even when selection and layout generation are
+  unchanged. The concrete
+  `/Users/liminchen/Documents/GitHub/c9watch/docs/plans/2026-02-18-popover-window-design.md`
+  reproduction exposed a second root cause: the running workspace was `/`, and
+  lexical `starts_with` alone incorrectly classified every absolute file as
+  available even when the bounded accepted index stopped near `/Users`. The
+  bridge now preserves a workspace only when that accepted file index actually
+  contains the current file; otherwise it adopts the file's direct parent so
+  the requested file node can materialize. The Full Mindmap preview
+  settle owner is one long-lived `Task::run` latest-only watch stream per
+  navigator. Reset sends `None` without leaving a dead receiver, so a valid
+  selected Markdown file progresses from `Loading preview…` through worker
+  read/parse to `Document` (or reaches terminal `Error`); stale/cancelled
+  identities remain rejected. The first file request subscribes the
+  persistent settle worker before publishing its watch value, so the initial
+  selection cannot remain Loading when no later watch update occurs. Focused
+  evidence: document root-Left 5, explicit canvas-focus 3, preview lifecycle
+  18, all `full_mindmap_` 82, affected mindmap 41, virtual-window 11; the
+  complete library suite is 293/293, and `cargo test --tests` passes all 67
+  integration tests. Default,
+  `--no-default-features`, and explicit `--features pdf` checks pass;
+  touched-file rustfmt and `git diff --check` pass. The optimized release
+  build was rebuilt with `cargo build --release --bin rmdv`; the arm64 Mach-O
+  artifact is `target/release/rmdv` (35,396,048 bytes; SHA-256
+  `6d7d7f0dbc6cf8812bca172dbd0ff0ca7aea3d13debe5a39dbfc8996cef3477f`). No
+  app-bundle packaging, signing, publish, tag, or deployment was performed.
+  The first post-build manual retest did not exercise this artifact: the
+  release command's single-instance IPC focused a still-running
+  `/private/tmp/mdv-zen-fix-target/debug/rmdv` process instead. Its welcome-only
+  window was verified, the stale process was stopped, and `lsof` then confirmed
+  the active executable as this checkout's `target/release/rmdv`. After the
+  latest rebuild and full process restart, the exact c9watch reproduction was
+  manually accepted: root `Left` returns to Full Mindmap focused on
+  `2026-02-18-popover-window-design.md` instead of `/Users`.
+
+- **Prior accepted manual-acceptance correction (2026-07-17):** the
+  document-Mindmap root `Left` bridge now carries an explicit Full Mindmap
+  canvas-focus request alongside the selected workspace node. Existing-
+  workspace and parent-adopt/load paths update that request only at accepted,
+  stale-guarded materialization boundaries, so layout-cache reuse cannot leave
+  the canvas centered on the root or a sibling. The Full Mindmap file-preview
+  scrollable now reuses the ordinary Markdown transparent-rail style while
+  preserving thumb hover/drag and fade behavior. The non-file folder/status
+  panel keeps Iced's default themed scrollbar catalog. Explicit deselection
+  also clears deferred bridge-file intent, and identity-less legacy image
+  completions cannot overwrite a preview-owned terminal failure. Newer explicit
+  toggle/deselect intent now clears any deferred bridge-file selection and
+  cancels a non-preserve parent/root workspace load, so its stale completion
+  cannot overwrite the user's selection or focus. A preserve-navigation hidden
+  refresh remains accepted after deselection so snapshot/filter/exit work can
+  finish, but normalization (including accepted exact-empty verification) keeps
+  the explicit no-selection/no-focus state and closed panel. Focused
+  bridge/style/asset tests pass (`document_mindmap_root_left` 4, preview style
+  1, non-file default style 1, `mindmap::tests::full_mindmap_` 3, explicit
+  canvas-focus 1, failed-image legacy guard 1, focused `full_mindmap_` 78); the
+  complete library suite is 287/287, and `cargo test --tests` passes every
+  integration target. Default, `--no-default-features`, and explicit
+  `--features pdf` checks pass; touched-file rustfmt and `git diff --check`
+  pass. The repository’s standard optimized local build,
+  `cargo build --release --bin rmdv`, now succeeds. Its arm64 Mach-O artifact
+  is `target/release/rmdv` (35,396,048 bytes; SHA-256
+  `f884504b128501d09c111bc8e81643e58d37f5fb7b664c0af1054bb4060f6406`).
+  This is the requested local performance artifact; no app-bundle packaging,
+  signing, publish, tag, or deployment is claimed. The prior
+  `target/debug/rmdv` debug binary is superseded by this release build.
+
+- **Current uncommitted P1/P2 correction pass (2026-07-16):** Full Mindmap
+  preview lifecycle now preserves same-path in-flight/ready selections, uses a
+  persistent latest-only 300 ms settle worker and per-navigator bounded parse
+  capacity, and tags scroll/measurement/image/diagram work with a namespace
+  plus request identity. Complete Markdown previews receive worker-built
+  `VirtShape` and compact asset indexes; the UI moves the unique shape Arc into
+  `VirtWindow` without an O(n) vector clone, while visible asset priming is
+  lazy and capped at 64 descriptors per wave. Sparse measured-height deltas
+  are cleared on theme/custom typography/font/panel-width/window geometry
+  changes, and image/diagram cache removal keeps byte accounting accurate.
+  Failed remote image URLs are terminal for the accepted preview identity and
+  visible range, with range/theme/identity changes as deliberate retry
+  boundaries; same-range re-primes preserve the `Failed` sentinel. Image and
+  diagram operations now carry exact range plus a monotonic asset-wave id,
+  reject stale A -> B -> A completions, and drain old Loading/Pending
+  ownership before a new visible wave so hung off-screen work cannot consume
+  the 64-operation cap.
+  The design spec documents these ownership, cache, and geometry contracts.
+  Final local gates pass: focused `full_mindmap_` 72, keyed-body 3, virtual
+  window 11, all 278 library tests, all integration targets via
+  `cargo test --tests`, default/no-default/PDF `cargo check --lib`, touched-
+  file rustfmt, and `git diff --check`.
+  A prior current-source manual debug binary was rebuilt at
+  `target/debug/rmdv` (arm64 Mach-O; SHA-256
+  `df7ecb407110ae29d8cfa443399303853c633c1c5f424be0a882081eb5d8b1fc`); it is
+  superseded by the manual-acceptance correction above and is not the requested
+  optimized performance artifact. Changes are present in the working tree
+  only; no commit, publish, release, or native/manual acceptance is claimed.
+
+- **Earlier local settle adjustment (2026-07-16; superseded by the correction
+  pass above):** Full Mindmap file
+  preview selection now waits 300 ms (up from 200 ms) before starting the
+  background read/parse; the document Mindmap panel remains on its separate
+  75 ms cadence. The exact-duration regression and design spec are updated.
+  The focused settle test, all 67 `full_mindmap_` tests, `cargo check`,
+  touched-file rustfmt, and `git diff --check` pass. No binary was rebuilt;
+  manual/native acceptance and any integration, push, release, or deploy work
+  remain out of scope.
 
 - **Crash/stutter correction independently accepted locally (serial maker +
   lead, 2026-07-16; implementation/spec commit `070ef02`):** manual testing of
@@ -169,8 +280,10 @@ Last reconciled: 2026-07-16 (Asia/Taipei)
 
 - Actual checkout: `/Users/liminchen/Documents/GitHub/mdv`
 - Legacy non-repo path: `/Users/liminchen/Documents/GitHub/mdv-main`
-- Active branch: `feat/full-mindmap-mode`; its latest independently accepted
-  implementation candidate is `84cd355` (`feat: set full mindmap preview settle to 200ms`).
+- Active branch: `feat/full-mindmap-mode`; the working tree contains the
+  uncommitted P1/P2 preview correction pass above. The latest committed
+  implementation candidate remains `84cd355` (`feat: set full mindmap preview
+  settle to 200ms`).
 - Local `main` is at `67564e5`, eleven commits ahead of `origin/main`: Windows
   IPC fix `6fa6450`, CJK emphasis fix `0df1fe2`, reviewed CJK repair `d97370e`,
   the six-commit reviewed Zen feature/repair line `1199455..f2b0519`, and Zen

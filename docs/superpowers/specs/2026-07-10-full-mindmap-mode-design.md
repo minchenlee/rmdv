@@ -142,7 +142,7 @@ document-mindmap handlers. Global commands such as theme, save, hidden files,
 | `⌘O` / `⌘P` | Open the existing folder picker / file finder as fallback overlays. |
 
 Keyboard selection immediately updates the selection ring. The detail panel
-shows a neutral loading state while a selected file settles for 200 ms; only
+shows a neutral loading state while a selected file settles for 300 ms; only
 then does its complete read-only preview begin. The document Mindmap panel
 keeps its separate 75 ms rendered-content cadence. Enter bypasses the Full
 Mindmap settle window for deliberate activation.
@@ -150,7 +150,7 @@ Mindmap settle window for deliberate activation.
 ## Mouse behavior
 
 - Clicking a folder selects it and toggles expansion.
-- Clicking a file selects it and starts the same 200 ms-settled read-only
+- Clicking a file selects it and starts the same 300 ms-settled read-only
   preview. It does not immediately replace the document; `Enter` is the
   deliberate activation step and bypasses the preview delay.
 - Drag-to-pan, wheel zoom, auto-center, hover tooltips, node animation, and
@@ -468,7 +468,7 @@ may directly assign `file`, `source`, `saved_source`, `dirty`, or `editor`.
     ignored and pending file opens are cancelled immediately.
 13. Standard picker file fallback waits for its parent workspace index before
     opening, and cached graphs reuse the same graph/node allocations.
-14. Full Mindmap file selection settles for 200 ms before starting a preview;
+14. Full Mindmap file selection settles for 300 ms before starting a preview;
     the document Mindmap panel's separate 75 ms cadence is unchanged. Stale
     settle messages, folder/root/filter changes, and exits cancel ownership.
     Enter bypasses the delay, ready previews are reused, and dirty/stale
@@ -545,15 +545,39 @@ guards, stale file completions, previews, and workspace ownership remain
 unchanged. In the opposite direction, `Left` from a document top-level heading
 (or the document-root/no-selection boundary) enters Full Mindmap with the
 current file deferred until its expanded folder listing is accepted. An
-existing workspace is preserved when it contains that file; otherwise the
-current file's parent (or Home) is adopted through the existing background
-workspace loader. `Left` from a nested heading continues to select its real
-heading parent. The document mindmap's selection/collapse state and the Full
-Mindmap navigator remain separate throughout both transitions.
+existing workspace is preserved only when its accepted bounded file index
+contains that file. Lexical ancestry alone is insufficient: a broad root such
+as `/` may be truncated before the deep file node can materialize. When the
+file is absent from that index, the current file's parent (or Home) is adopted
+through the existing background workspace loader. `Left` from a nested heading
+continues to select its real heading parent. During either asynchronous path,
+the bridge records the
+current workspace file as the explicit canvas-focus request before its node
+is materialized. The accepted workspace file then owns both the navigator
+selection and that request. The canvas consumes it only after the exact node
+is present in the rendered graph, so an intermediate root frame, retained
+layout cache, or stale folder completion cannot leave the viewport centered
+on the workspace root or a sibling. The document
+mindmap's selection/collapse state and the Full Mindmap navigator remain
+separate throughout both transitions. A newer explicit Full Mindmap toggle or
+deselect supersedes any deferred bridge-file selection. It also cancels a
+non-preserve parent/root workspace load, whose late completion is rejected by
+the existing request identity. A preserve-navigation hidden refresh is not
+cancelled by deselection: its accepted snapshot/filter/exit work may finish,
+but workspace and exact-empty normalization preserve the explicit
+no-selection/no-focus state and closed panel instead of manufacturing a root
+selection.
+
+The focus request is consumed by the shared canvas only after the requested
+workspace node is present in the graph being rendered. A transient graph frame
+that still lacks the deferred file therefore cannot advance the canvas's
+`last_focus` bookkeeping; the accepted materialization retries the exact file
+target even when selection and layout generation are otherwise unchanged. This
+closes the manual root-jump path without changing nested document `Left`.
 
 ### 7. Full Mindmap preview settle and virtual scrolling (2026-07-16)
 
-File selection by arrow navigation or the canvas owns a named 200 ms settle
+File selection by arrow navigation or the canvas owns a named 300 ms settle
 request before it starts the complete preview read/parse. The panel renders
 `Loading preview…` during that window, and the update thread never performs a
 synchronous filesystem read. Large source parsing and syntax highlighting also
@@ -578,13 +602,83 @@ to use their existing owned data renderer, and PDFs remain Enter-only.
 
 Preview safety is part of this contract: every preview read, Markdown parse,
 and syntax-highlight pass runs off the Iced update thread. A single latest-only
-worker gate plus a cooperative epoch cancels stale chunked reads and prevents
-rapid navigation from queueing obsolete work. Height operations are
+read gate plus a cooperative epoch cancels stale chunked reads; Markdown parses
+use a small per-navigator semaphore so obsolete work cannot create an
+unbounded `spawn_blocking` backlog while the current preview still makes
+progress. The settle timer is one persistent latest-only watch worker per
+navigator, not one uncancellable sleep per key repeat. The worker subscribes
+before the first request is published, so the initial file selection cannot
+be stranded in `Loading` when no later watch update occurs. Height operations are
 coalesced, target only rows not already in the preview cache, and may schedule
 at most one follow-up when the materialized range changes before completion.
+The settle owner is a single long-lived `Task::run` watch stream for each Full
+Mindmap navigator. Resetting a selection publishes `None` to that stream while
+keeping the receiver alive; the next request reuses it and emits one accepted
+settle message. A completed read and parse must always replace `Loading` with a
+terminal `Document`/`Data` preview, while a source-read or parse failure becomes
+`Error`; stale or cancelled identities are ignored without changing the latest
+selection's loading state.
 Preview rows retain the keyed wrapper's tag-checked tree boundary, but use a
 fresh-diff namespace on file/range changes so stateful child trees are rebuilt
 instead of being reused across unrelated materialized content.
+
+The Full Mindmap file-preview scrollable reuses the ordinary Markdown
+scrollable style. Its vertical/horizontal rail backgrounds are transparent
+while idle, hover/drag still raises the scroller thumb, and the existing
+scroll identity, fade timing, preview background, and virtual-range behavior
+are unchanged. The non-file folder/status panel keeps Iced's established
+default themed scrollbar catalog; it does not inherit the transparent preview
+rail treatment.
+
+### 8. Preview assets, geometry, and cache ownership (2026-07-16)
+
+The preview worker returns two immutable, compact products with the parsed
+blocks: a `VirtShape` containing the fold-visible display indices and estimate
+prefix, and an asset index keyed by top-level block. The accepted runtime
+preview owns the shape in an `Arc`; the UI takes that sole Arc and
+`Arc::try_unwrap`s it into its `VirtWindow`, so the large display/prefix vectors
+move across the worker boundary without an O(n) UI clone. Hand-authored test
+fixtures may omit either product and use the bounded fallback path.
+
+Asset priming reads only the current materialized virtual range. It dispatches
+at most 64 image/diagram descriptors per wave, records a cursor for the next
+wave, and schedules another bounded wave only when the current range still has
+work. Off-screen blocks therefore do not allocate widget/task descriptors or
+trigger recursive all-document scans. The preview's visible asset keep sets
+feed image-cache trimming, so the 256 MiB soft budget remains effective even
+when a complete preview has thousands of remote assets.
+
+An image fetch failure is terminal for the accepted preview identity and its
+current visible-range wave. The `Failed` cache sentinel is retained and a
+same-range prime skips that URL, so a permanent network failure cannot cause
+an immediate retry loop. A changed preview identity, visible-range transition
+or re-entry, or theme reset is the deliberate retry boundary; merely
+reselecting the same ready path in the same range does not retry the failed
+URL. Every image/diagram operation carries the exact preview namespace,
+request, materialized range, and monotonic asset-wave id. A late completion
+from an older range (including an A -> B -> A re-entry) therefore cannot remove
+or replace the current wave's Loading/Pending sentinel or mark its URL
+terminal. Starting a new range wave drains stale Loading/Pending ownership
+from the visible-wave maps and shared cache sentinels, so hung off-screen
+requests cannot consume the 64-operation cap indefinitely.
+
+Normal document image/diagram completions have no preview request identity.
+While a Full Mindmap preview owns a same-key Loading/Pending operation or a
+retained result, those legacy completions are ignored; preview completions
+carry the full operation identity and may remove only their own loading or
+pending sentinel. This prevents an A -> B (and A -> B -> A) same-URL or
+same-hash race from evicting or overwriting the current cache entry. Removing
+an image or diagram cache entry also updates its tracked byte total.
+
+Measured-height corrections are sparse deltas over the worker prefix. Any
+theme/custom-typography change, font zoom, panel-width cycle/drag, or native
+window resize clears the preview height cache and sparse deltas, bumps the
+measurement generation, and remeasures the current range. A late operation may
+release the coalescing slot only when its exact namespace/request/path and
+generation still own that slot; stale results cannot clear a newer operation.
+Scroll tags include the Full Mindmap instance namespace as well as path/request
+identity, so a late scroll from an exited/re-entered navigator cannot move a
+new panel.
 
 ### Verification after implementation
 
@@ -624,26 +718,30 @@ The approved design is implemented as follows:
   successful and dirty file opens, late completion, stale completion, and exit
   state restoration, including workspace-switch cancellation and same-path
   exit/re-entry request identity. The keyboard-first refinement also covers
+  rendered Full Mindmap workspace-graph focus after a deferred file
+  materializes, persistent
+  latest-only settle-worker reuse across preview resets, and terminal
+  Loading/Document/Error preview transitions. It also covers
   Space folding, Enter folder re-rooting, direct workspace-root parent
   traversal, recursive snapshot counts, read-only previews, stale async
   completions, async bounded workspace indexing, lazy root/current-file reveal,
   collapse/re-expand eviction, hidden/root/re-entry stale rejection, zero-copy
   graph cache reuse, and independent `⌘⌥W` panel sizing.
 
-Verification recorded in `PROJECT_STATUS.md`: the current library suite,
-integration suites, focused Full Mindmap tests, and diff validation passed.
-The all-target `cargo test` run is presently blocked only by temporary-disk
-exhaustion while linking the `pdf_smoke` example. Native desktop automation
-timed out locally, so visual interaction needs a manual pass before
+Verification recorded in `PROJECT_STATUS.md`: the current focused Full Mindmap
+suite (including geometry invalidation and first-selection settle delivery),
+keyed-body and virtual-window tests, all 292 library tests and all integration
+targets via `cargo test --tests`,
+default/no-default/PDF library checks, touched-file rustfmt, and
+`git diff --check` pass in the working tree. An all-target build including the
+`pdf_smoke` example is not part of this correction pass; the earlier attempt
+filled temporary build storage while linking that example. Native desktop
+automation timed out locally, so visual interaction needs a manual pass before
 release-oriented work.
 
-- The base implementation's prior all-target test and release-build checks
-  passed. For the current keyboard-first refinement, the library and
-  integration suites plus the focused Full Mindmap tests passed; the all-target
-  run could not complete because temporary build storage filled while linking
-  `pdf_smoke`.
-- `rustfmt --edition 2021 --check src/picker.rs src/workspace_mindmap.rs` and
-  `git diff --check` — passed.
+- `rustfmt --edition 2021 --check src/app.rs src/mindmap.rs src/virt.rs
+  src/diagram.rs` and `git diff --check` — passed for the current touched
+  files.
 - Repository-wide `cargo fmt --check` and strict Clippy remain blocked by
   broad repository formatting/lint debt, so they are not clean pass gates for
   this focused feature change.

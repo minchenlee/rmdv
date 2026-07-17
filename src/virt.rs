@@ -10,7 +10,7 @@
 //! materialized.
 
 use crate::ast::{Block, BlockId, Inline, ListItem};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 const LINE_PX: f32 = 24.0;
 const HEADING_PX: [f32; 6] = [44.0, 36.0, 30.0, 26.0, 24.0, 22.0];
@@ -62,6 +62,15 @@ fn inline_chars(i: &Inline) -> f32 {
 #[derive(Default, Clone)]
 pub struct HeightCache {
     measured: HashMap<BlockId, f32>,
+}
+
+/// The immutable, estimate-based shape of a document. Large previews build
+/// this on their blocking worker and transfer the vectors into the UI state;
+/// viewport changes then only re-window the existing shape.
+#[derive(Clone, Debug, Default)]
+pub struct VirtShape {
+    pub display: Vec<usize>,
+    pub prefix: Vec<f32>,
 }
 
 impl HeightCache {
@@ -151,6 +160,10 @@ pub struct VirtWindow {
     pub band: (f32, f32),
     /// False = doc small enough to render fully (range covers all of display).
     pub active: bool,
+    /// Sparse measured-height corrections layered over the worker-built
+    /// estimate prefix. Keeping only measured entries avoids rebuilding or
+    /// reallocating an O(all-blocks) prefix on every viewport measurement.
+    adjustments: BTreeMap<usize, f32>,
 }
 
 impl VirtWindow {
@@ -166,7 +179,76 @@ impl VirtWindow {
     ) {
         self.display = display_list(blocks, folded);
         self.prefix = prefix_sums(blocks, &self.display, cache);
+        self.adjustments.clear();
         self.rebuild_at_current_shape(offset_y, viewport_h);
+    }
+
+    /// Build an immutable shape from a complete block list. Callers that own a
+    /// large preview should run this on a blocking worker before accepting it
+    /// on the Iced update thread.
+    pub fn shape(
+        blocks: &[(BlockId, Block)],
+        folded: &HashSet<BlockId>,
+        cache: &HeightCache,
+    ) -> VirtShape {
+        let display = display_list(blocks, folded);
+        let prefix = prefix_sums(blocks, &display, cache);
+        VirtShape { display, prefix }
+    }
+
+    /// Install a worker-built shape and compute only the bounded viewport
+    /// range. The vectors are moved into this window; no all-block scan occurs
+    /// on the update thread.
+    pub fn install_shape(&mut self, shape: VirtShape, offset_y: f32, viewport_h: f32) {
+        self.display = shape.display;
+        self.prefix = shape.prefix;
+        self.adjustments.clear();
+        self.rebuild_at_current_shape(offset_y, viewport_h);
+    }
+
+    pub fn install_shape_arc(
+        &mut self,
+        shape: std::sync::Arc<VirtShape>,
+        offset_y: f32,
+        viewport_h: f32,
+    ) {
+        match std::sync::Arc::try_unwrap(shape) {
+            Ok(shape) => self.install_shape(shape, offset_y, viewport_h),
+            Err(shape) => self.install_shape((*shape).clone(), offset_y, viewport_h),
+        }
+    }
+
+    /// Apply one measured display-entry height without rebuilding the complete
+    /// prefix. The sparse delta is folded into prefix queries as needed.
+    pub fn apply_height_delta(&mut self, dpos: usize, delta: f32) {
+        if delta.abs() <= f32::EPSILON {
+            return;
+        }
+        let entry = self.adjustments.entry(dpos).or_insert(0.0);
+        *entry += delta;
+        if entry.abs() <= 0.001 {
+            self.adjustments.remove(&dpos);
+        }
+    }
+
+    pub fn clear_height_adjustments(&mut self) {
+        self.adjustments.clear();
+    }
+
+    fn adjustment_before(&self, index: usize) -> f32 {
+        self.adjustments
+            .range(..index)
+            .map(|(_, delta)| *delta)
+            .sum()
+    }
+
+    /// Prefix position including sparse measured corrections.
+    pub fn prefix_at(&self, index: usize) -> f32 {
+        self.prefix
+            .get(index)
+            .copied()
+            .unwrap_or_else(|| self.prefix.last().copied().unwrap_or(0.0))
+            + self.adjustment_before(index)
     }
 
     /// True when `offset_y` (body-relative px) left the band the current
@@ -183,21 +265,21 @@ impl VirtWindow {
 
     /// Estimated y of the top of display entry `dpos`, body-relative.
     pub fn block_top(&self, dpos: usize) -> f32 {
-        self.prefix.get(dpos).copied().unwrap_or(0.0)
+        self.prefix_at(dpos)
     }
 
     /// Estimated height of display entry `dpos` (without trailing gap).
     pub fn block_height(&self, dpos: usize) -> f32 {
-        match (self.prefix.get(dpos), self.prefix.get(dpos + 1)) {
-            (Some(a), Some(b)) => (b - a - BLOCK_GAP_PX).max(0.0),
-            _ => 0.0,
+        if dpos >= self.display.len() {
+            return 0.0;
         }
+        (self.prefix_at(dpos + 1) - self.prefix_at(dpos) - BLOCK_GAP_PX).max(0.0)
     }
 
     /// Estimated total body-column height (matches a full render's height:
     /// every block plus a gap between consecutive ones, no trailing gap).
     pub fn total_height(&self) -> f32 {
-        (self.prefix.last().copied().unwrap_or(0.0) - BLOCK_GAP_PX).max(0.0)
+        (self.prefix_at(self.display.len()) - BLOCK_GAP_PX).max(0.0)
     }
 
     /// Height of the spacer standing in for blocks above the window. None when
@@ -208,7 +290,7 @@ impl VirtWindow {
         if !self.active || self.range.0 == 0 {
             return None;
         }
-        Some((self.prefix[self.range.0] - BLOCK_GAP_PX).max(0.0))
+        Some((self.prefix_at(self.range.0) - BLOCK_GAP_PX).max(0.0))
     }
 
     /// Height of the spacer standing in for blocks below the window. None when
@@ -217,7 +299,7 @@ impl VirtWindow {
         if !self.active || self.range.1 >= self.display.len() {
             return None;
         }
-        let tail = self.prefix[self.display.len()] - self.prefix[self.range.1];
+        let tail = self.prefix_at(self.display.len()) - self.prefix_at(self.range.1);
         Some((tail - BLOCK_GAP_PX).max(0.0))
     }
 
@@ -235,6 +317,7 @@ impl VirtWindow {
     ) {
         self.display = display_list(blocks, folded);
         self.prefix = prefix_sums(blocks, &self.display, cache);
+        self.adjustments.clear();
         let dpos = self.display.binary_search(&ast_idx).unwrap_or_else(|i| i);
         let offset = self.block_top(dpos) - viewport_h.max(400.0) * 0.38;
         self.rebuild_at_current_shape(offset.max(0.0), viewport_h);
@@ -253,8 +336,8 @@ impl VirtWindow {
         let offset_y = offset_y.clamp(0.0, self.total_height());
         let lo = offset_y - pad;
         let hi = offset_y + vh + pad;
-        let start = self.prefix[1..].partition_point(|&bottom| bottom < lo);
-        let end = self.prefix[..self.display.len()].partition_point(|&top| top <= hi);
+        let start = partition_point(self.display.len(), |index| self.prefix_at(index + 1) < lo);
+        let end = partition_point(self.display.len(), |index| self.prefix_at(index) <= hi);
         self.range = (
             start.min(self.display.len()),
             end.max(start).min(self.display.len()),
@@ -262,14 +345,36 @@ impl VirtWindow {
         self.band = (offset_y - pad * 0.5, offset_y + pad * 0.5);
     }
 
+    /// Re-window an already-installed shape without rebuilding its display or
+    /// prefix vectors. This is the preview path used for scroll/resize events.
+    pub fn rebuild_at_current_shape_for_preview(&mut self, offset_y: f32, viewport_h: f32) {
+        self.rebuild_at_current_shape(offset_y, viewport_h);
+    }
+
     /// Display entry whose span contains `offset_y` (body-relative px).
     pub fn display_pos_at(&self, offset_y: f32) -> Option<usize> {
         if self.display.is_empty() {
             return None;
         }
-        let k = self.prefix[1..].partition_point(|&bottom| bottom <= offset_y);
+        let k = partition_point(self.display.len(), |index| {
+            self.prefix_at(index + 1) <= offset_y
+        });
         Some(k.min(self.display.len() - 1))
     }
+}
+
+fn partition_point(len: usize, mut predicate: impl FnMut(usize) -> bool) -> usize {
+    let mut lo = 0;
+    let mut hi = len;
+    while lo < hi {
+        let mid = lo + (hi - lo) / 2;
+        if predicate(mid) {
+            lo = mid + 1;
+        } else {
+            hi = mid;
+        }
+    }
+    lo
 }
 
 fn pad_px(viewport_h: f32) -> f32 {

@@ -178,6 +178,14 @@ impl DiagramCache {
         }
     }
 
+    pub fn remove(&mut self, key: &(u64, u32)) -> Option<DiagramState> {
+        let removed = self.inner.pop(key);
+        if let Some(state) = removed.as_ref() {
+            self.bytes = self.bytes.saturating_sub(state_cost(state));
+        }
+        removed
+    }
+
     pub fn len(&self) -> usize {
         self.inner.len()
     }
@@ -604,6 +612,18 @@ mod tests {
         cache.put((1, 0), ready_state(200));
         assert_eq!(cache.cost_bytes(), 600);
         assert_eq!(cache.len(), 2);
+    }
+
+    #[test]
+    fn cache_remove_tracks_byte_cost() {
+        let mut cache = DiagramCache::with_byte_budget(8, usize::MAX);
+        cache.put((1, 0), ready_state(400));
+        cache.put((2, 0), ready_state(200));
+        assert_eq!(cache.cost_bytes(), 600);
+        assert!(cache.remove(&(1, 0)).is_some());
+        assert_eq!(cache.cost_bytes(), 200);
+        assert!(cache.remove(&(1, 0)).is_none());
+        assert_eq!(cache.cost_bytes(), 200);
     }
 
     #[test]
