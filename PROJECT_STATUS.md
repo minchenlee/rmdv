@@ -1,6 +1,6 @@
 # rmdv — project status
 
-Last verified: 2026-07-18 21:42 CST (Asia/Taipei)
+Last verified: 2026-07-18 21:45 CST (Asia/Taipei)
 Stale after: 7 days
 Canonical repository: `/Users/liminchen/Documents/GitHub/mdv`
 Expected branch: `main`; always resolve its live HEAD before mutation.
@@ -26,6 +26,10 @@ line, with public documentation, site metadata, and release assets aligned.
 - The first site deployment attempt (`29646511085`) failed because the
   workflow installed Wrangler 3.90.0, which could not consume the repository's
   JSONC static-assets config. The deployment fix pins Wrangler 4.112.0.
+- The retry (`29646699009`) confirmed Wrangler 4.112.0 reads the config, then
+  stopped because `CLOUDFLARE_API_TOKEN` is not configured in GitHub Actions;
+  `CLOUDFLARE_ACCOUNT_ID` is also absent. The site deployment remains pending
+  until the owner adds those secrets.
 
 ## Live workstreams
 
