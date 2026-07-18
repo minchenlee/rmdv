@@ -4,12 +4,13 @@ Last reconciled: 2026-07-18 (Asia/Taipei)
 
 ## Active work
 
-- **PR #8 squash-merge pending (2026-07-18):** branch
-  `feat/full-mindmap-mode` is published as
-  [PR #8](https://github.com/minchenlee/rmdv/pull/8) against `main`. The final
-  Full Mindmap UI follow-up is committed locally; remote push and the
-  requested squash merge remain the next actions. Local validation and native
-  acceptance are recorded below.
+- **PR #8 squash-merged (2026-07-18):**
+  [PR #8](https://github.com/minchenlee/rmdv/pull/8) was merged into remote
+  `main` with squash commit
+  `a8f8348619829199b53ad761d07293b1f419bba3`. The final Full Mindmap UI
+  follow-up is included; the source branch remains published at
+  `19715ae1ce840fcedfa72705011e4abc0f40b892` because branch deletion was not
+  requested. Local validation and native acceptance are recorded below.
 
 - **Current PR #8 review fix (2026-07-17):** IPC `open` and
   `reveal` now defer the generic document load until Full Mindmap has exited,
@@ -18,8 +19,7 @@ Last reconciled: 2026-07-18 (Asia/Taipei)
   load. Added synchronous, stale-snapshot, and `reveal` regressions. Evidence:
   296/296 library tests, all 67 integration tests, default and
   `--no-default-features` `cargo check --lib`, touched-file rustfmt, and
-  `git diff --check`. Changes are scoped to this branch; commit and remote
-  publish state is reflected by Git.
+  `git diff --check`. The changes are included in the PR #8 squash merge.
 
 - **Current PR #8 follow-up P2 fix (2026-07-18):** a deferred IPC file open
   now carries its terminal exit intent through user-driven Full Mindmap root,
@@ -31,10 +31,10 @@ Last reconciled: 2026-07-18 (Asia/Taipei)
   navigation. Evidence: 297/297 library tests, all integration targets via
   `cargo test --tests`, default, `--no-default-features`, and `pdf`
   `cargo check --lib`, touched-file rustfmt, and `git diff --check`. The
-  changes are committed and pushed on `feat/full-mindmap-mode`; PR merge
-  remains pending for this follow-up.
+  changes are committed and pushed on `feat/full-mindmap-mode` and are
+  included in the PR #8 squash merge.
 
-- **Current Full Mindmap UI adjustment (2026-07-18):** panel
+- **Merged Full Mindmap UI adjustment (2026-07-18):** panel
   visibility is now an explicit user choice and Full Mindmap entry starts with
   it closed. Node focus, folder toggles, workspace reconciliation, deferred file
   materialization, and deselection preserve the current panel state instead of
@@ -47,9 +47,9 @@ Last reconciled: 2026-07-18 (Asia/Taipei)
   `cargo build --release --bin rmdv`. The current arm64 Mach-O artifact is
   `target/release/rmdv` (35,412,560 bytes; SHA-256
   `12b92b77671e36d1479a55884398e7f3a7d16ae281ba3b7867af726344428d45`). The
-  implementation and `PRODUCT.md` are committed as `2b4f4a3`; the project
-  status update is being committed separately before the requested push and
-  squash merge.
+  implementation and `PRODUCT.md` were committed as `2b4f4a3`, pushed with
+  status commit `19715ae`, and included in squash commit
+  `a8f8348619829199b53ad761d07293b1f419bba3`.
 
 - **Accepted manual-bug correction (2026-07-17):** the
   document-Mindmap root `Left` bridge records the current file as its explicit
@@ -327,16 +327,14 @@ Last reconciled: 2026-07-18 (Asia/Taipei)
 
 - Actual checkout: `/Users/liminchen/Documents/GitHub/mdv`
 - Legacy non-repo path: `/Users/liminchen/Documents/GitHub/mdv-main`
-- Active branch: `feat/full-mindmap-mode`; the implementation and product
-  register are committed in `2b4f4a3`, with this status update pending as the
-  final local change before publishing. The preceding branch tip was
-  `1abeae5` (`docs: record pushed PR follow-up`).
-- Local `main` is at `67564e5`, eleven commits ahead of `origin/main`: Windows
-  IPC fix `6fa6450`, CJK emphasis fix `0df1fe2`, reviewed CJK repair `d97370e`,
-  the six-commit reviewed Zen feature/repair line `1199455..f2b0519`, and Zen
-  editor/toast polish `68fc8d0`, followed by reliable CLI screenshots
-  `67564e5`.
-  `origin/main` and released tag `v0.4.0` remain at `34d352d`.
+- Active branch: `feat/full-mindmap-mode`; the local checkout is clean at
+  `19715ae1ce840fcedfa72705011e4abc0f40b892`, the merged PR head. Remote
+  `main` is at squash commit
+  `a8f8348619829199b53ad761d07293b1f419bba3`.
+- Local `main` remains intentionally untouched at `67564e5`; it is eight
+  commits ahead and two commits behind the refreshed `origin/main`, so do not
+  describe that local branch as synchronized without a separate reconciliation.
+- The released tag `v0.4.0` remains at `34d352d`.
 - Three worktrees are currently registered: the active checkout above, the
   clean `feat/mindmap-zoom-controls` worktree, and
   `.claude/worktrees/zen-ui-polish` on `codex/zen-ui-polish`, clean at
