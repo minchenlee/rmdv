@@ -238,6 +238,8 @@ pub enum FullMindmapPreview {
 pub struct FullMindmapState {
     pub selected: Option<WorkspaceNodeId>,
     pub expanded: HashSet<PathBuf>,
+    /// Visibility is an explicit user choice and must not change when focus
+    /// moves between workspace nodes.
     pub panel_open: bool,
     pub panel_width: f32,
     /// Current step in the Full Mindmap ⌘⌥W width cycle. Kept separate from
@@ -1324,7 +1326,7 @@ impl App {
         FullMindmapState {
             selected: None,
             expanded: HashSet::new(),
-            panel_open: true,
+            panel_open: false,
             panel_width: MIND_PANEL_DEFAULT,
             panel_step: 0,
             panel_drag: None,
@@ -1939,7 +1941,6 @@ impl App {
                     .map(|path| WorkspaceNodeId::File(path.clone()))
                     .unwrap_or(root_id),
             );
-            full.panel_open = true;
             full.panel_drag = None;
             // Rebuilding the workspace means navigation has changed intent. An
             // in-flight file read from the prior workspace must not later exit
@@ -2376,7 +2377,6 @@ impl App {
             };
             full.selected = Some(id.clone());
             full.focus_request = Some(id);
-            full.panel_open = true;
             // A background hidden-entry refresh describes the same workspace
             // and intentionally captures navigation at completion time. Keep
             // it alive across ordinary selection changes; project switches
@@ -4044,6 +4044,24 @@ impl App {
             .width(Length::Fill)
             .height(Length::Fill)
             .into();
+        let selected_is_file = full
+            .selected
+            .as_ref()
+            .and_then(|id| graph.node(id))
+            .is_some_and(|node| node.kind == WorkspaceNodeKind::File)
+            && (full.pending_workspace_load.is_none()
+                || full
+                    .pending_workspace_load
+                    .as_ref()
+                    .is_some_and(|request| request.preserve_navigation));
+        let hint_items: &[(&str, &str)] = match selected_is_file {
+            true => &[("←↑→↓", "move"), ("Enter", "open")],
+            false => &[("←↑→↓", "move"), ("Space", "fold"), ("Enter", "root")],
+        };
+        let canvas: Element<'_, Message> = stack![canvas, full_mindmap_hint(hint_items, pal)]
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .into();
         let body: Element<'_, Message> = if full.panel_open {
             irow![
                 canvas,
@@ -4245,13 +4263,6 @@ impl App {
         } else {
             content
         };
-        let hint_items: &[(&str, &str)] = match selected_is_file {
-            true => &[("←↑→↓", "move"), ("Enter", "open")],
-            false => &[("←↑→↓", "move"), ("Space", "fold"), ("Enter", "root")],
-        };
-        let hint = container(hint_pills(hint_items, pal))
-            .padding(Padding::from([8, 16]))
-            .width(Length::Fill);
         let body: Element<'_, Message> = if selected_is_file {
             content
         } else {
@@ -4272,28 +4283,19 @@ impl App {
                 .style(scrollable::default)
                 .into()
         };
-        container(column![
-            body,
-            container(Space::new().height(1.0))
-                .width(Length::Fill)
-                .style(move |_| container::Style {
-                    background: Some(pal.rule.into()),
-                    ..Default::default()
-                }),
-            hint,
-        ])
-        .width(Length::Fixed(panel_width))
-        .height(Length::Fill)
-        .style(move |_| container::Style {
-            background: Some(pal.surface.into()),
-            border: Border {
-                color: pal.rule,
-                width: 1.0,
-                radius: 0.0.into(),
-            },
-            ..Default::default()
-        })
-        .into()
+        container(body)
+            .width(Length::Fixed(panel_width))
+            .height(Length::Fill)
+            .style(move |_| container::Style {
+                background: Some(pal.surface.into()),
+                border: Border {
+                    color: pal.rule,
+                    width: 1.0,
+                    radius: 0.0.into(),
+                },
+                ..Default::default()
+            })
+            .into()
     }
 
     fn command_items(&self) -> Vec<(&'static str, Message)> {
@@ -4984,7 +4986,6 @@ impl App {
                     full.deferred_file_selection = None;
                     full.selected = Some(id.clone());
                     full.focus_request = Some(id);
-                    full.panel_open = true;
                     full.pending_preview_settle = None;
                     full.pending_preview = None;
                     full.preview = FullMindmapPreview::None;
@@ -5034,7 +5035,6 @@ impl App {
                     full.selected = None;
                     full.focus_request = None;
                     full.deferred_file_selection = None;
-                    full.panel_open = false;
                     full.panel_drag = None;
                     full.pending_preview_settle = None;
                     full.pending_preview = None;
@@ -5241,7 +5241,7 @@ impl App {
             Message::FullMindmapCyclePanelWidth => {
                 let window_size = self.window_size;
                 if let Some(full) = self.full_mindmap.as_mut() {
-                    // A keyboard width change should always reveal the result.
+                    // This explicit panel-width action reveals the resized result.
                     full.panel_open = true;
                     full.panel_drag = None;
                     full.panel_step = (full.panel_step + 1) % MIND_PANEL_FRACS.len();
@@ -5561,7 +5561,6 @@ impl App {
                             let file_id = WorkspaceNodeId::File(path.clone());
                             full.selected = Some(file_id.clone());
                             full.focus_request = Some(file_id);
-                            full.panel_open = true;
                         }
                         if self.file.as_ref() == Some(&path) {
                             let source = self.source_snapshot_for_preview();
@@ -10684,6 +10683,41 @@ fn hint_pills<'a>(items: &[(&'a str, &'a str)], pal: Palette) -> Element<'a, Mes
     row.into()
 }
 
+/// Floating Full Mindmap keyboard hint. It sits over the canvas so the panel
+/// remains dedicated to the selected file or folder preview.
+fn full_mindmap_hint<'a>(items: &[(&'a str, &'a str)], pal: Palette) -> Element<'a, Message> {
+    let island = container(hint_pills(items, pal))
+        .padding(Padding::from([8, 16]))
+        .clip(true)
+        .style(move |_| container::Style {
+            background: Some(pal.surface.into()),
+            border: Border {
+                color: pal.rule,
+                width: 1.0,
+                radius: 10.0.into(),
+            },
+            shadow: iced::Shadow {
+                color: Color::from_rgba(0.0, 0.0, 0.0, 0.22),
+                offset: iced::Vector::new(0.0, 5.0),
+                blur_radius: 14.0,
+            },
+            ..Default::default()
+        });
+
+    container(island)
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .padding(Padding {
+            top: 0.0,
+            right: 0.0,
+            bottom: 16.0,
+            left: 0.0,
+        })
+        .align_x(iced::alignment::Horizontal::Center)
+        .align_y(iced::alignment::Vertical::Bottom)
+        .into()
+}
+
 fn overlay_frame<'a>(
     content: Element<'a, Message>,
     pal: Palette,
@@ -13598,7 +13632,7 @@ mod tests {
         let full = app.full_mindmap.as_ref().unwrap();
         assert_eq!(full.selected, Some(other_id.clone()));
         assert_eq!(full.focus_request, Some(other_id));
-        assert!(full.panel_open);
+        assert!(!full.panel_open);
         assert!(full.pending_preview.is_none());
         assert!(full.pending_preview_settle.is_none());
         assert!(matches!(full.preview, FullMindmapPreview::None));
@@ -14512,6 +14546,37 @@ mod tests {
         let _ = app.update(Message::FullMindmapCyclePanelWidth);
         assert_eq!(app.full_mindmap.as_ref().unwrap().panel_width, 400.0);
         assert_eq!(app.mindmap_panel_width, 333.0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn full_mindmap_focus_preserves_user_panel_visibility() {
+        let dir = full_mindmap_test_dir("panel-visibility");
+        let folder = dir.join("notes");
+        let file = folder.join("guide.md");
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(&file, "# Guide\n").unwrap();
+
+        let mut app = App::default();
+        app.set_workspace(dir.clone(), false);
+        app.full_mindmap = Some(full_workspace_state(&dir));
+        assert!(!app.full_mindmap.as_ref().unwrap().panel_open);
+
+        let _ = app.update(Message::FullMindmapSelectNode(WorkspaceNodeId::File(
+            file.clone(),
+        )));
+        assert!(!app.full_mindmap.as_ref().unwrap().panel_open);
+
+        let _ = app.update(Message::FullMindmapToggleNode(WorkspaceNodeId::Folder(
+            folder.clone(),
+        )));
+        assert!(!app.full_mindmap.as_ref().unwrap().panel_open);
+
+        let _ = app.update(Message::FullMindmapTogglePanel);
+        assert!(app.full_mindmap.as_ref().unwrap().panel_open);
+        let _ = app.update(Message::FullMindmapDeselect);
+        assert!(app.full_mindmap.as_ref().unwrap().panel_open);
+
         let _ = std::fs::remove_dir_all(&dir);
     }
 
