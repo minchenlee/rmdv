@@ -329,8 +329,9 @@ Last reconciled: 2026-07-18 (Asia/Taipei)
 - Legacy non-repo path: `/Users/liminchen/Documents/GitHub/mdv-main`
 - Active branch: `feat/full-mindmap-mode`; the implementation was merged from
   PR head `19715ae1ce840fcedfa72705011e4abc0f40b892`, and this checkout keeps
-  the feature line with the post-merge status snapshot. Remote `main` is at
-  squash commit `a8f8348619829199b53ad761d07293b1f419bba3`.
+  the feature line with the post-merge status snapshot. Remote `main` includes
+  squash commit `a8f8348619829199b53ad761d07293b1f419bba3` and subsequent
+  status-only project-status reconciliation commits.
 - Local `main` remains intentionally untouched at `67564e5`; it is eight
   commits ahead and two commits behind the refreshed `origin/main`, so do not
   describe that local branch as synchronized without a separate reconciliation.
