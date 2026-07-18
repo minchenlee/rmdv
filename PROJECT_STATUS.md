@@ -4,10 +4,11 @@ Last reconciled: 2026-07-18 (Asia/Taipei)
 
 ## Active work
 
-- **PR open (2026-07-17):** branch `feat/full-mindmap-mode` is published
-  as [PR #8](https://github.com/minchenlee/rmdv/pull/8) against `main`. GitHub
-  reports it mergeable with a clean merge state; no remote status checks
-  were present immediately after creation. Local validation and native
+- **PR #8 squash-merge pending (2026-07-18):** branch
+  `feat/full-mindmap-mode` is published as
+  [PR #8](https://github.com/minchenlee/rmdv/pull/8) against `main`. The final
+  Full Mindmap UI follow-up is committed locally; remote push and the
+  requested squash merge remain the next actions. Local validation and native
   acceptance are recorded below.
 
 - **Current PR #8 review fix (2026-07-17):** IPC `open` and
@@ -32,6 +33,23 @@ Last reconciled: 2026-07-18 (Asia/Taipei)
   `cargo check --lib`, touched-file rustfmt, and `git diff --check`. The
   changes are committed and pushed on `feat/full-mindmap-mode`; PR merge
   remains pending for this follow-up.
+
+- **Current Full Mindmap UI adjustment (2026-07-18):** panel
+  visibility is now an explicit user choice and Full Mindmap entry starts with
+  it closed. Node focus, folder toggles, workspace reconciliation, deferred file
+  materialization, and deselection preserve the current panel state instead of
+  opening or closing it implicitly. The existing `←↑→↓ / Space / Enter` hint moved out of the preview
+  panel into a centered bottom floating island over the canvas, with file
+  selection retaining its `Enter / open` variant. Added the confirmed product
+  register at `PRODUCT.md` and a regression covering closed/open panel-state
+  preservation. Evidence: 298/298 library tests, all integration targets via
+  `cargo test --tests`, touched-file rustfmt, `git diff --check`, and
+  `cargo build --release --bin rmdv`. The current arm64 Mach-O artifact is
+  `target/release/rmdv` (35,412,560 bytes; SHA-256
+  `12b92b77671e36d1479a55884398e7f3a7d16ae281ba3b7867af726344428d45`). The
+  implementation and `PRODUCT.md` are committed as `2b4f4a3`; the project
+  status update is being committed separately before the requested push and
+  squash merge.
 
 - **Accepted manual-bug correction (2026-07-17):** the
   document-Mindmap root `Left` bridge records the current file as its explicit
@@ -309,10 +327,10 @@ Last reconciled: 2026-07-18 (Asia/Taipei)
 
 - Actual checkout: `/Users/liminchen/Documents/GitHub/mdv`
 - Legacy non-repo path: `/Users/liminchen/Documents/GitHub/mdv-main`
-- Active branch: `feat/full-mindmap-mode`; the working tree contains the
-  uncommitted P1/P2 preview correction pass above. The latest committed
-  implementation candidate remains `84cd355` (`feat: set full mindmap preview
-  settle to 200ms`).
+- Active branch: `feat/full-mindmap-mode`; the implementation and product
+  register are committed in `2b4f4a3`, with this status update pending as the
+  final local change before publishing. The preceding branch tip was
+  `1abeae5` (`docs: record pushed PR follow-up`).
 - Local `main` is at `67564e5`, eleven commits ahead of `origin/main`: Windows
   IPC fix `6fa6450`, CJK emphasis fix `0df1fe2`, reviewed CJK repair `d97370e`,
   the six-commit reviewed Zen feature/repair line `1199455..f2b0519`, and Zen
