@@ -30,8 +30,8 @@ Last reconciled: 2026-07-18 (Asia/Taipei)
   navigation. Evidence: 297/297 library tests, all integration targets via
   `cargo test --tests`, default, `--no-default-features`, and `pdf`
   `cargo check --lib`, touched-file rustfmt, and `git diff --check`. The
-  changes are committed on `feat/full-mindmap-mode`; remote push and merge
-  remain pending for this follow-up.
+  changes are committed and pushed on `feat/full-mindmap-mode`; PR merge
+  remains pending for this follow-up.
 
 - **Accepted manual-bug correction (2026-07-17):** the
   document-Mindmap root `Left` bridge records the current file as its explicit
