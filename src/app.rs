@@ -4444,7 +4444,15 @@ impl App {
                 // A workspace selected through Full Mindmap Mode should not
                 // silently alter the hidden sidebar's open/closed preference.
                 if self.full_mindmap.is_some() {
-                    self.begin_full_mindmap_workspace_load(p, false, None, false, false, false)
+                    let exit_after_refresh = self.pending_ipc_file_open.is_some();
+                    self.begin_full_mindmap_workspace_load(
+                        p,
+                        false,
+                        None,
+                        false,
+                        false,
+                        exit_after_refresh,
+                    )
                 } else {
                     self.set_workspace(p, true);
                     Task::none()
@@ -5189,7 +5197,15 @@ impl App {
                 if self.workspace.as_ref() == Some(&path) {
                     return Task::none();
                 }
-                self.begin_full_mindmap_workspace_load(path, true, None, false, false, false)
+                let exit_after_refresh = self.pending_ipc_file_open.is_some();
+                self.begin_full_mindmap_workspace_load(
+                    path,
+                    true,
+                    None,
+                    false,
+                    false,
+                    exit_after_refresh,
+                )
             }
             Message::FullMindmapWorkspaceParent => {
                 let root = self
@@ -5202,7 +5218,15 @@ impl App {
                 let Some(parent) = root.parent().map(PathBuf::from) else {
                     return Task::none();
                 };
-                self.begin_full_mindmap_workspace_load(parent, true, None, false, false, false)
+                let exit_after_refresh = self.pending_ipc_file_open.is_some();
+                self.begin_full_mindmap_workspace_load(
+                    parent,
+                    true,
+                    None,
+                    false,
+                    false,
+                    exit_after_refresh,
+                )
             }
             Message::FullMindmapReturnToFiles => self.exit_full_mindmap(true),
             Message::FullMindmapTogglePanel => {
@@ -6151,6 +6175,9 @@ impl App {
                 }
                 let parent = path.parent().map(|p| p.to_path_buf());
                 if self.full_mindmap.is_some() {
+                    // Deliberate picker activation supersedes an IPC open that
+                    // was waiting for Full Mindmap to exit.
+                    self.pending_ipc_file_open = None;
                     // Preserve the picker contract without synchronously
                     // indexing the file's parent on the UI thread. The file
                     // read starts only after that bounded index is ready.
@@ -16070,6 +16097,85 @@ mod tests {
         let _ = app.update(Message::FileLoaded(Ok((new.clone(), "# New\n".into()))));
 
         assert!(app.full_mindmap.is_none());
+        assert_eq!(app.file.as_deref(), Some(new.as_path()));
+        assert!(app.pending_nav.is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn ipc_open_survives_full_mindmap_root_change_during_reconciliation() {
+        let dir = full_mindmap_test_dir("ipc-open-root-change");
+        let old_root = dir.join("old-root");
+        let new_root = dir.join("new-root");
+        let old = old_root.join("old.md");
+        let new = new_root.join("new.md");
+        std::fs::create_dir_all(&old_root).unwrap();
+        std::fs::create_dir_all(&new_root).unwrap();
+        std::fs::write(&old, "# Old\n").unwrap();
+        std::fs::write(&new, "# New\n").unwrap();
+
+        let mut app = App::default();
+        app.set_workspace(old_root.clone(), false);
+        app.file = Some(old);
+        app.source = "# Old\n".into();
+        app.saved_source = app.source.clone();
+        app.full_mindmap = Some(full_workspace_state(&old_root));
+        app.show_hidden = true;
+
+        let _ = app.update(Message::Ipc(
+            crate::ipc::Request {
+                id: 1,
+                cmd: crate::ipc::Cmd::Open {
+                    file: new.to_string_lossy().into_owned(),
+                    line: Some(3),
+                    section: Some("New".into()),
+                    focus: crate::ipc::FocusBehavior::Suppress,
+                },
+            },
+            std::sync::Arc::new(std::sync::Mutex::new(None)),
+        ));
+
+        let stale_request = app
+            .full_mindmap
+            .as_ref()
+            .and_then(|full| full.pending_workspace_load.clone())
+            .expect("stale snapshot should delay the exit");
+        assert!(stale_request.exit_after_refresh);
+        assert!(app.pending_ipc_file_open.is_some());
+
+        let _ = app.update(Message::FullMindmapSetRoot(new_root.clone()));
+        let root_request = app
+            .full_mindmap
+            .as_ref()
+            .and_then(|full| full.pending_workspace_load.clone())
+            .expect("root change should replace the stale refresh");
+        assert_eq!(root_request.path, new_root);
+        assert!(root_request.exit_after_refresh);
+        assert!(app.pending_ipc_file_open.is_some());
+
+        let stale_snapshot = tree::build_workspace(&old_root, true).unwrap();
+        let _ = app.update(Message::FullMindmapWorkspaceLoaded {
+            request: stale_request,
+            result: Ok((old_root.clone(), stale_snapshot)),
+        });
+        assert_eq!(
+            app.full_mindmap
+                .as_ref()
+                .and_then(|full| full.pending_workspace_load.clone()),
+            Some(root_request.clone())
+        );
+
+        let root_snapshot = tree::build_workspace(&new_root, true).unwrap();
+        let _ = app.update(Message::FullMindmapWorkspaceLoaded {
+            request: root_request,
+            result: Ok((new_root.clone(), root_snapshot)),
+        });
+
+        assert!(app.full_mindmap.is_none());
+        assert!(app.pending_ipc_file_open.is_none());
+        assert_eq!(app.pending_nav.as_ref().and_then(|nav| nav.line), Some(3));
+
+        let _ = app.update(Message::FileLoaded(Ok((new.clone(), "# New\n".into()))));
         assert_eq!(app.file.as_deref(), Some(new.as_path()));
         assert!(app.pending_nav.is_none());
         let _ = std::fs::remove_dir_all(&dir);

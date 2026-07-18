@@ -1,6 +1,6 @@
 # rmdv — shared project status
 
-Last reconciled: 2026-07-17 (Asia/Taipei)
+Last reconciled: 2026-07-18 (Asia/Taipei)
 
 ## Active work
 
@@ -19,6 +19,19 @@ Last reconciled: 2026-07-17 (Asia/Taipei)
   `--no-default-features` `cargo check --lib`, touched-file rustfmt, and
   `git diff --check`. Changes are scoped to this branch; commit and remote
   publish state is reflected by Git.
+
+- **Current PR #8 follow-up P2 fix (2026-07-18):** a deferred IPC file open
+  now carries its terminal exit intent through user-driven Full Mindmap root,
+  parent, and workspace changes, so a replacement workspace snapshot still
+  exits the navigator and starts the queued document load. Deliberate picker
+  file activation explicitly supersedes the deferred IPC intent. Added
+  `ipc_open_survives_full_mindmap_root_change_during_reconciliation` to cover
+  stale completion rejection, replacement-root acceptance, and final line
+  navigation. Evidence: 297/297 library tests, all integration targets via
+  `cargo test --tests`, default, `--no-default-features`, and `pdf`
+  `cargo check --lib`, touched-file rustfmt, and `git diff --check`. The
+  changes are committed on `feat/full-mindmap-mode`; remote push and merge
+  remain pending for this follow-up.
 
 - **Accepted manual-bug correction (2026-07-17):** the
   document-Mindmap root `Left` bridge records the current file as its explicit
