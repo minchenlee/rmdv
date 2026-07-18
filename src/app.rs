@@ -864,6 +864,12 @@ pub struct PendingNav {
     pub fragment: Option<String>,
 }
 
+#[derive(Debug, Clone)]
+struct PendingIpcFileOpen {
+    path: PathBuf,
+    nav: Option<PendingNav>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ZenRestoreState {
     pub sidebar_open: bool,
@@ -1037,6 +1043,9 @@ pub struct App {
     /// Set by IPC `Open { line, section }` so the subsequent `FileLoaded`
     /// can finish navigation once the AST/block_lines exist.
     pub pending_nav: Option<PendingNav>,
+    /// IPC file activation waits here while Full Mindmap exits and, when
+    /// needed, reconciles a stale hidden-file workspace snapshot.
+    pending_ipc_file_open: Option<PendingIpcFileOpen>,
     /// Snap-to relative offset queued for the next `update` tick. Used by
     /// `apply_goto` which can't perform scroll math during the IPC handler
     /// without re-entering `update`.
@@ -1180,6 +1189,7 @@ impl Default for App {
             zoom_diagram: None,
             block_lines: Vec::new(),
             pending_nav: None,
+            pending_ipc_file_open: None,
             queued_snap: None,
             queued_goto: None,
             pending_screenshot: None,
@@ -1858,6 +1868,37 @@ impl App {
         self.restore_body_scroll()
     }
 
+    /// Start an IPC file activation only after Full Mindmap has stopped owning
+    /// the reader surface. A normal exit clears the navigator synchronously;
+    /// when the hidden-file snapshot is stale, `exit_full_mindmap` completes
+    /// through `FullMindmapWorkspaceLoaded` and consumes the same pending open
+    /// there.
+    fn begin_ipc_file_open(&mut self, path: PathBuf, nav: Option<PendingNav>) -> Task<Message> {
+        if self.full_mindmap.is_none() {
+            self.pending_nav = nav;
+            return Task::perform(load_file(path), Message::FileLoaded);
+        }
+
+        // Do not let an older generic load consume the navigation intended for
+        // this deferred request while the navigator is still visible.
+        self.pending_nav = None;
+        self.pending_ipc_file_open = Some(PendingIpcFileOpen { path, nav });
+        let exit = self.exit_full_mindmap(false);
+        if self.full_mindmap.is_none() {
+            self.start_pending_ipc_file_open(exit)
+        } else {
+            exit
+        }
+    }
+
+    fn start_pending_ipc_file_open(&mut self, cleanup: Task<Message>) -> Task<Message> {
+        let Some(PendingIpcFileOpen { path, nav }) = self.pending_ipc_file_open.take() else {
+            return cleanup;
+        };
+        self.pending_nav = nav;
+        Task::batch([cleanup, Task::perform(load_file(path), Message::FileLoaded)])
+    }
+
     /// Start (or refresh) the workspace phase without touching sidebar state.
     fn reset_full_mindmap_workspace(&mut self) {
         let Some(tree) = self.workspace_tree.as_ref() else {
@@ -2260,6 +2301,8 @@ impl App {
         if self.full_mindmap.is_none() {
             return self.load_file_unless_dirty(path);
         }
+        // Deliberate Full Mindmap activation supersedes a deferred IPC open.
+        self.pending_ipc_file_open = None;
         // Enter is deliberate activation: cancel any read-only preview settle
         // or in-flight preview before the guarded file-open path takes over.
         self.cancel_full_mindmap_preview();
@@ -5245,6 +5288,7 @@ impl App {
                         // editor change. Clearing the navigator only after the
                         // request was accepted preserves its dirty safety.
                         self.cancel_full_mindmap_verification();
+                        self.pending_ipc_file_open = None;
                         self.full_mindmap = None;
                         // Full Mindmap file activation always hands the file
                         // back to the document mindmap, whose normal load path
@@ -5577,7 +5621,7 @@ impl App {
                                 self.sidebar_tab = SidebarTab::Files;
                                 self.reveal_current_file();
                             }
-                            followup = self.restore_body_scroll();
+                            followup = self.start_pending_ipc_file_open(self.restore_body_scroll());
                         } else if !request.preserve_navigation && request.select_root {
                             self.reset_full_mindmap_preview_window();
                             if let Some(full) = self.full_mindmap.as_mut() {
@@ -5618,7 +5662,9 @@ impl App {
                         }
                         if request.exit_after_refresh {
                             self.error = Some(message);
-                            followup = self.finish_full_mindmap_exit(request.return_to_files_after);
+                            let cleanup =
+                                self.finish_full_mindmap_exit(request.return_to_files_after);
+                            followup = self.start_pending_ipc_file_open(cleanup);
                         } else if let Some(full) = self.full_mindmap.as_mut() {
                             full.pending_workspace_load = None;
                             full.load_error = Some(message);
@@ -5641,7 +5687,9 @@ impl App {
                             // failed; promote the error before removing its
                             // navigator-local error surface.
                             self.error = Some(message);
-                            followup = self.finish_full_mindmap_exit(request.return_to_files_after);
+                            let cleanup =
+                                self.finish_full_mindmap_exit(request.return_to_files_after);
+                            followup = self.start_pending_ipc_file_open(cleanup);
                         } else if let Some(full) = self.full_mindmap.as_mut() {
                             full.pending_workspace_load = None;
                             full.load_error = Some(message);
@@ -7336,10 +7384,8 @@ impl App {
                         if self.dirty {
                             Response::err(id, self.unsaved_edits_open_message())
                         } else {
-                            follow_up = Task::perform(
-                                load_file(std::path::PathBuf::from(file)),
-                                Message::FileLoaded,
-                            );
+                            follow_up =
+                                self.begin_ipc_file_open(std::path::PathBuf::from(file), None);
                             nav_focus = Some(focus);
                             Response::ok(id)
                         }
@@ -7354,12 +7400,14 @@ impl App {
                             Response::err(id, self.unsaved_edits_open_message())
                         } else {
                             let path = std::path::PathBuf::from(file);
-                            follow_up = Task::perform(load_file(path), Message::FileLoaded);
-                            self.pending_nav = Some(PendingNav {
-                                line,
-                                section,
-                                ..Default::default()
-                            });
+                            follow_up = self.begin_ipc_file_open(
+                                path,
+                                Some(PendingNav {
+                                    line,
+                                    section,
+                                    ..Default::default()
+                                }),
+                            );
                             nav_focus = Some(focus);
                             Response::ok(id)
                         }
@@ -15892,6 +15940,138 @@ mod tests {
         assert_eq!(app.file.as_deref(), Some(new.as_path()));
         assert_eq!(app.source, "# New\n");
         assert!(!app.dirty);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn ipc_open_exits_full_mindmap_before_loading_document() {
+        let old = std::path::PathBuf::from("/workspace/old.md");
+        let new = std::path::PathBuf::from("/workspace/new.md");
+        let mut app = App::default();
+        app.file = Some(old);
+        app.source = "# Old\n".into();
+        app.saved_source = app.source.clone();
+        app.full_mindmap = Some(full_workspace_state(std::path::Path::new("/workspace")));
+
+        let _ = app.update(Message::Ipc(
+            crate::ipc::Request {
+                id: 1,
+                cmd: crate::ipc::Cmd::Open {
+                    file: new.to_string_lossy().into_owned(),
+                    line: Some(4),
+                    section: Some("Target".into()),
+                    focus: crate::ipc::FocusBehavior::Suppress,
+                },
+            },
+            std::sync::Arc::new(std::sync::Mutex::new(None)),
+        ));
+
+        assert!(app.full_mindmap.is_none());
+        assert!(app.pending_ipc_file_open.is_none());
+        assert_eq!(app.pending_nav.as_ref().and_then(|nav| nav.line), Some(4));
+        assert_eq!(
+            app.pending_nav
+                .as_ref()
+                .and_then(|nav| nav.section.as_deref()),
+            Some("Target")
+        );
+
+        let _ = app.update(Message::FileLoaded(Ok((
+            new.clone(),
+            "# New\n\n# Target\n".into(),
+        ))));
+
+        assert!(app.full_mindmap.is_none());
+        assert_eq!(app.file.as_deref(), Some(new.as_path()));
+        assert!(app.pending_nav.is_none());
+    }
+
+    #[test]
+    fn ipc_reveal_exits_full_mindmap_before_loading_document() {
+        let old = std::path::PathBuf::from("/workspace/old.md");
+        let new = std::path::PathBuf::from("/workspace/new.md");
+        let mut app = App::default();
+        app.file = Some(old);
+        app.source = "# Old\n".into();
+        app.saved_source = app.source.clone();
+        app.full_mindmap = Some(full_workspace_state(std::path::Path::new("/workspace")));
+
+        let _ = app.update(Message::Ipc(
+            crate::ipc::Request {
+                id: 1,
+                cmd: crate::ipc::Cmd::Reveal {
+                    file: new.to_string_lossy().into_owned(),
+                    focus: crate::ipc::FocusBehavior::Suppress,
+                },
+            },
+            std::sync::Arc::new(std::sync::Mutex::new(None)),
+        ));
+
+        assert!(app.full_mindmap.is_none());
+        assert!(app.pending_ipc_file_open.is_none());
+        assert!(app.pending_nav.is_none());
+
+        let _ = app.update(Message::FileLoaded(Ok((new.clone(), "# New\n".into()))));
+
+        assert!(app.full_mindmap.is_none());
+        assert_eq!(app.file.as_deref(), Some(new.as_path()));
+    }
+
+    #[test]
+    fn ipc_open_waits_for_stale_full_mindmap_snapshot_before_loading() {
+        let dir = full_mindmap_test_dir("ipc-open-stale-snapshot");
+        let old = dir.join("old.md");
+        let new = dir.join("new.md");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(&old, "# Old\n").unwrap();
+        std::fs::write(&new, "# New\n").unwrap();
+
+        let mut app = App::default();
+        app.set_workspace(dir.clone(), false);
+        app.file = Some(old);
+        app.source = "# Old\n".into();
+        app.saved_source = app.source.clone();
+        app.full_mindmap = Some(full_workspace_state(&dir));
+        app.show_hidden = true;
+
+        let _ = app.update(Message::Ipc(
+            crate::ipc::Request {
+                id: 1,
+                cmd: crate::ipc::Cmd::Open {
+                    file: new.to_string_lossy().into_owned(),
+                    line: Some(3),
+                    section: Some("New".into()),
+                    focus: crate::ipc::FocusBehavior::Suppress,
+                },
+            },
+            std::sync::Arc::new(std::sync::Mutex::new(None)),
+        ));
+
+        assert!(app.full_mindmap.is_some());
+        assert!(app.pending_nav.is_none());
+        assert!(app.pending_ipc_file_open.is_some());
+        let workspace_request = app
+            .full_mindmap
+            .as_ref()
+            .and_then(|full| full.pending_workspace_load.clone())
+            .expect("stale snapshot should delay the exit");
+        assert!(workspace_request.exit_after_refresh);
+
+        let snapshot = tree::build_workspace(&dir, true).unwrap();
+        let _ = app.update(Message::FullMindmapWorkspaceLoaded {
+            request: workspace_request,
+            result: Ok((dir.clone(), snapshot)),
+        });
+
+        assert!(app.full_mindmap.is_none());
+        assert!(app.pending_ipc_file_open.is_none());
+        assert_eq!(app.pending_nav.as_ref().and_then(|nav| nav.line), Some(3));
+
+        let _ = app.update(Message::FileLoaded(Ok((new.clone(), "# New\n".into()))));
+
+        assert!(app.full_mindmap.is_none());
+        assert_eq!(app.file.as_deref(), Some(new.as_path()));
+        assert!(app.pending_nav.is_none());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
