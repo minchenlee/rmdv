@@ -1,6 +1,6 @@
 # rmdv — project status
 
-Last verified: 2026-07-18 17:32 CST (Asia/Taipei)
+Last verified: 2026-07-18 21:42 CST (Asia/Taipei)
 Stale after: 7 days
 Canonical repository: `/Users/liminchen/Documents/GitHub/mdv`
 Expected branch: `main`; always resolve its live HEAD before mutation.
@@ -20,8 +20,12 @@ line, with public documentation, site metadata, and release assets aligned.
 - An isolated RC from `origin/main@33b7d8f` passed 314 library tests, all
   integration targets, default/PDF/no-default checks, the release build, and
   native Full Mindmap smoke with a 50% preview panel.
-- The release commit is being prepared for tag `v0.5.0`; GitHub Actions will
-  build platform artifacts, checksums, and `latest.json` after the tag push.
+- Release commit `b67161c` is published as tag `v0.5.0`; GitHub release
+  workflow `29645918474` built all platform artifacts, checksums, and
+  `latest.json` successfully.
+- The first site deployment attempt (`29646511085`) failed because the
+  workflow installed Wrangler 3.90.0, which could not consume the repository's
+  JSONC static-assets config. The deployment fix pins Wrangler 4.112.0.
 
 ## Live workstreams
 
