@@ -562,6 +562,36 @@ fn editor_key_binding(
     iced::widget::text_editor::Binding::from_key_press(kp)
 }
 
+/// Resolve the reader typography shortcuts. Document Mindmap panels render
+/// through the same typography, so these chords must remain available there.
+fn reader_font_size_shortcut(
+    key: &iced::keyboard::Key,
+    modifiers: iced::keyboard::Modifiers,
+) -> Option<Message> {
+    if !(modifiers.command() || modifiers.control()) {
+        return None;
+    }
+    let reader_action = match key.as_ref() {
+        iced::keyboard::Key::Character("=" | "+") => Message::FontSizeUp,
+        iced::keyboard::Key::Character("-") => Message::FontSizeDown,
+        iced::keyboard::Key::Character("0") => Message::FontSizeReset,
+        _ => return None,
+    };
+    Some(reader_action)
+}
+
+/// In document Mindmap mode, higher-level surfaces and the `⌘K` folding chord
+/// own the keyboard. Do not resize unseen panel text behind them.
+fn reader_font_shortcuts_enabled(
+    full_mindmap: bool,
+    document_mindmap: bool,
+    overlay_open: bool,
+    search_open: bool,
+    fold_chord: bool,
+) -> bool {
+    !full_mindmap && !fold_chord && (!document_mindmap || (!overlay_open && !search_open))
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Overlay {
     None,
@@ -711,6 +741,9 @@ pub enum Message {
     FontSizeReset,
     ToggleFooter,
     ToggleMindmap,
+    /// A macOS magnification delta from the native event bridge. The shared
+    /// canvas consumes the cumulative stream on its next redraw.
+    MindmapNativePinch(f32),
     MindmapToggleNode(crate::ast::BlockId),
     MindmapSelectLeaf(crate::ast::BlockId),
     MindmapDeselect,
@@ -1010,6 +1043,14 @@ pub struct App {
     pub mindmap_panel_step: usize,
     pub mindmap_panel_drag: Option<(f32, Option<f32>)>,
     pub mindmap_autocenter: bool,
+    /// Cumulative macOS magnification delivered by the native pinch bridge.
+    /// The canvas records its own baseline when mounted, so this is only an
+    /// input stream and does not persist a document's zoom level.
+    pub mindmap_native_pinch_log: f64,
+    /// Full Mindmap has a distinct canvas state and therefore its own input
+    /// stream. Keeping them separate prevents a mode switch from replaying a
+    /// gesture into the other graph.
+    pub full_mindmap_native_pinch_log: f64,
     /// Cached mindmap layout, lazily rebuilt from (ast, file, mindmap_collapsed).
     /// Every mutation of those inputs must call `invalidate_mindmap_layout`.
     /// RefCell so `view(&self)` can populate it on first read.
@@ -1184,6 +1225,8 @@ impl Default for App {
             mindmap_panel_step: 0,
             mindmap_panel_drag: None,
             mindmap_autocenter: true,
+            mindmap_native_pinch_log: 0.0,
+            full_mindmap_native_pinch_log: 0.0,
             mindmap_layout: std::cell::RefCell::new(None),
             mindmap_data_panel: std::cell::RefCell::new(None),
             diagram_cache: crate::diagram::DiagramCache::new(64),
@@ -2900,6 +2943,9 @@ impl App {
     }
 
     pub fn new(initial: Option<PathBuf>) -> (Self, Task<Message>) {
+        // Iced 0.14 does not forward macOS `PinchGesture` events. Register a
+        // tiny process-local bridge while we're still on the app's main thread.
+        crate::native_pinch::install();
         let mut app = Self::default();
         let mut errs = Vec::new();
         let mut combined = crate::theme_load::bundled().clone();
@@ -3961,6 +4007,7 @@ impl App {
             &[
                 ("←↑→↓", "move"),
                 ("Space", "fold"),
+                ("= / −", "zoom"),
                 ("⌘⌥B", "panel"),
                 ("⌘B", "sidebar"),
             ],
@@ -4036,6 +4083,8 @@ impl App {
             panel_width: full.panel_width,
             autocenter: true,
             layout_generation: Some(full.layout_generation),
+            keyboard_zoom_enabled: self.overlay == Overlay::None,
+            native_pinch_log: self.full_mindmap_native_pinch_log,
             on_toggle: Box::new(Message::FullMindmapToggleNode),
             on_select: Box::new(Message::FullMindmapSelectNode),
             on_deselect: Message::FullMindmapDeselect,
@@ -4912,6 +4961,19 @@ impl App {
                     preview_measure,
                     self.show_toast("Font reset".to_string()),
                 ])
+            }
+            Message::MindmapNativePinch(delta) => {
+                // The native monitor runs for the whole app. Only forward a
+                // finite magnification delta while a graph owns the visible
+                // surface; search and overlays retain their normal input.
+                if delta.is_finite() && self.overlay == Overlay::None {
+                    if self.full_mindmap.is_some() {
+                        self.full_mindmap_native_pinch_log += f64::from(delta);
+                    } else if self.view_mode == ViewMode::Mindmap && !self.search_open {
+                        self.mindmap_native_pinch_log += f64::from(delta);
+                    }
+                }
+                Task::none()
             }
             Message::ToggleFooter => {
                 self.show_footer = !self.show_footer;
@@ -7572,16 +7634,28 @@ impl App {
                 ev,
             )| {
                 use iced::keyboard::{key::Named, Event as KEv, Key};
-                let (key, physical, mods) = match ev {
+                let (key, modified_key, physical, mods) = match ev {
                     iced::Event::Keyboard(KEv::KeyPressed {
                         key,
+                        modified_key,
                         physical_key,
                         modifiers,
                         ..
-                    }) => (key, physical_key, modifiers),
+                    }) => (key, modified_key, physical_key, modifiers),
                     _ => return Message::Noop,
                 };
                 let cmd = mods.command() || mods.control();
+                if reader_font_shortcuts_enabled(
+                    full_mindmap,
+                    mindmap,
+                    overlay_open,
+                    focused,
+                    fold_chord,
+                ) {
+                    if let Some(message) = reader_font_size_shortcut(&modified_key, mods) {
+                        return message;
+                    }
+                }
                 // Keep the full navigator's activation separate from document
                 // ⌘M. Physical matching handles layouts that emit a shifted
                 // character differently on macOS.
@@ -7669,9 +7743,6 @@ impl App {
                         "f" if cmd => return Message::ToggleSearch,
                         "t" if cmd => return Message::ToggleTheme,
                         "e" if cmd => return Message::ToggleViewMode,
-                        "=" | "+" if cmd => return Message::FontSizeUp,
-                        "-" if cmd => return Message::FontSizeDown,
-                        "0" if cmd => return Message::FontSizeReset,
                         "m" if cmd => return Message::ToggleMindmap,
                         "/" if cmd => return Message::ToggleShortcuts,
                         "c" if cmd && !editing && !overlay_open => return Message::HintSelection,
@@ -7866,6 +7937,7 @@ impl App {
             iced::Subscription::none()
         };
         let ipc = iced::Subscription::run(ipc_subscription_stream);
+        let native_pinch = crate::native_pinch::subscription().map(Message::MindmapNativePinch);
         let window_events = iced::window::events().filter_map(|(id, event)| match event {
             iced::window::Event::Opened { .. }
             | iced::window::Event::Focused
@@ -7886,6 +7958,7 @@ impl App {
             full_mind_drag,
             window_events,
             ipc,
+            native_pinch,
         ])
     }
 
@@ -7980,6 +8053,10 @@ impl App {
                     panel_width: self.mindmap_panel_width,
                     autocenter: self.mindmap_autocenter,
                     layout_generation: None,
+                    keyboard_zoom_enabled: self.overlay == Overlay::None
+                        && !self.search_open
+                        && !self.fold_chord_pending,
+                    native_pinch_log: self.mindmap_native_pinch_log,
                     on_toggle: Box::new(Message::MindmapToggleNode),
                     on_select: Box::new(Message::MindmapSelectLeaf),
                     on_deselect: Message::MindmapDeselect,
@@ -10276,8 +10353,8 @@ fn shortcuts_overlay<'a>(pal: Palette) -> Element<'a, Message> {
                 ("Esc", "Exit Zen Edit"),
                 ("⌘T", "Cycle Theme"),
                 ("⌘⇧.", "Toggle Hidden Files"),
-                ("⌘+ ⌘-", "Font Size Up / Down"),
-                ("⌘0", "Reset Font Size"),
+                ("⌘+ ⌘-", "Reader Font Size Up / Down"),
+                ("⌘0", "Reset Reader Font Size"),
                 ("⌘⇧P", "Command Palette"),
             ],
         ),
@@ -10295,6 +10372,8 @@ fn shortcuts_overlay<'a>(pal: Palette) -> Element<'a, Message> {
                 ("⌘M", "Toggle Mindmap"),
                 ("⌘⌥B", "Toggle Panel"),
                 ("⌘⌥W", "Cycle Panel Width"),
+                ("= −", "Zoom Graph In / Out"),
+                ("0", "Reset Graph Zoom (100%)"),
                 ("← ↑ → ↓", "Navigate nodes"),
                 ("Space", "Fold / unfold node"),
             ],
@@ -11746,6 +11825,41 @@ mod tests {
             Modifiers::COMMAND,
         ))
         .is_none());
+    }
+
+    #[test]
+    fn mindmap_preserves_reader_font_chords_and_guards_obscured_surfaces() {
+        use iced::keyboard::{Key, Modifiers};
+
+        assert!(reader_font_shortcuts_enabled(
+            false, true, false, false, false
+        ));
+        assert!(!reader_font_shortcuts_enabled(
+            false, true, true, false, false
+        ));
+        assert!(!reader_font_shortcuts_enabled(
+            false, true, false, true, false
+        ));
+        assert!(!reader_font_shortcuts_enabled(
+            false, true, false, false, true
+        ));
+        assert!(!reader_font_shortcuts_enabled(
+            true, false, false, false, false
+        ));
+
+        assert!(matches!(
+            reader_font_size_shortcut(&Key::Character("+".into()), Modifiers::COMMAND,),
+            Some(Message::FontSizeUp)
+        ));
+        assert!(matches!(
+            reader_font_size_shortcut(&Key::Character("-".into()), Modifiers::CTRL,),
+            Some(Message::FontSizeDown)
+        ));
+        assert!(matches!(
+            reader_font_size_shortcut(&Key::Character("0".into()), Modifiers::COMMAND,),
+            Some(Message::FontSizeReset)
+        ));
+        assert!(reader_font_size_shortcut(&Key::Character("+".into()), Modifiers::NONE,).is_none());
     }
 
     #[test]
@@ -16515,5 +16629,32 @@ mod tests {
         assert_eq!(app.sidebar_tab, SidebarTab::Outline);
         assert!(app.search_open);
         assert!(!app.show_footer);
+    }
+
+    #[test]
+    fn native_pinch_is_scoped_to_the_visible_mindmap_surface() {
+        let mut app = App::default();
+
+        let _ = app.update(Message::MindmapNativePinch(0.25));
+        assert_eq!(app.mindmap_native_pinch_log, 0.0);
+
+        app.view_mode = ViewMode::Mindmap;
+        let _ = app.update(Message::MindmapNativePinch(0.25));
+        assert_eq!(app.mindmap_native_pinch_log, 0.25);
+
+        app.search_open = true;
+        let _ = app.update(Message::MindmapNativePinch(0.5));
+        assert_eq!(app.mindmap_native_pinch_log, 0.25);
+
+        app.search_open = false;
+        app.overlay = Overlay::Shortcuts;
+        let _ = app.update(Message::MindmapNativePinch(0.5));
+        assert_eq!(app.mindmap_native_pinch_log, 0.25);
+
+        app.overlay = Overlay::None;
+        app.full_mindmap = Some(App::new_full_mindmap_state());
+        let _ = app.update(Message::MindmapNativePinch(0.75));
+        assert_eq!(app.full_mindmap_native_pinch_log, 0.75);
+        assert_eq!(app.mindmap_native_pinch_log, 0.25);
     }
 }

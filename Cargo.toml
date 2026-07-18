@@ -55,6 +55,13 @@ libc = "0.2"
 # scanned image-only PDFs won't yield text, but native-text PDFs work.
 liteparse = { version = "2", optional = true, default-features = false }
 
+[target.'cfg(target_os = "macos")'.dependencies]
+# Iced 0.14 currently drops Winit's macOS `PinchGesture`; this is the narrow
+# AppKit bridge used to forward magnification deltas back into the app.
+block2 = "0.6"
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", features = ["NSEvent", "block2"] }
+
 [features]
 # `pdf` is on by default so `.pdf` files render as markdown out of the box
 # (cargo run / installed app). Build with `--no-default-features` to drop it
