@@ -4,13 +4,24 @@ Last verified: 2026-07-18 17:32 CST (Asia/Taipei)
 Stale after: 7 days
 Canonical repository: `/Users/liminchen/Documents/GitHub/mdv`
 Expected branch: `main`; always resolve its live HEAD before mutation.
-Last verified main base: `origin/main@f75918c` before the control-plane merge.
+Last verified main base: `origin/main@33b7d8f806fc5caee617469664a2065f2e3bb9ee`.
 Authority: This is a routing snapshot. Verify Git, GitHub, runtime identity, and manual evidence before mutation.
 
 ## Current outcome
 
-Keep the post-Full-Mindmap `main` line stable while turning the remaining local
-branches and product debt into independently executable, evidence-backed tasks.
+Release rmdv v0.5.0 from the accepted Full Mindmap and Zoom Controls `main`
+line, with public documentation, site metadata, and release assets aligned.
+
+## v0.5.0 release
+
+- Release materials cover the Full Mindmap workspace, native mindmap zoom,
+  Zen edit mode, public site metadata, `site/llms.txt`, and the native capture
+  at `site/assets/shot-full-mindmap.webp`.
+- An isolated RC from `origin/main@33b7d8f` passed 314 library tests, all
+  integration targets, default/PDF/no-default checks, the release build, and
+  native Full Mindmap smoke with a 50% preview panel.
+- The release commit is being prepared for tag `v0.5.0`; GitHub Actions will
+  build platform artifacts, checksums, and `latest.json` after the tag push.
 
 ## Live workstreams
 

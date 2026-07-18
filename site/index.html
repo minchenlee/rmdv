@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>rmdv: Native Markdown Viewer for Developers — Rust, No Electron</title>
-<meta name="description" content="Free open-source Rust markdown viewer. Native Mermaid, Graphviz DOT, LaTeX math, mind maps, and local PDF-to-Markdown extraction. No Electron or embedded browser. Agent-controllable via IPC.">
+<title>rmdv: Native Markdown Viewer with Full Mindmap Workspaces — Rust, No Electron</title>
+<meta name="description" content="Native Rust Markdown viewer with Full Mindmap workspace navigation, Mermaid, Graphviz, LaTeX math, local PDF extraction, and agent-controllable IPC. No Electron or embedded browser.">
 <meta name="author" content="Min-Chen Lee">
 <meta name="keywords" content="markdown viewer, markdown reader, rust, native app, no electron, obsidian alternative, typora alternative, glow alternative, mermaid, tree-sitter, coding agents">
 <link rel="canonical" href="https://rmdv.mclee.dev/">
@@ -12,8 +12,8 @@
 <meta name="theme-color" content="#282c34" media="(prefers-color-scheme: dark)">
 <meta name="color-scheme" content="light dark">
 <!-- Open Graph -->
-<meta property="og:title" content="rmdv: Native Markdown Viewer for Developers — Rust, No Electron">
-<meta property="og:description" content="Native Rust markdown viewer. No Electron. ~150ms cold start, keyboard-first, agent-controllable.">
+<meta property="og:title" content="rmdv: Native Markdown Viewer with Full Mindmap Workspaces — Rust, No Electron">
+<meta property="og:description" content="See the shape of a Markdown workspace. Native Rust rendering and keyboard-first Full Mindmap navigation, with no Electron.">
 <meta property="og:url" content="https://rmdv.mclee.dev/">
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="rmdv">
@@ -25,8 +25,8 @@
 <meta property="og:image:alt" content="Screenshot of rmdv rendering a README: sidebar file tree on the left, formatted markdown with syntax-highlighted code blocks on the right.">
 <!-- Twitter -->
 <meta name="twitter:card" content="summary_large_image">
-<meta name="twitter:title" content="rmdv: Native Markdown Viewer for Developers — Rust, No Electron">
-<meta name="twitter:description" content="Native Rust markdown viewer. No Electron. ~150ms cold start, keyboard-first, agent-controllable.">
+<meta name="twitter:title" content="rmdv: Native Markdown Viewer with Full Mindmap Workspaces — Rust, No Electron">
+<meta name="twitter:description" content="See the shape of a Markdown workspace. Native Rust rendering and keyboard-first Full Mindmap navigation, with no Electron.">
 <meta name="twitter:image" content="https://rmdv.mclee.dev/assets/og-cover.png">
 <meta name="twitter:image:alt" content="rmdv — Markdown, rendered at native speed.">
 <link rel="icon" href="assets/favicon-32.png" sizes="32x32" type="image/png">
@@ -75,9 +75,9 @@
       "applicationCategory": "DeveloperApplication",
       "applicationSubCategory": "Markdown Viewer",
       "operatingSystem": ["macOS", "Linux", "Windows"],
-      "softwareVersion": "0.4.0",
+      "softwareVersion": "0.5.0",
       "datePublished": "2026-05-10",
-      "dateModified": "2026-07-10",
+      "dateModified": "2026-07-18",
       "releaseNotes": "https://github.com/minchenlee/rmdv/releases",
       "license": "https://opensource.org/licenses/MIT",
       "isAccessibleForFree": true,
@@ -86,7 +86,7 @@
         "price": "0",
         "priceCurrency": "USD"
       },
-      "description": "rmdv is a free, open-source native markdown viewer written in Rust. It renders Markdown, Mermaid diagrams, Graphviz DOT graphs, LaTeX math, and JSON/YAML mind maps without a browser, Electron, or JavaScript runtime. On macOS and Linux, text PDFs are extracted locally to Markdown via PDFium.",
+      "description": "rmdv is a free, open-source native markdown viewer written in Rust with Full Mindmap workspace navigation. It renders Markdown, Mermaid diagrams, Graphviz DOT graphs, LaTeX math, and JSON/YAML mind maps without a browser, Electron, or JavaScript runtime. On macOS and Linux, text PDFs are extracted locally to Markdown via PDFium.",
       "featureList": [
         "Folder workspace browser with file tree",
         "Fuzzy file finder (Cmd+P)",
@@ -95,6 +95,8 @@
         "Graphviz DOT diagram rendering (native, no browser)",
         "Block LaTeX math rendering via pure-Rust layout engine (no JavaScript)",
         "Mindmap view for any document including JSON and YAML (Cmd+M)",
+        "Full Mindmap workspace navigation for folders and files (Cmd+Shift+M)",
+        "Native mindmap zoom with keyboard, wheel, touch, and trackpad input",
         "PDF viewing as rendered Markdown via local PDFium text extraction, no cloud or LLM (macOS and Linux)",
         "Vault-wide search with Zed-style full-page results (Cmd+Shift+F)",
         "In-document search (Cmd+F)",
@@ -103,6 +105,7 @@
         "Ten built-in theme presets (One Light/Dark, GitHub Light/Dark, Solarized Light/Dark, Gruvbox, Nord, Dracula, Tokyo Night)",
         "Keyboard-first navigation (vim j/k/g/G)",
         "Edit mode (Cmd+E)",
+        "Zen editing with unsaved-edit protection across navigation",
         "Heading fold (Cmd+K 0-6)",
         "IPC socket API — controllable by AI coding agents via the rmdv CLI returning one-line JSON"
       ],
@@ -112,6 +115,7 @@
         "https://rmdv.mclee.dev/assets/shot-hero.webp",
         "https://rmdv.mclee.dev/assets/shot-workspace.webp",
         "https://rmdv.mclee.dev/assets/shot-diagrams.webp",
+        "https://rmdv.mclee.dev/assets/shot-full-mindmap.webp",
         "https://rmdv.mclee.dev/assets/shot-mindmap.webp",
         "https://rmdv.mclee.dev/assets/shot-search.webp"
       ],
@@ -137,6 +141,14 @@
           "acceptedAnswer": {
             "@type": "Answer",
             "text": "rmdv is a read-focused viewer, not a note-linking knowledge base. It opens folders without vault setup and has no plugin ecosystem. Mermaid diagrams and LaTeX math render natively."
+          }
+        },
+        {
+          "@type": "Question",
+          "name": "What is the difference between document Mindmap and Full Mindmap?",
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "Document Mindmap (Cmd+M) turns the current Markdown, JSON, or YAML document into a tree. Full Mindmap (Cmd+Shift+M) is an app-level workspace navigator: it shows the folders and files in a workspace and lets you preview or open a selected file. The two surfaces are separate, so entering one does not overwrite the other."
           }
         },
         {
@@ -341,6 +353,12 @@
         <figcaption><b>Tree-sitter highlighting.</b> Rust, Python, TS, Go, C/C++, Java, SQL, Bash and more. Real parsers, not regex.</figcaption>
       </figure>
       <figure class="shot-card">
+        <button class="shot-trigger" type="button" aria-label="View full-size Full Mindmap workspace screenshot">
+          <img src="assets/shot-full-mindmap.webp" alt="rmdv Full Mindmap workspace showing a folder graph, selected Markdown file, and read-only preview panel" loading="lazy" decoding="async" width="1223" height="768">
+        </button>
+        <figcaption><b>Full Mindmap workspace.</b> See folders and files as one navigable graph with <kbd data-mod>⌘</kbd><kbd>⇧</kbd><kbd>M</kbd>. Arrow keys move through the tree, <kbd>Space</kbd> expands a branch, and <kbd>Enter</kbd> opens the selected file.</figcaption>
+      </figure>
+      <figure class="shot-card">
         <button class="shot-trigger" type="button" aria-label="View full-size mindmap screenshot">
           <img src="assets/shot-mindmap.webp" alt="A JSON config file shown as a collapsible data mind map" loading="lazy" decoding="async" width="1600" height="1005">
         </button>
@@ -372,6 +390,10 @@
       <div class="keyrow"><span class="cap"><kbd data-mod>⌘</kbd><kbd>⇧</kbd><kbd>F</kbd></span><span>search whole vault</span></div>
       <div class="keyrow"><span class="cap"><kbd data-mod>⌘</kbd><kbd>B</kbd></span><span>toggle sidebar</span></div>
       <div class="keyrow"><span class="cap"><kbd data-mod>⌘</kbd><kbd>M</kbd></span><span>mindmap view</span></div>
+      <div class="keyrow"><span class="cap"><kbd data-mod>⌘</kbd><kbd>⇧</kbd><kbd>M</kbd></span><span>Full Mindmap workspace</span></div>
+      <div class="keyrow"><span class="cap"><kbd>=</kbd><kbd>−</kbd></span><span>zoom the active mindmap canvas</span></div>
+      <div class="keyrow"><span class="cap"><kbd>0</kbd></span><span>reset mindmap zoom</span></div>
+      <div class="keyrow"><span class="cap"><kbd data-mod>⌘</kbd><kbd>⌥</kbd><kbd>W</kbd></span><span>cycle Full Mindmap preview-panel width</span></div>
       <div class="keyrow"><span class="cap"><kbd data-mod>⌘</kbd><kbd>E</kbd></span><span>edit mode</span></div>
       <div class="keyrow"><span class="cap"><kbd data-mod>⌘</kbd><kbd>K</kbd><kbd>0–6</kbd></span><span>fold headings to level</span></div>
       <div class="keyrow"><span class="cap"><kbd data-key="j">j</kbd><kbd data-key="k">k</kbd></span><span>scroll down / up</span></div>
@@ -413,6 +435,11 @@ rmdv list-sections spec.md | jq -r <span class="s">'.[].path'</span></code></pre
       <details class="faq-item">
         <summary>Is rmdv free and open source?</summary>
         <p>Yes. rmdv is MIT-licensed and free to use, modify, and distribute. Source code is at <a href="https://github.com/minchenlee/rmdv">github.com/minchenlee/rmdv</a>.</p>
+      </details>
+
+      <details class="faq-item">
+        <summary>What is the difference between document Mindmap and Full Mindmap?</summary>
+        <p>Document Mindmap (<kbd data-mod>⌘</kbd><kbd>M</kbd>) turns the current Markdown, JSON, or YAML document into a tree. Full Mindmap (<kbd data-mod>⌘</kbd><kbd>⇧</kbd><kbd>M</kbd>) is an app-level workspace navigator: it shows the folders and files in a workspace and lets you preview or open a selected file. The two surfaces are separate, so entering one does not overwrite the other.</p>
       </details>
 
       <details class="faq-item">

@@ -24,6 +24,8 @@ machine-readable IPC control interface.
 - Graphviz DOT diagrams rendered natively
 - Block LaTeX math (`$$…$$`) via a pure-Rust layout engine ([iced_math](https://crates.io/crates/iced_math)); no MathJax, no KaTeX
 - Mind-map view (`⌘M`): any Markdown, JSON, or YAML document as a collapsible tree
+- Full Mindmap workspace (`⌘⇧M`): navigate folders and files as a bounded, keyboard-first graph
+- Native mindmap zoom: `=` / `−` / `0`, mouse wheel, touch pinch, and macOS trackpad pinch
 - PDF viewing: open a `.pdf` and read it as rendered Markdown; text extracted locally via [liteparse](https://crates.io/crates/liteparse) (PDFium), no cloud, no LLM (macOS + Linux; view-only)
 - Tree-sitter syntax highlighting: Rust, Python, JS, TS, Go, C, C++, Java, SQL, Bash, JSON, HTML, Markdown, and more
 - Vault-wide search (`⌘⇧F`): Zed-style full-page results across every file in the workspace
@@ -31,6 +33,7 @@ machine-readable IPC control interface.
 - Command palette (`⌘⇧P`) and quick file finder (`⌘P`)
 - Live reload: edits in your editor reflect instantly
 - Edit mode (`⌘E`)
+- Zen editing with unsaved-edit protection across navigation
 - 10 built-in theme presets: One Light/Dark, GitHub Light/Dark, Solarized Light/Dark, Gruvbox, Nord, Dracula, and Tokyo Night, with system follow
 - Keyboard-first: `j`/`k`/`g`/`G`, `⌘↑`/`⌘↓`, heading fold `⌘K 0–6`
 - Auto-update: checks GitHub releases, SHA-256 verifies; signed + notarized on macOS
@@ -41,12 +44,14 @@ machine-readable IPC control interface.
 
 | | |
 |:-:|:-:|
-| ![A Mermaid flowchart rendered natively in rmdv](site/assets/shot-diagrams.webp) | ![A JSON config file shown as a collapsible data mind map](site/assets/shot-mindmap.webp) |
-| Native Mermaid / DOT / LaTeX | Mind-map view (`⌘M`) |
-| ![Syntax-highlighted Rust and Java code blocks](site/assets/shot-treesitter.webp) | ![A deeply nested document with outline and breadcrumb navigation](site/assets/shot-search.webp) |
-| Tree-sitter highlighting | Vault-wide search (`⌘⇧F`) |
-| ![The demo vault shown in a light theme](site/assets/shot-themes.webp) | ![A notes document with task lists and tables, updated live](site/assets/shot-livereload.webp) |
-| 10 built-in theme presets | Live reload |
+| ![A Mermaid flowchart rendered natively in rmdv](site/assets/shot-diagrams.webp) | ![rmdv Full Mindmap workspace showing a folder graph, selected Markdown file, and read-only preview panel](site/assets/shot-full-mindmap.webp) |
+| Native Mermaid / DOT / LaTeX | Full Mindmap workspace (`⌘⇧M`) |
+| ![A JSON config file shown as a collapsible data mind map](site/assets/shot-mindmap.webp) | ![Syntax-highlighted Rust and Java code blocks](site/assets/shot-treesitter.webp) |
+| Document Mindmap (`⌘M`) | Tree-sitter highlighting |
+| ![A deeply nested document with outline and breadcrumb navigation](site/assets/shot-search.webp) | ![The demo vault shown in a light theme](site/assets/shot-themes.webp) |
+| Vault-wide search (`⌘⇧F`) | 10 built-in theme presets |
+| ![A notes document with task lists and tables, updated live](site/assets/shot-livereload.webp) | |
+| Live reload | |
 
 More on [rmdv.mclee.dev](https://rmdv.mclee.dev).
 
@@ -92,9 +97,14 @@ Designed for coding agents (Claude Code, Codex, Cursor) to pull rmdv to the rele
 
 ## Keyboard shortcuts
 
+Full Mindmap Mode (`⌘⇧M`) is an opt-in workspace navigator for seeing folders,
+files, and their structure as one graph. It is separate from document Mindmap
+(`⌘M`), so switching surfaces does not replace the document you are reading.
+
 | Key | Action | | Key | Action |
 |---|---|---|---|---|
-| `⌘P` | File finder | | `⌘M` | Mindmap view |
+| `⌘P` | File finder | | `⌘M` | Document Mindmap |
+| `⌘⇧M` | Full Mindmap workspace | | `⌘⌥W` | Cycle Mindmap panel width |
 | `⌘⇧P` | Command palette | | `⌘E` | Toggle edit mode |
 | `⌘O` | Open folder | | `⌘T` | Toggle theme |
 | `⌘B` | Toggle sidebar | | `⌘K 0–6` | Fold headings to level |
@@ -102,7 +112,7 @@ Designed for coding agents (Claude Code, Codex, Cursor) to pull rmdv to the rele
 | `=` / `−` | Mindmap zoom in / out | | `0` | Reset mindmap zoom |
 | `⌘⇧F` | Search whole vault | | `j` / `k` | Scroll down / up |
 | `g` / `G` | Top / bottom | | `Space` / `⇧Space` | Page down / up |
-| `Esc` | Close overlay / search | | | |
+| `Esc` | Exit Full Mindmap / close overlay | | | |
 
 ## Historical performance benchmark
 

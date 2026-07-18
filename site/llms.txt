@@ -11,7 +11,7 @@ rmdv (Rust Markdown Viewer) is a read-focused desktop app for macOS, Windows, an
 ## Source and releases
 
 - [GitHub repository](https://github.com/minchenlee/rmdv): Source code, issue tracker, pull requests. MIT license.
-- [Releases](https://github.com/minchenlee/rmdv/releases): Pre-built binaries for macOS (signed + notarized), Linux, and Windows. SHA-256 verified. Latest: v0.4.0 (2026-06-23).
+- [Releases](https://github.com/minchenlee/rmdv/releases): Pre-built binaries for macOS (signed + notarized), Linux, and Windows. SHA-256 verified. Latest: v0.5.0 (2026-07-18).
 
 ## Key facts
 
@@ -29,6 +29,8 @@ rmdv has an agent-controllable IPC socket. Historical v0.2.0 benchmarks were mea
 - Graphviz DOT diagrams rendered natively
 - Block LaTeX math ($$…$$) via pure-Rust layout engine (iced_math); no MathJax, no KaTeX
 - Mind-map view (⌘M): any Markdown, JSON, or YAML document as a collapsible tree
+- Full Mindmap workspace (⌘⇧M): navigate folders and files as a bounded, keyboard-first graph
+- Native mindmap zoom: = / − / 0, mouse wheel, touch pinch, and macOS trackpad pinch
 - Vault-wide full-text search (⌘⇧F): Zed-style full-page results across all files in the workspace
 - In-document search (⌘F)
 - Live reload on file save
@@ -36,6 +38,7 @@ rmdv has an agent-controllable IPC socket. Historical v0.2.0 benchmarks were mea
 - Themes: 10 built-in presets — One Light/Dark, GitHub Light/Dark, Solarized Light/Dark, Gruvbox, Nord, Dracula, Tokyo Night
 - Keyboard-first navigation: j/k/g/G, ⌘↑/⌘↓, heading fold ⌘K 0–6
 - Edit mode (⌘E)
+- Zen editing with unsaved-edit protection across navigation
 - IPC CLI: `rmdv open <path>`, `rmdv goto --line N`, `rmdv goto --section <name>`, `rmdv mode mindmap`, `rmdv current`, `rmdv list-sections <path>`; all return one-line JSON
 
 ## IPC / agent control
