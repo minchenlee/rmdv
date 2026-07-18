@@ -6,6 +6,7 @@ use crate::render::Highlight;
 use crate::search::{self, MatchPos};
 use crate::theme::{self, Palette, ThemeMode, ThemePreset, Typography};
 use crate::tree::{self, Node};
+use crate::workspace_mindmap::{self, WorkspaceGraph, WorkspaceNodeId, WorkspaceNodeKind};
 use iced::widget::{
     button, column, container, mouse_area, row as irow, scrollable, stack, text, text_input,
     Column, Space,
@@ -13,6 +14,10 @@ use iced::widget::{
 use iced::{Background, Border, Color, Element, Length, Padding, Task, Theme};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
+use std::sync::{
+    atomic::{AtomicU64, Ordering},
+    Arc, OnceLock,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ViewMode {
@@ -33,6 +38,306 @@ pub enum MindmapDir {
     Down,
     Left,
     Right,
+}
+
+fn full_mindmap_space_message() -> Message {
+    Message::FullMindmapToggleSelected
+}
+
+fn full_mindmap_preview_scroll_tag(full: &FullMindmapState) -> (u64, Option<PathBuf>, u64) {
+    if let Some(request) = full.preview_identity.as_ref() {
+        return (
+            full.preview_namespace,
+            Some(request.path.clone()),
+            request.id,
+        );
+    }
+    if let Some(request) = full.pending_preview.as_ref() {
+        return (
+            full.preview_namespace,
+            Some(request.path.clone()),
+            request.id,
+        );
+    }
+    if let Some(request) = full.pending_preview_settle.as_ref() {
+        return (
+            full.preview_namespace,
+            Some(request.path.clone()),
+            request.id,
+        );
+    }
+    (full.preview_namespace, None, 0)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingFullMindmapOpen {
+    pub id: u64,
+    pub path: PathBuf,
+}
+
+/// Read-only side-panel preview identity. It is separate from a pending open:
+/// selecting nodes must never replace the current document or consume its
+/// dirty-file guard.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingFullMindmapPreview {
+    pub id: u64,
+    pub path: PathBuf,
+}
+
+/// Preview-owned asset identity. The namespace survives Full Mindmap
+/// re-entry, while the request id changes for every accepted file preview.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FullMindmapPreviewIdentity {
+    pub namespace: u64,
+    pub request: PendingFullMindmapPreview,
+}
+
+/// Ownership of one image/diagram operation in one materialized virtual
+/// range. The preview request alone is insufficient: a late completion from
+/// an older range must not mutate the current wave's Loading/Pending sentinel
+/// or terminal-failure state.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FullMindmapPreviewAssetIdentity {
+    pub preview: FullMindmapPreviewIdentity,
+    pub range: (usize, usize),
+    pub wave: u64,
+}
+
+/// Identity for the short settle window before a selected Full Mindmap file
+/// starts its complete read-only preview. This is separate from
+/// `PendingFullMindmapPreview`: no file read owns the navigator until this
+/// debounce message is accepted.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingFullMindmapPreviewSettle {
+    pub id: u64,
+    pub path: PathBuf,
+}
+
+/// Identity for a bounded workspace index requested by Full Mindmap. The
+/// result is applied only while this exact request still owns the navigator.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingFullMindmapWorkspaceLoad {
+    pub id: u64,
+    pub path: PathBuf,
+    pub select_root: bool,
+    /// Folder-picker fallback can request that a file open begin only after its
+    /// parent workspace index is ready, avoiding a synchronous scan race.
+    pub open_after: Option<PathBuf>,
+    /// Hidden-entry refreshes keep the user's current expansion and selection
+    /// after the background snapshot replaces the tree.
+    pub preserve_navigation: bool,
+    /// Returning to Files with a changed hidden-file filter waits for this
+    /// snapshot, then reveals the refreshed sidebar directly.
+    pub return_to_files_after: bool,
+    /// Normal Esc/toggle exits also wait for a stale hidden sidebar snapshot,
+    /// but restore the prior underlying surface instead of forcing Files.
+    pub exit_after_refresh: bool,
+}
+
+/// Identity for one expanded folder's bounded branch-local discovery. The
+/// workspace/filter tuple prevents a late completion from another explorer
+/// generation from repopulating a collapsed or replaced branch.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingFullMindmapFolderLoad {
+    pub id: u64,
+    pub workspace_root: PathBuf,
+    pub folder: PathBuf,
+    pub show_hidden: bool,
+}
+
+/// Identity for one candidate in a fixed delayed-reveal verification wave.
+/// Unlike ordinary expanded-folder materialization, these requests are owned
+/// by both the wave and the parent expansion generation. A result from a
+/// collapsed/re-rooted/refiltered navigator therefore cannot reveal a shell
+/// in a newer graph.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingFullMindmapVerification {
+    pub id: u64,
+    pub wave_id: u64,
+    pub workspace_root: PathBuf,
+    pub parent: PathBuf,
+    pub parent_expansion_generation: u64,
+    pub folder: PathBuf,
+    pub show_hidden: bool,
+}
+
+/// Fixed, bounded verification ownership. `candidates` is snapshotted at wave
+/// start, so `total` never grows while completions arrive. At most
+/// `FULL_MINDMAP_VERIFICATION_CONCURRENCY` requests are in flight and the
+/// candidate cap leaves excess LowerBound(0) shells visible with their truthful
+/// scan-limit label instead of silently dropping them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FullMindmapVerificationWave {
+    pub id: u64,
+    pub workspace_root: PathBuf,
+    pub show_hidden: bool,
+    pub parent_expansion_generation: u64,
+    pub candidates: Vec<PathBuf>,
+    pub parent_by_candidate: HashMap<PathBuf, PathBuf>,
+    pub next_index: usize,
+    pub in_flight: HashSet<PathBuf>,
+    pub request_ids: HashMap<PathBuf, u64>,
+    pub checked: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FullMindmapProgress {
+    pub wave_id: u64,
+    pub checked: usize,
+    pub total: usize,
+}
+
+#[derive(Debug, Clone)]
+enum FullMindmapPreviewAsset {
+    Image(String),
+    Diagram {
+        hash: u64,
+        kind: crate::ast::DiagramKind,
+        source: String,
+    },
+}
+
+/// Compact worker-built asset index keyed by top-level preview block. The UI
+/// only clones descriptors for the currently materialized virtual range;
+/// nested assets in off-screen blocks never trigger an O(all-blocks) scan.
+#[derive(Debug, Clone, Default)]
+pub struct FullMindmapPreviewAssetIndex {
+    by_block: HashMap<BlockId, Vec<FullMindmapPreviewAsset>>,
+}
+
+#[derive(Debug, Clone)]
+pub enum FullMindmapPreview {
+    None,
+    Loading(PathBuf),
+    Document {
+        path: PathBuf,
+        blocks: Vec<(BlockId, Block)>,
+        truncated: bool,
+        /// Estimate display/prefix shape built by the preview worker. `None`
+        /// is retained for small test fixtures and legacy callers; runtime
+        /// complete previews always carry the worker-built shape.
+        shape: Option<Arc<crate::virt::VirtShape>>,
+        /// Worker-built compact asset descriptors. `None` is retained for
+        /// hand-authored fixtures; the runtime parser always provides it.
+        assets: Option<Arc<FullMindmapPreviewAssetIndex>>,
+    },
+    Data {
+        path: PathBuf,
+        source: String,
+        truncated: bool,
+    },
+    Error {
+        path: PathBuf,
+        error: String,
+    },
+}
+
+/// App-level workspace navigator state. This is intentionally distinct from
+/// document `ViewMode::Mindmap` and every `mindmap_*` document field.
+#[derive(Clone)]
+pub struct FullMindmapState {
+    pub selected: Option<WorkspaceNodeId>,
+    pub expanded: HashSet<PathBuf>,
+    /// Visibility is an explicit user choice and must not change when focus
+    /// moves between workspace nodes.
+    pub panel_open: bool,
+    pub panel_width: f32,
+    /// Current step in the Full Mindmap ⌘⌥W width cycle. Kept separate from
+    /// document Mindmap state so the two modes cannot affect one another.
+    pub panel_step: usize,
+    pub panel_drag: Option<(f32, Option<f32>)>,
+    pub pending_open: Option<PendingFullMindmapOpen>,
+    pub pending_preview_settle: Option<PendingFullMindmapPreviewSettle>,
+    pub pending_preview: Option<PendingFullMindmapPreview>,
+    pub pending_workspace_load: Option<PendingFullMindmapWorkspaceLoad>,
+    pub pending_folder_loads: HashMap<PathBuf, PendingFullMindmapFolderLoad>,
+    /// One fixed delayed-reveal wave owns unresolved LowerBound(0) shells at
+    /// the currently visible expanded frontier. The wave is canceled whenever
+    /// expansion/root/filter/mode ownership changes.
+    pub verification_wave: Option<FullMindmapVerificationWave>,
+    /// Newly materialized child shells cannot be appended to an active wave's
+    /// fixed candidate denominator. They remain hidden here until that wave
+    /// drains, then a fresh fixed snapshot verifies them.
+    pub verification_followup_pending: bool,
+    pub verification_hidden: HashSet<PathBuf>,
+    /// Increments whenever the expanded frontier changes. Verification
+    /// requests carry the parent generation to reject stale completions.
+    pub expansion_generation: u64,
+    pub materialized_folders: HashMap<PathBuf, workspace_mindmap::MaterializedFolder>,
+    /// A current or previously selected file is selected only after its parent
+    /// listing proves that the file is still visible under the accepted filter.
+    pub deferred_file_selection: Option<PathBuf>,
+    /// Exact canvas focus request for the workspace navigator. It is kept
+    /// separate from `selected` so async materialization can be observed and
+    /// guarded without letting a stale completion refocus the root/sibling.
+    pub focus_request: Option<WorkspaceNodeId>,
+    pub preview: FullMindmapPreview,
+    /// Accepted preview request identity. It is separate from the local
+    /// measurement generation so background workspace requests cannot rebuild
+    /// an unchanged preview child tree.
+    pub preview_identity: Option<PendingFullMindmapPreview>,
+    pub preview_namespace: u64,
+    pub preview_shape_ready: bool,
+    /// Full Mindmap preview virtualization is completely separate from the
+    /// document reader's window, viewport, and measured-height cache. A
+    /// selected file therefore cannot move or resize the document underneath
+    /// the navigator, and a later document load cannot invalidate this panel.
+    pub preview_window: crate::virt::VirtWindow,
+    pub preview_viewport: Option<iced::widget::scrollable::Viewport>,
+    pub preview_height_cache: crate::virt::HeightCache,
+    /// At most one preview measurement operation may be in flight. Scroll
+    /// events can arrive faster than widget-tree operations complete; the
+    /// guard coalesces those events instead of queueing an unbounded stream.
+    pub preview_measurement_pending: bool,
+    /// Materialized display range captured when the pending measurement was
+    /// dispatched. If scrolling moves to a different range before completion,
+    /// the accepted result schedules one follow-up for that current range.
+    pub preview_measurement_range: Option<(usize, usize)>,
+    pub preview_measurement_generation: Option<u64>,
+    /// Monotonic identity for preview selection/parse/layout work. Height
+    /// measurements carry it so a late operation cannot alter a new file.
+    pub preview_generation: u64,
+    /// Cooperative cancellation for stale preview reads/parses. The worker
+    /// checks this token between bounded chunks and before expensive parsing.
+    pub preview_work_epoch: Arc<AtomicU64>,
+    /// Per-navigator parse capacity. Obsolete previews can never occupy a
+    /// process-global slot or create an unbounded spawn_blocking backlog;
+    /// waiting tasks poll the same epoch and abandon promptly when superseded.
+    pub preview_parse_gate: Arc<tokio::sync::Semaphore>,
+    /// One shared latest-only settle worker per Full Mindmap instance. The
+    /// watch channel replaces requests instead of spawning one uncancellable
+    /// sleep per key repeat.
+    pub preview_settle_tx: tokio::sync::watch::Sender<Option<PendingFullMindmapPreviewSettle>>,
+    pub preview_settle_worker_started: bool,
+    /// Remote image loads dispatched by the preview. Values retain the exact
+    /// request that owns each loading sentinel: an old completion must not
+    /// remove or overwrite a newer preview's same-URL operation.
+    pub preview_loading_images: HashMap<String, FullMindmapPreviewAssetIdentity>,
+    /// Diagram renders use the same ownership rule because the cache key is
+    /// only `(content hash, theme)` and can be reused by A -> B previews.
+    pub preview_pending_diagrams: HashMap<(u64, u32), FullMindmapPreviewAssetIdentity>,
+    /// Remote/diagram keys used by the accepted preview, including entries
+    /// that completed. Legacy document-only completion messages carry no
+    /// request identity, so these sets let us keep them from replacing an
+    /// active preview-owned result while still reusing loaded cache entries.
+    pub preview_asset_images: HashSet<String>,
+    /// Image failures are terminal for the current preview identity and
+    /// visible-range wave. A later prime may continue with other assets, but
+    /// it must not immediately delete `Failed` and retry the same URL forever.
+    /// The set is cleared when the identity/range/theme retry boundary changes.
+    pub preview_failed_images: HashSet<String>,
+    pub preview_asset_diagrams: HashSet<(u64, u32)>,
+    pub preview_asset_cursor: usize,
+    pub preview_asset_cursor_tag: Option<(u64, u64, (usize, usize))>,
+    pub preview_asset_wave_id: u64,
+    pub load_error: Option<String>,
+    /// Visible workspace graphs are rebuilt only after their source/expansion
+    /// changes, not every `view()` frame.
+    layout_cache: std::cell::RefCell<Option<std::sync::Arc<WorkspaceGraph>>>,
+    /// Generation of the visible workspace graph. The shared canvas uses this
+    /// to preserve focus when async folder discovery rebuilds the graph without
+    /// changing the selected path.
+    pub layout_generation: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -100,6 +405,15 @@ impl ImageCache {
 
     pub fn contains_key(&self, key: &str) -> bool {
         self.map.contains_key(key)
+    }
+
+    pub fn remove(&mut self, key: &str) -> Option<ImageState> {
+        let removed = self.map.remove(key);
+        if let Some(state) = removed.as_ref() {
+            self.bytes = self.bytes.saturating_sub(image_state_cost(state));
+        }
+        self.order.retain(|entry| entry != key);
+        removed
     }
 
     pub fn insert(&mut self, key: String, value: ImageState) {
@@ -173,6 +487,34 @@ const MIND_PANEL_MAX: f32 = 900.0;
 const MIND_PANEL_FRACS: [f32; 3] = [1.0 / 3.0, 0.5, 0.6];
 const MIND_PANEL_MAX_BLOCKS: usize = 80;
 const MIND_PANEL_MAX_TEXT_BYTES: usize = 24 * 1024;
+/// Kept only for the stale-worker regression fixture. Runtime preview parsing
+/// is always dispatched to the guarded worker, regardless of source length.
+#[cfg(test)]
+const FULL_MINDMAP_PREVIEW_STALE_SOURCE_BYTES: usize = 64 * 1024;
+const FULL_MINDMAP_PREVIEW_CANCELLED: &str = "full mindmap preview superseded";
+const FULL_MINDMAP_PREVIEW_READ_CHUNK_BYTES: usize = 64 * 1024;
+/// The document Mindmap panel keeps its existing rendered-content debounce
+/// cadence, while Full Mindmap previews use a longer quiet window so rapid
+/// workspace navigation does not start unnecessary reads.
+const MINDMAP_PANEL_SETTLE_MS: u64 = 75;
+const FULL_MINDMAP_PREVIEW_SETTLE_MS: u64 = 300;
+/// Maximum asset descriptors dispatched by one visible-range pass. Further
+/// blocks are picked up by a later scroll/remeasure pass, keeping task and
+/// cache pressure bounded for asset-heavy Markdown.
+const FULL_MINDMAP_PREVIEW_ASSET_BATCH: usize = 64;
+/// Delayed-reveal verification is deliberately small and fixed. Four bounded
+/// filesystem workers keep the UI responsive; the candidate cap bounds both
+/// queue memory and total extra scans. Candidates beyond the cap stay visible
+/// with their `scan limit reached` lower-bound label.
+const FULL_MINDMAP_VERIFICATION_CONCURRENCY: usize = 4;
+const FULL_MINDMAP_VERIFICATION_MAX_CANDIDATES: usize = 256;
+
+fn mindmap_panel_width_for_step(step: usize, window_size: Option<iced::Size>) -> f32 {
+    let target = window_size
+        .map(|size| size.width * MIND_PANEL_FRACS[step % MIND_PANEL_FRACS.len()])
+        .unwrap_or(MIND_PANEL_DEFAULT);
+    target.clamp(MIND_PANEL_MIN, MIND_PANEL_MAX)
+}
 
 fn editor_font() -> iced::Font {
     iced::Font {
@@ -181,6 +523,43 @@ fn editor_font() -> iced::Font {
         stretch: iced::font::Stretch::Normal,
         style: iced::font::Style::Normal,
     }
+}
+
+fn editor_key_binding(
+    kp: iced::widget::text_editor::KeyPress,
+) -> Option<iced::widget::text_editor::Binding<Message>> {
+    use iced::keyboard::{key::Named, Key};
+    use iced::widget::text_editor::{Binding, Motion};
+
+    if kp.modifiers.command() {
+        let motion = match kp.key.as_ref() {
+            Key::Named(Named::ArrowLeft) => Some(Motion::Home),
+            Key::Named(Named::ArrowRight) => Some(Motion::End),
+            Key::Named(Named::ArrowUp) => Some(Motion::DocumentStart),
+            Key::Named(Named::ArrowDown) => Some(Motion::DocumentEnd),
+            _ => None,
+        };
+        if let Some(motion) = motion {
+            return Some(if kp.modifiers.shift() {
+                Binding::Select(motion)
+            } else {
+                Binding::Move(motion)
+            });
+        }
+    }
+
+    let cmd_or_ctrl = kp.modifiers.command() || kp.modifiers.control();
+    if cmd_or_ctrl {
+        let keep = matches!(
+            kp.key.to_latin(kp.physical_key),
+            Some('c' | 'x' | 'v' | 'a' | 'z' | 'y')
+        );
+        if !keep {
+            return None;
+        }
+    }
+
+    iced::widget::text_editor::Binding::from_key_press(kp)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -232,6 +611,9 @@ impl ThemeEntry {
 #[derive(Debug, Clone)]
 pub enum Message {
     Open(PathBuf),
+    /// File-finder activation. Full Mindmap Mode intercepts this narrow path
+    /// so fallback opens retain its async dirty-file safety contract.
+    OpenFileFinderPath(PathBuf),
     OpenWorkspace(PathBuf),
     OpenFolderPicker,
     OpenFileFinder,
@@ -341,6 +723,80 @@ pub enum Message {
     ToggleMindmapAutocenter,
     ToggleMindmapPanel,
     MindmapCyclePanelWidth,
+    ToggleFullMindmap,
+    ExitFullMindmap,
+    FullMindmapToggleNode(WorkspaceNodeId),
+    FullMindmapSelectNode(WorkspaceNodeId),
+    FullMindmapDeselect,
+    FullMindmapNavigate(MindmapDir),
+    FullMindmapDiveWorkspace(WorkspaceNodeId),
+    FullMindmapActivate,
+    FullMindmapToggleSelected,
+    FullMindmapSelectRoot,
+    FullMindmapSetRoot(PathBuf),
+    FullMindmapWorkspaceParent,
+    FullMindmapReturnToFiles,
+    FullMindmapTogglePanel,
+    FullMindmapCyclePanelWidth,
+    FullMindmapPanelDragStart(f32),
+    FullMindmapPanelDragMove(f32),
+    FullMindmapPanelDragEnd,
+    FullMindmapFileLoaded {
+        request: PendingFullMindmapOpen,
+        result: Result<(PathBuf, String), String>,
+    },
+    FullMindmapPreviewSettle {
+        request: PendingFullMindmapPreviewSettle,
+    },
+    FullMindmapPreviewLoaded {
+        request: PendingFullMindmapPreview,
+        result: Result<(PathBuf, String), String>,
+    },
+    FullMindmapPreviewParsed {
+        request: PendingFullMindmapPreview,
+        result: Result<FullMindmapPreview, String>,
+    },
+    /// Scroll and measured-height feedback for the Full Mindmap preview panel.
+    /// These messages are deliberately not `BodyScrolled`/
+    /// `BlockHeightsMeasured`: the panel owns a different viewport and cache.
+    FullMindmapPreviewScrolled {
+        namespace: u64,
+        path: Option<PathBuf>,
+        identity: u64,
+        viewport: iced::widget::scrollable::Viewport,
+    },
+    FullMindmapPreviewBlockHeightsMeasured {
+        path: PathBuf,
+        namespace: u64,
+        identity: u64,
+        generation: u64,
+        measured: Vec<(crate::ast::BlockId, f32)>,
+        at_offset: f32,
+    },
+    FullMindmapPreviewImageFetched {
+        identity: FullMindmapPreviewIdentity,
+        range: (usize, usize),
+        wave: u64,
+        url: String,
+        result: Result<Vec<u8>, String>,
+    },
+    FullMindmapPreviewAssetWave {
+        identity: FullMindmapPreviewIdentity,
+        range: (usize, usize),
+        wave: u64,
+    },
+    FullMindmapWorkspaceLoaded {
+        request: PendingFullMindmapWorkspaceLoad,
+        result: Result<(PathBuf, tree::WorkspaceSnapshot), String>,
+    },
+    FullMindmapFolderLoaded {
+        request: PendingFullMindmapFolderLoad,
+        result: Result<(PathBuf, tree::ExpandedFolderSnapshot), String>,
+    },
+    FullMindmapVerificationLoaded {
+        request: PendingFullMindmapVerification,
+        result: Result<(PathBuf, tree::ExpandedFolderSnapshot), String>,
+    },
     WindowResized(iced::window::Id, iced::Size),
     RefreshWindowMode(iced::window::Id),
     RefreshWindowModeSettled(iced::window::Id),
@@ -360,7 +816,10 @@ pub enum Message {
     HeadingHoverExit(crate::ast::BlockId),
     EditorAction(iced::widget::text_editor::Action),
     SaveFile,
-    FileSaved(Result<(), String>),
+    FileSaved {
+        result: Result<(), String>,
+        saved_source: String,
+    },
     EditorUndo,
     EditorRedo,
     /// Zoom a rendered diagram into the image-viewer overlay. Looks up the
@@ -371,6 +830,14 @@ pub enum Message {
     /// Result of an async diagram render dispatched by `prime_diagram_cache`.
     /// `theme_id` is the snapshot at dispatch time — stale results are dropped.
     DiagramRendered {
+        hash: u64,
+        theme_id: u32,
+        result: Result<crate::diagram::RenderOutput, String>,
+    },
+    FullMindmapPreviewDiagramRendered {
+        identity: FullMindmapPreviewIdentity,
+        range: (usize, usize),
+        wave: u64,
         hash: u64,
         theme_id: u32,
         result: Result<crate::diagram::RenderOutput, String>,
@@ -399,6 +866,19 @@ pub struct PendingNav {
     pub fragment: Option<String>,
 }
 
+#[derive(Debug, Clone)]
+struct PendingIpcFileOpen {
+    path: PathBuf,
+    nav: Option<PendingNav>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ZenRestoreState {
+    pub sidebar_open: bool,
+    pub show_footer: bool,
+    pub search_open: bool,
+}
+
 pub struct App {
     pub file: Option<PathBuf>,
     pub source: String,
@@ -419,7 +899,16 @@ pub struct App {
     pub search_open: bool,
     pub workspace: Option<PathBuf>,
     pub workspace_files: Vec<PathBuf>,
+    /// Bounded lightweight path index used only to reconstruct ordinary Files
+    /// sidebar rows across the full retained tree depth. Cmd+P and vault search
+    /// continue to use `workspace_files` and its historical shallower depth.
+    pub workspace_sidebar_files: tree::SidebarFileIndex,
     pub workspace_tree: Option<Node>,
+    /// Filter used to produce the stored workspace snapshot. Full Mindmap may
+    /// change `show_hidden` while the Files sidebar remains obscured.
+    pub workspace_snapshot_show_hidden: bool,
+    /// True when the bounded workspace index stopped at its entry/file budget.
+    pub workspace_truncated: bool,
     /// Whether dot-prefixed dirs/files appear in the tree, picker, and
     /// workspace_files walk. Toggled by `Message::ToggleHidden` (⌘⇧.).
     /// `.git`/node_modules/target are always filtered regardless.
@@ -457,6 +946,13 @@ pub struct App {
     pub vault_collapsed: HashSet<PathBuf>,
     pub vault_viewport: Option<iced::widget::scrollable::Viewport>,
     pub picker: Option<Picker>,
+    /// Opt-in workspace navigator. Kept separate from the document's
+    /// `ViewMode::Mindmap` state so entering/exiting it cannot disturb an open
+    /// document mindmap or Zen editor.
+    pub full_mindmap: Option<FullMindmapState>,
+    /// Monotonic across Full Mindmap sessions so a result from a mode that was
+    /// exited cannot collide with a new same-path request after re-entry.
+    pub full_mindmap_request_seq: u64,
     pub tree_viewport: Option<iced::widget::scrollable::Viewport>,
     pub outline_viewport: Option<iced::widget::scrollable::Viewport>,
     /// Latest window size, tracked via `window::resize_events` for ⌘⌥W
@@ -477,12 +973,20 @@ pub struct App {
     pub(crate) height_cache: crate::virt::HeightCache,
     pub toast: Option<Toast>,
     pub toast_seq: u64,
+    /// Persistent neutral progress feedback for the active Full Mindmap
+    /// verification wave. Kept separate from attention/error toasts so a
+    /// blocked action never loses its own priority or expiry timing.
+    pub full_mindmap_progress: Option<FullMindmapProgress>,
     pub custom_themes: Vec<crate::theme_load::CustomTheme>,
     pub theme_id: crate::theme::ThemeId,
     pub image_cache: ImageCache,
     pub zoom_url: Option<String>,
     pub view_mode: ViewMode,
     pub editor: Option<iced::widget::text_editor::Content>,
+    pub zen_restore: Option<ZenRestoreState>,
+    /// Last document text known to have been persisted successfully. `source`
+    /// may contain an unsaved Zen edit after switching back to rendered mode.
+    pub saved_source: String,
     pub dirty: bool,
     pub edit_history: crate::history::SnapshotStack,
     pub edit_redo: crate::history::SnapshotStack,
@@ -541,6 +1045,9 @@ pub struct App {
     /// Set by IPC `Open { line, section }` so the subsequent `FileLoaded`
     /// can finish navigation once the AST/block_lines exist.
     pub pending_nav: Option<PendingNav>,
+    /// IPC file activation waits here while Full Mindmap exits and, when
+    /// needed, reconciles a stale hidden-file workspace snapshot.
+    pending_ipc_file_open: Option<PendingIpcFileOpen>,
     /// Snap-to relative offset queued for the next `update` tick. Used by
     /// `apply_goto` which can't perform scroll math during the IPC handler
     /// without re-entering `update`.
@@ -610,7 +1117,10 @@ impl Default for App {
             search_open: false,
             workspace: None,
             workspace_files: Vec::new(),
+            workspace_sidebar_files: tree::SidebarFileIndex::default(),
             workspace_tree: None,
+            workspace_snapshot_show_hidden: false,
+            workspace_truncated: false,
             show_hidden: false,
             expanded: HashSet::new(),
             sidebar_open: false,
@@ -632,6 +1142,8 @@ impl Default for App {
             vault_collapsed: HashSet::new(),
             vault_viewport: None,
             picker: None,
+            full_mindmap: None,
+            full_mindmap_request_seq: 0,
             tree_viewport: None,
             outline_viewport: None,
             window_size: None,
@@ -647,12 +1159,15 @@ impl Default for App {
             height_cache: crate::virt::HeightCache::default(),
             toast: None,
             toast_seq: 0,
+            full_mindmap_progress: None,
             custom_themes: Vec::new(),
             theme_id: crate::theme::ThemeId::Preset(preset),
             image_cache: ImageCache::default(),
             zoom_url: None,
             view_mode: ViewMode::Rendered,
             editor: None,
+            zen_restore: None,
+            saved_source: String::new(),
             dirty: false,
             edit_history: crate::history::SnapshotStack::default(),
             edit_redo: crate::history::SnapshotStack::default(),
@@ -676,6 +1191,7 @@ impl Default for App {
             zoom_diagram: None,
             block_lines: Vec::new(),
             pending_nav: None,
+            pending_ipc_file_open: None,
             queued_snap: None,
             queued_goto: None,
             pending_screenshot: None,
@@ -703,6 +1219,1549 @@ impl App {
         self.typography.body_size
     }
 
+    /// Return the current source in an Arc so read-only Full Mindmap parsing
+    /// does not clone a `String` on the update thread. The worker performs the
+    /// one owned conversion required by the parser off-thread.
+    fn source_snapshot_for_preview(&self) -> Arc<str> {
+        Arc::from(self.source.as_str())
+    }
+
+    fn sync_editor_to_source(&mut self) -> bool {
+        let Some(ed) = self.editor.as_ref() else {
+            return false;
+        };
+        let text = ed.text();
+        if text == self.source {
+            self.dirty = self.source != self.saved_source;
+            return false;
+        }
+        self.source = text;
+        self.reparse_source();
+        self.dirty = self.source != self.saved_source;
+        true
+    }
+
+    fn enter_zen_edit_mode(&mut self) -> Task<Message> {
+        if self.file.is_none() {
+            return Task::none();
+        }
+        if is_pdf_path(self.file.as_deref()) {
+            return self.show_toast("PDFs are view-only".into());
+        }
+        if self.zen_restore.is_none() {
+            self.zen_restore = Some(ZenRestoreState {
+                sidebar_open: self.sidebar_open,
+                show_footer: self.show_footer,
+                search_open: self.search_open,
+            });
+        }
+        self.sidebar_open = false;
+        self.show_footer = true;
+        self.search_open = false;
+        self.overlay = Overlay::None;
+        self.mindmap_panel_drag = None;
+        self.editor = Some(iced::widget::text_editor::Content::with_text(
+            self.source.as_str(),
+        ));
+        self.edit_history.clear();
+        self.edit_redo.clear();
+        self.view_mode = ViewMode::Raw;
+        Task::none()
+    }
+
+    fn leave_zen_edit_mode(&mut self, sync_editor: bool) {
+        if sync_editor {
+            self.sync_editor_to_source();
+        }
+        self.editor = None;
+        self.edit_history.clear();
+        self.edit_redo.clear();
+        self.view_mode = ViewMode::Rendered;
+        self.restore_zen_chrome();
+    }
+
+    fn exit_zen_edit_mode(&mut self) -> Task<Message> {
+        self.leave_zen_edit_mode(true);
+        self.restore_body_scroll()
+    }
+
+    fn restore_zen_chrome(&mut self) {
+        if let Some(restore) = self.zen_restore.take() {
+            self.sidebar_open = restore.sidebar_open;
+            self.show_footer = restore.show_footer;
+            self.search_open = restore.search_open;
+        }
+    }
+
+    fn unsaved_edits_open_message(&self) -> String {
+        format!(
+            "unsaved edits in {}; save or discard before opening another",
+            self.file
+                .as_ref()
+                .map(|p| p.display().to_string())
+                .unwrap_or_default()
+        )
+    }
+
+    fn block_file_open_if_dirty(&mut self) -> Option<Task<Message>> {
+        if self.dirty {
+            Some(self.show_toast(self.unsaved_edits_open_message()))
+        } else {
+            None
+        }
+    }
+
+    fn load_file_unless_dirty(&mut self, path: PathBuf) -> Task<Message> {
+        if let Some(blocked) = self.block_file_open_if_dirty() {
+            return blocked;
+        }
+        Task::perform(load_file(path), Message::FileLoaded)
+    }
+
+    fn new_full_mindmap_state() -> FullMindmapState {
+        static NEXT_PREVIEW_NAMESPACE: AtomicU64 = AtomicU64::new(1);
+        let preview_namespace = NEXT_PREVIEW_NAMESPACE.fetch_add(1, Ordering::Relaxed);
+        let (preview_settle_tx, _) =
+            tokio::sync::watch::channel::<Option<PendingFullMindmapPreviewSettle>>(None);
+        FullMindmapState {
+            selected: None,
+            expanded: HashSet::new(),
+            panel_open: false,
+            panel_width: MIND_PANEL_DEFAULT,
+            panel_step: 0,
+            panel_drag: None,
+            pending_open: None,
+            pending_preview_settle: None,
+            pending_preview: None,
+            pending_workspace_load: None,
+            pending_folder_loads: HashMap::new(),
+            verification_wave: None,
+            verification_followup_pending: false,
+            verification_hidden: HashSet::new(),
+            expansion_generation: 0,
+            materialized_folders: HashMap::new(),
+            deferred_file_selection: None,
+            focus_request: None,
+            preview: FullMindmapPreview::None,
+            preview_identity: None,
+            preview_namespace,
+            preview_shape_ready: false,
+            preview_window: crate::virt::VirtWindow::default(),
+            preview_viewport: None,
+            preview_height_cache: crate::virt::HeightCache::default(),
+            preview_measurement_pending: false,
+            preview_measurement_range: None,
+            preview_measurement_generation: None,
+            preview_generation: 0,
+            preview_work_epoch: Arc::new(AtomicU64::new(0)),
+            preview_parse_gate: Arc::new(tokio::sync::Semaphore::new(3)),
+            preview_settle_tx,
+            preview_settle_worker_started: false,
+            preview_loading_images: HashMap::new(),
+            preview_pending_diagrams: HashMap::new(),
+            preview_asset_images: HashSet::new(),
+            preview_failed_images: HashSet::new(),
+            preview_asset_diagrams: HashSet::new(),
+            preview_asset_cursor: 0,
+            preview_asset_cursor_tag: None,
+            preview_asset_wave_id: 0,
+            load_error: None,
+            layout_cache: std::cell::RefCell::new(None),
+            layout_generation: 0,
+        }
+    }
+
+    fn full_mindmap_start_folder(&self) -> Option<PathBuf> {
+        self.workspace.clone().or_else(|| {
+            self.file
+                .as_ref()
+                .and_then(|file| file.parent().map(PathBuf::from))
+        })
+    }
+
+    fn full_mindmap_graph(&self) -> Option<std::sync::Arc<WorkspaceGraph>> {
+        let full = self.full_mindmap.as_ref()?;
+        if let Some(graph) = full.layout_cache.borrow().as_ref() {
+            return Some(std::sync::Arc::clone(graph));
+        }
+        let graph = std::sync::Arc::new(workspace_mindmap::from_tree_with_hidden(
+            self.workspace_tree.as_ref()?,
+            &full.expanded,
+            &full.materialized_folders,
+            &full.pending_folder_loads.keys().cloned().collect(),
+            &full.verification_hidden,
+            self.workspace_truncated,
+        ));
+        *full.layout_cache.borrow_mut() = Some(std::sync::Arc::clone(&graph));
+        Some(graph)
+    }
+
+    fn invalidate_full_mindmap_layout(&mut self) {
+        if let Some(full) = self.full_mindmap.as_mut() {
+            // Invalidate the cache and publish a distinct focus-generation
+            // signal. A selected folder can survive a graph rebuild, so the
+            // canvas cannot infer this intent from selection identity alone.
+            full.layout_generation = full.layout_generation.wrapping_add(1);
+            *full.layout_cache.borrow_mut() = None;
+        }
+    }
+
+    /// Cancel all delayed-reveal ownership. The spawned filesystem futures
+    /// cannot be force-stopped by Iced, so clearing the wave and hidden set is
+    /// the cancellation boundary; completion handlers then fail the strict
+    /// identity check and cannot reveal stale nodes.
+    fn cancel_full_mindmap_verification(&mut self) {
+        let had_hidden = self.full_mindmap.as_ref().is_some_and(|full| {
+            full.verification_wave.is_some() || !full.verification_hidden.is_empty()
+        });
+        if let Some(full) = self.full_mindmap.as_mut() {
+            full.verification_wave = None;
+            full.verification_followup_pending = false;
+            full.verification_hidden.clear();
+        }
+        self.full_mindmap_progress = None;
+        if had_hidden {
+            self.invalidate_full_mindmap_layout();
+        }
+    }
+
+    fn bump_full_mindmap_expansion_generation(&mut self) {
+        if let Some(full) = self.full_mindmap.as_mut() {
+            full.expansion_generation = full.expansion_generation.wrapping_add(1);
+        }
+    }
+
+    fn full_mindmap_folder_count(
+        &self,
+        path: &std::path::Path,
+    ) -> Option<tree::RecursiveFileCount> {
+        let full = self.full_mindmap.as_ref()?;
+        if let Some(materialized) = full.materialized_folders.get(path) {
+            return Some(match materialized {
+                workspace_mindmap::MaterializedFolder::Verified {
+                    recursive_supported_file_count,
+                    ..
+                } => *recursive_supported_file_count,
+                workspace_mindmap::MaterializedFolder::Loaded {
+                    recursive_supported_file_count,
+                    ..
+                } => *recursive_supported_file_count,
+                workspace_mindmap::MaterializedFolder::Error(_) => {
+                    tree::RecursiveFileCount::Unavailable
+                }
+            });
+        }
+        // A lazily expanded parent owns shallow child skeletons that are no
+        // longer reachable through the retained workspace tree. Resolve the
+        // child's count from that in-memory branch before giving up.
+        for materialized in full.materialized_folders.values() {
+            if let workspace_mindmap::MaterializedFolder::Loaded { folders, .. } = materialized {
+                if let Some(node) = folders.iter().find(|node| node.path == path) {
+                    return node.recursive_supported_file_count;
+                }
+            }
+        }
+        self.workspace_tree
+            .as_ref()
+            .and_then(|root| tree::find_folder(root, path))
+            .and_then(|node| node.recursive_supported_file_count)
+    }
+
+    /// Snapshot unresolved LowerBound(0) folders that are actually visible
+    /// beneath an expanded parent. The graph is authoritative: collapsed
+    /// descendants and folders hidden by an older wave never enter the queue.
+    fn full_mindmap_verification_candidates(&self) -> (Vec<PathBuf>, HashMap<PathBuf, PathBuf>) {
+        let Some(full) = self.full_mindmap.as_ref() else {
+            return (Vec::new(), HashMap::new());
+        };
+        let Some(graph) = self.full_mindmap_graph() else {
+            return (Vec::new(), HashMap::new());
+        };
+        let expanded = full.expanded.clone();
+        let mut candidates = Vec::new();
+        let mut parent_by_candidate = HashMap::new();
+        for node in graph.nodes.iter() {
+            let Some(WorkspaceNodeId::Folder(path)) = node.id.as_ref() else {
+                continue;
+            };
+            // The acted-on folder itself stays visible while its explicit
+            // expansion owns a branch-local load. Delayed verification is for
+            // unresolved children on the newly expanded frontier; hiding the
+            // parent would remove the user's selection and suppress its
+            // Loading files status.
+            if expanded.contains(path) {
+                continue;
+            }
+            // Count/status facts already accepted for this path (including a
+            // count-only verification result) are authoritative until the
+            // branch is explicitly expanded; do not rescan them on every
+            // sibling materialization.
+            if full.materialized_folders.contains_key(path) {
+                continue;
+            }
+            if !matches!(
+                self.full_mindmap_folder_count(path),
+                Some(tree::RecursiveFileCount::LowerBound(0))
+            ) {
+                continue;
+            }
+            let Some(parent) = graph.parent(&WorkspaceNodeId::Folder(path.clone())) else {
+                continue;
+            };
+            if !matches!(
+                parent,
+                WorkspaceNodeId::Root(_) | WorkspaceNodeId::Folder(_)
+            ) || !expanded.contains(parent.path())
+            {
+                continue;
+            }
+            if parent_by_candidate
+                .insert(path.clone(), parent.path().to_path_buf())
+                .is_none()
+            {
+                candidates.push(path.clone());
+            }
+        }
+        // Graph order is stable and follows the user's visible tree. Keep the
+        // first fixed prefix; excess candidates remain visible with the
+        // retained scan-limit label rather than being silently dropped.
+        candidates.truncate(FULL_MINDMAP_VERIFICATION_MAX_CANDIDATES);
+        parent_by_candidate.retain(|path, _| candidates.contains(path));
+        (candidates, parent_by_candidate)
+    }
+
+    /// Keep newly materialized frontier shells hidden without mutating the
+    /// active wave's fixed candidate list/denominator. When that wave drains,
+    /// the pending shells are included by a fresh fixed snapshot. If no wave
+    /// is active, start that snapshot immediately in this same update so the
+    /// shells cannot flash for one rendered frame.
+    fn schedule_full_mindmap_verification_followup(&mut self) -> Task<Message> {
+        let active = self
+            .full_mindmap
+            .as_ref()
+            .is_some_and(|full| full.verification_wave.is_some());
+        if !active {
+            return self.begin_full_mindmap_verification_wave();
+        }
+
+        let (candidates, _) = self.full_mindmap_verification_candidates();
+        let active_candidates = self
+            .full_mindmap
+            .as_ref()
+            .and_then(|full| full.verification_wave.as_ref())
+            .map(|wave| wave.candidates.iter().collect::<HashSet<_>>())
+            .unwrap_or_default();
+        let new_candidates = candidates
+            .into_iter()
+            .filter(|path| {
+                // A verification result already owns only count/status for
+                // this path; it must not be scheduled repeatedly on every
+                // sibling materialization.
+                !self
+                    .full_mindmap
+                    .as_ref()
+                    .is_some_and(|full| full.materialized_folders.contains_key(path))
+                    && !active_candidates.contains(path)
+            })
+            .collect::<Vec<_>>();
+        if new_candidates.is_empty() {
+            return Task::none();
+        }
+        if let Some(full) = self.full_mindmap.as_mut() {
+            full.verification_hidden.extend(new_candidates);
+            full.verification_followup_pending = true;
+        }
+        self.invalidate_full_mindmap_layout();
+        Task::none()
+    }
+
+    /// Start one fixed wave. The denominator is frozen before any worker is
+    /// launched and therefore cannot change when a result exposes new shells.
+    fn begin_full_mindmap_verification_wave(&mut self) -> Task<Message> {
+        let Some(workspace_root) = self.workspace.clone() else {
+            self.cancel_full_mindmap_verification();
+            return Task::none();
+        };
+        if self.workspace_snapshot_show_hidden != self.show_hidden {
+            self.cancel_full_mindmap_verification();
+            return Task::none();
+        }
+        // Rebuild the candidate snapshot from the currently visible frontier,
+        // never from a graph whose old wave still hides shells.
+        self.cancel_full_mindmap_verification();
+        let (candidates, parent_by_candidate) = self.full_mindmap_verification_candidates();
+        if candidates.is_empty() {
+            return Task::none();
+        }
+        self.full_mindmap_request_seq = self.full_mindmap_request_seq.wrapping_add(1);
+        let wave_id = self.full_mindmap_request_seq;
+        let show_hidden = self.show_hidden;
+        let parent_expansion_generation = self
+            .full_mindmap
+            .as_ref()
+            .map(|full| full.expansion_generation)
+            .unwrap_or_default();
+        let total = candidates.len();
+        if let Some(full) = self.full_mindmap.as_mut() {
+            full.verification_hidden = candidates.iter().cloned().collect();
+            full.verification_wave = Some(FullMindmapVerificationWave {
+                id: wave_id,
+                workspace_root,
+                show_hidden,
+                parent_expansion_generation,
+                candidates,
+                parent_by_candidate,
+                next_index: 0,
+                in_flight: HashSet::new(),
+                request_ids: HashMap::new(),
+                checked: 0,
+            });
+        }
+        self.full_mindmap_progress = Some(FullMindmapProgress {
+            wave_id,
+            checked: 0,
+            total,
+        });
+        self.invalidate_full_mindmap_layout();
+        self.launch_full_mindmap_verification_tasks()
+    }
+
+    /// Fill the fixed worker window from the wave's immutable candidate queue.
+    fn launch_full_mindmap_verification_tasks(&mut self) -> Task<Message> {
+        let mut tasks = Vec::new();
+        loop {
+            let next = {
+                let Some(full) = self.full_mindmap.as_mut() else {
+                    break;
+                };
+                let Some(wave) = full.verification_wave.as_mut() else {
+                    break;
+                };
+                if wave.in_flight.len() >= FULL_MINDMAP_VERIFICATION_CONCURRENCY
+                    || wave.next_index >= wave.candidates.len()
+                {
+                    break;
+                }
+                let folder = wave.candidates[wave.next_index].clone();
+                wave.next_index += 1;
+                wave.in_flight.insert(folder.clone());
+                Some((
+                    wave.id,
+                    wave.workspace_root.clone(),
+                    wave.show_hidden,
+                    wave.parent_expansion_generation,
+                    wave.parent_by_candidate
+                        .get(&folder)
+                        .cloned()
+                        .unwrap_or_else(|| wave.workspace_root.clone()),
+                    folder,
+                ))
+            };
+            let Some((
+                wave_id,
+                workspace_root,
+                show_hidden,
+                parent_expansion_generation,
+                parent,
+                folder,
+            )) = next
+            else {
+                break;
+            };
+            self.full_mindmap_request_seq = self.full_mindmap_request_seq.wrapping_add(1);
+            let request = PendingFullMindmapVerification {
+                id: self.full_mindmap_request_seq,
+                wave_id,
+                workspace_root,
+                parent,
+                parent_expansion_generation,
+                folder: folder.clone(),
+                show_hidden,
+            };
+            if let Some(full) = self.full_mindmap.as_mut() {
+                if let Some(wave) = full.verification_wave.as_mut() {
+                    wave.request_ids.insert(folder.clone(), request.id);
+                }
+            }
+            tasks.push(Task::perform(
+                load_full_mindmap_folder(folder, show_hidden),
+                move |result| Message::FullMindmapVerificationLoaded { request, result },
+            ));
+        }
+        Task::batch(tasks)
+    }
+
+    fn handle_full_mindmap_verification_loaded(
+        &mut self,
+        request: PendingFullMindmapVerification,
+        result: Result<(PathBuf, tree::ExpandedFolderSnapshot), String>,
+    ) -> Task<Message> {
+        let current = self.workspace.as_ref() == Some(&request.workspace_root)
+            && self.show_hidden == request.show_hidden
+            && self.workspace_snapshot_show_hidden == request.show_hidden
+            && self.full_mindmap.as_ref().is_some_and(|full| {
+                full.expansion_generation == request.parent_expansion_generation
+                    && full.expanded.contains(&request.parent)
+                    && full.verification_wave.as_ref().is_some_and(|wave| {
+                        wave.id == request.wave_id
+                            && wave.workspace_root == request.workspace_root
+                            && wave.show_hidden == request.show_hidden
+                            && wave.parent_expansion_generation
+                                == request.parent_expansion_generation
+                            && wave.candidates.contains(&request.folder)
+                            && wave.in_flight.contains(&request.folder)
+                            && wave.request_ids.get(&request.folder) == Some(&request.id)
+                    })
+            });
+        if !current {
+            return Task::none();
+        }
+
+        let mut accepted_exact_empty = false;
+        let materialized = match result {
+            Ok((path, snapshot)) if path == request.folder => {
+                accepted_exact_empty = matches!(
+                    snapshot.recursive_supported_file_count,
+                    tree::RecursiveFileCount::Exact(0)
+                );
+                workspace_mindmap::MaterializedFolder::Verified {
+                    recursive_supported_file_count: snapshot.recursive_supported_file_count,
+                    truncated: snapshot.truncated,
+                }
+            }
+            Ok((path, _)) => workspace_mindmap::MaterializedFolder::Error(format!(
+                "Verified unexpected folder: {}",
+                path.display()
+            )),
+            Err(error) => workspace_mindmap::MaterializedFolder::Error(error),
+        };
+
+        let (done, followup_pending) = if let Some(full) = self.full_mindmap.as_mut() {
+            full.verification_hidden.remove(&request.folder);
+            full.materialized_folders
+                .insert(request.folder.clone(), materialized);
+            let wave = full
+                .verification_wave
+                .as_mut()
+                .expect("verified request owns a wave");
+            wave.in_flight.remove(&request.folder);
+            wave.request_ids.remove(&request.folder);
+            // Each accepted result advances exactly once. This monotonic
+            // counter drives both the determinate bar and remaining label.
+            wave.checked = wave.checked.saturating_add(1);
+            let done = wave.checked >= wave.candidates.len() && wave.in_flight.is_empty();
+            let followup_pending = done && full.verification_followup_pending;
+            if done {
+                full.verification_wave = None;
+                full.verification_followup_pending = false;
+                if !followup_pending {
+                    full.verification_hidden.clear();
+                    self.full_mindmap_progress = None;
+                }
+            } else {
+                self.full_mindmap_progress = Some(FullMindmapProgress {
+                    wave_id: wave.id,
+                    checked: wave.checked,
+                    total: wave.candidates.len(),
+                });
+            }
+            (done, followup_pending)
+        } else {
+            return Task::none();
+        };
+        self.invalidate_full_mindmap_layout();
+        if accepted_exact_empty {
+            self.normalize_full_mindmap_workspace();
+        }
+        if done {
+            if followup_pending {
+                self.schedule_full_mindmap_verification_followup()
+            } else {
+                Task::none()
+            }
+        } else {
+            self.launch_full_mindmap_verification_tasks()
+        }
+    }
+
+    fn enter_full_mindmap(&mut self) -> Task<Message> {
+        self.enter_full_mindmap_at(None)
+    }
+
+    /// Enter Full Mindmap, optionally forcing a fresh workspace root. The
+    /// document-Mindmap boundary uses the override when the current file is
+    /// outside the existing workspace; ordinary Full Mindmap entry preserves
+    /// its already-indexed workspace exactly as before.
+    fn enter_full_mindmap_at(&mut self, forced_start: Option<PathBuf>) -> Task<Message> {
+        self.overlay = Overlay::None;
+        if self.full_mindmap.is_some() {
+            self.cancel_full_mindmap_verification();
+            // Re-entry replaces the navigator state. Bump the preview epoch
+            // before dropping the old state so any active read/parse exits at
+            // its next cooperative checkpoint instead of blocking new work.
+            self.reset_full_mindmap_preview_window();
+        }
+        self.full_mindmap = Some(Self::new_full_mindmap_state());
+        if forced_start.is_none() && self.workspace_tree.is_some() {
+            self.reset_full_mindmap_workspace();
+            let verification = self.begin_full_mindmap_verification_wave();
+            let expanded = self.begin_full_mindmap_expanded_folder_loads();
+            Task::batch([verification, expanded])
+        } else {
+            let start = forced_start
+                .or_else(|| self.full_mindmap_start_folder())
+                .or_else(Picker::home);
+            start.map_or_else(Task::none, |path| {
+                self.begin_full_mindmap_workspace_load(path, false, None, false, false, false)
+            })
+        }
+    }
+
+    /// Return to the workspace navigator from document-level Mindmap. Keep an
+    /// existing workspace only when its accepted bounded index contains the
+    /// current file; otherwise adopt the file's parent (or Home) through the
+    /// same background workspace-load path used by every other Full Mindmap
+    /// root change.
+    fn enter_full_mindmap_for_current_file(&mut self) -> Task<Message> {
+        let Some(file) = self.file.clone() else {
+            return Task::none();
+        };
+        let in_workspace = self
+            .workspace
+            .as_ref()
+            .is_some_and(|root| file.starts_with(root))
+            && self.workspace_files.contains(&file);
+        let forced_start = (!in_workspace)
+            .then(|| file.parent().map(PathBuf::from).or_else(Picker::home))
+            .flatten();
+        self.enter_full_mindmap_at(forced_start)
+    }
+
+    /// Exit Full Mindmap without exposing a workspace snapshot built under a
+    /// different hidden-file filter. Normal exits restore the prior surface;
+    /// the explicit Files action additionally opens the sidebar.
+    fn exit_full_mindmap(&mut self, return_to_files: bool) -> Task<Message> {
+        let stale_workspace =
+            self.full_mindmap.is_some() && self.workspace_snapshot_show_hidden != self.show_hidden;
+        if stale_workspace {
+            if let Some(path) = self.workspace.clone() {
+                return self.begin_full_mindmap_workspace_load(
+                    path,
+                    false,
+                    None,
+                    true,
+                    return_to_files,
+                    true,
+                );
+            }
+        }
+        self.finish_full_mindmap_exit(return_to_files)
+    }
+
+    fn finish_full_mindmap_exit(&mut self, return_to_files: bool) -> Task<Message> {
+        self.cancel_full_mindmap_verification();
+        self.reset_full_mindmap_preview_window();
+        self.full_mindmap = None;
+        if return_to_files {
+            self.sidebar_open = true;
+            self.sidebar_tab = SidebarTab::Files;
+            self.reveal_current_file();
+        }
+        self.restore_body_scroll()
+    }
+
+    /// Start an IPC file activation only after Full Mindmap has stopped owning
+    /// the reader surface. A normal exit clears the navigator synchronously;
+    /// when the hidden-file snapshot is stale, `exit_full_mindmap` completes
+    /// through `FullMindmapWorkspaceLoaded` and consumes the same pending open
+    /// there.
+    fn begin_ipc_file_open(&mut self, path: PathBuf, nav: Option<PendingNav>) -> Task<Message> {
+        if self.full_mindmap.is_none() {
+            self.pending_nav = nav;
+            return Task::perform(load_file(path), Message::FileLoaded);
+        }
+
+        // Do not let an older generic load consume the navigation intended for
+        // this deferred request while the navigator is still visible.
+        self.pending_nav = None;
+        self.pending_ipc_file_open = Some(PendingIpcFileOpen { path, nav });
+        let exit = self.exit_full_mindmap(false);
+        if self.full_mindmap.is_none() {
+            self.start_pending_ipc_file_open(exit)
+        } else {
+            exit
+        }
+    }
+
+    fn start_pending_ipc_file_open(&mut self, cleanup: Task<Message>) -> Task<Message> {
+        let Some(PendingIpcFileOpen { path, nav }) = self.pending_ipc_file_open.take() else {
+            return cleanup;
+        };
+        self.pending_nav = nav;
+        Task::batch([cleanup, Task::perform(load_file(path), Message::FileLoaded)])
+    }
+
+    /// Start (or refresh) the workspace phase without touching sidebar state.
+    fn reset_full_mindmap_workspace(&mut self) {
+        let Some(tree) = self.workspace_tree.as_ref() else {
+            return;
+        };
+        let root = tree.path.clone();
+        let current_file = self
+            .file
+            .as_ref()
+            .filter(|file| file.starts_with(&root))
+            .cloned();
+        let ancestors = current_file
+            .as_ref()
+            .map(|file| tree::ancestors_of(&root, file))
+            .unwrap_or_default();
+        self.reset_full_mindmap_preview_window();
+        {
+            let Some(full) = self.full_mindmap.as_mut() else {
+                return;
+            };
+            full.expanded.clear();
+            full.expanded.insert(root.clone());
+            for ancestor in ancestors {
+                full.expanded.insert(ancestor);
+            }
+            let root_id = WorkspaceNodeId::Root(root);
+            full.selected = Some(root_id.clone());
+            // The document-Mindmap root-Left bridge already knows which file
+            // must own the first Full Mindmap viewport. Keep that request
+            // alive before the branch listing exposes the file node; the
+            // canvas will deliberately defer consuming it until the rendered
+            // WorkspaceGraph contains the exact file. Without this early
+            // identity, the first root frame becomes the only focus event and
+            // a later materialization can leave the viewport at the root.
+            full.focus_request = Some(
+                current_file
+                    .as_ref()
+                    .map(|path| WorkspaceNodeId::File(path.clone()))
+                    .unwrap_or(root_id),
+            );
+            full.panel_drag = None;
+            // Rebuilding the workspace means navigation has changed intent. An
+            // in-flight file read from the prior workspace must not later exit
+            // the navigator into that old document.
+            full.pending_open = None;
+            full.pending_preview_settle = None;
+            full.pending_preview = None;
+            full.pending_workspace_load = None;
+            full.pending_folder_loads.clear();
+            full.verification_wave = None;
+            full.verification_followup_pending = false;
+            full.verification_hidden.clear();
+            full.expansion_generation = full.expansion_generation.wrapping_add(1);
+            full.materialized_folders.clear();
+            full.deferred_file_selection = current_file;
+            full.preview = FullMindmapPreview::None;
+            full.load_error = None;
+            full.layout_generation = full.layout_generation.wrapping_add(1);
+            *full.layout_cache.borrow_mut() = None;
+        }
+        self.full_mindmap_progress = None;
+        self.invalidate_full_mindmap_layout();
+    }
+
+    /// Keep a Full Mindmap selection valid after rebuilding the source tree
+    /// (for example after toggling hidden files) without sharing sidebar state.
+    fn normalize_full_mindmap_workspace(&mut self) {
+        let selected = match self.full_mindmap.as_ref() {
+            Some(FullMindmapState { selected, .. }) => selected.clone(),
+            _ => return,
+        };
+        if selected.is_none() {
+            // Explicit canvas deselection is a valid latest navigation state.
+            // A preserve-navigation snapshot refresh may replace graph data,
+            // but it must not manufacture a root selection/focus afterward.
+            if let Some(full) = self.full_mindmap.as_mut() {
+                full.focus_request = None;
+            }
+            return;
+        }
+        let Some(graph) = self.full_mindmap_graph() else {
+            return;
+        };
+        let deferred = self
+            .full_mindmap
+            .as_ref()
+            .and_then(|full| full.deferred_file_selection.as_ref());
+        let deferred_file = selected
+            .as_ref()
+            .is_some_and(|id| matches!(id, WorkspaceNodeId::File(path) if deferred == Some(path)));
+        let next = selected
+            .clone()
+            .filter(|id| graph.node(id).is_some() || deferred_file)
+            .or_else(|| {
+                selected
+                    .as_ref()
+                    .and_then(|id| graph.nearest_visible_ancestor(id.path()))
+            })
+            .unwrap_or_else(|| graph.root_id());
+        let selection_changed = self
+            .full_mindmap
+            .as_ref()
+            .is_some_and(|full| full.selected.as_ref() != Some(&next));
+        // A bridge entry records a file focus before its parent listing is
+        // accepted. Normalization may run for an intermediate root/sibling
+        // snapshot, but it must not replace that still-pending file request
+        // with the currently visible root. Explicit user navigation clears
+        // `deferred_file_selection` first, so this preservation cannot block
+        // a newer selection.
+        let preserve_deferred_file_focus = self.full_mindmap.as_ref().is_some_and(|full| {
+            matches!(
+                (&full.focus_request, &full.deferred_file_selection),
+                (
+                    Some(WorkspaceNodeId::File(focus)),
+                    Some(deferred),
+                ) if focus == deferred
+            )
+        });
+        if selection_changed {
+            self.reset_full_mindmap_preview_window();
+        }
+        if let Some(full) = self.full_mindmap.as_mut() {
+            if selection_changed {
+                full.pending_preview_settle = None;
+                full.pending_preview = None;
+                full.preview = FullMindmapPreview::None;
+            }
+            if !preserve_deferred_file_focus && full.focus_request.as_ref() != Some(&next) {
+                full.focus_request = Some(next.clone());
+            }
+            full.selected = Some(next);
+        }
+    }
+
+    fn replace_workspace_snapshot(&mut self, path: PathBuf, snapshot: tree::WorkspaceSnapshot) {
+        self.workspace_files = snapshot.files;
+        self.workspace_sidebar_files = snapshot.sidebar_files;
+        self.workspace_tree = Some(snapshot.root);
+        self.workspace_snapshot_show_hidden = self.show_hidden;
+        self.workspace_truncated = snapshot.truncated;
+        self.workspace = Some(path);
+    }
+
+    fn apply_workspace_snapshot(
+        &mut self,
+        path: PathBuf,
+        snapshot: tree::WorkspaceSnapshot,
+        open_sidebar: bool,
+    ) {
+        self.replace_workspace_snapshot(path, snapshot);
+        self.expanded.clear();
+        if let Some(tree) = &self.workspace_tree {
+            self.expanded.insert(tree.path.clone());
+        }
+        if open_sidebar {
+            self.sidebar_open = true;
+        }
+        self.tree_cursor = 0;
+        self.overlay = Overlay::None;
+        self.picker = None;
+        if self.full_mindmap.is_some() {
+            self.reset_full_mindmap_workspace();
+            self.normalize_full_mindmap_workspace();
+        }
+    }
+
+    fn set_workspace(&mut self, path: PathBuf, open_sidebar: bool) {
+        match tree::build_workspace(&path, self.show_hidden) {
+            Ok(snapshot) => self.apply_workspace_snapshot(path, snapshot, open_sidebar),
+            Err(error) => {
+                let message = format!("Couldn't index {}: {error}", path.display());
+                if let Some(full) = self.full_mindmap.as_mut() {
+                    full.load_error = Some(message);
+                } else {
+                    self.error = Some(message);
+                }
+            }
+        }
+    }
+
+    /// Full Mindmap workspace changes are intentionally background-only. A
+    /// project root can contain thousands of unrelated entries; indexing it on
+    /// the Iced update thread would freeze navigation and could exhaust memory.
+    fn begin_full_mindmap_workspace_load(
+        &mut self,
+        path: PathBuf,
+        select_root: bool,
+        open_after: Option<PathBuf>,
+        preserve_navigation: bool,
+        return_to_files_after: bool,
+        exit_after_refresh: bool,
+    ) -> Task<Message> {
+        if self.full_mindmap.is_none() {
+            self.set_workspace(path, true);
+            return Task::none();
+        }
+        let already_pending = self.full_mindmap.as_ref().is_some_and(|full| {
+            full.pending_workspace_load.as_ref().is_some_and(|pending| {
+                pending.path == path
+                    && pending.select_root == select_root
+                    && pending.open_after == open_after
+                    && pending.preserve_navigation == preserve_navigation
+                    && pending.return_to_files_after == return_to_files_after
+                    && pending.exit_after_refresh == exit_after_refresh
+            })
+        });
+        if already_pending {
+            return Task::none();
+        }
+        // Root/filter changes supersede every delayed-reveal worker. The
+        // request identity check also guards futures that cannot be aborted.
+        self.cancel_full_mindmap_verification();
+        self.bump_full_mindmap_expansion_generation();
+        if !preserve_navigation {
+            self.reset_full_mindmap_preview_window();
+        }
+        self.full_mindmap_request_seq = self.full_mindmap_request_seq.wrapping_add(1);
+        let request = PendingFullMindmapWorkspaceLoad {
+            id: self.full_mindmap_request_seq,
+            path: path.clone(),
+            select_root,
+            open_after,
+            preserve_navigation,
+            return_to_files_after,
+            exit_after_refresh,
+        };
+        let full = self.full_mindmap.as_mut().expect("checked above");
+        full.pending_workspace_load = Some(request.clone());
+        // A new refresh owns the status line. Do not leave an error from a
+        // prior failed snapshot visible after a later refresh succeeds.
+        full.load_error = None;
+        if preserve_navigation {
+            if let Some(WorkspaceNodeId::File(path)) = full.selected.as_ref() {
+                full.deferred_file_selection = Some(path.clone());
+            }
+        } else {
+            full.deferred_file_selection = None;
+        }
+        full.pending_folder_loads.clear();
+        full.materialized_folders.clear();
+        if !preserve_navigation {
+            full.pending_open = None;
+        }
+        if !preserve_navigation {
+            full.pending_preview_settle = None;
+            full.pending_preview = None;
+            full.load_error = None;
+            full.preview = FullMindmapPreview::None;
+            full.preview_shape_ready = false;
+        }
+        self.invalidate_full_mindmap_layout();
+        let show_hidden = self.show_hidden;
+        Task::perform(
+            load_full_mindmap_workspace(path, show_hidden),
+            move |result| Message::FullMindmapWorkspaceLoaded { request, result },
+        )
+    }
+
+    fn begin_full_mindmap_expanded_folder_loads(&mut self) -> Task<Message> {
+        let folders = self
+            .full_mindmap
+            .as_ref()
+            .map(|full| full.expanded.iter().cloned().collect::<Vec<_>>())
+            .unwrap_or_default();
+        Task::batch(
+            folders
+                .into_iter()
+                .map(|folder| self.begin_full_mindmap_folder_load(folder)),
+        )
+    }
+
+    fn begin_full_mindmap_folder_load(&mut self, folder: PathBuf) -> Task<Message> {
+        let Some(workspace_root) = self.workspace.clone() else {
+            return Task::none();
+        };
+        let eligible = self.full_mindmap.as_ref().is_some_and(|full| {
+            full.expanded.contains(&folder)
+                && folder.starts_with(&workspace_root)
+                && !full
+                    .materialized_folders
+                    .get(&folder)
+                    .is_some_and(|materialized| {
+                        matches!(
+                            materialized,
+                            workspace_mindmap::MaterializedFolder::Loaded { .. }
+                                | workspace_mindmap::MaterializedFolder::Error(_)
+                        )
+                    })
+                && !full.pending_folder_loads.contains_key(&folder)
+                // A delayed-reveal wave owns unresolved shells, including an
+                // expanded ancestor. Avoid a duplicate branch scan whose
+                // completion could race the fixed wave's result.
+                && !full.verification_hidden.contains(&folder)
+        });
+        if !eligible || self.workspace_snapshot_show_hidden != self.show_hidden {
+            return Task::none();
+        }
+
+        // An exact retained node already owns complete folder structure and
+        // the standard sidebar's pre-grouped immediate paths. Reuse those
+        // bounded in-memory facts; only interrupted/unreadable or lazily
+        // discovered shallow nodes need another filesystem pass.
+        let retained_snapshot = self
+            .workspace_tree
+            .as_ref()
+            .and_then(|root| tree::find_folder(root, &folder))
+            .filter(|node| {
+                matches!(
+                    node.recursive_supported_file_count,
+                    Some(tree::RecursiveFileCount::Exact(_))
+                )
+            })
+            .map(|node| {
+                let folders = node
+                    .children
+                    .iter()
+                    .cloned()
+                    .map(|mut child| {
+                        child.children.clear();
+                        child
+                    })
+                    .collect();
+                let files = self.workspace_sidebar_files.files_for(&folder).to_vec();
+                let count = node
+                    .recursive_supported_file_count
+                    .expect("filtered exact retained folder");
+                (folders, files, count)
+            });
+
+        self.full_mindmap_request_seq = self.full_mindmap_request_seq.wrapping_add(1);
+        let request = PendingFullMindmapFolderLoad {
+            id: self.full_mindmap_request_seq,
+            workspace_root,
+            folder: folder.clone(),
+            show_hidden: self.show_hidden,
+        };
+        let full = self.full_mindmap.as_mut().expect("eligible Full Mindmap");
+        full.pending_folder_loads
+            .insert(folder.clone(), request.clone());
+        full.materialized_folders.remove(&folder);
+        self.invalidate_full_mindmap_layout();
+        if let Some((folders, files, recursive_supported_file_count)) = retained_snapshot {
+            let result = Ok((
+                folder,
+                tree::ExpandedFolderSnapshot {
+                    folders,
+                    files,
+                    recursive_supported_file_count,
+                    truncated: false,
+                },
+            ));
+            Task::done(Message::FullMindmapFolderLoaded { request, result })
+        } else {
+            Task::perform(
+                load_full_mindmap_folder(folder, request.show_hidden),
+                move |result| Message::FullMindmapFolderLoaded { request, result },
+            )
+        }
+    }
+
+    fn evict_full_mindmap_folder(&mut self, folder: &std::path::Path) {
+        if let Some(full) = self.full_mindmap.as_mut() {
+            full.expansion_generation = full.expansion_generation.wrapping_add(1);
+            full.expanded.retain(|path| !path.starts_with(folder));
+            full.pending_folder_loads
+                .retain(|path, _| !path.starts_with(folder));
+            full.materialized_folders
+                .retain(|path, _| !path.starts_with(folder));
+            if full
+                .deferred_file_selection
+                .as_ref()
+                .is_some_and(|path| path.starts_with(folder))
+            {
+                full.deferred_file_selection = None;
+            }
+        }
+        self.invalidate_full_mindmap_layout();
+    }
+
+    /// Drop logical ownership of any Full Mindmap preview work. The spawned
+    /// timer/read cannot always be aborted, so its request identity remains
+    /// the final stale-result guard in the message handlers.
+    fn cancel_full_mindmap_preview(&mut self) {
+        self.reset_full_mindmap_preview_window();
+        if let Some(full) = self.full_mindmap.as_mut() {
+            full.pending_preview_settle = None;
+            full.pending_preview = None;
+            full.preview = FullMindmapPreview::None;
+        }
+    }
+
+    /// Full Mindmap-only file load. The wrapper retains request identity so a
+    /// late result cannot close the navigator after a newer request supersedes
+    /// it, and its error has a navigator-local home instead of `App::error`.
+    fn begin_full_mindmap_open(&mut self, path: PathBuf) -> Task<Message> {
+        if let Some(blocked) = self.block_file_open_if_dirty() {
+            return blocked;
+        }
+        if self.full_mindmap.is_none() {
+            return self.load_file_unless_dirty(path);
+        }
+        // Deliberate Full Mindmap activation supersedes a deferred IPC open.
+        self.pending_ipc_file_open = None;
+        // Enter is deliberate activation: cancel any read-only preview settle
+        // or in-flight preview before the guarded file-open path takes over.
+        self.cancel_full_mindmap_preview();
+        let pending_refresh = self
+            .full_mindmap
+            .as_ref()
+            .and_then(|full| full.pending_workspace_load.clone())
+            .filter(|request| request.preserve_navigation);
+        if let Some(request) = pending_refresh {
+            // A hidden-filter refresh and file read must not race: accepting
+            // the file first would exit Full Mindmap and make the snapshot
+            // completion stale. Supersede the spawned refresh with a new
+            // request whose accepted completion starts the file read.
+            if request.exit_after_refresh {
+                // Esc/toggle/Return to Files already owns the terminal intent.
+                // A queued activation must not turn that exit into a file open.
+                return Task::none();
+            }
+            return self.begin_full_mindmap_workspace_load(
+                request.path,
+                request.select_root,
+                Some(path),
+                true,
+                request.return_to_files_after,
+                false,
+            );
+        }
+        self.full_mindmap_request_seq = self.full_mindmap_request_seq.wrapping_add(1);
+        let request = PendingFullMindmapOpen {
+            id: self.full_mindmap_request_seq,
+            path: path.clone(),
+        };
+        let full = self.full_mindmap.as_mut().expect("checked above");
+        full.pending_open = Some(request.clone());
+        full.load_error = None;
+        Task::perform(load_file(path), move |result| {
+            Message::FullMindmapFileLoaded { request, result }
+        })
+    }
+
+    /// Select a workspace node and independently settle a bounded, read-only
+    /// preview when it is a file. Preview loads deliberately bypass the dirty
+    /// guard because they never alter the current document.
+    fn select_full_mindmap_node(&mut self, id: WorkspaceNodeId) -> Task<Message> {
+        let node = self
+            .full_mindmap_graph()
+            .and_then(|graph| graph.node(&id).cloned());
+        let preview_path = node
+            .as_ref()
+            .and_then(|node| {
+                matches!(&node.kind, WorkspaceNodeKind::File)
+                    .then(|| node.path.clone())
+                    .flatten()
+            })
+            .or_else(|| match &id {
+                WorkspaceNodeId::File(path)
+                    if self.workspace_files.contains(path)
+                        && self
+                            .workspace
+                            .as_ref()
+                            .is_some_and(|root| path.starts_with(root)) =>
+                {
+                    Some(path.clone())
+                }
+                _ => None,
+            });
+        if let Some(full) = self.full_mindmap.as_mut() {
+            full.deferred_file_selection = match &id {
+                WorkspaceNodeId::File(path) if node.is_none() => Some(path.clone()),
+                _ => None,
+            };
+            full.selected = Some(id.clone());
+            full.focus_request = Some(id);
+            // A background hidden-entry refresh describes the same workspace
+            // and intentionally captures navigation at completion time. Keep
+            // it alive across ordinary selection changes; project switches
+            // and parent loads still retain their existing cancellation path.
+            if full
+                .pending_workspace_load
+                .as_ref()
+                .is_some_and(|request| !request.preserve_navigation)
+            {
+                full.pending_workspace_load = None;
+            }
+            full.load_error = None;
+        }
+        // `schedule_full_mindmap_preview` owns the preview reset boundary. Do
+        // not reset here: same-path reselection must preserve a ready preview
+        // and, more importantly, must not cancel its in-flight latest request
+        // before the same-path ownership check runs.
+        let preview = self.schedule_full_mindmap_preview(preview_path);
+        Task::batch([
+            preview,
+            iced::widget::operation::scroll_to(
+                Self::full_mindmap_preview_scroll_id(),
+                iced::widget::scrollable::AbsoluteOffset { x: 0.0, y: 0.0 },
+            ),
+        ])
+    }
+
+    /// Queue a short settle window for a file selected by keyboard or canvas.
+    /// The preview remains in a neutral loading state while the user is still
+    /// moving; only the accepted settle message starts the bounded filesystem
+    /// read and parser. Every newer selection replaces this identity, so a
+    /// timer that cannot be aborted is harmless when it eventually fires.
+    fn schedule_full_mindmap_preview(&mut self, path: Option<PathBuf>) -> Task<Message> {
+        let Some(path) = path else {
+            self.cancel_full_mindmap_preview();
+            return Task::none();
+        };
+        let Some(full) = self.full_mindmap.as_ref() else {
+            return Task::none();
+        };
+        let already_owned = full
+            .pending_preview_settle
+            .as_ref()
+            .is_some_and(|pending| pending.path == path)
+            || full
+                .pending_preview
+                .as_ref()
+                .is_some_and(|pending| pending.path == path);
+        let already_ready = full.pending_preview.is_none()
+            && matches!(
+                &full.preview,
+                FullMindmapPreview::Document { path: current, .. }
+                    | FullMindmapPreview::Data { path: current, .. }
+                    if current == &path
+            );
+        if already_owned {
+            return Task::none();
+        }
+        if already_ready {
+            // Re-selection must not reread/reparse a retained preview, but a
+            // soft cache trim may have evicted one of its remote assets. The
+            // preview identity remains stable while this lightweight pass
+            // reclaims only missing image/diagram work.
+            return self.prime_full_mindmap_preview_assets();
+        }
+
+        // Selection changed: reset only preview-owned virtualization and
+        // measurement state before the new settle/read request takes over.
+        self.reset_full_mindmap_preview_window();
+        self.full_mindmap_request_seq = self.full_mindmap_request_seq.wrapping_add(1);
+        let request = PendingFullMindmapPreviewSettle {
+            id: self.full_mindmap_request_seq,
+            path: path.clone(),
+        };
+        // Subscribe before publishing the request. The persistent worker is
+        // normally started lazily on the first file selection; publishing to
+        // the watch channel first would let a newly-created receiver start at
+        // the already-published version and miss the settle wake-up if the
+        // stream waits for `changed()` before inspecting its current value.
+        let settle_worker = self.start_full_mindmap_preview_settle_worker();
+        let full = self.full_mindmap.as_mut().expect("checked above");
+        // A different selection supersedes both an older timer and an older
+        // read. The old future may still complete, but its request no longer
+        // matches `pending_preview` and is ignored.
+        full.pending_preview_settle = Some(request.clone());
+        full.pending_preview = None;
+        full.preview = FullMindmapPreview::Loading(path);
+        let _ = full.preview_settle_tx.send(Some(request));
+        settle_worker
+    }
+
+    /// Start the one persistent latest-only debounce worker for this navigator
+    /// instance. Every subsequent selection replaces the watch value; stale
+    /// sleeps are abandoned by the worker rather than accumulating one task per
+    /// key repeat.
+    fn start_full_mindmap_preview_settle_worker(&mut self) -> Task<Message> {
+        let Some(full) = self.full_mindmap.as_mut() else {
+            return Task::none();
+        };
+        if full.preview_settle_worker_started {
+            return Task::none();
+        }
+        full.preview_settle_worker_started = true;
+        let receiver = full.preview_settle_tx.subscribe();
+        // Keep one stream alive for the navigator lifetime. A one-shot task
+        // can resolve its settle message before update() handles it; if a
+        // newer selection resets the watch in that gap, the next request
+        // would otherwise send into a receiver with no live worker and stay
+        // on `Loading preview…` forever.
+        Task::run(full_mindmap_preview_settle_stream(receiver), |request| {
+            Message::FullMindmapPreviewSettle { request }
+        })
+    }
+
+    fn begin_full_mindmap_preview(&mut self, path: Option<PathBuf>) -> Task<Message> {
+        let Some(path) = path else {
+            self.reset_full_mindmap_preview_window();
+            if let Some(full) = self.full_mindmap.as_mut() {
+                full.pending_preview_settle = None;
+                full.pending_preview = None;
+                full.preview = FullMindmapPreview::None;
+            }
+            return Task::none();
+        };
+        let already_ready = self.full_mindmap.as_ref().is_some_and(|full| {
+            full.pending_preview
+                .as_ref()
+                .is_some_and(|pending| pending.path == path)
+                || (full.pending_preview.is_none()
+                    && matches!(
+                    &full.preview,
+                    FullMindmapPreview::Document { path: current, .. }
+                        | FullMindmapPreview::Data { path: current, .. }
+                        if current == &path
+                    ))
+        });
+        if already_ready {
+            return Task::none();
+        }
+        if self.full_mindmap.is_none() {
+            return Task::none();
+        }
+        self.full_mindmap_request_seq = self.full_mindmap_request_seq.wrapping_add(1);
+        let request = PendingFullMindmapPreview {
+            id: self.full_mindmap_request_seq,
+            path: path.clone(),
+        };
+        let (preview_work_epoch, preview_work_cancel) = self
+            .full_mindmap
+            .as_ref()
+            .map(|full| {
+                (
+                    full.preview_work_epoch.load(Ordering::Acquire),
+                    Arc::clone(&full.preview_work_epoch),
+                )
+            })
+            .expect("checked above");
+        let full = self.full_mindmap.as_mut().expect("checked above");
+        // This direct path bypasses the settle timer; clear the watch value
+        // as well as the compatibility field so an old worker cannot emit its
+        // request again after this accepted read starts.
+        let _ = full.preview_settle_tx.send(None);
+        full.pending_preview_settle = None;
+        full.pending_preview = Some(request.clone());
+        full.preview_identity = Some(request.clone());
+        full.preview_measurement_generation = None;
+        full.preview = FullMindmapPreview::Loading(path.clone());
+        Task::perform(
+            load_full_mindmap_preview_guarded(path, preview_work_cancel, preview_work_epoch),
+            move |result| Message::FullMindmapPreviewLoaded { request, result },
+        )
+    }
+
+    /// Start parsing an already-open document for the initial Full Mindmap
+    /// preview without doing parser/highlighter work on the update thread.
+    /// Unlike selection-driven previews this intentionally skips the 300 ms
+    /// settle because the document is already the accepted current file.
+    fn begin_full_mindmap_preview_source(
+        &mut self,
+        path: PathBuf,
+        source: Arc<str>,
+    ) -> Task<Message> {
+        if self.full_mindmap.is_none() {
+            return Task::none();
+        }
+        // A source-backed reparse is a new accepted preview even when the
+        // path is unchanged. Clear old measurement ownership/window shape so
+        // pending g1 results cannot poison the new parse's geometry.
+        self.reset_full_mindmap_preview_window();
+        let full = self.full_mindmap.as_mut().expect("checked above");
+        self.full_mindmap_request_seq = self.full_mindmap_request_seq.wrapping_add(1);
+        let request = PendingFullMindmapPreview {
+            id: self.full_mindmap_request_seq,
+            path: path.clone(),
+        };
+        let epoch = full.preview_work_epoch.load(Ordering::Acquire);
+        let cancel = Arc::clone(&full.preview_work_epoch);
+        let parse_gate = Arc::clone(&full.preview_parse_gate);
+        // Source-backed previews also bypass debounce. Explicitly cancel any
+        // prior watch value before assigning this accepted identity.
+        let _ = full.preview_settle_tx.send(None);
+        full.pending_preview_settle = None;
+        full.pending_preview = Some(request.clone());
+        full.preview_identity = Some(request.clone());
+        full.preview_measurement_generation = None;
+        full.preview = FullMindmapPreview::Loading(path);
+        Task::perform(
+            parse_full_mindmap_preview_guarded(
+                request.path.clone(),
+                source,
+                cancel,
+                epoch,
+                parse_gate,
+            ),
+            move |result| Message::FullMindmapPreviewParsed { request, result },
+        )
+    }
+
+    /// Drop only Full Mindmap preview layout/scroll ownership. The document
+    /// reader's `virt_window`, viewport, and height cache are intentionally
+    /// untouched. A generation bump makes already-dispatched measurement
+    /// operations harmless when selection changes.
+    fn reset_full_mindmap_preview_window(&mut self) {
+        let stale_loading = self
+            .full_mindmap
+            .as_mut()
+            .map(|full| full.preview_loading_images.drain().collect::<Vec<_>>())
+            .unwrap_or_default();
+        let stale_diagrams = self
+            .full_mindmap
+            .as_ref()
+            .map(|full| {
+                full.preview_pending_diagrams
+                    .keys()
+                    .copied()
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        for (url, _owner) in stale_loading {
+            if matches!(self.image_cache.get(&url), Some(ImageState::Loading)) {
+                self.image_cache.remove(&url);
+            }
+        }
+        for key in stale_diagrams {
+            if matches!(
+                self.diagram_cache.peek(&key),
+                Some(crate::diagram::DiagramState::Pending)
+            ) {
+                self.diagram_cache.remove(&key);
+            }
+        }
+        if let Some(full) = self.full_mindmap.as_mut() {
+            let _ = full.preview_settle_tx.send(None);
+            full.preview_generation = full.preview_generation.wrapping_add(1);
+            full.preview_window = crate::virt::VirtWindow::default();
+            full.preview_viewport = None;
+            full.preview_height_cache.clear();
+            full.preview_measurement_pending = false;
+            full.preview_measurement_range = None;
+            full.preview_measurement_generation = None;
+            full.preview_identity = None;
+            full.preview_shape_ready = false;
+            full.preview_work_epoch.fetch_add(1, Ordering::AcqRel);
+            full.preview_pending_diagrams.clear();
+            full.preview_asset_images.clear();
+            full.preview_failed_images.clear();
+            full.preview_asset_diagrams.clear();
+            full.preview_asset_cursor = 0;
+            full.preview_asset_cursor_tag = None;
+            full.preview_asset_wave_id = full.preview_asset_wave_id.wrapping_add(1);
+        }
+    }
+
+    fn full_mindmap_preview_body_offset(full: &FullMindmapState) -> f32 {
+        full.preview_viewport
+            .as_ref()
+            .map(|viewport| viewport.absolute_offset().y.max(0.0))
+            .unwrap_or(0.0)
+    }
+
+    /// Rebuild the preview's shared virtual window from its own viewport and
+    /// measured-height cache. This mirrors `rebuild_virt_here` but never reads
+    /// or mutates document state.
+    fn rebuild_full_mindmap_preview_here(&mut self) {
+        let Some(full) = self.full_mindmap.as_mut() else {
+            return;
+        };
+        let offset = Self::full_mindmap_preview_body_offset(full);
+        let viewport_h = full
+            .preview_viewport
+            .as_ref()
+            .map(|viewport| viewport.bounds().height)
+            .or(self.window_size.map(|size| size.height))
+            .unwrap_or(1000.0);
+        if matches!(full.preview, FullMindmapPreview::Document { .. }) {
+            if !full.preview_shape_ready {
+                // Move the worker-built shape out of the enum so the normal
+                // runtime handoff is O(1); the Arc is uniquely owned here.
+                let shape = match &mut full.preview {
+                    FullMindmapPreview::Document { shape, .. } => shape.take(),
+                    _ => None,
+                };
+                if let Some(shape) = shape {
+                    full.preview_window
+                        .install_shape_arc(shape, offset, viewport_h);
+                } else if let FullMindmapPreview::Document { blocks, .. } = &full.preview {
+                    // Small in-memory fixtures and older callers may not carry
+                    // worker geometry. Runtime complete previews always do.
+                    full.preview_window.rebuild(
+                        blocks,
+                        &HashSet::new(),
+                        &full.preview_height_cache,
+                        offset,
+                        viewport_h,
+                    );
+                }
+                full.preview_shape_ready = true;
+            } else {
+                full.preview_window
+                    .rebuild_at_current_shape_for_preview(offset, viewport_h);
+            }
+        } else {
+            full.preview_window = crate::virt::VirtWindow::default();
+            full.preview_shape_ready = false;
+        }
+    }
+
+    fn refresh_full_mindmap_preview_heights(&mut self) -> Task<Message> {
+        if let Some(full) = self.full_mindmap.as_mut() {
+            full.preview_generation = full.preview_generation.wrapping_add(1);
+            full.preview_height_cache.clear();
+            full.preview_window.clear_height_adjustments();
+            if !full.preview_measurement_pending {
+                full.preview_measurement_range = None;
+                full.preview_measurement_generation = None;
+            }
+        }
+        self.rebuild_full_mindmap_preview_here();
+        Task::batch([
+            self.prime_full_mindmap_preview_assets(),
+            self.measure_full_mindmap_preview_heights(),
+        ])
+    }
+
+    /// Dispatch a widget operation that measures only the materialized
+    /// preview blocks. The path and generation travel with the result so a
+    /// late operation cannot feed the document cache or a newer selection.
+    fn measure_full_mindmap_preview_heights(&mut self) -> Task<Message> {
+        let Some(full) = self.full_mindmap.as_mut() else {
+            return Task::none();
+        };
+        let FullMindmapPreview::Document { path, blocks, .. } = &full.preview else {
+            return Task::none();
+        };
+        if !full.preview_window.active || full.preview_measurement_pending {
+            return Task::none();
+        }
+        let (start, end) = full.preview_window.range;
+        let targets: HashMap<iced::widget::Id, crate::ast::BlockId> = full.preview_window.display
+            [start.min(full.preview_window.display.len())
+                ..end.min(full.preview_window.display.len())]
+            .iter()
+            .filter_map(|&idx| blocks.get(idx).map(|(id, _)| *id))
+            .filter(|id| !full.preview_height_cache.is_measured(*id))
+            .map(|id| (crate::render::block_anchor_id(id), id))
+            .collect();
+        if targets.is_empty() {
+            return Task::none();
+        }
+        full.preview_measurement_pending = true;
+        full.preview_measurement_range = Some(full.preview_window.range);
+        full.preview_measurement_generation = Some(full.preview_generation);
+        measure_full_mindmap_preview_block_heights(
+            path.clone(),
+            full.preview_namespace,
+            full.preview_identity
+                .as_ref()
+                .map(|request| request.id)
+                .unwrap_or(0),
+            full.preview_generation,
+            targets,
+            Self::full_mindmap_preview_body_offset(full),
+        )
+    }
+
     fn show_toast(&mut self, text: String) -> Task<Message> {
         self.toast_seq = self.toast_seq.wrapping_add(1);
         let id = self.toast_seq;
@@ -726,6 +2785,12 @@ impl App {
     }
     fn overlay_scroll_id() -> iced::widget::Id {
         iced::widget::Id::new("overlay")
+    }
+    /// Stable identity for the Full Mindmap read-only preview. This is kept
+    /// distinct from the document body scrollable so selecting a file never
+    /// reuses or mutates document scroll state.
+    fn full_mindmap_preview_scroll_id() -> iced::widget::Id {
+        iced::widget::Id::new("full-mindmap-preview")
     }
     fn search_input_id() -> iced::widget::Id {
         iced::widget::Id::new("search-input")
@@ -1076,8 +3141,13 @@ impl App {
         let id = *id;
         // The scroll Operation walks the body scrollable, which only exists in
         // Rendered view — outline/fragment nav fired from Raw or Mindmap would
-        // otherwise no-op. Switch to Rendered (and reveal the target if folded).
-        self.view_mode = ViewMode::Rendered;
+        // otherwise no-op. Leave Zen through the normal cleanup path so editor
+        // text and chrome state do not remain stranded.
+        if self.view_mode == ViewMode::Raw {
+            self.leave_zen_edit_mode(true);
+        } else {
+            self.view_mode = ViewMode::Rendered;
+        }
         self.unfold_to_reveal(idx);
         self.rebuild_virt_around_block(idx);
         self.nav_anchor = Some(idx);
@@ -1126,11 +3196,7 @@ impl App {
                 );
                 (nodes, size, std::collections::HashMap::new())
             };
-            *cache = Some((
-                std::sync::Arc::new(nodes),
-                size,
-                std::sync::Arc::new(paths),
-            ));
+            *cache = Some((std::sync::Arc::new(nodes), size, std::sync::Arc::new(paths)));
         }
         let (nodes, size, paths) = cache.as_ref().unwrap();
         (
@@ -1224,21 +3290,30 @@ impl App {
     }
 
     /// Evict oldest fetched images once the cache exceeds its byte budget.
-    /// Images referenced by the current document (or the open zoom modal) are
-    /// never evicted, so what's on screen never changes.
+    /// Images referenced by the current document, visible Full Mindmap preview
+    /// wave, or open zoom modal are never evicted, so what's on screen never
+    /// changes.
     fn trim_image_cache(&mut self) {
         if self.image_cache.cost_bytes() <= IMAGE_CACHE_BYTE_BUDGET {
             return;
         }
-        let keep: HashSet<&str> = self
+        let mut keep: HashSet<String> = self
             .ast
             .iter()
             .filter_map(|(_, b)| match b {
-                Block::Image { url, .. } => Some(url.as_str()),
+                Block::Image { url, .. } => Some(url.clone()),
                 _ => None,
             })
-            .chain(self.zoom_url.as_deref())
+            .chain(self.zoom_url.clone())
             .collect();
+        if let Some(full) = self.full_mindmap.as_ref() {
+            // Keep only assets from the current materialized preview wave and
+            // in-flight ownership. The worker index may cover thousands of
+            // off-screen URLs; retaining all of them would defeat the cache
+            // byte budget and recreate the original memory spike.
+            keep.extend(full.preview_asset_images.iter().cloned());
+            keep.extend(full.preview_loading_images.keys().cloned());
+        }
         self.image_cache
             .trim(IMAGE_CACHE_BYTE_BUDGET, |k| keep.contains(k));
     }
@@ -1313,6 +3388,368 @@ impl App {
         } else {
             Task::batch(tasks)
         }
+    }
+
+    /// Drop Loading/Pending ownership from an older virtual range before a
+    /// new visible wave primes. The old futures may still complete, but their
+    /// range-tagged messages can no longer remove the new wave's sentinels.
+    /// This also prevents hung off-screen image requests from consuming the
+    /// current wave's 64-operation cap forever.
+    fn reconcile_full_mindmap_preview_asset_wave(
+        &mut self,
+        asset_identity: &FullMindmapPreviewAssetIdentity,
+    ) {
+        let stale_images = self
+            .full_mindmap
+            .as_ref()
+            .map(|full| {
+                full.preview_loading_images
+                    .iter()
+                    .filter(|(_, owner)| *owner != asset_identity)
+                    .map(|(url, _)| url.clone())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let stale_diagrams = self
+            .full_mindmap
+            .as_ref()
+            .map(|full| {
+                full.preview_pending_diagrams
+                    .iter()
+                    .filter(|(_, owner)| *owner != asset_identity)
+                    .map(|(key, _)| *key)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        for url in stale_images {
+            if let Some(full) = self.full_mindmap.as_mut() {
+                full.preview_loading_images.remove(&url);
+            }
+            if matches!(self.image_cache.get(&url), Some(ImageState::Loading)) {
+                self.image_cache.remove(&url);
+            }
+        }
+        for key in stale_diagrams {
+            if let Some(full) = self.full_mindmap.as_mut() {
+                full.preview_pending_diagrams.remove(&key);
+            }
+            if matches!(
+                self.diagram_cache.peek(&key),
+                Some(crate::diagram::DiagramState::Pending)
+            ) {
+                self.diagram_cache.remove(&key);
+            }
+        }
+    }
+
+    /// Prime the same remote-image and diagram caches used by normal document
+    /// rendering, but tag every asynchronous result with this preview's
+    /// namespace/request identity. Stale preview assets are therefore dropped
+    /// without mutating a newer file's lifecycle.
+    fn prime_full_mindmap_preview_assets(&mut self) -> Task<Message> {
+        let Some(full) = self.full_mindmap.as_ref() else {
+            return Task::none();
+        };
+        let Some(request) = full.preview_identity.as_ref() else {
+            return Task::none();
+        };
+        let FullMindmapPreview::Document { blocks, assets, .. } = &full.preview else {
+            return Task::none();
+        };
+        let identity = FullMindmapPreviewIdentity {
+            namespace: full.preview_namespace,
+            request: request.clone(),
+        };
+        let range = full.preview_window.range;
+        let tag = (identity.namespace, identity.request.id, range);
+        let cursor = if full.preview_asset_cursor_tag == Some(tag) {
+            full.preview_asset_cursor
+        } else {
+            0
+        };
+        let display_len = full.preview_window.display.len();
+        let visible_start = range.0.min(display_len);
+        let visible_end = range.1.min(display_len);
+        // Copy only the currently materialized virtual slice. Cloning the
+        // worker-built display vector here would reintroduce an O(all-blocks)
+        // UI allocation on every scroll/asset completion.
+        let visible_indices = full.preview_window.display[visible_start..visible_end].to_vec();
+        let visible_ids = visible_indices
+            .iter()
+            .filter_map(|&idx| blocks.get(idx).map(|(id, _)| *id))
+            .collect::<Vec<_>>();
+        let index = assets.clone();
+        let visible_blocks = if index.is_none() {
+            visible_indices
+                .iter()
+                .filter_map(|&idx| blocks.get(idx).cloned())
+                .collect::<Vec<_>>()
+        } else {
+            Vec::new()
+        };
+        let mut total = 0usize;
+        let mut skipped = 0usize;
+        let mut descriptors = Vec::new();
+        if let Some(index) = &index {
+            total = visible_ids
+                .iter()
+                .filter_map(|id| index.by_block.get(id))
+                .map(Vec::len)
+                .sum();
+            'indexed: for id in &visible_ids {
+                let Some(assets) = index.by_block.get(id) else {
+                    continue;
+                };
+                for asset in assets {
+                    if skipped < cursor {
+                        skipped += 1;
+                        continue;
+                    }
+                    if descriptors.len() >= FULL_MINDMAP_PREVIEW_ASSET_BATCH {
+                        break 'indexed;
+                    }
+                    skipped += 1;
+                    descriptors.push(asset.clone());
+                }
+            }
+        } else {
+            for (_, block) in &visible_blocks {
+                let mut images = Vec::new();
+                let mut diagrams = Vec::new();
+                collect_preview_assets(block, &mut images, &mut diagrams);
+                let assets = images
+                    .into_iter()
+                    .map(FullMindmapPreviewAsset::Image)
+                    .chain(diagrams.into_iter().map(|(hash, kind, source)| {
+                        FullMindmapPreviewAsset::Diagram { hash, kind, source }
+                    }))
+                    .collect::<Vec<_>>();
+                total = total.saturating_add(assets.len());
+                for asset in assets {
+                    if skipped < cursor {
+                        skipped += 1;
+                        continue;
+                    }
+                    if descriptors.len() >= FULL_MINDMAP_PREVIEW_ASSET_BATCH {
+                        skipped += 1;
+                        continue;
+                    }
+                    skipped += 1;
+                    descriptors.push(asset);
+                }
+            }
+        }
+
+        // A changed visible range starts a fresh lazy wave and drops off-screen
+        // keep-set ownership. Subsequent waves for the same tag append only
+        // descriptors from this range.
+        if let Some(full) = self.full_mindmap.as_mut() {
+            if full.preview_asset_cursor_tag != Some(tag) {
+                full.preview_asset_wave_id = full.preview_asset_wave_id.wrapping_add(1);
+                full.preview_asset_images.clear();
+                full.preview_failed_images.clear();
+                full.preview_asset_diagrams.clear();
+                full.preview_asset_cursor_tag = Some(tag);
+            }
+        }
+
+        let mut tasks = Vec::new();
+        let mut seen_images = HashSet::new();
+        let mut seen_diagrams = HashSet::new();
+        let mut consumed = 0usize;
+        let mut dispatched = 0usize;
+        let mut blocked = false;
+        let theme_id = self.diagram_theme_id;
+        let palette = self.palette;
+        let asset_identity = FullMindmapPreviewAssetIdentity {
+            preview: identity.clone(),
+            range,
+            wave: self
+                .full_mindmap
+                .as_ref()
+                .map(|full| full.preview_asset_wave_id)
+                .unwrap_or(0),
+        };
+        self.reconcile_full_mindmap_preview_asset_wave(&asset_identity);
+        for asset in descriptors {
+            match asset {
+                FullMindmapPreviewAsset::Image(url) => {
+                    if !is_remote_url(&url) || !seen_images.insert(url.clone()) {
+                        consumed += 1;
+                        continue;
+                    }
+                    if let Some(full) = self.full_mindmap.as_mut() {
+                        full.preview_asset_images.insert(url.clone());
+                    }
+                    let preview_failed = self
+                        .full_mindmap
+                        .as_ref()
+                        .is_some_and(|full| full.preview_failed_images.contains(&url));
+                    if preview_failed {
+                        consumed += 1;
+                        continue;
+                    }
+                    let cache_is_loading =
+                        matches!(self.image_cache.get(&url), Some(ImageState::Loading));
+                    let cache_is_loaded = matches!(
+                        self.image_cache.get(&url),
+                        Some(ImageState::Loaded(_) | ImageState::LoadedSvg { .. })
+                    );
+                    let preview_owns_loading = self.full_mindmap.as_ref().is_some_and(|full| {
+                        full.preview_loading_images
+                            .get(&url)
+                            .is_some_and(|owner| owner == &asset_identity)
+                    });
+                    if cache_is_loaded || (cache_is_loading && preview_owns_loading) {
+                        consumed += 1;
+                        continue;
+                    }
+                    if self.full_mindmap.as_ref().is_some_and(|full| {
+                        full.preview_loading_images.len() >= FULL_MINDMAP_PREVIEW_ASSET_BATCH
+                    }) {
+                        blocked = true;
+                        break;
+                    }
+                    if self.image_cache.contains_key(&url) && !preview_owns_loading {
+                        self.image_cache.remove(&url);
+                    }
+                    self.image_cache.insert(url.clone(), ImageState::Loading);
+                    if let Some(full) = self.full_mindmap.as_mut() {
+                        full.preview_loading_images
+                            .insert(url.clone(), asset_identity.clone());
+                    }
+                    let task_identity = identity.clone();
+                    let task_url = url.clone();
+                    tasks.push(Task::perform(
+                        fetch_image(task_url.clone()),
+                        move |(_, result)| Message::FullMindmapPreviewImageFetched {
+                            identity: task_identity.clone(),
+                            range,
+                            wave: asset_identity.wave,
+                            url: task_url.clone(),
+                            result,
+                        },
+                    ));
+                    consumed += 1;
+                    dispatched += 1;
+                }
+                FullMindmapPreviewAsset::Diagram { hash, kind, source } => {
+                    let key = (hash, theme_id);
+                    if !seen_diagrams.insert(hash) {
+                        consumed += 1;
+                        continue;
+                    }
+                    if let Some(full) = self.full_mindmap.as_mut() {
+                        full.preview_asset_diagrams.insert(key);
+                    }
+                    let cache_is_pending = matches!(
+                        self.diagram_cache.peek(&key),
+                        Some(crate::diagram::DiagramState::Pending)
+                    );
+                    let preview_owns_pending = self.full_mindmap.as_ref().is_some_and(|full| {
+                        full.preview_pending_diagrams
+                            .get(&key)
+                            .is_some_and(|owner| owner == &asset_identity)
+                    });
+                    if self.diagram_cache.peek(&key).is_some()
+                        && (!cache_is_pending || preview_owns_pending)
+                    {
+                        consumed += 1;
+                        continue;
+                    }
+                    if self.full_mindmap.as_ref().is_some_and(|full| {
+                        full.preview_pending_diagrams.len() >= FULL_MINDMAP_PREVIEW_ASSET_BATCH
+                    }) {
+                        blocked = true;
+                        break;
+                    }
+                    if cache_is_pending && !preview_owns_pending {
+                        self.diagram_cache.remove(&key);
+                    }
+                    self.diagram_cache
+                        .put(key, crate::diagram::DiagramState::Pending);
+                    if let Some(full) = self.full_mindmap.as_mut() {
+                        full.preview_pending_diagrams
+                            .insert(key, asset_identity.clone());
+                    }
+                    let task_identity = identity.clone();
+                    tasks.push(Task::perform(
+                        crate::diagram::render_blocking_async(
+                            kind,
+                            source,
+                            palette,
+                            "JetBrains Mono".into(),
+                        ),
+                        move |result| Message::FullMindmapPreviewDiagramRendered {
+                            identity: task_identity.clone(),
+                            range,
+                            wave: asset_identity.wave,
+                            hash,
+                            theme_id,
+                            result,
+                        },
+                    ));
+                    consumed += 1;
+                    dispatched += 1;
+                }
+            }
+        }
+        let next_cursor = cursor.saturating_add(consumed);
+        let has_more = next_cursor < total;
+        if let Some(full) = self.full_mindmap.as_mut() {
+            full.preview_asset_cursor = next_cursor;
+        }
+        let next_wave = if has_more && dispatched == 0 && !blocked {
+            Task::done(Message::FullMindmapPreviewAssetWave {
+                identity,
+                range,
+                wave: asset_identity.wave,
+            })
+        } else {
+            Task::none()
+        };
+        if tasks.is_empty() {
+            next_wave
+        } else {
+            Task::batch([Task::batch(tasks), next_wave])
+        }
+    }
+
+    /// Theme ids are part of diagram cache identity. When the palette changes,
+    /// discard only preview-owned Pending work from the old theme and rebuild
+    /// the retained preview's diagram asset set under the new key immediately.
+    /// Loaded image assets remain reusable across theme changes.
+    fn refresh_full_mindmap_preview_assets_for_theme(&mut self) -> Task<Message> {
+        let stale = self
+            .full_mindmap
+            .as_ref()
+            .map(|full| {
+                full.preview_pending_diagrams
+                    .keys()
+                    .filter(|(_, theme_id)| *theme_id != self.diagram_theme_id)
+                    .copied()
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        for key in stale {
+            if matches!(
+                self.diagram_cache.peek(&key),
+                Some(crate::diagram::DiagramState::Pending)
+            ) {
+                self.diagram_cache.remove(&key);
+            }
+        }
+        let theme_id = self.diagram_theme_id;
+        if let Some(full) = self.full_mindmap.as_mut() {
+            full.preview_pending_diagrams
+                .retain(|(_, id), _| *id == theme_id);
+            full.preview_asset_diagrams
+                .retain(|(_, id)| *id == theme_id);
+            full.preview_failed_images.clear();
+            full.preview_asset_cursor = 0;
+            full.preview_asset_cursor_tag = None;
+        }
+        self.prime_full_mindmap_preview_assets()
     }
 
     /// Recompute `diagram_theme_id` from current palette. Returns true iff
@@ -1481,6 +3918,8 @@ impl App {
                         self.hovered_heading,
                         &self.diagram_cache,
                         self.diagram_theme_id,
+                        true,
+                        (0, 0),
                     ));
                     if truncated {
                         col = col.push(
@@ -1545,7 +3984,331 @@ impl App {
             .into()
     }
 
+    /// Full-window workspace navigator. It deliberately reads only
+    /// `full_mindmap` and `workspace_mindmap` state; document mindmap layout,
+    /// collapse, selection, and preview state stay untouched underneath.
+    fn full_mindmap_view(&self, pal: Palette, recently_scrolled: bool) -> Element<'_, Message> {
+        let Some(full) = self.full_mindmap.as_ref() else {
+            return Space::new().into();
+        };
+        let Some(graph) = self.full_mindmap_graph() else {
+            if let Some(load) = &full.pending_workspace_load {
+                return container(
+                    column![
+                        text("Indexing workspace…").size(14).color(pal.fg),
+                        text(load.path.display().to_string()).size(12).color(pal.muted),
+                        text("Large folders are indexed in the background with a fixed safety limit.")
+                            .size(12)
+                            .color(pal.muted),
+                    ]
+                    .spacing(10),
+                )
+                .padding(24)
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .center_x(Length::Fill)
+                .center_y(Length::Fill)
+                .into();
+            }
+            return container(
+                text("Workspace navigator unavailable — press Esc to return")
+                    .size(14)
+                    .color(pal.muted),
+            )
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .center_x(Length::Fill)
+            .center_y(Length::Fill)
+            .into();
+        };
+
+        let program = crate::mindmap::MindmapProgram::<WorkspaceNodeId, Message> {
+            nodes: graph.nodes.clone(),
+            content_size: graph.content_size,
+            palette: pal,
+            selected: full.selected.clone(),
+            // Keep the explicit navigator request distinct from the selected
+            // ring. The shared canvas uses `selected` as a compatibility
+            // fallback only when no request exists; a present request always
+            // targets the accepted node's final layout position.
+            focus: full.focus_request.clone(),
+            panel_open: full.panel_open,
+            panel_width: full.panel_width,
+            autocenter: true,
+            layout_generation: Some(full.layout_generation),
+            on_toggle: Box::new(Message::FullMindmapToggleNode),
+            on_select: Box::new(Message::FullMindmapSelectNode),
+            on_deselect: Message::FullMindmapDeselect,
+        };
+        let canvas: Element<'_, Message> = iced::widget::canvas(program)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .into();
+        let selected_is_file = full
+            .selected
+            .as_ref()
+            .and_then(|id| graph.node(id))
+            .is_some_and(|node| node.kind == WorkspaceNodeKind::File)
+            && (full.pending_workspace_load.is_none()
+                || full
+                    .pending_workspace_load
+                    .as_ref()
+                    .is_some_and(|request| request.preserve_navigation));
+        let hint_items: &[(&str, &str)] = match selected_is_file {
+            true => &[("←↑→↓", "move"), ("Enter", "open")],
+            false => &[("←↑→↓", "move"), ("Space", "fold"), ("Enter", "root")],
+        };
+        let canvas: Element<'_, Message> = stack![canvas, full_mindmap_hint(hint_items, pal)]
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .into();
+        let body: Element<'_, Message> = if full.panel_open {
+            irow![
+                canvas,
+                full_mindmap_panel_resize_handle(pal),
+                self.full_mindmap_panel_view(&graph, pal, full.panel_width, recently_scrolled),
+            ]
+            .into()
+        } else {
+            canvas
+        };
+        container(body)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .style(move |_| container::Style {
+                background: Some(pal.bg.into()),
+                ..Default::default()
+            })
+            .into()
+    }
+
+    fn full_mindmap_panel_view(
+        &self,
+        graph: &WorkspaceGraph,
+        pal: Palette,
+        panel_width: f32,
+        recently_scrolled: bool,
+    ) -> Element<'_, Message> {
+        let Some(full) = self.full_mindmap.as_ref() else {
+            return Space::new().into();
+        };
+        let selected = full.selected.as_ref().and_then(|id| graph.node(id));
+        let label = full
+            .selected
+            .as_ref()
+            .and_then(|id| graph.index_of(id))
+            .and_then(|idx| graph.nodes.get(idx))
+            .map(|node| node.full_label.clone())
+            .unwrap_or_else(|| "Select a folder or file".to_string());
+        let selected_path = selected.and_then(|node| node.path.as_ref());
+        let selected_is_file = selected.is_some_and(|node| node.kind == WorkspaceNodeKind::File)
+            && (full.pending_workspace_load.is_none()
+                || full
+                    .pending_workspace_load
+                    .as_ref()
+                    .is_some_and(|request| request.preserve_navigation));
+        let preview_widget_generation = (
+            full.preview_identity
+                .as_ref()
+                .or_else(|| full.pending_preview.as_ref())
+                .map(|request| request.id)
+                .or_else(|| {
+                    full.pending_preview_settle
+                        .as_ref()
+                        .map(|request| request.id)
+                })
+                .unwrap_or(0),
+            full.preview_generation,
+        );
+        let content: Element<'_, Message> =
+            if selected_is_file {
+                let preview: Element<'_, Message> = match &full.preview {
+                    FullMindmapPreview::Loading(path) if Some(path) == selected_path => {
+                        container(text("Loading preview…").size(13).color(pal.muted))
+                            .padding(24)
+                            .into()
+                    }
+                    FullMindmapPreview::Document {
+                        path,
+                        blocks,
+                        truncated,
+                        ..
+                    } if Some(path) == selected_path => {
+                        let rendered = crate::render::render(
+                            blocks,
+                            &pal,
+                            &self.typography,
+                            &Highlight::default(),
+                            Some(&full.preview_window),
+                            &self.image_cache,
+                            Some(path.as_path()),
+                            &HashSet::new(),
+                            None,
+                            &self.diagram_cache,
+                            self.diagram_theme_id,
+                            false,
+                            preview_widget_generation,
+                        )
+                        .map(|_| Message::Noop);
+                        let mut preview = Column::new().push(rendered);
+                        if *truncated {
+                            preview = preview.push(
+                                text("Preview truncated for performance")
+                                    .size(12)
+                                    .color(pal.muted),
+                            );
+                        }
+                        preview.into()
+                    }
+                    FullMindmapPreview::Data {
+                        path,
+                        source,
+                        truncated,
+                    } if Some(path) == selected_path => {
+                        let mut preview = Column::new().push(
+                            crate::render::data_view_owned(source.clone(), &pal, &self.typography)
+                                .map(|_| Message::Noop),
+                        );
+                        if *truncated {
+                            preview = preview.push(
+                                text("Preview truncated for performance")
+                                    .size(12)
+                                    .color(pal.muted),
+                            );
+                        }
+                        preview.into()
+                    }
+                    FullMindmapPreview::Error { path, error } if Some(path) == selected_path => {
+                        container(text(error.clone()).size(13).color(pal.accent))
+                            .padding(24)
+                            .into()
+                    }
+                    _ => container(text("Loading preview…").size(13).color(pal.muted))
+                        .padding(24)
+                        .into(),
+                };
+                // The label/path header and its fixed 20 px top breathing room
+                // live outside the scrollable. The preview body therefore starts
+                // at exact offset zero, regardless of label/path wrapping.
+                let preview_header = container(
+                    column![
+                        text(label).size(14).color(pal.fg),
+                        text(
+                            selected_path
+                                .map(|path| path.display().to_string())
+                                .unwrap_or_default()
+                        )
+                        .size(12)
+                        .color(pal.muted),
+                    ]
+                    .spacing(10),
+                )
+                .padding(Padding {
+                    top: 20.0,
+                    right: 18.0,
+                    bottom: 10.0,
+                    left: 18.0,
+                })
+                .width(Length::Fill);
+                let scroll_tag = full_mindmap_preview_scroll_tag(full);
+                let preview_scroll = scrollable(container(preview).padding(Padding {
+                    top: 0.0,
+                    right: 18.0,
+                    bottom: 20.0,
+                    left: 18.0,
+                }))
+                .id(Self::full_mindmap_preview_scroll_id())
+                .on_scroll(move |viewport| Message::FullMindmapPreviewScrolled {
+                    namespace: scroll_tag.0,
+                    path: scroll_tag.1.clone(),
+                    identity: scroll_tag.2,
+                    viewport,
+                })
+                .height(Length::Fill)
+                .direction(slim_scroll_direction())
+                .style(move |_, status| sleek_scrollable_style(status, pal, recently_scrolled));
+                column![preview_header, preview_scroll,].spacing(0).into()
+            } else if let Some(load) = &full.pending_workspace_load {
+                container(
+                    column![
+                    text("Indexing project…").size(14).color(pal.fg),
+                    text(load.path.display().to_string()).size(12).color(pal.muted),
+                    text("Large folders are indexed in the background with a fixed safety limit.")
+                        .size(12)
+                        .color(pal.muted),
+                ]
+                    .spacing(10),
+                )
+                .padding(24)
+                .center_y(Length::Fill)
+                .into()
+            } else {
+                let hint = match selected.map(|node| &node.kind) {
+                    Some(WorkspaceNodeKind::Empty) => "No supported files are visible here.",
+                    Some(WorkspaceNodeKind::Error) => "Choose another readable folder.",
+                    Some(WorkspaceNodeKind::Truncated) => {
+                        "Some files were omitted to keep navigation responsive."
+                    }
+                    _ => "Select a file to preview its content.",
+                };
+                container(text(hint).size(13).color(pal.muted))
+                    .padding(24)
+                    .center_y(Length::Fill)
+                    .into()
+            };
+        let content: Element<'_, Message> = if let Some(error) = full.load_error.as_ref() {
+            column![text(error.clone()).size(12).color(pal.accent), content,]
+                .spacing(10)
+                .into()
+        } else {
+            content
+        };
+        let body: Element<'_, Message> = if selected_is_file {
+            content
+        } else {
+            let scroll_tag = full_mindmap_preview_scroll_tag(full);
+            scrollable(container(content).padding(Padding::from([20, 18])))
+                .id(Self::full_mindmap_preview_scroll_id())
+                .on_scroll(move |viewport| Message::FullMindmapPreviewScrolled {
+                    namespace: scroll_tag.0,
+                    path: scroll_tag.1.clone(),
+                    identity: scroll_tag.2,
+                    viewport,
+                })
+                .height(Length::Fill)
+                .direction(slim_scroll_direction())
+                // Folder/status content keeps Iced's established default
+                // scrollbar catalog; only the file preview below uses the
+                // ordinary Markdown transparent-rail style.
+                .style(scrollable::default)
+                .into()
+        };
+        container(body)
+            .width(Length::Fixed(panel_width))
+            .height(Length::Fill)
+            .style(move |_| container::Style {
+                background: Some(pal.surface.into()),
+                border: Border {
+                    color: pal.rule,
+                    width: 1.0,
+                    radius: 0.0.into(),
+                },
+                ..Default::default()
+            })
+            .into()
+    }
+
     fn command_items(&self) -> Vec<(&'static str, Message)> {
+        let panel_toggle = if self.full_mindmap.is_some() {
+            Message::FullMindmapTogglePanel
+        } else {
+            Message::ToggleMindmapPanel
+        };
+        let panel_width = if self.full_mindmap.is_some() {
+            Message::FullMindmapCyclePanelWidth
+        } else {
+            Message::MindmapCyclePanelWidth
+        };
         vec![
             ("Open Folder…  ⌘O", Message::OpenFolderPicker),
             ("Find File in Workspace…  ⌘P", Message::OpenFileFinder),
@@ -1553,17 +4316,15 @@ impl App {
             ("Toggle Hidden Files  ⌘⇧.", Message::ToggleHidden),
             ("Find in Document  ⌘F", Message::ToggleSearch),
             ("Search All Files…  ⌘⇧F", Message::OpenVaultSearch),
-            ("Toggle Raw/Rendered  ⌘E", Message::ToggleViewMode),
+            ("Toggle Zen Edit  ⌘E", Message::ToggleViewMode),
             ("Increase Font Size  ⌘+", Message::FontSizeUp),
             ("Decrease Font Size  ⌘-", Message::FontSizeDown),
             ("Reset Font Size  ⌘0", Message::FontSizeReset),
             ("Toggle Status Footer", Message::ToggleFooter),
             ("Toggle Mindmap  ⌘M", Message::ToggleMindmap),
-            ("Toggle Mindmap Panel  ⌘⌥B", Message::ToggleMindmapPanel),
-            (
-                "Cycle Mindmap Panel Width  ⌘⌥W",
-                Message::MindmapCyclePanelWidth,
-            ),
+            ("Toggle Full Mindmap Mode  ⌘⇧M", Message::ToggleFullMindmap),
+            ("Toggle Mindmap Panel  ⌘⌥B", panel_toggle),
+            ("Cycle Mindmap Panel Width  ⌘⌥W", panel_width),
             (
                 "Toggle Mindmap Auto-Center",
                 Message::ToggleMindmapAutocenter,
@@ -1672,20 +4433,32 @@ impl App {
             return Task::batch(tasks);
         }
         match msg {
-            Message::Open(p) => Task::perform(load_file(p), Message::FileLoaded),
-            Message::OpenWorkspace(p) => {
-                self.workspace_files = picker::walk_markdown(&p, 8, 5000, self.show_hidden);
-                self.workspace_tree = Some(tree::build(&p, self.show_hidden));
-                self.expanded.clear();
-                if let Some(t) = &self.workspace_tree {
-                    self.expanded.insert(t.path.clone());
-                }
-                self.workspace = Some(p);
-                self.sidebar_open = true;
-                self.tree_cursor = 0;
+            Message::Open(p) => self.load_file_unless_dirty(p),
+            Message::OpenFileFinderPath(p) => {
                 self.overlay = Overlay::None;
-                self.picker = None;
-                Task::none()
+                if self.full_mindmap.is_some() {
+                    self.begin_full_mindmap_open(p)
+                } else {
+                    self.load_file_unless_dirty(p)
+                }
+            }
+            Message::OpenWorkspace(p) => {
+                // A workspace selected through Full Mindmap Mode should not
+                // silently alter the hidden sidebar's open/closed preference.
+                if self.full_mindmap.is_some() {
+                    let exit_after_refresh = self.pending_ipc_file_open.is_some();
+                    self.begin_full_mindmap_workspace_load(
+                        p,
+                        false,
+                        None,
+                        false,
+                        false,
+                        exit_after_refresh,
+                    )
+                } else {
+                    self.set_workspace(p, true);
+                    Task::none()
+                }
             }
             Message::OpenFolderPicker => {
                 self.open_overlay(Overlay::FolderPicker);
@@ -1787,8 +4560,7 @@ impl App {
                 if visible.is_empty() {
                     return Task::none();
                 }
-                let next =
-                    (self.vault_cursor as isize + d).clamp(0, visible.len() as isize - 1);
+                let next = (self.vault_cursor as isize + d).clamp(0, visible.len() as isize - 1);
                 self.vault_cursor = next as usize;
                 self.scroll_vault_to_cursor()
             }
@@ -1818,6 +4590,9 @@ impl App {
             }
             Message::VaultOpenHit(idx) => {
                 if let Some(hit) = self.vault_results.get(idx).cloned() {
+                    if let Some(blocked) = self.block_file_open_if_dirty() {
+                        return blocked;
+                    }
                     self.vault_open = false;
                     self.pending_nav = Some(PendingNav {
                         line: Some(hit.line),
@@ -1855,7 +4630,130 @@ impl App {
                     Task::none()
                 }
             }
+            Message::FullMindmapPreviewImageFetched {
+                identity,
+                range,
+                wave,
+                url,
+                result,
+            } => {
+                let asset_identity = FullMindmapPreviewAssetIdentity {
+                    preview: identity.clone(),
+                    range,
+                    wave,
+                };
+                let valid = self.full_mindmap.as_ref().is_some_and(|full| {
+                    full.preview_namespace == identity.namespace
+                        && full.preview_identity.as_ref() == Some(&identity.request)
+                        && full.preview_window.range == range
+                        && full.preview_asset_wave_id == wave
+                        && full.selected.as_ref().is_some_and(|selected| {
+                            matches!(selected, WorkspaceNodeId::File(path) if path == &identity.request.path)
+                        })
+                });
+                let owns_loading = self
+                    .full_mindmap
+                    .as_ref()
+                    .and_then(|full| full.preview_loading_images.get(&url))
+                    .is_some_and(|owner| owner == &asset_identity);
+                if owns_loading {
+                    if let Some(full) = self.full_mindmap.as_mut() {
+                        full.preview_loading_images.remove(&url);
+                    }
+                }
+                if !valid {
+                    // Only the operation that inserted this Loading sentinel
+                    // may remove it. A stale A completion must not delete B's
+                    // same-URL request after B has taken ownership.
+                    if owns_loading
+                        && matches!(self.image_cache.get(&url), Some(ImageState::Loading))
+                    {
+                        self.image_cache.remove(&url);
+                    }
+                    return Task::none();
+                }
+                // A duplicate/current-identity completion that no longer
+                // owns the Loading sentinel cannot claim the shared cache or
+                // alter the terminal-failure set.
+                if !owns_loading {
+                    return Task::none();
+                }
+                match result {
+                    Ok(bytes) => {
+                        let state = if is_svg_bytes(&bytes)
+                            || url.to_ascii_lowercase().ends_with(".svg")
+                        {
+                            let arc = std::sync::Arc::new(bytes);
+                            let svg = iced::widget::svg::Handle::from_memory(arc.as_ref().clone());
+                            ImageState::LoadedSvg {
+                                svg,
+                                bytes: arc,
+                                raster: None,
+                            }
+                        } else {
+                            ImageState::Loaded(iced::widget::image::Handle::from_bytes(bytes))
+                        };
+                        self.image_cache.insert(url, state);
+                        self.trim_image_cache();
+                        let assets = self.prime_full_mindmap_preview_assets();
+                        Task::batch([
+                            assets,
+                            self.measure_full_mindmap_preview_heights(),
+                            self.measure_window_heights(),
+                        ])
+                    }
+                    Err(_) => {
+                        if owns_loading {
+                            if let Some(full) = self.full_mindmap.as_mut() {
+                                full.preview_failed_images.insert(url.clone());
+                            }
+                        }
+                        self.image_cache.insert(url, ImageState::Failed);
+                        self.prime_full_mindmap_preview_assets()
+                    }
+                }
+            }
+            Message::FullMindmapPreviewAssetWave {
+                identity,
+                range,
+                wave,
+            } => {
+                let valid = self.full_mindmap.as_ref().is_some_and(|full| {
+                    full.preview_namespace == identity.namespace
+                        && full.preview_identity.as_ref() == Some(&identity.request)
+                        && matches!(&full.preview, FullMindmapPreview::Document { .. })
+                        && full.preview_window.range == range
+                        && full.preview_asset_wave_id == wave
+                });
+                if valid {
+                    self.prime_full_mindmap_preview_assets()
+                } else {
+                    Task::none()
+                }
+            }
             Message::ImageFetched(url, Ok(bytes)) => {
+                // The legacy document fetch message has no request identity.
+                // If a Full Mindmap preview owns this URL's pending load,
+                // terminal failure, or retained result, let the preview lane
+                // remain authoritative; otherwise an old document fetch can
+                // overwrite a newer preview operation in the shared cache.
+                let preview_pending = self
+                    .full_mindmap
+                    .as_ref()
+                    .is_some_and(|full| full.preview_loading_images.contains_key(&url));
+                let preview_failed = self
+                    .full_mindmap
+                    .as_ref()
+                    .is_some_and(|full| full.preview_failed_images.contains(&url));
+                let preview_has_result = self.full_mindmap.as_ref().is_some_and(|full| {
+                    full.preview_asset_images.contains(&url)
+                        && self.image_cache.get(&url).is_some_and(|state| {
+                            matches!(state, ImageState::Loaded(_) | ImageState::LoadedSvg { .. })
+                        })
+                });
+                if preview_pending || preview_failed || preview_has_result {
+                    return Task::none();
+                }
                 let state = if is_svg_bytes(&bytes) || url.to_ascii_lowercase().ends_with(".svg") {
                     let arc = std::sync::Arc::new(bytes);
                     let svg = iced::widget::svg::Handle::from_memory(arc.as_ref().clone());
@@ -1892,6 +4790,23 @@ impl App {
                 Task::none()
             }
             Message::ImageFetched(url, Err(_)) => {
+                let preview_pending = self
+                    .full_mindmap
+                    .as_ref()
+                    .is_some_and(|full| full.preview_loading_images.contains_key(&url));
+                let preview_failed = self
+                    .full_mindmap
+                    .as_ref()
+                    .is_some_and(|full| full.preview_failed_images.contains(&url));
+                let preview_has_result = self.full_mindmap.as_ref().is_some_and(|full| {
+                    full.preview_asset_images.contains(&url)
+                        && self.image_cache.get(&url).is_some_and(|state| {
+                            matches!(state, ImageState::Loaded(_) | ImageState::LoadedSvg { .. })
+                        })
+                });
+                if preview_pending || preview_failed || preview_has_result {
+                    return Task::none();
+                }
                 self.image_cache.insert(url, ImageState::Failed);
                 Task::none()
             }
@@ -1968,8 +4883,10 @@ impl App {
                 let size = self.adjust_font_scale(1.1);
                 self.height_cache.clear();
                 self.rebuild_virt_here();
+                let preview_measure = self.refresh_full_mindmap_preview_heights();
                 Task::batch([
                     self.measure_window_heights(),
+                    preview_measure,
                     self.show_toast(format!("Font {:.0} px", size)),
                 ])
             }
@@ -1977,8 +4894,10 @@ impl App {
                 let size = self.adjust_font_scale(1.0 / 1.1);
                 self.height_cache.clear();
                 self.rebuild_virt_here();
+                let preview_measure = self.refresh_full_mindmap_preview_heights();
                 Task::batch([
                     self.measure_window_heights(),
+                    preview_measure,
                     self.show_toast(format!("Font {:.0} px", size)),
                 ])
             }
@@ -1987,8 +4906,10 @@ impl App {
                 self.typography = self.typography_base;
                 self.height_cache.clear();
                 self.rebuild_virt_here();
+                let preview_measure = self.refresh_full_mindmap_preview_heights();
                 Task::batch([
                     self.measure_window_heights(),
+                    preview_measure,
                     self.show_toast("Font reset".to_string()),
                 ])
             }
@@ -2009,47 +4930,10 @@ impl App {
                 if self.file.is_none() {
                     return Task::none();
                 }
-                // PDFs render to markdown for viewing only — their "source" is
-                // extracted text, not editable. Block edit mode; allow leaving
-                // Raw if somehow already there.
-                if is_pdf_path(self.file.as_deref()) && self.view_mode != ViewMode::Raw {
-                    return self.show_toast("PDFs are view-only".into());
-                }
-                let restore = self.restore_body_scroll();
                 match self.view_mode {
-                    ViewMode::Rendered => {
-                        self.editor = Some(iced::widget::text_editor::Content::with_text(
-                            self.source.as_str(),
-                        ));
-                        self.edit_history.clear();
-                        self.edit_redo.clear();
-                        self.dirty = false;
-                        self.view_mode = ViewMode::Raw;
-                    }
-                    ViewMode::Raw => {
-                        if let Some(ed) = self.editor.take() {
-                            let text = ed.text();
-                            if text != self.source {
-                                self.source = text;
-                                self.reparse_source();
-                            }
-                        }
-                        self.edit_history.clear();
-                        self.edit_redo.clear();
-                        self.view_mode = ViewMode::Rendered;
-                    }
-                    ViewMode::Mindmap => {
-                        self.mindmap_panel_drag = None;
-                        self.editor = Some(iced::widget::text_editor::Content::with_text(
-                            self.source.as_str(),
-                        ));
-                        self.edit_history.clear();
-                        self.edit_redo.clear();
-                        self.dirty = false;
-                        self.view_mode = ViewMode::Raw;
-                    }
+                    ViewMode::Raw => self.exit_zen_edit_mode(),
+                    ViewMode::Rendered | ViewMode::Mindmap => self.enter_zen_edit_mode(),
                 }
-                restore
             }
             Message::ToggleMindmap => {
                 if self.file.is_none() {
@@ -2062,15 +4946,11 @@ impl App {
                         self.view_mode = ViewMode::Rendered;
                     }
                     ViewMode::Raw => {
-                        if let Some(ed) = self.editor.take() {
-                            let text = ed.text();
-                            if text != self.source {
-                                self.source = text;
-                                self.reparse_source();
-                            }
-                        }
+                        self.sync_editor_to_source();
+                        self.editor = None;
                         self.edit_history.clear();
                         self.edit_redo.clear();
+                        self.restore_zen_chrome();
                         self.view_mode = ViewMode::Mindmap;
                     }
                     ViewMode::Rendered => self.view_mode = ViewMode::Mindmap,
@@ -2079,6 +4959,771 @@ impl App {
                 // arrow nav and the preview panel start at the top heading.
                 self.mindmap_focus_first_child();
                 restore
+            }
+            Message::ToggleFullMindmap => {
+                if self.full_mindmap.is_some() {
+                    self.exit_full_mindmap(false)
+                } else {
+                    self.enter_full_mindmap()
+                }
+            }
+            Message::ExitFullMindmap => self.exit_full_mindmap(false),
+            Message::FullMindmapToggleNode(id) => {
+                let workspace_path = self.full_mindmap_graph().and_then(|graph| {
+                    graph.node(&id).and_then(|node| {
+                        matches!(
+                            node.kind,
+                            WorkspaceNodeKind::Root | WorkspaceNodeKind::Folder
+                        )
+                        .then(|| node.path.clone())
+                        .flatten()
+                    })
+                });
+                let mut load = None;
+                let mut collapse = None;
+                self.reset_full_mindmap_preview_window();
+                if let Some(full) = self.full_mindmap.as_mut() {
+                    full.deferred_file_selection = None;
+                    full.selected = Some(id.clone());
+                    full.focus_request = Some(id);
+                    full.pending_preview_settle = None;
+                    full.pending_preview = None;
+                    full.preview = FullMindmapPreview::None;
+                    full.load_error = None;
+                    if full
+                        .pending_workspace_load
+                        .as_ref()
+                        .is_some_and(|request| !request.preserve_navigation)
+                    {
+                        full.pending_workspace_load = None;
+                    }
+                    if let Some(path) = workspace_path.clone() {
+                        if full.expanded.contains(&path) {
+                            collapse = Some(path);
+                        } else {
+                            full.expanded.insert(path.clone());
+                            load = Some(path);
+                        }
+                    }
+                }
+                if workspace_path.is_some() {
+                    self.cancel_full_mindmap_verification();
+                    if load.is_some() {
+                        self.bump_full_mindmap_expansion_generation();
+                    }
+                }
+                self.invalidate_full_mindmap_layout();
+                if let Some(path) = collapse {
+                    self.evict_full_mindmap_folder(&path);
+                    // Cancellation clears the old hidden set. Re-snapshot the
+                    // remaining expanded frontier now, otherwise unresolved
+                    // shells under unrelated expanded parents flash visible
+                    // after this branch collapses.
+                    self.begin_full_mindmap_verification_wave()
+                } else {
+                    load.map_or_else(Task::none, |path| {
+                        let verification = self.begin_full_mindmap_verification_wave();
+                        let branch = self.begin_full_mindmap_folder_load(path);
+                        Task::batch([verification, branch])
+                    })
+                }
+            }
+            Message::FullMindmapSelectNode(id) => self.select_full_mindmap_node(id),
+            Message::FullMindmapDeselect => {
+                self.reset_full_mindmap_preview_window();
+                if let Some(full) = self.full_mindmap.as_mut() {
+                    full.selected = None;
+                    full.focus_request = None;
+                    full.deferred_file_selection = None;
+                    full.panel_drag = None;
+                    full.pending_preview_settle = None;
+                    full.pending_preview = None;
+                    full.preview = FullMindmapPreview::None;
+                    if full
+                        .pending_workspace_load
+                        .as_ref()
+                        .is_some_and(|request| !request.preserve_navigation)
+                    {
+                        full.pending_workspace_load = None;
+                    }
+                }
+                self.invalidate_full_mindmap_layout();
+                Task::none()
+            }
+            Message::FullMindmapNavigate(dir) => {
+                enum Navigation {
+                    Select(WorkspaceNodeId),
+                    Dive(WorkspaceNodeId),
+                    WorkspaceParent,
+                    None,
+                }
+
+                let navigation = (|| {
+                    let full = self.full_mindmap.as_ref()?;
+                    let graph = self.full_mindmap_graph()?;
+                    let current = full.selected.clone().unwrap_or_else(|| graph.root_id());
+                    let nav = match dir {
+                        MindmapDir::Up => graph
+                            .sibling(&current, -1)
+                            .map(Navigation::Select)
+                            .unwrap_or(Navigation::None),
+                        MindmapDir::Down => graph
+                            .sibling(&current, 1)
+                            .map(Navigation::Select)
+                            .unwrap_or(Navigation::None),
+                        MindmapDir::Left => graph
+                            .parent(&current)
+                            .map_or_else(|| Navigation::WorkspaceParent, Navigation::Select),
+                        MindmapDir::Right => {
+                            if graph
+                                .node(&current)
+                                .is_some_and(|node| node.has_hidden_children)
+                            {
+                                Navigation::Dive(current)
+                            } else {
+                                graph
+                                    .first_child(&current)
+                                    .map(Navigation::Select)
+                                    .unwrap_or(Navigation::None)
+                            }
+                        }
+                    };
+                    Some(nav)
+                })()
+                .unwrap_or(Navigation::None);
+
+                match navigation {
+                    Navigation::Select(id) => self.update(Message::FullMindmapSelectNode(id)),
+                    Navigation::Dive(id) => self.update(Message::FullMindmapDiveWorkspace(id)),
+                    Navigation::WorkspaceParent => self.update(Message::FullMindmapWorkspaceParent),
+                    Navigation::None => Task::none(),
+                }
+            }
+            Message::FullMindmapDiveWorkspace(id) => {
+                let Some(graph) = self.full_mindmap_graph() else {
+                    return Task::none();
+                };
+                let Some(node) = graph.node(&id) else {
+                    return Task::none();
+                };
+                if !matches!(
+                    node.kind,
+                    WorkspaceNodeKind::Root | WorkspaceNodeKind::Folder
+                ) {
+                    return Task::none();
+                }
+                let child = if node.has_hidden_children {
+                    if let Some(path) = node.path.clone() {
+                        self.cancel_full_mindmap_verification();
+                        if let Some(full) = self.full_mindmap.as_mut() {
+                            full.expanded.insert(path.clone());
+                            full.expansion_generation = full.expansion_generation.wrapping_add(1);
+                        }
+                        self.invalidate_full_mindmap_layout();
+                        let verification = self.begin_full_mindmap_verification_wave();
+                        let load = self.begin_full_mindmap_folder_load(path);
+                        let select = self
+                            .full_mindmap_graph()
+                            .and_then(|expanded| expanded.first_child(&id))
+                            .map_or_else(Task::none, |child| {
+                                self.update(Message::FullMindmapSelectNode(child))
+                            });
+                        return Task::batch([verification, load, select]);
+                    } else {
+                        None
+                    }
+                } else {
+                    graph.first_child(&id)
+                };
+                child.map_or_else(Task::none, |child| {
+                    self.update(Message::FullMindmapSelectNode(child))
+                })
+            }
+            Message::FullMindmapActivate => {
+                let action = (|| {
+                    let full = self.full_mindmap.as_ref()?;
+                    let graph = self.full_mindmap_graph()?;
+                    let selected = full.selected.clone().unwrap_or_else(|| graph.root_id());
+                    if let WorkspaceNodeId::File(path) = &selected {
+                        if full.deferred_file_selection.as_ref() == Some(path) {
+                            return Some(Message::OpenFileFinderPath(path.clone()));
+                        }
+                    }
+                    let node = graph.node(&selected)?;
+                    match node.kind {
+                        WorkspaceNodeKind::Root | WorkspaceNodeKind::Folder => {
+                            node.path.clone().map(Message::FullMindmapSetRoot)
+                        }
+                        WorkspaceNodeKind::File => {
+                            node.path.clone().map(Message::OpenFileFinderPath)
+                        }
+                        WorkspaceNodeKind::Empty
+                        | WorkspaceNodeKind::Error
+                        | WorkspaceNodeKind::Truncated
+                        | WorkspaceNodeKind::Loading => None,
+                    }
+                })();
+                action.map_or_else(Task::none, |message| self.update(message))
+            }
+            Message::FullMindmapToggleSelected => {
+                let id = self
+                    .full_mindmap
+                    .as_ref()
+                    .and_then(|full| full.selected.clone());
+                let can_toggle = self.full_mindmap_graph().is_some_and(|graph| {
+                    id.as_ref().is_some_and(|id| {
+                        graph.node(id).is_some_and(|node| {
+                            matches!(
+                                node.kind,
+                                WorkspaceNodeKind::Root | WorkspaceNodeKind::Folder
+                            )
+                        })
+                    })
+                });
+                if can_toggle {
+                    if let Some(id) = id {
+                        return self.update(Message::FullMindmapToggleNode(id));
+                    }
+                }
+                Task::none()
+            }
+            Message::FullMindmapSelectRoot => {
+                if let Some(graph) = self.full_mindmap_graph() {
+                    return self.update(Message::FullMindmapSelectNode(graph.root_id()));
+                }
+                Task::none()
+            }
+            Message::FullMindmapSetRoot(path) => {
+                if self.workspace.as_ref() == Some(&path) {
+                    return Task::none();
+                }
+                let exit_after_refresh = self.pending_ipc_file_open.is_some();
+                self.begin_full_mindmap_workspace_load(
+                    path,
+                    true,
+                    None,
+                    false,
+                    false,
+                    exit_after_refresh,
+                )
+            }
+            Message::FullMindmapWorkspaceParent => {
+                let root = self
+                    .workspace
+                    .clone()
+                    .filter(|_| self.full_mindmap.is_some());
+                let Some(root) = root else {
+                    return Task::none();
+                };
+                let Some(parent) = root.parent().map(PathBuf::from) else {
+                    return Task::none();
+                };
+                let exit_after_refresh = self.pending_ipc_file_open.is_some();
+                self.begin_full_mindmap_workspace_load(
+                    parent,
+                    true,
+                    None,
+                    false,
+                    false,
+                    exit_after_refresh,
+                )
+            }
+            Message::FullMindmapReturnToFiles => self.exit_full_mindmap(true),
+            Message::FullMindmapTogglePanel => {
+                if let Some(full) = self.full_mindmap.as_mut() {
+                    full.panel_open = !full.panel_open;
+                    if !full.panel_open {
+                        full.panel_drag = None;
+                    }
+                }
+                Task::none()
+            }
+            Message::FullMindmapCyclePanelWidth => {
+                let window_size = self.window_size;
+                if let Some(full) = self.full_mindmap.as_mut() {
+                    // This explicit panel-width action reveals the resized result.
+                    full.panel_open = true;
+                    full.panel_drag = None;
+                    full.panel_step = (full.panel_step + 1) % MIND_PANEL_FRACS.len();
+                    full.panel_width = mindmap_panel_width_for_step(full.panel_step, window_size);
+                }
+                self.refresh_full_mindmap_preview_heights()
+            }
+            Message::FullMindmapPanelDragStart(_) => {
+                if let Some(full) = self.full_mindmap.as_mut() {
+                    full.panel_drag = Some((full.panel_width, None));
+                }
+                Task::none()
+            }
+            Message::FullMindmapPanelDragMove(cursor_x) => {
+                if let Some(full) = self.full_mindmap.as_mut() {
+                    if let Some((origin, anchor)) = full.panel_drag {
+                        match anchor {
+                            None => full.panel_drag = Some((origin, Some(cursor_x))),
+                            Some(anchor) => {
+                                full.panel_width = (origin + anchor - cursor_x)
+                                    .clamp(MIND_PANEL_MIN, MIND_PANEL_MAX);
+                            }
+                        }
+                    }
+                }
+                self.refresh_full_mindmap_preview_heights()
+            }
+            Message::FullMindmapPanelDragEnd => {
+                if let Some(full) = self.full_mindmap.as_mut() {
+                    full.panel_drag = None;
+                }
+                Task::none()
+            }
+            Message::FullMindmapFileLoaded { request, result } => {
+                let current = self.full_mindmap.as_ref().is_some_and(|full| {
+                    full.pending_open
+                        .as_ref()
+                        .is_some_and(|pending| pending == &request)
+                });
+                if !current {
+                    // A newer request replaced this one, or the user left Full
+                    // Mindmap Mode while it was in flight.
+                    return Task::none();
+                }
+                if self.dirty {
+                    if let Some(full) = self.full_mindmap.as_mut() {
+                        if full.pending_open.as_ref() == Some(&request) {
+                            full.pending_open = None;
+                        }
+                    }
+                    self.pending_nav = None;
+                    return self.show_toast(self.unsaved_edits_open_message());
+                }
+                match result {
+                    Err(error) => {
+                        if let Some(full) = self.full_mindmap.as_mut() {
+                            if full.pending_open.as_ref() == Some(&request) {
+                                full.pending_open = None;
+                                full.load_error = Some(error);
+                            }
+                        }
+                        Task::none()
+                    }
+                    Ok((path, source)) if path == request.path => {
+                        // Delegate synchronously to the established load path:
+                        // the dirty recheck above and this call are one update,
+                        // so a late completion cannot discard an intervening
+                        // editor change. Clearing the navigator only after the
+                        // request was accepted preserves its dirty safety.
+                        self.cancel_full_mindmap_verification();
+                        self.pending_ipc_file_open = None;
+                        self.full_mindmap = None;
+                        // Full Mindmap file activation always hands the file
+                        // back to the document mindmap, whose normal load path
+                        // then focuses the first content child. Let that path
+                        // clean up a pre-existing Raw/Zen editor first; its
+                        // leave_zen_edit_mode helper restores Rendered, so the
+                        // bridge reapplies Mindmap only after delegation.
+                        let task = self.update(Message::FileLoaded(Ok((path, source))));
+                        self.view_mode = ViewMode::Mindmap;
+                        self.mindmap_focus_first_child();
+                        task
+                    }
+                    Ok((path, _)) => {
+                        if let Some(full) = self.full_mindmap.as_mut() {
+                            if full.pending_open.as_ref() == Some(&request) {
+                                full.pending_open = None;
+                                full.load_error =
+                                    Some(format!("Loaded unexpected file: {}", path.display()));
+                            }
+                        }
+                        Task::none()
+                    }
+                }
+            }
+            Message::FullMindmapPreviewSettle { request } => {
+                let current = self.full_mindmap.as_ref().is_some_and(|full| {
+                    full.pending_preview_settle.as_ref() == Some(&request)
+                        && matches!(
+                            full.selected.as_ref(),
+                            Some(WorkspaceNodeId::File(path)) if path == &request.path
+                        )
+                });
+                if !current {
+                    // A newer selection, folder/root/filter change, or mode
+                    // exit superseded this timer. No read may begin here.
+                    return self.start_full_mindmap_preview_settle_worker();
+                }
+                if let Some(full) = self.full_mindmap.as_mut() {
+                    full.pending_preview_settle = None;
+                }
+                self.begin_full_mindmap_preview(Some(request.path))
+            }
+            Message::FullMindmapPreviewLoaded { request, result } => {
+                let current = self.full_mindmap.as_ref().is_some_and(|full| {
+                    full.pending_preview
+                        .as_ref()
+                        .is_some_and(|pending| pending == &request)
+                });
+                if !current {
+                    // Selection, folder, workspace, or mode changed while the
+                    // read was running. A preview result must never affect the
+                    // current document or a newer selection.
+                    return Task::none();
+                }
+                match result {
+                    Ok((path, source)) if path == request.path => {
+                        // Every Markdown parse/highlight runs away from the
+                        // update thread. A short file can still contain
+                        // hundreds of blocks; byte size is not a safe proxy
+                        // for parser cost or widget-tree size.
+                        let Some((epoch, cancel, parse_gate)) =
+                            self.full_mindmap.as_ref().map(|full| {
+                                (
+                                    full.preview_work_epoch.load(Ordering::Acquire),
+                                    Arc::clone(&full.preview_work_epoch),
+                                    Arc::clone(&full.preview_parse_gate),
+                                )
+                            })
+                        else {
+                            return Task::none();
+                        };
+                        return Task::perform(
+                            parse_full_mindmap_preview_guarded(
+                                path,
+                                Arc::from(source),
+                                cancel,
+                                epoch,
+                                parse_gate,
+                            ),
+                            move |result| Message::FullMindmapPreviewParsed { request, result },
+                        );
+                    }
+                    Ok((path, _)) => {
+                        if let Some(full) = self.full_mindmap.as_mut() {
+                            if full.pending_preview.as_ref() == Some(&request) {
+                                full.pending_preview = None;
+                                full.preview = FullMindmapPreview::Error {
+                                    path: request.path,
+                                    error: format!(
+                                        "Preview loaded unexpected file: {}",
+                                        path.display()
+                                    ),
+                                };
+                            }
+                        }
+                    }
+                    Err(error) => {
+                        if error == FULL_MINDMAP_PREVIEW_CANCELLED {
+                            // A newer selection already invalidated the
+                            // request in normal operation. Keep this guard so
+                            // a cooperative worker cancellation can never
+                            // replace a current loading state with an error.
+                            return Task::none();
+                        }
+                        if let Some(full) = self.full_mindmap.as_mut() {
+                            if full.pending_preview.as_ref() == Some(&request) {
+                                full.pending_preview = None;
+                                full.preview = FullMindmapPreview::Error {
+                                    path: request.path,
+                                    error,
+                                };
+                            }
+                        }
+                    }
+                }
+                Task::none()
+            }
+            Message::FullMindmapPreviewParsed { request, result } => {
+                let current = self
+                    .full_mindmap
+                    .as_ref()
+                    .is_some_and(|full| full.pending_preview.as_ref() == Some(&request));
+                if !current {
+                    return Task::none();
+                }
+                match result {
+                    Ok(preview) => {
+                        if let Some(full) = self.full_mindmap.as_mut() {
+                            if full.pending_preview.as_ref() == Some(&request) {
+                                full.pending_preview = None;
+                                full.preview_shape_ready = false;
+                                full.preview = preview;
+                            }
+                        }
+                        // The accepted parse is the first point at which the
+                        // full block list exists. Build its own shared
+                        // virtual window and measure only that window after
+                        // the next layout pass.
+                        self.rebuild_full_mindmap_preview_here();
+                        let assets = self.prime_full_mindmap_preview_assets();
+                        Task::batch([assets, self.measure_full_mindmap_preview_heights()])
+                    }
+                    Err(error) => {
+                        if error == FULL_MINDMAP_PREVIEW_CANCELLED {
+                            return Task::none();
+                        }
+                        if let Some(full) = self.full_mindmap.as_mut() {
+                            if full.pending_preview.as_ref() == Some(&request) {
+                                full.pending_preview = None;
+                                full.preview = FullMindmapPreview::Error {
+                                    path: request.path,
+                                    error,
+                                };
+                            }
+                        }
+                        Task::none()
+                    }
+                }
+            }
+            Message::FullMindmapFolderLoaded { request, result } => {
+                let current = self.workspace.as_ref() == Some(&request.workspace_root)
+                    && self.show_hidden == request.show_hidden
+                    && self.workspace_snapshot_show_hidden == request.show_hidden
+                    && self.full_mindmap.as_ref().is_some_and(|full| {
+                        full.expanded.contains(&request.folder)
+                            && full
+                                .pending_folder_loads
+                                .get(&request.folder)
+                                .is_some_and(|pending| pending == &request)
+                    });
+                if !current {
+                    return Task::none();
+                }
+
+                let mut accepted_exact_empty = false;
+                let accepted_files = match result {
+                    Ok((path, snapshot)) if path == request.folder => {
+                        accepted_exact_empty = matches!(
+                            snapshot.recursive_supported_file_count,
+                            tree::RecursiveFileCount::Exact(0)
+                        );
+                        let folders = std::sync::Arc::new(snapshot.folders);
+                        let files = std::sync::Arc::new(snapshot.files);
+                        if let Some(full) = self.full_mindmap.as_mut() {
+                            full.pending_folder_loads.remove(&request.folder);
+                            full.materialized_folders.insert(
+                                request.folder.clone(),
+                                workspace_mindmap::MaterializedFolder::Loaded {
+                                    folders,
+                                    files: std::sync::Arc::clone(&files),
+                                    recursive_supported_file_count: snapshot
+                                        .recursive_supported_file_count,
+                                    truncated: snapshot.truncated,
+                                },
+                            );
+                        }
+                        Some(files)
+                    }
+                    Ok((path, _)) => {
+                        if let Some(full) = self.full_mindmap.as_mut() {
+                            full.pending_folder_loads.remove(&request.folder);
+                            full.materialized_folders.insert(
+                                request.folder.clone(),
+                                workspace_mindmap::MaterializedFolder::Error(format!(
+                                    "Loaded unexpected folder: {}",
+                                    path.display()
+                                )),
+                            );
+                        }
+                        None
+                    }
+                    Err(error) => {
+                        if let Some(full) = self.full_mindmap.as_mut() {
+                            full.pending_folder_loads.remove(&request.folder);
+                            full.materialized_folders.insert(
+                                request.folder.clone(),
+                                workspace_mindmap::MaterializedFolder::Error(error),
+                            );
+                        }
+                        None
+                    }
+                };
+                self.invalidate_full_mindmap_layout();
+                if accepted_exact_empty {
+                    // A formerly unknown shell is no longer a valid visible
+                    // selection once its bounded retry proves it exact-empty.
+                    self.normalize_full_mindmap_workspace();
+                }
+                // The branch snapshot may have introduced a new expanded
+                // frontier of LowerBound(0) child shells after the current
+                // verification wave froze its denominator. Keep those shells
+                // hidden and either queue a follow-up behind the active wave
+                // or start a fresh fixed wave immediately when idle.
+                let followup = self.schedule_full_mindmap_verification_followup();
+
+                let deferred = self.full_mindmap.as_ref().and_then(|full| {
+                    full.deferred_file_selection
+                        .as_ref()
+                        .filter(|path| path.parent() == Some(request.folder.as_path()))
+                        .cloned()
+                });
+                if let (Some(files), Some(path)) = (accepted_files.as_ref(), deferred) {
+                    if files.contains(&path) {
+                        if let Some(full) = self.full_mindmap.as_mut() {
+                            full.deferred_file_selection = None;
+                            let file_id = WorkspaceNodeId::File(path.clone());
+                            full.selected = Some(file_id.clone());
+                            full.focus_request = Some(file_id);
+                        }
+                        if self.file.as_ref() == Some(&path) {
+                            let source = self.source_snapshot_for_preview();
+                            let preview =
+                                self.begin_full_mindmap_preview_source(path.clone(), source);
+                            return Task::batch([followup, preview]);
+                        }
+                        return Task::batch([
+                            followup,
+                            self.begin_full_mindmap_preview(Some(path)),
+                        ]);
+                    }
+                    if let Some(full) = self.full_mindmap.as_mut() {
+                        full.deferred_file_selection = None;
+                    }
+                    self.normalize_full_mindmap_workspace();
+                }
+
+                let loading_id = WorkspaceNodeId::Status(
+                    request.folder.clone(),
+                    workspace_mindmap::WorkspaceStatus::LoadingFiles,
+                );
+                let selected_loading = self
+                    .full_mindmap
+                    .as_ref()
+                    .is_some_and(|full| full.selected.as_ref() == Some(&loading_id));
+                if selected_loading {
+                    let parent_id = if self.workspace.as_ref() == Some(&request.folder) {
+                        WorkspaceNodeId::Root(request.folder)
+                    } else {
+                        WorkspaceNodeId::Folder(request.folder)
+                    };
+                    if let Some(child) = self
+                        .full_mindmap_graph()
+                        .and_then(|graph| graph.first_child(&parent_id))
+                    {
+                        return Task::batch([followup, self.select_full_mindmap_node(child)]);
+                    }
+                    return Task::batch([followup, self.select_full_mindmap_node(parent_id)]);
+                }
+                followup
+            }
+            Message::FullMindmapVerificationLoaded { request, result } => {
+                self.handle_full_mindmap_verification_loaded(request, result)
+            }
+            Message::FullMindmapWorkspaceLoaded { request, result } => {
+                let current = self.full_mindmap.as_ref().is_some_and(|full| {
+                    full.pending_workspace_load
+                        .as_ref()
+                        .is_some_and(|pending| pending == &request)
+                });
+                if !current {
+                    // The navigator exited or a newer folder choice superseded
+                    // this bounded index while it was running.
+                    return Task::none();
+                }
+                let open_after = request.open_after.clone();
+                let mut followup = Task::none();
+                match result {
+                    Ok((path, snapshot)) if path == request.path => {
+                        if request.preserve_navigation {
+                            // Same-workspace refreshes replace only snapshot
+                            // data. File preview/open requests and the latest
+                            // Full Mindmap navigation remain independently
+                            // owned and valid across this completion.
+                            self.replace_workspace_snapshot(path.clone(), snapshot);
+                            if let Some(full) = self.full_mindmap.as_mut() {
+                                full.pending_workspace_load = None;
+                            }
+                            self.invalidate_full_mindmap_layout();
+                            self.normalize_full_mindmap_workspace();
+                        } else {
+                            self.apply_workspace_snapshot(path.clone(), snapshot, false);
+                        }
+                        if request.exit_after_refresh {
+                            self.cancel_full_mindmap_verification();
+                            self.reset_full_mindmap_preview_window();
+                            self.full_mindmap = None;
+                            if request.return_to_files_after {
+                                self.sidebar_open = true;
+                                self.sidebar_tab = SidebarTab::Files;
+                                self.reveal_current_file();
+                            }
+                            followup = self.start_pending_ipc_file_open(self.restore_body_scroll());
+                        } else if !request.preserve_navigation && request.select_root {
+                            self.reset_full_mindmap_preview_window();
+                            if let Some(full) = self.full_mindmap.as_mut() {
+                                let root_id = WorkspaceNodeId::Root(path.clone());
+                                full.selected = Some(root_id.clone());
+                                full.focus_request = Some(root_id);
+                                full.expanded.clear();
+                                full.expanded.insert(path);
+                                full.pending_open = None;
+                                full.pending_preview_settle = None;
+                                full.pending_preview = None;
+                                full.preview = FullMindmapPreview::None;
+                            }
+                            self.invalidate_full_mindmap_layout();
+                        }
+                        if !request.exit_after_refresh {
+                            if let Some(file) = open_after.clone() {
+                                followup = self.begin_full_mindmap_open(file);
+                            }
+                        }
+                        if !request.exit_after_refresh {
+                            let verification = self.begin_full_mindmap_verification_wave();
+                            followup = if open_after.is_none() {
+                                Task::batch([
+                                    followup,
+                                    verification,
+                                    self.begin_full_mindmap_expanded_folder_loads(),
+                                ])
+                            } else {
+                                Task::batch([followup, verification])
+                            };
+                        }
+                    }
+                    Ok((path, _)) => {
+                        let message = format!("Indexed unexpected folder: {}", path.display());
+                        if request.preserve_navigation {
+                            self.show_hidden = self.workspace_snapshot_show_hidden;
+                        }
+                        if request.exit_after_refresh {
+                            self.error = Some(message);
+                            let cleanup =
+                                self.finish_full_mindmap_exit(request.return_to_files_after);
+                            followup = self.start_pending_ipc_file_open(cleanup);
+                        } else if let Some(full) = self.full_mindmap.as_mut() {
+                            full.pending_workspace_load = None;
+                            full.load_error = Some(message);
+                        }
+                        if request.preserve_navigation && !request.exit_after_refresh {
+                            followup = self.begin_full_mindmap_expanded_folder_loads();
+                        }
+                    }
+                    Err(error) => {
+                        let message = format!("Couldn't index {}: {error}", request.path.display());
+                        // The existing workspace snapshot is still filtered
+                        // under the previous value. Revert the UI preference so
+                        // every accepted failure leaves those two facts aligned.
+                        if request.preserve_navigation {
+                            self.show_hidden = self.workspace_snapshot_show_hidden;
+                        }
+                        if request.exit_after_refresh {
+                            // Exit is terminal user intent. Do not trap the user
+                            // in Full Mindmap merely because reconciliation
+                            // failed; promote the error before removing its
+                            // navigator-local error surface.
+                            self.error = Some(message);
+                            let cleanup =
+                                self.finish_full_mindmap_exit(request.return_to_files_after);
+                            followup = self.start_pending_ipc_file_open(cleanup);
+                        } else if let Some(full) = self.full_mindmap.as_mut() {
+                            full.pending_workspace_load = None;
+                            full.load_error = Some(message);
+                        }
+                        if request.preserve_navigation && !request.exit_after_refresh {
+                            followup = self.begin_full_mindmap_expanded_folder_loads();
+                        }
+                    }
+                }
+                self.invalidate_full_mindmap_layout();
+                followup
             }
             Message::MindmapToggleNode(id) => {
                 if self.mindmap_collapsed.contains(&id) {
@@ -2122,8 +5767,20 @@ impl App {
                             .and_then(|root| root.children.first().copied())
                     });
                 let Some(cur_idx) = cur else {
+                    if dir == MindmapDir::Left {
+                        return self.enter_full_mindmap_for_current_file();
+                    }
                     return Task::none();
                 };
+                // The document root is represented by an unselectable node
+                // (`id == None`). Left at that boundary (including the
+                // no-selection/root semantic above) hands navigation to the
+                // current file's Full Mindmap workspace.
+                if dir == MindmapDir::Left
+                    && parents[cur_idx].map_or(true, |parent| nodes[parent].id.is_none())
+                {
+                    return self.enter_full_mindmap_for_current_file();
+                }
                 let next_idx: Option<usize> = match dir {
                     MindmapDir::Down | MindmapDir::Up => (|| -> Option<usize> {
                         let parent = parents[cur_idx]?;
@@ -2174,7 +5831,9 @@ impl App {
                             self.mindmap_panel_settle_gen.wrapping_add(1);
                         let settle_gen = self.mindmap_panel_settle_gen;
                         return Task::perform(
-                            tokio::time::sleep(std::time::Duration::from_millis(75)),
+                            tokio::time::sleep(std::time::Duration::from_millis(
+                                MINDMAP_PANEL_SETTLE_MS,
+                            )),
                             move |_| Message::MindmapPanelSettle(settle_gen),
                         );
                     }
@@ -2200,7 +5859,14 @@ impl App {
             }
             Message::WindowResized(id, size) => {
                 self.window_size = Some(size);
-                refresh_window_mode_after_native_transition(id)
+                // The preview viewport height can change without a scroll
+                // event (for example when a window is tiled). Re-window and
+                // remeasure its retained layout deterministically.
+                let preview_geometry = self.refresh_full_mindmap_preview_heights();
+                Task::batch([
+                    refresh_window_mode_after_native_transition(id),
+                    preview_geometry,
+                ])
             }
             Message::RefreshWindowMode(id) => refresh_window_mode_after_native_transition(id),
             Message::RefreshWindowModeSettled(id) => refresh_window_mode(id),
@@ -2275,14 +5941,8 @@ impl App {
                 self.mindmap_panel_open = true;
                 self.mindmap_panel_drag = None;
                 self.mindmap_panel_step = (self.mindmap_panel_step + 1) % MIND_PANEL_FRACS.len();
-                let frac = MIND_PANEL_FRACS[self.mindmap_panel_step];
-                // Fall back to the default px width until the first resize event
-                // gives us a real window width.
-                let target = match self.window_size {
-                    Some(s) => s.width * frac,
-                    None => MIND_PANEL_DEFAULT,
-                };
-                self.mindmap_panel_width = target.clamp(MIND_PANEL_MIN, MIND_PANEL_MAX);
+                self.mindmap_panel_width =
+                    mindmap_panel_width_for_step(self.mindmap_panel_step, self.window_size);
                 Task::none()
             }
             Message::MindmapToggleSelected => {
@@ -2342,7 +6002,7 @@ impl App {
                     }
                     ed.perform(action);
                     if edits {
-                        self.dirty = true;
+                        self.dirty = ed.text() != self.saved_source;
                     }
                 }
                 Task::none()
@@ -2353,7 +6013,7 @@ impl App {
                         let current = ed.text();
                         self.edit_redo.push(current);
                         *ed = iced::widget::text_editor::Content::with_text(&prev);
-                        self.dirty = prev != self.source;
+                        self.dirty = prev != self.saved_source;
                     }
                 }
                 Task::none()
@@ -2364,7 +6024,7 @@ impl App {
                         let current = ed.text();
                         self.edit_history.push(current);
                         *ed = iced::widget::text_editor::Content::with_text(&next);
-                        self.dirty = next != self.source;
+                        self.dirty = next != self.saved_source;
                     }
                 }
                 Task::none()
@@ -2379,7 +6039,8 @@ impl App {
                 };
                 self.source = text.clone();
                 self.reparse_source();
-                self.dirty = false;
+                self.dirty = self.source != self.saved_source;
+                let saved_source = text.clone();
                 let prime = self.prime_diagram_cache();
                 Task::batch([
                     Task::perform(
@@ -2388,13 +6049,41 @@ impl App {
                                 .await
                                 .map_err(|e| e.to_string())
                         },
-                        Message::FileSaved,
+                        move |result| Message::FileSaved {
+                            result,
+                            saved_source,
+                        },
                     ),
                     prime,
                 ])
             }
-            Message::FileSaved(Ok(())) => self.show_toast("✓ Saved".into()),
-            Message::FileSaved(Err(e)) => {
+            Message::FileSaved {
+                result: Ok(()),
+                saved_source,
+            } => {
+                // An older write may finish after a newer save was queued. Only
+                // advance the persisted baseline when this is still the source
+                // shown by the app; otherwise the newer write owns the state.
+                if self.source == saved_source {
+                    self.saved_source = saved_source;
+                    let current = self
+                        .editor
+                        .as_ref()
+                        .map(|ed| ed.text())
+                        .unwrap_or_else(|| self.source.clone());
+                    self.dirty = current != self.saved_source;
+                }
+                self.show_toast("✓ Saved".into())
+            }
+            Message::FileSaved {
+                result: Err(e),
+                saved_source,
+            } => {
+                // Keep the guard armed if the failed write is still the active
+                // document state. A later save may already have superseded it.
+                if self.source == saved_source {
+                    self.dirty = true;
+                }
                 self.error = Some(format!("save failed: {e}"));
                 Task::none()
             }
@@ -2480,7 +6169,29 @@ impl App {
             Message::PickerOpenFile(path) => {
                 self.overlay = Overlay::None;
                 self.picker = None;
+                if let Some(blocked) = self.block_file_open_if_dirty() {
+                    return blocked;
+                }
                 let parent = path.parent().map(|p| p.to_path_buf());
+                if self.full_mindmap.is_some() {
+                    // Deliberate picker activation supersedes an IPC open that
+                    // was waiting for Full Mindmap to exit.
+                    self.pending_ipc_file_open = None;
+                    // Preserve the picker contract without synchronously
+                    // indexing the file's parent on the UI thread. The file
+                    // read starts only after that bounded index is ready.
+                    if let Some(parent) = parent {
+                        return self.begin_full_mindmap_workspace_load(
+                            parent,
+                            false,
+                            Some(path),
+                            false,
+                            false,
+                            false,
+                        );
+                    }
+                    return self.begin_full_mindmap_open(path);
+                }
                 let load = Task::perform(load_file(path), Message::FileLoaded);
                 if let Some(parent) = parent {
                     Task::batch([Task::done(Message::OpenWorkspace(parent)), load])
@@ -2515,7 +6226,11 @@ impl App {
                     let files = self.filtered_files();
                     if let Some((p, _, _)) = files.get(self.overlay_selected).cloned() {
                         self.overlay = Overlay::None;
-                        return Task::perform(load_file(p), Message::FileLoaded);
+                        return if self.full_mindmap.is_some() {
+                            self.begin_full_mindmap_open(p)
+                        } else {
+                            self.load_file_unless_dirty(p)
+                        };
                     }
                     Task::none()
                 }
@@ -2580,18 +6295,20 @@ impl App {
                 Task::none()
             }
             Message::FileLoaded(Ok((path, src))) => {
+                if self.dirty {
+                    // An IPC/link/vault open can queue navigation before its
+                    // asynchronous read returns. Do not let that stale target
+                    // affect the next successful open after this one is blocked.
+                    self.pending_nav = None;
+                    return self.show_toast(self.unsaved_edits_open_message());
+                }
                 crate::recent::add(&path);
+                if self.view_mode == ViewMode::Raw || self.editor.is_some() {
+                    self.leave_zen_edit_mode(false);
+                }
                 if self.workspace.is_none() {
                     if let Some(parent) = path.parent().map(PathBuf::from) {
-                        self.workspace_files =
-                            picker::walk_markdown(&parent, 8, 5000, self.show_hidden);
-                        self.workspace_tree = Some(tree::build(&parent, self.show_hidden));
-                        self.expanded.clear();
-                        if let Some(t) = &self.workspace_tree {
-                            self.expanded.insert(t.path.clone());
-                        }
-                        self.workspace = Some(parent);
-                        self.tree_cursor = 0;
+                        self.set_workspace(parent, false);
                     }
                 }
                 // Opening a DIFFERENT file: the body scrollable's offset gets
@@ -2604,7 +6321,9 @@ impl App {
                     self.body_viewport = None;
                 }
                 self.source = src;
+                self.saved_source = self.source.clone();
                 self.file = Some(path);
+                self.dirty = false;
                 self.outline_cursor = 0;
                 self.is_data_doc = data_lang_for(self.file.as_deref()).is_some();
                 self.mindmap_collapsed.clear();
@@ -2691,6 +6410,9 @@ impl App {
                                 || e.eq_ignore_ascii_case("tex")
                         });
                         if is_md && path.is_file() {
+                            if let Some(blocked) = self.block_file_open_if_dirty() {
+                                return blocked;
+                            }
                             if let Some(f) = fragment {
                                 self.pending_nav = Some(PendingNav {
                                     fragment: Some(f.to_string()),
@@ -2705,6 +6427,7 @@ impl App {
                 Task::none()
             }
             Message::FileLoaded(Err(e)) => {
+                self.pending_nav = None;
                 self.error = Some(e);
                 Task::none()
             }
@@ -2719,11 +6442,18 @@ impl App {
                     self.set_typography_base(t);
                 }
                 let changed = self.refresh_diagram_theme_id();
+                let preview_geometry = self.refresh_full_mindmap_preview_heights();
                 let toast = self.show_toast(label);
                 if changed {
-                    Task::batch([toast, self.prime_diagram_cache()])
+                    let preview_assets = self.refresh_full_mindmap_preview_assets_for_theme();
+                    Task::batch([
+                        toast,
+                        preview_geometry,
+                        self.prime_diagram_cache(),
+                        preview_assets,
+                    ])
                 } else {
-                    toast
+                    Task::batch([toast, preview_geometry])
                 }
             }
             Message::SetTheme(t) => {
@@ -2731,11 +6461,18 @@ impl App {
                 self.palette = theme::palette_for(t);
                 self.theme_id = theme::ThemeId::Preset(t);
                 let changed = self.refresh_diagram_theme_id();
+                let preview_geometry = self.refresh_full_mindmap_preview_heights();
                 let toast = self.show_toast(t.label().to_string());
                 if changed {
-                    Task::batch([toast, self.prime_diagram_cache()])
+                    let preview_assets = self.refresh_full_mindmap_preview_assets_for_theme();
+                    Task::batch([
+                        toast,
+                        preview_geometry,
+                        self.prime_diagram_cache(),
+                        preview_assets,
+                    ])
                 } else {
-                    toast
+                    Task::batch([toast, preview_geometry])
                 }
             }
             Message::SetCustomTheme(slug) => {
@@ -2745,11 +6482,18 @@ impl App {
                     self.set_typography_base(typography);
                     self.theme_id = theme::ThemeId::Custom(slug.clone());
                     let changed = self.refresh_diagram_theme_id();
+                    let preview_geometry = self.refresh_full_mindmap_preview_heights();
                     let toast = self.show_toast(label);
                     if changed {
-                        Task::batch([toast, self.prime_diagram_cache()])
+                        let preview_assets = self.refresh_full_mindmap_preview_assets_for_theme();
+                        Task::batch([
+                            toast,
+                            preview_geometry,
+                            self.prime_diagram_cache(),
+                            preview_assets,
+                        ])
                     } else {
-                        toast
+                        Task::batch([toast, preview_geometry])
                     }
                 } else {
                     Task::none()
@@ -2773,12 +6517,19 @@ impl App {
                     self.error = Some(format!("theme load: {}", errs.join("; ")));
                 }
                 let changed = self.refresh_diagram_theme_id();
+                let preview_geometry = self.refresh_full_mindmap_preview_heights();
                 let toast =
                     self.show_toast(format!("{n} custom theme{}", if n == 1 { "" } else { "s" }));
                 if changed {
-                    Task::batch([toast, self.prime_diagram_cache()])
+                    let preview_assets = self.refresh_full_mindmap_preview_assets_for_theme();
+                    Task::batch([
+                        toast,
+                        preview_geometry,
+                        self.prime_diagram_cache(),
+                        preview_assets,
+                    ])
                 } else {
-                    toast
+                    Task::batch([toast, preview_geometry])
                 }
             }
             Message::ThemeFilesChanged => {
@@ -2814,27 +6565,34 @@ impl App {
                 } else {
                     Task::none()
                 };
+                let preview_geometry = active_changed
+                    .then(|| self.refresh_full_mindmap_preview_heights())
+                    .unwrap_or_else(Task::none);
                 if active_changed && self.refresh_diagram_theme_id() {
-                    Task::batch([toast, self.prime_diagram_cache()])
+                    let preview_assets = self.refresh_full_mindmap_preview_assets_for_theme();
+                    Task::batch([
+                        toast,
+                        preview_geometry,
+                        self.prime_diagram_cache(),
+                        preview_assets,
+                    ])
                 } else {
-                    toast
+                    Task::batch([toast, preview_geometry])
                 }
             }
-            Message::OpenThemesDir => {
-                match crate::theme_load::ensure_themes_dir() {
-                    Ok(dir) => match open::that_detached(&dir) {
-                        Ok(()) => self.show_toast("opened themes folder".to_string()),
-                        Err(e) => {
-                            self.error = Some(format!("open themes folder: {e}"));
-                            Task::none()
-                        }
-                    },
+            Message::OpenThemesDir => match crate::theme_load::ensure_themes_dir() {
+                Ok(dir) => match open::that_detached(&dir) {
+                    Ok(()) => self.show_toast("opened themes folder".to_string()),
                     Err(e) => {
-                        self.error = Some(format!("themes folder: {e}"));
+                        self.error = Some(format!("open themes folder: {e}"));
                         Task::none()
                     }
+                },
+                Err(e) => {
+                    self.error = Some(format!("themes folder: {e}"));
+                    Task::none()
                 }
-            }
+            },
             Message::ToastExpire(id) => {
                 if let Some(t) = &self.toast {
                     if t.id == id {
@@ -2871,23 +6629,67 @@ impl App {
             }
             Message::ToggleHidden => {
                 self.show_hidden = !self.show_hidden;
-                // Rebuild tree + workspace_files with the new filter. Keep
-                // expanded paths; any node that disappears just won't show.
-                if let Some(ws) = self.workspace.clone() {
-                    self.workspace_files = picker::walk_markdown(&ws, 8, 5000, self.show_hidden);
-                    self.workspace_tree = Some(tree::build(&ws, self.show_hidden));
+                let full_active = self.full_mindmap.is_some();
+                let workspace = self.workspace.clone();
+                let pending_workspace = self
+                    .full_mindmap
+                    .as_ref()
+                    .and_then(|full| full.pending_workspace_load.clone());
+                // Outside Full Mindmap, preserve the existing sidebar behavior.
+                // Full Mindmap refreshes its potentially large workspace only
+                // through the stale-safe background loader below.
+                if !full_active {
+                    if let Some(ws) = workspace.as_ref() {
+                        match tree::build_workspace(&ws, self.show_hidden) {
+                            Ok(snapshot) => {
+                                self.workspace_files = snapshot.files;
+                                self.workspace_sidebar_files = snapshot.sidebar_files;
+                                self.workspace_tree = Some(snapshot.root);
+                                self.workspace_snapshot_show_hidden = self.show_hidden;
+                                self.workspace_truncated = snapshot.truncated;
+                            }
+                            Err(error) => {
+                                self.error =
+                                    Some(format!("Couldn't refresh {}: {error}", ws.display()));
+                            }
+                        }
+                    }
                 }
                 // If a picker is open, rebuild its view too.
                 if let Some(p) = self.picker.as_mut() {
                     p.show_hidden = self.show_hidden;
                     p.refresh();
                 }
+                if let Some(full) = self.full_mindmap.as_mut() {
+                    full.pending_workspace_load = None;
+                }
+                self.invalidate_full_mindmap_layout();
                 let label = if self.show_hidden {
                     "Hidden files: shown".to_string()
                 } else {
                     "Hidden files: hidden".to_string()
                 };
-                self.show_toast(label)
+                let workspace_refresh = if full_active {
+                    if let Some(request) = pending_workspace {
+                        self.begin_full_mindmap_workspace_load(
+                            request.path,
+                            request.select_root,
+                            request.open_after,
+                            request.preserve_navigation,
+                            request.return_to_files_after,
+                            request.exit_after_refresh,
+                        )
+                    } else {
+                        workspace.map_or_else(Task::none, |path| {
+                            self.begin_full_mindmap_workspace_load(
+                                path, false, None, true, false, false,
+                            )
+                        })
+                    }
+                } else {
+                    Task::none()
+                };
+                Task::batch([workspace_refresh, self.show_toast(label)])
             }
             Message::TreeToggle(p) => {
                 if !self.expanded.remove(&p) {
@@ -2899,7 +6701,9 @@ impl App {
                 let Some(root) = &self.workspace_tree else {
                     return Task::none();
                 };
-                let len = tree::flatten(root, &self.expanded).len();
+                let len =
+                    tree::flatten_with_files(root, &self.workspace_sidebar_files, &self.expanded)
+                        .len();
                 if len == 0 {
                     return Task::none();
                 }
@@ -2911,19 +6715,20 @@ impl App {
                 let Some(root) = &self.workspace_tree else {
                     return Task::none();
                 };
-                let rows = tree::flatten(root, &self.expanded);
+                let rows =
+                    tree::flatten_with_files(root, &self.workspace_sidebar_files, &self.expanded);
                 let Some(r) = rows.get(self.tree_cursor) else {
                     return Task::none();
                 };
-                if r.node.is_dir {
-                    let p = r.node.path.clone();
+                if r.node.is_dir() {
+                    let p = r.node.path().to_path_buf();
                     if !self.expanded.remove(&p) {
                         self.expanded.insert(p);
                     }
                     Task::none()
                 } else {
-                    let p = r.node.path.clone();
-                    Task::perform(load_file(p), Message::FileLoaded)
+                    let p = r.node.path().to_path_buf();
+                    self.load_file_unless_dirty(p)
                 }
             }
             Message::OutlineMove(d) => {
@@ -2947,12 +6752,13 @@ impl App {
                 let Some(root) = &self.workspace_tree else {
                     return Task::none();
                 };
-                let rows = tree::flatten(root, &self.expanded);
+                let rows =
+                    tree::flatten_with_files(root, &self.workspace_sidebar_files, &self.expanded);
                 let Some(r) = rows.get(self.tree_cursor) else {
                     return Task::none();
                 };
-                if r.node.is_dir {
-                    let p = r.node.path.clone();
+                if r.node.is_dir() {
+                    let p = r.node.path().to_path_buf();
                     if !self.expanded.remove(&p) {
                         self.expanded.insert(p);
                     }
@@ -2963,11 +6769,12 @@ impl App {
                 let Some(root) = &self.workspace_tree else {
                     return Task::none();
                 };
-                let rows = tree::flatten(root, &self.expanded);
+                let rows =
+                    tree::flatten_with_files(root, &self.workspace_sidebar_files, &self.expanded);
                 let Some(r) = rows.get(self.tree_cursor) else {
                     return Task::none();
                 };
-                let path = r.node.path.display().to_string();
+                let path = r.node.path().display().to_string();
                 let toast = self.show_toast("Path copied".into());
                 Task::batch([iced::clipboard::write::<Message>(path), toast])
             }
@@ -2988,13 +6795,8 @@ impl App {
             }
             Message::ScrollToBottom => {
                 let vh = self.body_viewport_h();
-                self.virt_window.rebuild(
-                    &self.ast,
-                    &self.folded,
-                    &self.height_cache,
-                    f32::MAX,
-                    vh,
-                );
+                self.virt_window
+                    .rebuild(&self.ast, &self.folded, &self.height_cache, f32::MAX, vh);
                 iced::widget::operation::scroll_to(
                     Self::scroll_id(),
                     iced::widget::scrollable::AbsoluteOffset {
@@ -3053,6 +6855,62 @@ impl App {
                 self.vault_viewport = Some(v);
                 self.last_scroll_at = Some(std::time::Instant::now());
                 Task::none()
+            }
+            Message::FullMindmapPreviewScrolled {
+                namespace,
+                path,
+                identity,
+                viewport: v,
+            } => {
+                let valid_identity = self.full_mindmap.as_ref().is_some_and(|full| {
+                    let (expected_namespace, expected_path, expected_id) =
+                        full_mindmap_preview_scroll_tag(full);
+                    expected_namespace == namespace
+                        && expected_id == identity
+                        && expected_path == path
+                });
+                if !valid_identity {
+                    // A late scroll event from the previous file/Full Mindmap
+                    // instance must not seed this preview's viewport offset.
+                    return Task::none();
+                }
+                let bounds_changed = self.full_mindmap.as_ref().is_some_and(|full| {
+                    full.preview_viewport
+                        .as_ref()
+                        .is_some_and(|previous| previous.bounds().size() != v.bounds().size())
+                });
+                if bounds_changed {
+                    if let Some(full) = self.full_mindmap.as_mut() {
+                        full.preview_generation = full.preview_generation.wrapping_add(1);
+                        full.preview_height_cache.clear();
+                        // A viewport-bounds event is itself a geometry
+                        // invalidation; do not let sparse corrections from
+                        // the old width/height distort the new prefix.
+                        full.preview_window.clear_height_adjustments();
+                        full.preview_measurement_pending = false;
+                        full.preview_measurement_range = None;
+                        full.preview_measurement_generation = None;
+                    }
+                }
+                if let Some(full) = self.full_mindmap.as_mut() {
+                    full.preview_viewport = Some(v);
+                }
+                self.last_scroll_at = Some(std::time::Instant::now());
+                let needs_rebuild = self.full_mindmap.as_ref().is_some_and(|full| {
+                    matches!(full.preview, FullMindmapPreview::Document { .. })
+                        && (bounds_changed
+                            || full
+                                .preview_window
+                                .needs_rebuild(Self::full_mindmap_preview_body_offset(full)))
+                });
+                if !needs_rebuild {
+                    return Task::none();
+                }
+                self.rebuild_full_mindmap_preview_here();
+                Task::batch([
+                    self.prime_full_mindmap_preview_assets(),
+                    self.measure_full_mindmap_preview_heights(),
+                ])
             }
             Message::BodyScrolled(v) => {
                 // A width change reflows text, invalidating measured heights;
@@ -3125,6 +6983,24 @@ impl App {
                 theme_id,
                 result,
             } => {
+                let key = (hash, theme_id);
+                // Legacy document diagram completions have no request
+                // identity. Keep a Full Mindmap preview's Pending/Ready
+                // ownership authoritative for a shared cache key; the
+                // preview completion will also refresh its own measurements.
+                let preview_pending = self
+                    .full_mindmap
+                    .as_ref()
+                    .is_some_and(|full| full.preview_pending_diagrams.contains_key(&key));
+                let preview_has_result = self.full_mindmap.as_ref().is_some_and(|full| {
+                    full.preview_asset_diagrams.contains(&key)
+                        && self.diagram_cache.peek(&key).is_some_and(|state| {
+                            !matches!(state, crate::diagram::DiagramState::Pending)
+                        })
+                });
+                if preview_pending || preview_has_result {
+                    return Task::none();
+                }
                 // Drop stale results — theme changed mid-render, or AST
                 // re-parsed away the source block.
                 if theme_id != self.diagram_theme_id {
@@ -3146,10 +7022,85 @@ impl App {
                     }
                     Err(msg) => crate::diagram::DiagramState::Err(msg),
                 };
-                self.diagram_cache.put((hash, theme_id), state);
+                self.diagram_cache.put(key, state);
                 // A Ready diagram replaces its faded-source placeholder with
                 // an image of a different height — refresh measured heights.
                 self.measure_window_heights()
+            }
+            Message::FullMindmapPreviewDiagramRendered {
+                identity,
+                range,
+                wave,
+                hash,
+                theme_id,
+                result,
+            } => {
+                let asset_identity = FullMindmapPreviewAssetIdentity {
+                    preview: identity.clone(),
+                    range,
+                    wave,
+                };
+                let valid = self.full_mindmap.as_ref().is_some_and(|full| {
+                    full.preview_namespace == identity.namespace
+                        && full.preview_identity.as_ref() == Some(&identity.request)
+                        && matches!(
+                            &full.preview,
+                            FullMindmapPreview::Document { path, .. }
+                                if path == &identity.request.path
+                        )
+                        && full.preview_window.range == range
+                        && full.preview_asset_wave_id == wave
+                        && self.diagram_theme_id == theme_id
+                });
+                let key = (hash, theme_id);
+                let owns_pending = self
+                    .full_mindmap
+                    .as_ref()
+                    .and_then(|full| full.preview_pending_diagrams.get(&key))
+                    .is_some_and(|owner| owner == &asset_identity);
+                if owns_pending {
+                    if let Some(full) = self.full_mindmap.as_mut() {
+                        full.preview_pending_diagrams.remove(&key);
+                    }
+                }
+                if !valid {
+                    if owns_pending
+                        && matches!(
+                            self.diagram_cache.peek(&key),
+                            Some(crate::diagram::DiagramState::Pending)
+                        )
+                    {
+                        self.diagram_cache.remove(&key);
+                    }
+                    return Task::none();
+                }
+                // A duplicate/current-identity completion that no longer
+                // owns the Pending sentinel cannot overwrite a newer Ready
+                // or Err result in the shared cache.
+                if !owns_pending {
+                    return Task::none();
+                }
+                let state = match result {
+                    Ok(out) => {
+                        let crate::diagram::RenderOutput { svg, rgba, w, h } = out;
+                        crate::diagram::DiagramState::Ready {
+                            inline: iced::widget::image::Handle::from_rgba(w, h, rgba),
+                            source_bytes: std::sync::Arc::new(svg),
+                            device_w: w,
+                        }
+                    }
+                    Err(msg) => crate::diagram::DiagramState::Err(msg),
+                };
+                self.diagram_cache.put(key, state);
+                // A shared cache result can affect both panels. Keep the
+                // preview lane's identity check above, then refresh whichever
+                // document layout is currently visible as well.
+                let assets = self.prime_full_mindmap_preview_assets();
+                Task::batch([
+                    assets,
+                    self.measure_full_mindmap_preview_heights(),
+                    self.measure_window_heights(),
+                ])
             }
             Message::SidebarDragStart => {
                 self.sidebar_drag = Some(self.sidebar_width);
@@ -3201,7 +7152,9 @@ impl App {
                 let mut delta_above = 0.0f32;
                 let mut any = false;
                 for (bid, h) in measured {
-                    let Some(&dpos) = by_id.get(&bid) else { continue };
+                    let Some(&dpos) = by_id.get(&bid) else {
+                        continue;
+                    };
                     let old = self.virt_window.block_height(dpos);
                     if (h - old).abs() <= 0.5 {
                         continue;
@@ -3229,6 +7182,149 @@ impl App {
                     );
                 }
                 Task::none()
+            }
+            Message::FullMindmapPreviewBlockHeightsMeasured {
+                path,
+                namespace,
+                identity,
+                generation,
+                measured,
+                at_offset,
+            } => {
+                let valid = self.full_mindmap.as_ref().is_some_and(|full| {
+                    full.preview_namespace == namespace
+                        && full
+                            .preview_identity
+                            .as_ref()
+                            .is_some_and(|request| request.id == identity && request.path == path)
+                        && full.preview_generation == generation
+                        && matches!(
+                            full.selected.as_ref(),
+                            Some(WorkspaceNodeId::File(selected)) if selected == &path
+                        )
+                        && matches!(
+                            &full.preview,
+                            FullMindmapPreview::Document { path: preview_path, .. }
+                                if preview_path == &path
+                        )
+                });
+                if !valid {
+                    // Geometry/theme changes invalidate an operation without
+                    // invalidating the preview identity. Only the exact
+                    // request+generation that owns the coalescing slot may
+                    // release it. In particular, an old g1 result cannot
+                    // clear a newer g2 operation that has already replaced
+                    // the slot.
+                    let owns_slot = self.full_mindmap.as_ref().is_some_and(|full| {
+                        full.preview_measurement_pending
+                            && full.preview_measurement_generation == Some(generation)
+                            && full.preview_namespace == namespace
+                            && full.preview_identity.as_ref().is_some_and(|request| {
+                                request.id == identity && request.path == path
+                            })
+                    });
+                    if owns_slot {
+                        if let Some(full) = self.full_mindmap.as_mut() {
+                            full.preview_measurement_pending = false;
+                            full.preview_measurement_range = None;
+                            full.preview_measurement_generation = None;
+                        }
+                        self.rebuild_full_mindmap_preview_here();
+                        return Task::batch([
+                            self.prime_full_mindmap_preview_assets(),
+                            self.measure_full_mindmap_preview_heights(),
+                        ]);
+                    }
+                    // The panel was reset or a newer file owns the viewport;
+                    // this result must not touch either preview state.
+                    return Task::none();
+                }
+                if let Some(full) = self.full_mindmap.as_mut() {
+                    full.preview_measurement_pending = false;
+                    full.preview_measurement_generation = None;
+                }
+                let body_off = self
+                    .full_mindmap
+                    .as_ref()
+                    .map(Self::full_mindmap_preview_body_offset)
+                    .unwrap_or(0.0);
+                let offset_stable = (body_off - at_offset).abs() <= 1.0;
+                let mut delta_above = 0.0f32;
+                let mut any = false;
+                let mut range_changed = false;
+                if let Some(full) = self.full_mindmap.as_mut() {
+                    range_changed =
+                        full.preview_measurement_range.take() != Some(full.preview_window.range);
+                    let (start, end) = full.preview_window.range;
+                    let display = full.preview_window.display.clone();
+                    let blocks = match &full.preview {
+                        FullMindmapPreview::Document { blocks, .. } => blocks,
+                        _ => return Task::none(),
+                    };
+                    let mut by_id: HashMap<crate::ast::BlockId, usize> = HashMap::new();
+                    for (offset, &idx) in display[start.min(display.len())..end.min(display.len())]
+                        .iter()
+                        .enumerate()
+                    {
+                        if let Some((id, _)) = blocks.get(idx) {
+                            by_id.insert(*id, start + offset);
+                        }
+                    }
+                    for (id, height) in measured {
+                        let Some(&dpos) = by_id.get(&id) else {
+                            continue;
+                        };
+                        if !height.is_finite() || height <= 0.0 {
+                            continue;
+                        }
+                        let old = full.preview_window.block_height(dpos);
+                        // Record every finite layout result even when it is
+                        // already close to the estimate; otherwise an
+                        // accurate estimate is repeatedly redispatched after
+                        // each window rebuild.
+                        full.preview_height_cache.set_measured(id, height);
+                        if (height - old).abs() <= 0.5 {
+                            continue;
+                        }
+                        any = true;
+                        if full.preview_window.block_top(dpos) + old <= body_off {
+                            delta_above += height - old;
+                        }
+                        full.preview_window.apply_height_delta(dpos, height - old);
+                    }
+                }
+                if !any {
+                    return if range_changed {
+                        // The operation completed for an older materialized
+                        // range while the viewport moved. Re-measure the
+                        // current range once; the pending guard prevents a
+                        // completion loop when the widget tree has no IDs.
+                        Task::batch([
+                            self.prime_full_mindmap_preview_assets(),
+                            self.measure_full_mindmap_preview_heights(),
+                        ])
+                    } else {
+                        Task::none()
+                    };
+                }
+                self.rebuild_full_mindmap_preview_here();
+                let assets = self.prime_full_mindmap_preview_assets();
+                let followup = if range_changed {
+                    self.measure_full_mindmap_preview_heights()
+                } else {
+                    Task::none()
+                };
+                if offset_stable && delta_above.abs() > 0.5 {
+                    let scroll = iced::widget::operation::scroll_by(
+                        Self::full_mindmap_preview_scroll_id(),
+                        iced::widget::scrollable::AbsoluteOffset {
+                            x: 0.0,
+                            y: delta_above,
+                        },
+                    );
+                    return Task::batch([assets, scroll, followup]);
+                }
+                Task::batch([assets, followup])
             }
             Message::Noop => Task::none(),
             Message::ToggleAutoFocusOnNav => {
@@ -3278,13 +7374,30 @@ impl App {
                     }
                     Cmd::Mode { mode, focus } => {
                         let is_pdf = is_pdf_path(self.file.as_deref());
-                        self.view_mode = match mode {
-                            Mode::View => ViewMode::Rendered,
+                        match mode {
+                            Mode::View => {
+                                if self.view_mode == ViewMode::Raw {
+                                    follow_up = self.exit_zen_edit_mode();
+                                } else {
+                                    self.view_mode = ViewMode::Rendered;
+                                }
+                            }
                             // PDFs are view-only: coerce edit requests to View.
-                            Mode::Edit if is_pdf => ViewMode::Rendered,
-                            Mode::Edit => ViewMode::Raw,
-                            Mode::Mindmap => ViewMode::Mindmap,
-                        };
+                            Mode::Edit if is_pdf => self.view_mode = ViewMode::Rendered,
+                            Mode::Edit => {
+                                follow_up = self.enter_zen_edit_mode();
+                            }
+                            Mode::Mindmap => {
+                                if self.view_mode == ViewMode::Raw {
+                                    self.sync_editor_to_source();
+                                    self.editor = None;
+                                    self.edit_history.clear();
+                                    self.edit_redo.clear();
+                                    self.restore_zen_chrome();
+                                }
+                                self.view_mode = ViewMode::Mindmap;
+                            }
+                        }
                         nav_focus = Some(focus);
                         Response::ok(id)
                     }
@@ -3294,12 +7407,14 @@ impl App {
                         Response::ok(id)
                     }
                     Cmd::Reveal { file, focus } => {
-                        follow_up = Task::perform(
-                            load_file(std::path::PathBuf::from(file)),
-                            Message::FileLoaded,
-                        );
-                        nav_focus = Some(focus);
-                        Response::ok(id)
+                        if self.dirty {
+                            Response::err(id, self.unsaved_edits_open_message())
+                        } else {
+                            follow_up =
+                                self.begin_ipc_file_open(std::path::PathBuf::from(file), None);
+                            nav_focus = Some(focus);
+                            Response::ok(id)
+                        }
                     }
                     Cmd::Open {
                         file,
@@ -3308,24 +7423,17 @@ impl App {
                         focus,
                     } => {
                         if self.dirty {
-                            Response::err(
-                                id,
-                                format!(
-                                    "unsaved edits in {}; save or discard before opening another",
-                                    self.file
-                                        .as_ref()
-                                        .map(|p| p.display().to_string())
-                                        .unwrap_or_default()
-                                ),
-                            )
+                            Response::err(id, self.unsaved_edits_open_message())
                         } else {
                             let path = std::path::PathBuf::from(file);
-                            follow_up = Task::perform(load_file(path), Message::FileLoaded);
-                            self.pending_nav = Some(PendingNav {
-                                line,
-                                section,
-                                ..Default::default()
-                            });
+                            follow_up = self.begin_ipc_file_open(
+                                path,
+                                Some(PendingNav {
+                                    line,
+                                    section,
+                                    ..Default::default()
+                                }),
+                            );
                             nav_focus = Some(focus);
                             Response::ok(id)
                         }
@@ -3353,10 +7461,7 @@ impl App {
                     }
                     Cmd::Resize { width, height } => {
                         follow_up = iced::window::latest().and_then(move |wid| {
-                            iced::window::resize(
-                                wid,
-                                iced::Size::new(width as f32, height as f32),
-                            )
+                            iced::window::resize(wid, iced::Size::new(width as f32, height as f32))
                         });
                         Response::ok(id)
                     }
@@ -3409,16 +7514,20 @@ impl App {
         let watcher = crate::watch::watch_subscription(self.file.clone()).map(Message::FileChanged);
         let theme_watcher =
             crate::theme_watch::watch_subscription().map(|()| Message::ThemeFilesChanged);
-        let focused = self.search_open;
+        let full_mindmap = self.full_mindmap.is_some();
+        let focused = self.search_open && !full_mindmap;
         let overlay_open = self.overlay != Overlay::None;
-        let sidebar_open = self.sidebar_open;
-        let outline_active = self.sidebar_open && self.sidebar_tab == SidebarTab::Outline;
-        let tree_active =
-            self.sidebar_open && self.workspace.is_some() && self.sidebar_tab == SidebarTab::Files;
-        let editing = self.view_mode == ViewMode::Raw && self.editor.is_some();
-        let fold_chord = self.fold_chord_pending;
-        let mindmap = self.view_mode == ViewMode::Mindmap;
-        let vault_open = self.vault_open;
+        let sidebar_open = self.sidebar_open && !full_mindmap;
+        let outline_active =
+            self.sidebar_open && self.sidebar_tab == SidebarTab::Outline && !full_mindmap;
+        let tree_active = self.sidebar_open
+            && self.workspace.is_some()
+            && self.sidebar_tab == SidebarTab::Files
+            && !full_mindmap;
+        let editing = self.view_mode == ViewMode::Raw && self.editor.is_some() && !full_mindmap;
+        let fold_chord = self.fold_chord_pending && !full_mindmap;
+        let mindmap = self.view_mode == ViewMode::Mindmap && !full_mindmap;
+        let vault_open = self.vault_open && !full_mindmap;
         let keys = iced::event::listen_with(|ev, status, _id| {
             let is_keyboard = matches!(
                 &ev,
@@ -3444,6 +7553,7 @@ impl App {
             fold_chord,
             mindmap,
             vault_open,
+            full_mindmap,
         ))
         .map(
             |(
@@ -3457,6 +7567,7 @@ impl App {
                     fold_chord,
                     mindmap,
                     vault_open,
+                    full_mindmap,
                 ),
                 ev,
             )| {
@@ -3471,14 +7582,30 @@ impl App {
                     _ => return Message::Noop,
                 };
                 let cmd = mods.command() || mods.control();
+                // Keep the full navigator's activation separate from document
+                // ⌘M. Physical matching handles layouts that emit a shifted
+                // character differently on macOS.
+                if cmd && mods.shift() {
+                    use iced::keyboard::key::{Code, Physical};
+                    if let Physical::Code(Code::KeyM) = physical {
+                        return Message::ToggleFullMindmap;
+                    }
+                }
                 // ⌘⌥B: alt+letter on macOS swaps the logical char, so match the
                 // physical KeyB code instead of the produced character.
                 if cmd && mods.alt() {
                     use iced::keyboard::key::{Code, Physical};
                     if let Physical::Code(Code::KeyB) = physical {
-                        return Message::ToggleMindmapPanel;
+                        return if full_mindmap {
+                            Message::FullMindmapTogglePanel
+                        } else {
+                            Message::ToggleMindmapPanel
+                        };
                     }
                     if let Physical::Code(Code::KeyW) = physical {
+                        if full_mindmap {
+                            return Message::FullMindmapCyclePanelWidth;
+                        }
                         if mindmap {
                             return Message::MindmapCyclePanelWidth;
                         }
@@ -3500,6 +7627,22 @@ impl App {
                     return Message::FoldChordCancel;
                 }
                 if let Key::Character(c) = &key {
+                    // Full Mindmap owns the window but retains the useful
+                    // global/fallback commands. Other document-only chords do
+                    // nothing while its surface is visible.
+                    if full_mindmap {
+                        return match c.as_str() {
+                            "p" if cmd && mods.shift() => Message::OpenCommandPalette,
+                            "P" if cmd => Message::OpenCommandPalette,
+                            "p" if cmd => Message::OpenFileFinder,
+                            "o" if cmd => Message::OpenFolderPicker,
+                            "." if cmd && mods.shift() => Message::ToggleHidden,
+                            ">" if cmd => Message::ToggleHidden,
+                            "t" if cmd => Message::ToggleTheme,
+                            "s" if cmd => Message::SaveFile,
+                            _ => Message::Noop,
+                        };
+                    }
                     // Vault search page owns the screen: only ⌘⇧F (re-open,
                     // idempotent) passes; every other ⌘-shortcut would mutate
                     // state under the page, so swallow it.
@@ -3558,6 +7701,9 @@ impl App {
                     if focused {
                         return Message::ToggleSearch;
                     }
+                    if editing {
+                        return Message::ToggleViewMode;
+                    }
                 }
                 if overlay_open {
                     return match key {
@@ -3567,6 +7713,27 @@ impl App {
                         Key::Named(Named::Space) => Message::OverlayDescend,
                         Key::Named(Named::ArrowRight) => Message::OverlayDescend,
                         Key::Named(Named::ArrowLeft) => Message::PickerParent,
+                        _ => Message::Noop,
+                    };
+                }
+                if full_mindmap {
+                    return match key {
+                        Key::Named(Named::Escape) => Message::ExitFullMindmap,
+                        Key::Named(Named::ArrowDown) => {
+                            Message::FullMindmapNavigate(MindmapDir::Down)
+                        }
+                        Key::Named(Named::ArrowUp) => Message::FullMindmapNavigate(MindmapDir::Up),
+                        Key::Named(Named::ArrowLeft) => {
+                            Message::FullMindmapNavigate(MindmapDir::Left)
+                        }
+                        Key::Named(Named::ArrowRight) => {
+                            Message::FullMindmapNavigate(MindmapDir::Right)
+                        }
+                        Key::Named(Named::Space) => full_mindmap_space_message(),
+                        Key::Named(Named::Enter) if cmd => Message::FullMindmapActivate,
+                        Key::Named(Named::Enter) => Message::FullMindmapActivate,
+                        Key::Named(Named::Home) if cmd => Message::FullMindmapSelectRoot,
+                        Key::Named(Named::Home) => Message::FullMindmapSelectRoot,
                         _ => Message::Noop,
                     };
                 }
@@ -3652,7 +7819,7 @@ impl App {
         } else {
             iced::Subscription::none()
         };
-        let drag = if self.sidebar_drag.is_some() {
+        let drag = if self.sidebar_drag.is_some() && !full_mindmap {
             iced::event::listen_with(|ev, _status, _id| match ev {
                 iced::Event::Mouse(iced::mouse::Event::CursorMoved { position }) => {
                     Some(Message::SidebarDragMove(position.x))
@@ -3665,7 +7832,9 @@ impl App {
         } else {
             iced::Subscription::none()
         };
-        let mind_drag = if self.view_mode == ViewMode::Mindmap && self.mindmap_panel_drag.is_some()
+        let mind_drag = if !full_mindmap
+            && self.view_mode == ViewMode::Mindmap
+            && self.mindmap_panel_drag.is_some()
         {
             iced::event::listen_with(|ev, _status, _id| match ev {
                 iced::Event::Mouse(iced::mouse::Event::CursorMoved { position }) => {
@@ -3674,6 +7843,23 @@ impl App {
                 iced::Event::Mouse(iced::mouse::Event::ButtonReleased(
                     iced::mouse::Button::Left,
                 )) => Some(Message::MindmapPanelDragEnd),
+                _ => None,
+            })
+        } else {
+            iced::Subscription::none()
+        };
+        let full_mind_drag = if self
+            .full_mindmap
+            .as_ref()
+            .is_some_and(|full| full.panel_drag.is_some())
+        {
+            iced::event::listen_with(|ev, _status, _id| match ev {
+                iced::Event::Mouse(iced::mouse::Event::CursorMoved { position }) => {
+                    Some(Message::FullMindmapPanelDragMove(position.x))
+                }
+                iced::Event::Mouse(iced::mouse::Event::ButtonReleased(
+                    iced::mouse::Button::Left,
+                )) => Some(Message::FullMindmapPanelDragEnd),
                 _ => None,
             })
         } else {
@@ -3697,6 +7883,7 @@ impl App {
             scroller,
             drag,
             mind_drag,
+            full_mind_drag,
             window_events,
             ipc,
         ])
@@ -3734,8 +7921,11 @@ impl App {
         let recently_scrolled = self
             .last_scroll_at
             .is_some_and(|t| t.elapsed() < std::time::Duration::from_millis(SCROLLER_FADE_MS));
+        let full_mindmap = self.full_mindmap.is_some();
 
-        let reader: Element<'_, Message> = if self.vault_open {
+        let reader: Element<'_, Message> = if full_mindmap {
+            self.full_mindmap_view(pal, recently_scrolled)
+        } else if self.vault_open {
             // Workspace-level page — renders before the file/welcome checks so
             // it works with no document open.
             vault_search_page(
@@ -3782,9 +7972,14 @@ impl App {
                     content_size,
                     palette: pal,
                     selected: self.mindmap_selected,
+                    // Document Mindmap keeps its historical selection-driven
+                    // animated positioning. Full Mindmap passes a separate
+                    // explicit focus request above.
+                    focus: None,
                     panel_open: self.mindmap_panel_open,
                     panel_width: self.mindmap_panel_width,
                     autocenter: self.mindmap_autocenter,
+                    layout_generation: None,
                     on_toggle: Box::new(Message::MindmapToggleNode),
                     on_select: Box::new(Message::MindmapSelectLeaf),
                     on_deselect: Message::MindmapDeselect,
@@ -3807,26 +8002,14 @@ impl App {
                 }
             } else if self.view_mode == ViewMode::Raw {
                 if let Some(ed) = self.editor.as_ref() {
-                    iced::widget::text_editor(ed)
+                    let editor = iced::widget::text_editor(ed)
                         .on_action(Message::EditorAction)
                         // Filter cmd/ctrl combos so global shortcuts (⌘B, ⌘T,
                         // ⌘E, ⌘K, ⌘M, ⌘P, ⌘O, etc.) don't ALSO get inserted
                         // as text by the editor. Keep ⌘C/⌘X/⌘V/⌘A/⌘Z/⌘Y for
                         // standard editor bindings — those have explicit
                         // handlers upstream that we want to preserve.
-                        .key_binding(|kp| {
-                            let cmd_or_ctrl = kp.modifiers.command() || kp.modifiers.control();
-                            if cmd_or_ctrl {
-                                let keep = matches!(
-                                    kp.key.to_latin(kp.physical_key),
-                                    Some('c' | 'x' | 'v' | 'a' | 'z' | 'y')
-                                );
-                                if !keep {
-                                    return None;
-                                }
-                            }
-                            iced::widget::text_editor::Binding::from_key_press(kp)
-                        })
+                        .key_binding(editor_key_binding)
                         .font(editor_font())
                         .size(self.typography.code_size)
                         .line_height(iced::widget::text::LineHeight::Relative(1.55))
@@ -3852,13 +8035,31 @@ impl App {
                             value: pal.fg,
                             selection: pal.selection,
                         })
-                        .into()
+                        .height(Length::Fill);
+                    container(
+                        container(editor)
+                            .width(Length::Fill)
+                            .height(Length::Fill)
+                            .max_width(READING_MAX),
+                    )
+                    .width(Length::Fill)
+                    .height(Length::Fill)
+                    .center_x(Length::Fill)
+                    .into()
                 } else {
-                    text(self.source.as_str())
+                    let fallback = text(self.source.as_str())
                         .font(iced::Font::MONOSPACE)
                         .size(self.typography.code_size)
-                        .color(pal.fg)
-                        .into()
+                        .color(pal.fg);
+                    container(
+                        container(fallback)
+                            .width(Length::Fill)
+                            .max_width(READING_MAX),
+                    )
+                    .width(Length::Fill)
+                    .height(Length::Fill)
+                    .center_x(Length::Fill)
+                    .into()
                 }
             } else if self.is_data_doc {
                 if let Some((_, Block::CodeBlock { code, spans, .. })) = self.ast.first() {
@@ -3876,6 +8077,8 @@ impl App {
                         self.hovered_heading,
                         &self.diagram_cache,
                         self.diagram_theme_id,
+                        true,
+                        (0, 0),
                     )
                 }
             } else {
@@ -3891,6 +8094,8 @@ impl App {
                     self.hovered_heading,
                     &self.diagram_cache,
                     self.diagram_theme_id,
+                    true,
+                    (0, 0),
                 )
             };
             if self.view_mode == ViewMode::Raw || self.view_mode == ViewMode::Mindmap {
@@ -3918,7 +8123,7 @@ impl App {
             }
         };
 
-        let reader_with_search: Element<'_, Message> = if self.search_open {
+        let reader_with_search: Element<'_, Message> = if self.search_open && !full_mindmap {
             column![
                 search_bar_view(&self.query, &self.matches, self.match_idx, pal),
                 reader,
@@ -3928,40 +8133,41 @@ impl App {
             reader.into()
         };
 
-        let main_area: Element<'_, Message> = if self.sidebar_open && self.workspace.is_some() {
-            // View panel paints its own rounded background. iced 0.14 doesn't
-            // mask child draws to the radius, but background fill does respect
-            // it — so the corner pixels outside the radius are transparent and
-            // show the sidebar-colored area behind. Reader content has enough
-            // padding that no text falls into the corner curve.
-            irow![
-                sidebar_view(self, pal),
-                sidebar_resize_handle(pal),
+        let main_area: Element<'_, Message> =
+            if !full_mindmap && self.sidebar_open && self.workspace.is_some() {
+                // View panel paints its own rounded background. iced 0.14 doesn't
+                // mask child draws to the radius, but background fill does respect
+                // it — so the corner pixels outside the radius are transparent and
+                // show the sidebar-colored area behind. Reader content has enough
+                // padding that no text falls into the corner curve.
+                irow![
+                    sidebar_view(self, pal),
+                    sidebar_resize_handle(pal),
+                    container(reader_with_search)
+                        .width(Length::Fill)
+                        .height(Length::Fill)
+                        .style(move |_| container::Style {
+                            background: Some(pal.bg.into()),
+                            border: Border {
+                                color: Color::TRANSPARENT,
+                                width: 0.0,
+                                radius: iced::border::top_left(24),
+                            },
+                            ..Default::default()
+                        }),
+                ]
+                .into()
+            } else {
                 container(reader_with_search)
                     .width(Length::Fill)
                     .height(Length::Fill)
-                    .style(move |_| container::Style {
-                        background: Some(pal.bg.into()),
-                        border: Border {
-                            color: Color::TRANSPARENT,
-                            width: 0.0,
-                            radius: iced::border::top_left(24),
-                        },
-                        ..Default::default()
-                    }),
-            ]
-            .into()
-        } else {
-            container(reader_with_search)
-                .width(Length::Fill)
-                .height(Length::Fill)
-                .into()
-        };
+                    .into()
+            };
 
         // When the sidebar is open, the area "behind" the view panel's rounded
         // top-left corner needs to look like sidebar, so the cutout pixels
         // outside the reader's rounded background pick up sidebar color.
-        let main_bg = if self.sidebar_open && self.workspace.is_some() {
+        let main_bg = if !full_mindmap && self.sidebar_open && self.workspace.is_some() {
             pal.sidebar
         } else {
             pal.bg
@@ -4007,8 +8213,10 @@ impl App {
         };
         // Status footer floats over the reader (content scrolls behind it),
         // pinned bottom-right. Shown for any open document except mindmap.
-        let footer_visible =
-            self.show_footer && self.file.is_some() && self.view_mode != ViewMode::Mindmap;
+        let footer_visible = !full_mindmap
+            && self.show_footer
+            && self.file.is_some()
+            && self.view_mode != ViewMode::Mindmap;
         let footer_layer: Element<'_, Message> = if footer_visible {
             status_footer(&self.source, pal)
         } else {
@@ -4017,27 +8225,26 @@ impl App {
         // Floating cheatsheet button, bottom-right of the reader. Sits just above the
         // word-count pill when the footer is visible; drops to the corner when it's
         // off. Hidden over the mindmap canvas and while an overlay is open.
-        let kb_button_layer: Element<'_, Message> = if self.view_mode != ViewMode::Mindmap
+        let kb_button_layer: Element<'_, Message> = if !full_mindmap
+            && self.view_mode != ViewMode::Mindmap
             && self.overlay == Overlay::None
         {
             let bottom_pad = if footer_visible { 44.0 } else { 12.0 };
-            container(
-                iced::widget::tooltip(
-                    ghost_lu(ic::KEYBOARD, pal).on_press(Message::ToggleShortcuts),
-                    container(text("Keyboard shortcuts  ⌘/").size(12).color(pal.fg))
-                        .padding(Padding::from([4, 8]))
-                        .style(move |_| container::Style {
-                            background: Some(pal.surface.into()),
-                            border: Border {
-                                color: pal.rule,
-                                width: 1.0,
-                                radius: 6.0.into(),
-                            },
-                            ..Default::default()
-                        }),
-                    iced::widget::tooltip::Position::Left,
-                ),
-            )
+            container(iced::widget::tooltip(
+                ghost_lu(ic::KEYBOARD, pal).on_press(Message::ToggleShortcuts),
+                container(text("Keyboard shortcuts  ⌘/").size(12).color(pal.fg))
+                    .padding(Padding::from([4, 8]))
+                    .style(move |_| container::Style {
+                        background: Some(pal.surface.into()),
+                        border: Border {
+                            color: pal.rule,
+                            width: 1.0,
+                            radius: 6.0.into(),
+                        },
+                        ..Default::default()
+                    }),
+                iced::widget::tooltip::Position::Left,
+            ))
             .width(Length::Fill)
             .height(Length::Fill)
             .padding(Padding {
@@ -4063,11 +8270,20 @@ impl App {
             Some(t) => toast_overlay(&t.text, pal),
             None => Space::new().into(),
         };
+        // Progress has its own neutral layer and never replaces the ordinary
+        // toast. The stack order keeps attention/error feedback above this
+        // persistent status while preserving each toast's expiry timing.
+        let progress_layer: Element<'_, Message> = match &self.full_mindmap_progress {
+            Some(progress) if self.full_mindmap.is_some() => {
+                full_mindmap_progress_overlay(progress, pal)
+            }
+            _ => Space::new().into(),
+        };
         let update_layer: Element<'_, Message> = match &self.pending_update {
             Some(u) => update_banner(&u.version, pal),
             None => Space::new().into(),
         };
-        iced::widget::stack![base, toast_layer, update_layer].into()
+        iced::widget::stack![base, progress_layer, toast_layer, update_layer].into()
     }
 }
 
@@ -4076,15 +8292,14 @@ fn update_banner<'a>(version: &str, pal: Palette) -> Element<'a, Message> {
     use iced::widget::{button, container, row, text as text_w};
     // A small accent dot signals "something new", matching the warm accent the
     // rest of the UI uses for its single highlight color.
-    let dot = container(Space::new().width(7).height(7))
-        .style(move |_| container::Style {
-            background: Some(pal.accent.into()),
-            border: Border {
-                radius: 999.0.into(),
-                ..Default::default()
-            },
+    let dot = container(Space::new().width(7).height(7)).style(move |_| container::Style {
+        background: Some(pal.accent.into()),
+        border: Border {
+            radius: 999.0.into(),
             ..Default::default()
-        });
+        },
+        ..Default::default()
+    });
     let label = text_w(format!("rmdv {version} ready to install"))
         .size(13.0)
         .color(pal.fg);
@@ -4110,15 +8325,9 @@ fn update_banner<'a>(version: &str, pal: Palette) -> Element<'a, Message> {
         })
         .on_press(Message::DismissUpdate);
     let bar = container(
-        row![
-            dot,
-            label,
-            Space::new().width(8),
-            install,
-            later
-        ]
-        .spacing(10)
-        .align_y(iced::alignment::Vertical::Center),
+        row![dot, label, Space::new().width(8), install, later]
+            .spacing(10)
+            .align_y(iced::alignment::Vertical::Center),
     )
     .padding(Padding::from([8, 10]))
     .style(move |_| container::Style {
@@ -4192,6 +8401,80 @@ fn toast_overlay<'a>(text: &str, pal: Palette) -> Element<'a, Message> {
             text_color: Some(pal.fg),
             ..Default::default()
         });
+    container(bubble)
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .padding([18, 0])
+        .align_x(iced::alignment::Horizontal::Center)
+        .align_y(iced::alignment::Vertical::Top)
+        .into()
+}
+
+/// Persistent, neutral Full Mindmap verification feedback. It intentionally
+/// shares the toast position but sits beneath the ordinary toast layer, so a
+/// blocked/error toast remains readable and keeps its own expiry deadline.
+fn full_mindmap_progress_overlay<'a>(
+    progress: &FullMindmapProgress,
+    pal: Palette,
+) -> Element<'a, Message> {
+    use iced::widget::{container, text as text_w};
+    let total = progress.total.max(1);
+    let checked = progress.checked.min(progress.total);
+    let remaining = progress.total.saturating_sub(checked);
+    let ratio = (checked as f32 / total as f32).clamp(0.0, 1.0);
+    let filled = ((ratio * 1000.0).round() as u16).max(if ratio > 0.0 { 1 } else { 0 });
+    let unfilled = 1000u16.saturating_sub(filled);
+    let bar = irow![
+        container(Space::new())
+            .width(Length::FillPortion(filled))
+            .height(Length::Fixed(4.0))
+            .style(move |_| container::Style {
+                background: Some(pal.muted.into()),
+                ..Default::default()
+            }),
+        container(Space::new())
+            .width(Length::FillPortion(unfilled.max(1)))
+            .height(Length::Fixed(4.0))
+            .style(move |_| container::Style {
+                background: Some(pal.rule.into()),
+                ..Default::default()
+            }),
+    ]
+    .spacing(0);
+    let bubble = container(
+        column![
+            text_w(format!(
+                "Verifying folders · {checked}/{} checked · {remaining} remaining",
+                progress.total
+            ))
+            .size(13.0)
+            .color(pal.fg),
+            container(bar)
+                .width(Length::Fill)
+                .clip(true)
+                .style(move |_| container::Style {
+                    background: Some(pal.rule.into()),
+                    border: Border {
+                        radius: 999.0.into(),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                }),
+        ]
+        .spacing(6),
+    )
+    .width(Length::Fixed(320.0))
+    .padding([8, 14])
+    .style(move |_| container::Style {
+        background: Some(pal.surface.into()),
+        border: Border {
+            color: pal.rule,
+            width: 1.0,
+            radius: 8.0.into(),
+        },
+        text_color: Some(pal.fg),
+        ..Default::default()
+    });
     container(bubble)
         .width(Length::Fill)
         .height(Length::Fill)
@@ -4526,6 +8809,69 @@ fn measure_block_heights(
     })
 }
 
+/// Preview-owned counterpart to `measure_block_heights`. The widget operation
+/// is identical, but carries the selected path and preview generation so the
+/// update handler can reject a result after navigation changed the panel.
+fn measure_full_mindmap_preview_block_heights(
+    path: PathBuf,
+    namespace: u64,
+    identity: u64,
+    generation: u64,
+    targets: HashMap<iced::widget::Id, crate::ast::BlockId>,
+    at_offset: f32,
+) -> Task<Message> {
+    struct MeasurePreviewHeights {
+        path: PathBuf,
+        namespace: u64,
+        identity: u64,
+        generation: u64,
+        targets: HashMap<iced::widget::Id, crate::ast::BlockId>,
+        at_offset: f32,
+        out: Vec<(crate::ast::BlockId, f32)>,
+    }
+
+    impl iced::advanced::widget::Operation<Message> for MeasurePreviewHeights {
+        fn traverse(
+            &mut self,
+            operate: &mut dyn FnMut(&mut dyn iced::advanced::widget::Operation<Message>),
+        ) {
+            operate(self);
+        }
+
+        fn container(&mut self, id: Option<&iced::widget::Id>, bounds: iced::Rectangle) {
+            if let Some(block_id) = id.and_then(|widget_id| self.targets.get(widget_id)) {
+                self.out.push((*block_id, bounds.height));
+            }
+        }
+
+        fn finish(&self) -> iced::advanced::widget::operation::Outcome<Message> {
+            iced::advanced::widget::operation::Outcome::Some(
+                Message::FullMindmapPreviewBlockHeightsMeasured {
+                    path: self.path.clone(),
+                    namespace: self.namespace,
+                    identity: self.identity,
+                    generation: self.generation,
+                    measured: self.out.clone(),
+                    at_offset: self.at_offset,
+                },
+            )
+        }
+    }
+
+    if targets.is_empty() {
+        return Task::none();
+    }
+    iced::advanced::widget::operate(MeasurePreviewHeights {
+        path,
+        namespace,
+        identity,
+        generation,
+        targets,
+        at_offset,
+        out: Vec::new(),
+    })
+}
+
 /// Scroll the vault results page just enough to bring the cursor's match block
 /// fully into view, measuring its real bounds (blocks have variable height).
 /// Only moves when the block is off-screen, like a code editor's cursor follow.
@@ -4637,6 +8983,8 @@ fn welcome_view<'a>(pal: Palette) -> Element<'a, Message> {
                 .size(14)
                 .color(pal.muted),
             Space::new().height(22),
+            primary_button("Browse a Project as Mindmap", pal).on_press(Message::ToggleFullMindmap),
+            Space::new().height(8),
             kbd("Open Folder", "⌘O"),
             kbd("Find File in Workspace", "⌘P"),
             kbd("Command Palette", "⌘⇧P"),
@@ -4645,6 +8993,7 @@ fn welcome_view<'a>(pal: Palette) -> Element<'a, Message> {
             kbd("Cycle Theme", "⌘T"),
             kbd("Edit / Select Text", "⌘E"),
             kbd("Fold to Level (then 0–6)", "⌘K"),
+            kbd("Full Mindmap Mode", "⌘⇧M"),
         ]
         .spacing(8)
         .align_x(iced::Alignment::Start)
@@ -4896,7 +9245,7 @@ fn sidebar_files_body<'a>(
     let mut list = Column::new().spacing(0).padding(Padding::from([4, 4]));
     let mut content_w = app.sidebar_width - 12.0; // minus scrollbar gutter
     if let Some(tree_root) = &app.workspace_tree {
-        let rows = tree::flatten(tree_root, &app.expanded);
+        let rows = tree::flatten_with_files(tree_root, &app.workspace_sidebar_files, &app.expanded);
         let current = app.file.as_ref();
         let cursor = app.tree_cursor;
         for r in rows.iter() {
@@ -5019,6 +9368,25 @@ fn mindmap_panel_resize_handle<'a>(pal: Palette) -> Element<'a, Message> {
     .into()
 }
 
+fn full_mindmap_panel_resize_handle<'a>(pal: Palette) -> Element<'a, Message> {
+    mouse_area(
+        container(
+            Space::new()
+                .width(Length::Fixed(crate::mindmap::PANEL_HANDLE_W))
+                .height(Length::Fill),
+        )
+        .style(move |_| container::Style {
+            background: Some(pal.bg.into()),
+            ..Default::default()
+        })
+        .height(Length::Fill),
+    )
+    .interaction(iced::mouse::Interaction::ResizingHorizontally)
+    .on_press(Message::FullMindmapPanelDragStart(0.0))
+    .on_release(Message::FullMindmapPanelDragEnd)
+    .into()
+}
+
 fn sidebar_resize_handle<'a>(pal: Palette) -> Element<'a, Message> {
     mouse_area(
         container(Space::new().width(Length::Fixed(5.0)).height(Length::Fill))
@@ -5039,26 +9407,28 @@ fn sidebar_resize_handle<'a>(pal: Palette) -> Element<'a, Message> {
 /// horizontal scroll kicks in when names overflow. Approximation uses an
 /// average advance for Inter @ 13px; exact metrics aren't worth the cost of a
 /// glyph-shaping pass on every render.
-fn tree_row_width(node: &Node, depth: usize) -> f32 {
+fn tree_row_width(node: tree::RowNode<'_>, depth: usize) -> f32 {
     const CHAR_ADVANCE: f32 = 7.0;
     let indent = TREE_INDENT * depth as f32;
     let chevron = 14.0;
     let leaf = 13.0 + 4.0 + 7.0; // icon + gap before + gap after
-    let label = node.name.chars().count() as f32 * CHAR_ADVANCE;
+    let label = node.name().chars().count() as f32 * CHAR_ADVANCE;
     let padding_h = 16.0; // button padding 8 each side
     indent + chevron + leaf + label + padding_h
 }
 
 fn tree_row<'a>(
-    node: &'a Node,
+    node: tree::RowNode<'a>,
     depth: usize,
     expanded: &HashSet<PathBuf>,
     current: Option<&'a PathBuf>,
     is_cursor: bool,
     pal: Palette,
 ) -> Element<'a, Message> {
-    let is_current = !node.is_dir && current.map(|c| c == &node.path).unwrap_or(false);
-    let path = node.path.clone();
+    let is_dir = node.is_dir();
+    let node_path = node.path();
+    let is_current = !is_dir && current.map(|c| c.as_path() == node_path).unwrap_or(false);
+    let path = node_path.to_path_buf();
 
     // Indent area with vertical guides per ancestor level.
     let mut indent = iced::widget::Row::new();
@@ -5066,8 +9436,8 @@ fn tree_row<'a>(
         indent = indent.push(indent_guide(pal));
     }
 
-    let chevron: Element<'a, Message> = if node.is_dir {
-        let open = expanded.contains(&node.path);
+    let chevron: Element<'a, Message> = if is_dir {
+        let open = expanded.contains(node_path);
         let g = if open {
             ic::CHEVRON_DOWN
         } else {
@@ -5080,26 +9450,26 @@ fn tree_row<'a>(
 
     let label_color = if is_current {
         pal.fg
-    } else if node.is_dir {
+    } else if is_dir {
         pal.fg
     } else {
         pal.muted
     };
-    let label_weight = if node.is_dir {
+    let label_weight = if is_dir {
         iced::font::Weight::Medium
     } else {
         iced::font::Weight::Normal
     };
     let mut label_font = iced::Font::with_name("Inter");
     label_font.weight = label_weight;
-    let label = text(node.name.as_str())
+    let label = text(node.name().into_owned())
         .size(13)
         .color(label_color)
         .font(label_font)
         .wrapping(text::Wrapping::None);
 
-    let leaf_icon: Element<'a, Message> = if node.is_dir {
-        let open = expanded.contains(&node.path);
+    let leaf_icon: Element<'a, Message> = if is_dir {
+        let open = expanded.contains(node_path);
         let g = if open { ic::FOLDER_OPEN } else { ic::FOLDER };
         icon::glyph(g, 13.0, pal.subtle).into()
     } else {
@@ -5116,7 +9486,7 @@ fn tree_row<'a>(
     .align_y(iced::Alignment::Center)
     .spacing(0);
 
-    let on_press = if node.is_dir {
+    let on_press = if is_dir {
         Message::TreeToggle(path)
     } else {
         Message::Open(path)
@@ -5398,7 +9768,7 @@ fn file_finder_overlay<'a>(
                     },
                     ..Default::default()
                 })
-                .on_press(Message::Open(path_clone));
+                .on_press(Message::OpenFileFinderPath(path_clone));
             list = list.push(row);
         }
     }
@@ -5486,14 +9856,8 @@ fn vault_search_page<'a>(
         );
     } else if edited {
         // Query typed but not yet searched (search runs on Enter, not per key).
-        list = list.push(
-            container(
-                text("Press Enter to search")
-                    .color(pal.subtle)
-                    .size(13),
-            )
-            .padding(14),
-        );
+        list = list
+            .push(container(text("Press Enter to search").color(pal.subtle).size(13)).padding(14));
     } else if hits.is_empty() {
         list = list.push(container(text("No matches").color(pal.subtle).size(13)).padding(14));
     } else {
@@ -5884,7 +10248,7 @@ fn byte_index_for_char(s: &str, n: usize) -> usize {
 fn shortcuts_overlay<'a>(pal: Palette) -> Element<'a, Message> {
     // (group title, [(keys, action)]). Hand-authored so we can group by category
     // and include non-command bindings (arrows, Space) the palette omits.
-    let groups: [(&str, &[(&str, &str)]); 5] = [
+    let groups: [(&str, &[(&str, &str)]); 6] = [
         (
             "File",
             &[
@@ -5908,12 +10272,21 @@ fn shortcuts_overlay<'a>(pal: Palette) -> Element<'a, Message> {
             "View",
             &[
                 ("⌘B", "Toggle Sidebar"),
-                ("⌘E", "Toggle Raw / Rendered"),
+                ("⌘E", "Toggle Zen Edit"),
+                ("Esc", "Exit Zen Edit"),
                 ("⌘T", "Cycle Theme"),
                 ("⌘⇧.", "Toggle Hidden Files"),
                 ("⌘+ ⌘-", "Font Size Up / Down"),
                 ("⌘0", "Reset Font Size"),
                 ("⌘⇧P", "Command Palette"),
+            ],
+        ),
+        (
+            "Edit",
+            &[
+                ("⌘← ⌘→", "Line Start / End"),
+                ("⌘↑ ⌘↓", "Document Start / End"),
+                ("⌘S", "Save"),
             ],
         ),
         (
@@ -5930,9 +10303,8 @@ fn shortcuts_overlay<'a>(pal: Palette) -> Element<'a, Message> {
     ];
 
     // Three balanced columns so the sheet is compact and nothing clips:
-    // File + Navigation | View | Mindmap + Help (each ≤ 8 rows).
-    let columns: [&[(&str, &[(&str, &str)])]; 3] =
-        [&groups[0..2], &groups[2..3], &groups[3..5]];
+    // File + Navigation | View | Edit + Mindmap + Help.
+    let columns: [&[(&str, &[(&str, &str)])]; 3] = [&groups[0..2], &groups[2..3], &groups[3..6]];
 
     let mut cols = irow![].spacing(24);
     for col_groups in columns {
@@ -6311,6 +10683,41 @@ fn hint_pills<'a>(items: &[(&'a str, &'a str)], pal: Palette) -> Element<'a, Mes
     row.into()
 }
 
+/// Floating Full Mindmap keyboard hint. It sits over the canvas so the panel
+/// remains dedicated to the selected file or folder preview.
+fn full_mindmap_hint<'a>(items: &[(&'a str, &'a str)], pal: Palette) -> Element<'a, Message> {
+    let island = container(hint_pills(items, pal))
+        .padding(Padding::from([8, 16]))
+        .clip(true)
+        .style(move |_| container::Style {
+            background: Some(pal.surface.into()),
+            border: Border {
+                color: pal.rule,
+                width: 1.0,
+                radius: 10.0.into(),
+            },
+            shadow: iced::Shadow {
+                color: Color::from_rgba(0.0, 0.0, 0.0, 0.22),
+                offset: iced::Vector::new(0.0, 5.0),
+                blur_radius: 14.0,
+            },
+            ..Default::default()
+        });
+
+    container(island)
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .padding(Padding {
+            top: 0.0,
+            right: 0.0,
+            bottom: 16.0,
+            left: 0.0,
+        })
+        .align_x(iced::alignment::Horizontal::Center)
+        .align_y(iced::alignment::Vertical::Bottom)
+        .into()
+}
+
 fn overlay_frame<'a>(
     content: Element<'a, Message>,
     pal: Palette,
@@ -6467,6 +10874,58 @@ fn data_lang_for(path: Option<&std::path::Path>) -> Option<&'static str> {
     }
 }
 
+fn collect_preview_assets(
+    block: &Block,
+    images: &mut Vec<String>,
+    diagrams: &mut Vec<(u64, crate::ast::DiagramKind, String)>,
+) {
+    match block {
+        Block::Image { url, .. } => images.push(url.clone()),
+        Block::Diagram { hash, kind, source } => {
+            diagrams.push((*hash, kind.clone(), source.clone()))
+        }
+        Block::Blockquote(blocks) => {
+            for block in blocks {
+                collect_preview_assets(block, images, diagrams);
+            }
+        }
+        Block::List { items, .. } => {
+            for item in items {
+                for block in &item.blocks {
+                    collect_preview_assets(block, images, diagrams);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn build_full_mindmap_preview_asset_index(
+    blocks: &[(BlockId, Block)],
+) -> FullMindmapPreviewAssetIndex {
+    let mut by_block = HashMap::new();
+    for (id, block) in blocks {
+        let mut images = Vec::new();
+        let mut diagrams = Vec::new();
+        collect_preview_assets(block, &mut images, &mut diagrams);
+        let mut assets = Vec::with_capacity(images.len() + diagrams.len());
+        assets.extend(images.into_iter().map(FullMindmapPreviewAsset::Image));
+        assets.extend(
+            diagrams
+                .into_iter()
+                .map(|(hash, kind, source)| FullMindmapPreviewAsset::Diagram {
+                    hash,
+                    kind,
+                    source,
+                }),
+        );
+        if !assets.is_empty() {
+            by_block.insert(*id, assets);
+        }
+    }
+    FullMindmapPreviewAssetIndex { by_block }
+}
+
 fn prettify_data(lang: &str, src: &str) -> String {
     if lang == "json" {
         if let Ok(v) = serde_json::from_str::<serde_json::Value>(src) {
@@ -6476,6 +10935,251 @@ fn prettify_data(lang: &str, src: &str) -> String {
         }
     }
     src.to_string()
+}
+
+fn truncate_preview_source(mut source: String) -> (String, bool) {
+    if source.len() <= MIND_PANEL_MAX_TEXT_BYTES {
+        return (source, false);
+    }
+    let mut end = MIND_PANEL_MAX_TEXT_BYTES;
+    while !source.is_char_boundary(end) {
+        end = end.saturating_sub(1);
+    }
+    source.truncate(end);
+    (source, true)
+}
+
+/// Parse and highlight a complete preview away from the Iced update thread.
+/// The static highlighter cache is mutex-protected, so worker results remain
+/// independent from the current document's mutable `HlCache`.
+fn parse_full_mindmap_preview_blocking(path: PathBuf, source: String) -> FullMindmapPreview {
+    if let Some(lang) = data_lang_for(Some(&path)) {
+        let (source, source_truncated) = truncate_preview_source(source);
+        let (pretty, pretty_truncated) = truncate_preview_source(prettify_data(lang, &source));
+        return FullMindmapPreview::Data {
+            path,
+            source: pretty,
+            truncated: source_truncated || pretty_truncated,
+        };
+    }
+
+    let (mut blocks, _) = if is_tex_path(Some(&path)) {
+        crate::tex::parse(&source)
+    } else {
+        parser::parse(&source)
+    };
+    for (_, block) in &mut blocks {
+        if let Block::CodeBlock {
+            lang: Some(lang),
+            code,
+            spans,
+        } = block
+        {
+            if spans.is_empty() {
+                *spans = crate::highlight::highlight(lang, code);
+            }
+        }
+    }
+    let shape = Arc::new(crate::virt::VirtWindow::shape(
+        &blocks,
+        &HashSet::new(),
+        &crate::virt::HeightCache::default(),
+    ));
+    let assets = Arc::new(build_full_mindmap_preview_asset_index(&blocks));
+    FullMindmapPreview::Document {
+        path,
+        blocks,
+        truncated: false,
+        shape: Some(shape),
+        assets: Some(assets),
+    }
+}
+
+fn full_mindmap_preview_settle_stream(
+    updates: tokio::sync::watch::Receiver<Option<PendingFullMindmapPreviewSettle>>,
+) -> impl futures::Stream<Item = PendingFullMindmapPreviewSettle> {
+    futures::stream::unfold((updates, None), |(mut updates, last_emitted)| async move {
+        loop {
+            let request = loop {
+                if let Some(request) = updates.borrow().clone() {
+                    if last_emitted.as_ref() != Some(&request) {
+                        break request;
+                    }
+                }
+                if updates.changed().await.is_err() {
+                    return None;
+                }
+            };
+            let timer = tokio::time::sleep(std::time::Duration::from_millis(
+                FULL_MINDMAP_PREVIEW_SETTLE_MS,
+            ));
+            tokio::pin!(timer);
+            loop {
+                tokio::select! {
+                    changed = updates.changed() => {
+                        if changed.is_err() {
+                            return None;
+                        }
+                        // The watch value is the only settle owner. Restart
+                        // the quiet window around whatever request is current.
+                        break;
+                    }
+                    _ = &mut timer => {
+                        if updates.borrow().as_ref() == Some(&request) {
+                            return Some((request.clone(), (updates, Some(request))));
+                        }
+                        break;
+                    }
+                }
+            }
+        }
+    })
+}
+
+fn full_mindmap_preview_work_gate() -> &'static tokio::sync::Semaphore {
+    static GATE: OnceLock<tokio::sync::Semaphore> = OnceLock::new();
+    GATE.get_or_init(|| tokio::sync::Semaphore::const_new(1))
+}
+
+fn preview_work_is_current(cancel: &AtomicU64, epoch: u64) -> bool {
+    cancel.load(Ordering::Acquire) == epoch
+}
+
+async fn acquire_full_mindmap_preview_work(
+    cancel: &Arc<AtomicU64>,
+    epoch: u64,
+) -> Result<tokio::sync::SemaphorePermit<'static>, String> {
+    loop {
+        if !preview_work_is_current(cancel, epoch) {
+            return Err(FULL_MINDMAP_PREVIEW_CANCELLED.to_string());
+        }
+        match full_mindmap_preview_work_gate().try_acquire() {
+            Ok(permit) => return Ok(permit),
+            Err(tokio::sync::TryAcquireError::NoPermits) => {
+                tokio::time::sleep(std::time::Duration::from_millis(8)).await;
+            }
+            Err(tokio::sync::TryAcquireError::Closed) => {
+                return Err("preview worker gate closed".to_string());
+            }
+        }
+    }
+}
+
+fn read_full_mindmap_preview_source_blocking(
+    path: PathBuf,
+    max_bytes: Option<usize>,
+    cancel: Option<Arc<AtomicU64>>,
+    epoch: u64,
+) -> Result<String, String> {
+    use std::io::Read;
+
+    let mut file = std::fs::File::open(path).map_err(|error| error.to_string())?;
+    let mut bytes = Vec::new();
+    let mut chunk = vec![0u8; FULL_MINDMAP_PREVIEW_READ_CHUNK_BYTES];
+    loop {
+        if cancel
+            .as_ref()
+            .is_some_and(|token| !preview_work_is_current(token, epoch))
+        {
+            return Err(FULL_MINDMAP_PREVIEW_CANCELLED.to_string());
+        }
+        let read = file.read(&mut chunk).map_err(|error| error.to_string())?;
+        if read == 0 {
+            break;
+        }
+        bytes.extend_from_slice(&chunk[..read]);
+        if let Some(limit) = max_bytes {
+            if bytes.len() >= limit {
+                bytes.truncate(limit);
+                break;
+            }
+        }
+    }
+    if cancel
+        .as_ref()
+        .is_some_and(|token| !preview_work_is_current(token, epoch))
+    {
+        return Err(FULL_MINDMAP_PREVIEW_CANCELLED.to_string());
+    }
+    Ok(String::from_utf8_lossy(&bytes).into_owned())
+}
+
+/// Complete read with a single cooperative worker. A newer selection bumps
+/// the token; stale queued work exits before taking the gate and an active
+/// read checks between bounded chunks, so rapid navigation cannot retain a
+/// backlog of large sources.
+async fn load_full_mindmap_preview_guarded(
+    path: PathBuf,
+    cancel: Arc<AtomicU64>,
+    epoch: u64,
+) -> Result<(PathBuf, String), String> {
+    #[cfg(feature = "pdf")]
+    if path
+        .extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| e.eq_ignore_ascii_case("pdf"))
+    {
+        return Err("PDF preview unavailable — press Enter to open".to_string());
+    }
+    let _permit = acquire_full_mindmap_preview_work(&cancel, epoch).await?;
+    let max_bytes = data_lang_for(Some(&path)).map(|_| MIND_PANEL_MAX_TEXT_BYTES + 1);
+    let read_path = path.clone();
+    let read_cancel = Arc::clone(&cancel);
+    let source = tokio::task::spawn_blocking(move || {
+        read_full_mindmap_preview_source_blocking(read_path, max_bytes, Some(read_cancel), epoch)
+    })
+    .await
+    .map_err(|error| error.to_string())??;
+    if !preview_work_is_current(&cancel, epoch) {
+        return Err(FULL_MINDMAP_PREVIEW_CANCELLED.to_string());
+    }
+    Ok((path, source))
+}
+
+/// Parse and highlight off the update thread. Parsing uses a small
+/// per-navigator capacity (separate from the read gate): an obsolete large
+/// parse may finish in parallel with the current selection without
+/// monopolizing a process-global slot, while bounded permits prevent a rapid
+/// sequence from filling the blocking pool. Epoch checks before and after the
+/// operation reject stale results.
+async fn parse_full_mindmap_preview_guarded(
+    path: PathBuf,
+    source: Arc<str>,
+    cancel: Arc<AtomicU64>,
+    epoch: u64,
+    parse_gate: Arc<tokio::sync::Semaphore>,
+) -> Result<FullMindmapPreview, String> {
+    if !preview_work_is_current(&cancel, epoch) {
+        return Err(FULL_MINDMAP_PREVIEW_CANCELLED.to_string());
+    }
+    let parse_permit = loop {
+        if !preview_work_is_current(&cancel, epoch) {
+            return Err(FULL_MINDMAP_PREVIEW_CANCELLED.to_string());
+        }
+        match Arc::clone(&parse_gate).try_acquire_owned() {
+            Ok(permit) => break permit,
+            Err(tokio::sync::TryAcquireError::NoPermits) => {
+                tokio::time::sleep(std::time::Duration::from_millis(8)).await;
+            }
+            Err(tokio::sync::TryAcquireError::Closed) => {
+                return Err("preview parse gate closed".to_string());
+            }
+        }
+    };
+    let parse_cancel = Arc::clone(&cancel);
+    tokio::task::spawn_blocking(move || {
+        let _parse_permit = parse_permit;
+        if !preview_work_is_current(&parse_cancel, epoch) {
+            return Err(FULL_MINDMAP_PREVIEW_CANCELLED.to_string());
+        }
+        let preview = parse_full_mindmap_preview_blocking(path, source.to_string());
+        if !preview_work_is_current(&parse_cancel, epoch) {
+            return Err(FULL_MINDMAP_PREVIEW_CANCELLED.to_string());
+        }
+        Ok(preview)
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 async fn load_file(p: PathBuf) -> Result<(PathBuf, String), String> {
@@ -6494,6 +11198,68 @@ async fn load_file(p: PathBuf) -> Result<(PathBuf, String), String> {
     let bytes = tokio::fs::read(&p).await.map_err(|e| e.to_string())?;
     let s = String::from_utf8_lossy(&bytes).into_owned();
     Ok((p, s))
+}
+
+/// Read the complete Full Mindmap side-panel source on a worker. PDFs remain
+/// openable with Enter but are intentionally not converted just for a preview.
+#[cfg(test)]
+async fn load_full_mindmap_preview(p: PathBuf) -> Result<(PathBuf, String), String> {
+    #[cfg(feature = "pdf")]
+    if p.extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| e.eq_ignore_ascii_case("pdf"))
+    {
+        return Err("PDF preview unavailable — press Enter to open".to_string());
+    }
+    let source = if data_lang_for(Some(&p)).is_some() {
+        let path = p.clone();
+        tokio::task::spawn_blocking(move || {
+            use std::io::Read;
+
+            let file = std::fs::File::open(path).map_err(|error| error.to_string())?;
+            let mut limited = file.take((MIND_PANEL_MAX_TEXT_BYTES + 1) as u64);
+            let mut bytes = Vec::with_capacity(MIND_PANEL_MAX_TEXT_BYTES + 1);
+            limited
+                .read_to_end(&mut bytes)
+                .map_err(|error| error.to_string())?;
+            Ok::<String, String>(String::from_utf8_lossy(&bytes).into_owned())
+        })
+        .await
+        .map_err(|error| error.to_string())??
+    } else {
+        tokio::fs::read(&p)
+            .await
+            .map_err(|error| error.to_string())
+            .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())?
+    };
+    Ok((p, source))
+}
+
+/// Build the tree and file-finder index together on a blocking worker. The
+/// tree-side entry/file budgets guarantee a very large project cannot grow
+/// this task without bound.
+async fn load_full_mindmap_workspace(
+    path: PathBuf,
+    show_hidden: bool,
+) -> Result<(PathBuf, tree::WorkspaceSnapshot), String> {
+    let scan_path = path.clone();
+    let snapshot =
+        tokio::task::spawn_blocking(move || tree::build_workspace(&scan_path, show_hidden))
+            .await
+            .map_err(|error| error.to_string())??;
+    Ok((path, snapshot))
+}
+
+async fn load_full_mindmap_folder(
+    path: PathBuf,
+    show_hidden: bool,
+) -> Result<(PathBuf, tree::ExpandedFolderSnapshot), String> {
+    let scan_path = path.clone();
+    let snapshot =
+        tokio::task::spawn_blocking(move || tree::load_expanded_folder(&scan_path, show_hidden))
+            .await
+            .map_err(|error| error.to_string())??;
+    Ok((path, snapshot))
 }
 
 async fn fetch_image(url: String) -> (String, Result<Vec<u8>, String>) {
@@ -6765,6 +11531,519 @@ mod tests {
         }
     }
 
+    #[test]
+    fn full_mindmap_preview_scrollbar_reuses_transparent_rail_style() {
+        let pal = Palette::ONE_DARK;
+        let idle = sleek_scrollable_style(
+            scrollable::Status::Active {
+                is_horizontal_scrollbar_disabled: false,
+                is_vertical_scrollbar_disabled: false,
+            },
+            pal,
+            false,
+        );
+        assert!(idle.vertical_rail.background.is_none());
+        assert!(idle.horizontal_rail.background.is_none());
+        assert_eq!(
+            idle.vertical_rail.scroller.background,
+            Background::Color(Color::TRANSPARENT)
+        );
+
+        // The shared ordinary Markdown style keeps the affordance on hover;
+        // only the rail/idle track remains transparent.
+        let hovered = sleek_scrollable_style(
+            scrollable::Status::Hovered {
+                is_horizontal_scrollbar_hovered: false,
+                is_vertical_scrollbar_hovered: true,
+                is_horizontal_scrollbar_disabled: false,
+                is_vertical_scrollbar_disabled: false,
+            },
+            pal,
+            false,
+        );
+        assert_eq!(
+            hovered.vertical_rail.scroller.background,
+            Background::Color(pal.scroller_hover)
+        );
+    }
+
+    #[test]
+    fn full_mindmap_non_file_panel_keeps_default_scrollbar_style() {
+        let default = scrollable::default(
+            &Theme::Dark,
+            scrollable::Status::Active {
+                is_horizontal_scrollbar_disabled: false,
+                is_vertical_scrollbar_disabled: false,
+            },
+        );
+        // The folder/status branch explicitly uses the catalog default, so
+        // its rails remain the established themed tracks rather than inheriting
+        // the transparent file-preview treatment.
+        assert!(default.vertical_rail.background.is_some());
+        assert!(default.horizontal_rail.background.is_some());
+    }
+
+    #[test]
+    fn folder_only_snapshot_sidebar_activates_indexed_file_through_dirty_guard() {
+        let dir = full_mindmap_test_dir("sidebar-indexed-activate");
+        let target = dir.join("target.md");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(&target, "# Target\n").unwrap();
+
+        let mut app = App::default();
+        app.set_workspace(dir.clone(), false);
+        assert!(app
+            .workspace_tree
+            .as_ref()
+            .unwrap()
+            .children
+            .iter()
+            .all(|node| node.is_dir));
+        let rows = tree::flatten_with_files(
+            app.workspace_tree.as_ref().unwrap(),
+            &app.workspace_sidebar_files,
+            &app.expanded,
+        );
+        app.tree_cursor = rows
+            .iter()
+            .position(|row| row.node.path() == target)
+            .expect("indexed root file should remain a standard sidebar row");
+        app.file = Some(dir.join("current.md"));
+        app.source = "unsaved current".into();
+        app.saved_source = "saved current".into();
+        app.dirty = true;
+
+        let _ = app.update(Message::TreeActivate);
+
+        assert_eq!(app.source, "unsaved current");
+        assert_eq!(app.file.as_deref(), Some(dir.join("current.md").as_path()));
+        assert!(app.dirty);
+        assert!(app
+            .toast
+            .as_ref()
+            .is_some_and(|toast| toast.text.contains("unsaved")));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn standard_sidebar_rows_follow_hidden_snapshot_refresh() {
+        let dir = full_mindmap_test_dir("sidebar-hidden-refresh");
+        let visible = dir.join("visible.md");
+        let hidden = dir.join(".hidden.md");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(&visible, "# Visible\n").unwrap();
+        std::fs::write(&hidden, "# Hidden\n").unwrap();
+
+        let mut app = App::default();
+        app.set_workspace(dir.clone(), false);
+        let before = tree::flatten_with_files(
+            app.workspace_tree.as_ref().unwrap(),
+            &app.workspace_sidebar_files,
+            &app.expanded,
+        );
+        assert!(before.iter().any(|row| row.node.path() == visible));
+        assert!(!before.iter().any(|row| row.node.path() == hidden));
+
+        let _ = app.update(Message::ToggleHidden);
+        let after = tree::flatten_with_files(
+            app.workspace_tree.as_ref().unwrap(),
+            &app.workspace_sidebar_files,
+            &app.expanded,
+        );
+        assert!(after.iter().any(|row| row.node.path() == visible));
+        assert!(after.iter().any(|row| row.node.path() == hidden));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn editor_key_press(
+        key: iced::keyboard::Key,
+        physical_key: iced::keyboard::key::Physical,
+        modifiers: iced::keyboard::Modifiers,
+    ) -> iced::widget::text_editor::KeyPress {
+        iced::widget::text_editor::KeyPress {
+            key: key.clone(),
+            modified_key: key,
+            physical_key,
+            modifiers,
+            text: None,
+            status: iced::widget::text_editor::Status::Focused { is_hovered: false },
+        }
+    }
+
+    #[test]
+    fn editor_key_binding_maps_command_arrows_to_cursor_motion() {
+        use iced::keyboard::key::{Code, Named, Physical};
+        use iced::keyboard::{Key, Modifiers};
+        use iced::widget::text_editor::{Binding, Motion};
+
+        assert!(matches!(
+            editor_key_binding(editor_key_press(
+                Key::Named(Named::ArrowLeft),
+                Physical::Code(Code::ArrowLeft),
+                Modifiers::COMMAND,
+            )),
+            Some(Binding::Move(Motion::Home))
+        ));
+        assert!(matches!(
+            editor_key_binding(editor_key_press(
+                Key::Named(Named::ArrowRight),
+                Physical::Code(Code::ArrowRight),
+                Modifiers::COMMAND,
+            )),
+            Some(Binding::Move(Motion::End))
+        ));
+        assert!(matches!(
+            editor_key_binding(editor_key_press(
+                Key::Named(Named::ArrowUp),
+                Physical::Code(Code::ArrowUp),
+                Modifiers::COMMAND,
+            )),
+            Some(Binding::Move(Motion::DocumentStart))
+        ));
+        assert!(matches!(
+            editor_key_binding(editor_key_press(
+                Key::Named(Named::ArrowDown),
+                Physical::Code(Code::ArrowDown),
+                Modifiers::COMMAND,
+            )),
+            Some(Binding::Move(Motion::DocumentEnd))
+        ));
+    }
+
+    #[test]
+    fn editor_key_binding_maps_shift_command_arrows_to_selection_motion() {
+        use iced::keyboard::key::{Code, Named, Physical};
+        use iced::keyboard::{Key, Modifiers};
+        use iced::widget::text_editor::{Binding, Motion};
+
+        assert!(matches!(
+            editor_key_binding(editor_key_press(
+                Key::Named(Named::ArrowLeft),
+                Physical::Code(Code::ArrowLeft),
+                Modifiers::COMMAND | Modifiers::SHIFT,
+            )),
+            Some(Binding::Select(Motion::Home))
+        ));
+        assert!(matches!(
+            editor_key_binding(editor_key_press(
+                Key::Named(Named::ArrowDown),
+                Physical::Code(Code::ArrowDown),
+                Modifiers::COMMAND | Modifiers::SHIFT,
+            )),
+            Some(Binding::Select(Motion::DocumentEnd))
+        ));
+    }
+
+    #[test]
+    fn editor_key_binding_still_blocks_non_editor_command_chords() {
+        use iced::keyboard::key::{Code, Physical};
+        use iced::keyboard::{Key, Modifiers};
+
+        assert!(editor_key_binding(editor_key_press(
+            Key::Character("b".into()),
+            Physical::Code(Code::KeyB),
+            Modifiers::COMMAND,
+        ))
+        .is_none());
+    }
+
+    #[test]
+    fn zen_entry_hides_sidebar_search_and_keeps_footer() {
+        let mut app = App::default();
+        app.file = Some(std::path::PathBuf::from("note.md"));
+        app.source = "# Title\n\nBody".into();
+        app.sidebar_open = true;
+        app.show_footer = true;
+        app.search_open = true;
+        app.overlay = Overlay::Command;
+
+        let _ = app.enter_zen_edit_mode();
+
+        assert_eq!(app.view_mode, ViewMode::Raw);
+        assert!(app.editor.is_some());
+        assert!(!app.sidebar_open);
+        assert!(app.show_footer);
+        assert!(!app.search_open);
+        assert_eq!(app.overlay, Overlay::None);
+        assert!(app.zen_restore.is_some());
+    }
+
+    #[test]
+    fn zen_exit_restores_saved_chrome_state() {
+        let mut app = App::default();
+        app.file = Some(std::path::PathBuf::from("note.md"));
+        app.source = "before".into();
+        app.sidebar_open = true;
+        app.show_footer = false;
+        app.search_open = true;
+
+        let _ = app.enter_zen_edit_mode();
+        assert!(app.show_footer);
+        let _ = app.exit_zen_edit_mode();
+
+        assert_eq!(app.view_mode, ViewMode::Rendered);
+        assert!(app.sidebar_open);
+        assert!(!app.show_footer);
+        assert!(app.search_open);
+        assert!(app.zen_restore.is_none());
+    }
+
+    #[test]
+    fn clean_file_loaded_while_in_zen_clears_editor_and_restores_chrome() {
+        let mut app = App::default();
+        app.file = Some(std::path::PathBuf::from("old.md"));
+        app.source = "old file".into();
+        app.sidebar_open = true;
+        app.show_footer = false;
+        app.search_open = true;
+
+        let _ = app.enter_zen_edit_mode();
+        app.editor = Some(iced::widget::text_editor::Content::with_text("old file"));
+        app.dirty = false;
+
+        let new_path = std::path::PathBuf::from("new.md");
+        let _ = app.update(Message::FileLoaded(Ok((
+            new_path.clone(),
+            "new file".into(),
+        ))));
+
+        assert_eq!(app.view_mode, ViewMode::Rendered);
+        assert_eq!(app.file.as_deref(), Some(new_path.as_path()));
+        assert_eq!(app.source, "new file");
+        assert!(app.editor.is_none());
+        assert!(!app.dirty);
+        assert!(app.sidebar_open);
+        assert!(!app.show_footer);
+        assert!(app.search_open);
+        assert!(app.zen_restore.is_none());
+    }
+
+    #[test]
+    fn dirty_file_loaded_while_in_zen_keeps_editor_and_current_file() {
+        let mut app = App::default();
+        let old_path = std::path::PathBuf::from("old.md");
+        app.file = Some(old_path.clone());
+        app.source = "old file".into();
+        app.sidebar_open = true;
+        app.show_footer = false;
+        app.search_open = true;
+
+        let _ = app.enter_zen_edit_mode();
+        app.editor = Some(iced::widget::text_editor::Content::with_text(
+            "old edited text",
+        ));
+        app.dirty = true;
+        app.pending_nav = Some(PendingNav {
+            line: Some(12),
+            ..Default::default()
+        });
+
+        let _ = app.update(Message::FileLoaded(Ok((
+            std::path::PathBuf::from("new.md"),
+            "new file".into(),
+        ))));
+
+        assert_eq!(app.view_mode, ViewMode::Raw);
+        assert_eq!(app.file.as_deref(), Some(old_path.as_path()));
+        assert_eq!(app.source, "old file");
+        assert_eq!(
+            app.editor.as_ref().map(|ed| ed.text()),
+            Some("old edited text".to_string())
+        );
+        assert!(app.dirty);
+        assert!(app.pending_nav.is_none());
+        assert!(!app.sidebar_open);
+        assert!(app.show_footer);
+        assert!(!app.search_open);
+        assert!(app.zen_restore.is_some());
+        assert!(app
+            .toast
+            .as_ref()
+            .is_some_and(|toast| toast.text.contains("unsaved edits")));
+    }
+
+    #[test]
+    fn zen_exit_and_reentry_preserve_unsaved_document_state() {
+        let mut app = App::default();
+        let old_path = std::path::PathBuf::from("old.md");
+        app.file = Some(old_path.clone());
+        app.source = "saved text".into();
+        app.saved_source = app.source.clone();
+
+        let _ = app.enter_zen_edit_mode();
+        app.editor = Some(iced::widget::text_editor::Content::with_text(
+            "unsaved text",
+        ));
+        app.dirty = true;
+        let _ = app.exit_zen_edit_mode();
+
+        assert_eq!(app.source, "unsaved text");
+        assert!(app.dirty);
+
+        let _ = app.enter_zen_edit_mode();
+        assert!(app.dirty);
+        let _ = app.update(Message::FileLoaded(Ok((
+            std::path::PathBuf::from("new.md"),
+            "new file".into(),
+        ))));
+
+        assert_eq!(app.file.as_deref(), Some(old_path.as_path()));
+        assert_eq!(app.source, "unsaved text");
+        assert!(app.dirty);
+    }
+
+    #[test]
+    fn failed_save_keeps_file_switch_guard_armed() {
+        let mut app = App::default();
+        app.file = Some(std::path::PathBuf::from("note.md"));
+        app.source = "unsaved text".into();
+        app.saved_source = "saved text".into();
+        app.dirty = false; // Mimic the old optimistic-save state.
+
+        let _ = app.update(Message::FileSaved {
+            result: Err("disk full".into()),
+            saved_source: "unsaved text".into(),
+        });
+
+        assert!(app.dirty);
+        assert!(app
+            .error
+            .as_ref()
+            .is_some_and(|error| error.contains("disk full")));
+    }
+
+    #[test]
+    fn completed_save_updates_the_persisted_baseline() {
+        let mut app = App::default();
+        app.file = Some(std::path::PathBuf::from("note.md"));
+        app.source = "saved text".into();
+        app.saved_source = "old text".into();
+        app.dirty = true;
+
+        let _ = app.update(Message::FileSaved {
+            result: Ok(()),
+            saved_source: "saved text".into(),
+        });
+
+        assert_eq!(app.saved_source, "saved text");
+        assert!(!app.dirty);
+    }
+
+    #[test]
+    fn file_finder_open_while_dirty_blocks_load_and_returns_to_editor() {
+        let mut app = App::default();
+        let old_path = std::path::PathBuf::from("old.md");
+        let new_path = std::path::PathBuf::from("new.md");
+        app.file = Some(old_path.clone());
+        app.source = "old file".into();
+        app.workspace = Some(std::path::PathBuf::from("."));
+        app.workspace_files = vec![new_path];
+        app.sidebar_open = true;
+        app.show_footer = false;
+        app.search_open = true;
+
+        let _ = app.enter_zen_edit_mode();
+        app.overlay = Overlay::FileFinder;
+        app.overlay_selected = 0;
+        app.editor = Some(iced::widget::text_editor::Content::with_text(
+            "old edited text",
+        ));
+        app.dirty = true;
+
+        let _ = app.update(Message::OverlayConfirm);
+
+        assert_eq!(app.view_mode, ViewMode::Raw);
+        assert_eq!(app.file.as_deref(), Some(old_path.as_path()));
+        assert_eq!(
+            app.editor.as_ref().map(|ed| ed.text()),
+            Some("old edited text".to_string())
+        );
+        assert!(app.dirty);
+        assert_eq!(app.overlay, Overlay::None);
+        assert!(app
+            .toast
+            .as_ref()
+            .is_some_and(|toast| toast.text.contains("unsaved edits")));
+    }
+
+    #[test]
+    fn dirty_vault_hit_does_not_close_search_or_queue_navigation() {
+        let mut app = App::default();
+        app.file = Some(std::path::PathBuf::from("old.md"));
+        app.source = "old file".into();
+        app.dirty = true;
+        app.vault_open = true;
+        app.vault_results.push(crate::vault_search::VaultHit {
+            path: std::path::PathBuf::from("new.md"),
+            line: 7,
+            col_start: 0,
+            col_end: 4,
+            context: Vec::new(),
+        });
+
+        let _ = app.update(Message::VaultOpenHit(0));
+
+        assert!(app.vault_open);
+        assert!(app.pending_nav.is_none());
+        assert!(app
+            .toast
+            .as_ref()
+            .is_some_and(|toast| toast.text.contains("unsaved edits")));
+    }
+
+    #[test]
+    fn dirty_local_link_does_not_queue_navigation() {
+        let dir = std::env::temp_dir().join(format!("rmdv-dirty-link-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("target.md"), "# Target\n").unwrap();
+
+        let mut app = App::default();
+        let current = dir.join("current.md");
+        app.file = Some(current.clone());
+        app.source = "old file".into();
+        app.dirty = true;
+
+        let _ = app.update(Message::OpenLink("target.md#target".into()));
+
+        assert_eq!(app.file.as_deref(), Some(current.as_path()));
+        assert!(app.dirty);
+        assert!(app.pending_nav.is_none());
+        assert!(app
+            .toast
+            .as_ref()
+            .is_some_and(|toast| toast.text.contains("unsaved edits")));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn scroll_to_line_while_in_zen_syncs_editor_and_restores_chrome() {
+        let mut app = App::default();
+        app.file = Some(std::path::PathBuf::from("note.md"));
+        app.source = "# One\n\nBody\n\n# Two\n".into();
+        app.load_ast_from_source();
+        app.sidebar_open = true;
+        app.show_footer = false;
+        app.search_open = true;
+
+        let target_line = line_for_fragment(&app.source, "two", false).unwrap();
+        let _ = app.enter_zen_edit_mode();
+        app.editor = Some(iced::widget::text_editor::Content::with_text(
+            "# One\n\nEdited body\n\n# Two\n",
+        ));
+
+        let _ = app.update(Message::ScrollToLine(target_line));
+
+        assert_eq!(app.view_mode, ViewMode::Rendered);
+        assert_eq!(app.source, "# One\n\nEdited body\n\n# Two\n");
+        assert!(app.editor.is_none());
+        assert!(app.sidebar_open);
+        assert!(!app.show_footer);
+        assert!(app.search_open);
+        assert!(app.zen_restore.is_none());
+    }
+
     fn loaded_image(bytes: usize) -> ImageState {
         ImageState::Loaded(iced::widget::image::Handle::from_bytes(vec![0u8; bytes]))
     }
@@ -6819,12 +12098,4422 @@ mod tests {
         let state = ImageState::LoadedSvg {
             svg: iced::widget::svg::Handle::from_memory(vec![0u8; 100]),
             bytes: std::sync::Arc::new(vec![0u8; 100]),
-            raster: Some(iced::widget::image::Handle::from_rgba(
-                5,
-                5,
-                vec![0u8; 100],
-            )),
+            raster: Some(iced::widget::image::Handle::from_rgba(5, 5, vec![0u8; 100])),
         };
         assert_eq!(image_state_cost(&state), 300);
+    }
+
+    fn full_workspace_state(root: &std::path::Path) -> FullMindmapState {
+        fn materialize(path: &std::path::Path, state: &mut FullMindmapState) {
+            if let Ok(snapshot) = tree::load_expanded_folder(path, true) {
+                state.materialized_folders.insert(
+                    path.to_path_buf(),
+                    workspace_mindmap::MaterializedFolder::Loaded {
+                        folders: std::sync::Arc::new(snapshot.folders),
+                        files: std::sync::Arc::new(snapshot.files),
+                        recursive_supported_file_count: snapshot.recursive_supported_file_count,
+                        truncated: snapshot.truncated,
+                    },
+                );
+            }
+            if let Ok(entries) = std::fs::read_dir(path) {
+                for entry in entries.flatten() {
+                    if entry.path().is_dir() {
+                        materialize(&entry.path(), state);
+                    }
+                }
+            }
+        }
+
+        let mut state = App::new_full_mindmap_state();
+        state.expanded.insert(root.to_path_buf());
+        state.selected = Some(WorkspaceNodeId::Root(root.to_path_buf()));
+        materialize(root, &mut state);
+        state
+    }
+
+    fn full_mindmap_test_dir(label: &str) -> std::path::PathBuf {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "rmdv-full-mindmap-{label}-{}-{stamp}",
+            std::process::id()
+        ))
+    }
+
+    fn verification_test_app(
+        candidate_count: usize,
+    ) -> (App, std::path::PathBuf, Vec<std::path::PathBuf>) {
+        let root = std::path::PathBuf::from("/verification-root");
+        let candidates = (0..candidate_count)
+            .map(|index| root.join(format!("candidate-{index}")))
+            .collect::<Vec<_>>();
+        let children = candidates
+            .iter()
+            .map(|path| Node {
+                path: path.clone(),
+                name: path.file_name().unwrap().to_string_lossy().into_owned(),
+                is_dir: true,
+                children: Vec::new(),
+                recursive_supported_file_count: Some(tree::RecursiveFileCount::LowerBound(0)),
+            })
+            .collect();
+        let root_node = Node {
+            path: root.clone(),
+            name: "verification-root".into(),
+            is_dir: true,
+            children,
+            recursive_supported_file_count: Some(tree::RecursiveFileCount::LowerBound(0)),
+        };
+        let mut app = App::default();
+        app.workspace = Some(root.clone());
+        app.workspace_tree = Some(root_node);
+        app.workspace_snapshot_show_hidden = false;
+        let mut full = App::new_full_mindmap_state();
+        full.expanded.insert(root.clone());
+        full.selected = Some(WorkspaceNodeId::Root(root.clone()));
+        app.full_mindmap = Some(full);
+        (app, root, candidates)
+    }
+
+    fn verification_request_for(
+        app: &App,
+        folder: &std::path::Path,
+    ) -> PendingFullMindmapVerification {
+        let full = app.full_mindmap.as_ref().unwrap();
+        let wave = full.verification_wave.as_ref().unwrap();
+        PendingFullMindmapVerification {
+            id: *wave.request_ids.get(folder).unwrap(),
+            wave_id: wave.id,
+            workspace_root: wave.workspace_root.clone(),
+            parent: wave
+                .parent_by_candidate
+                .get(folder)
+                .cloned()
+                .unwrap_or_else(|| wave.workspace_root.clone()),
+            parent_expansion_generation: wave.parent_expansion_generation,
+            folder: folder.to_path_buf(),
+            show_hidden: wave.show_hidden,
+        }
+    }
+
+    #[test]
+    fn full_mindmap_verification_wave_hides_unknowns_and_reveals_positive_counts() {
+        let (mut app, root, candidates) = verification_test_app(1);
+        let _ = app.begin_full_mindmap_verification_wave();
+        assert_eq!(
+            app.full_mindmap_progress,
+            Some(FullMindmapProgress {
+                wave_id: app
+                    .full_mindmap
+                    .as_ref()
+                    .unwrap()
+                    .verification_wave
+                    .as_ref()
+                    .unwrap()
+                    .id,
+                checked: 0,
+                total: 1,
+            })
+        );
+        assert!(app
+            .full_mindmap_graph()
+            .unwrap()
+            .node(&WorkspaceNodeId::Folder(candidates[0].clone()))
+            .is_none());
+
+        let request = verification_request_for(&app, &candidates[0]);
+        let _ = app.update(Message::FullMindmapVerificationLoaded {
+            request,
+            result: Ok((
+                candidates[0].clone(),
+                tree::ExpandedFolderSnapshot {
+                    folders: Vec::new(),
+                    files: vec![candidates[0].join("readme.md"); 3],
+                    recursive_supported_file_count: tree::RecursiveFileCount::Exact(3),
+                    truncated: false,
+                },
+            )),
+        });
+        let graph = app.full_mindmap_graph().unwrap();
+        assert_eq!(
+            graph
+                .nodes
+                .iter()
+                .find(|node| node.id.as_ref()
+                    == Some(&WorkspaceNodeId::Folder(candidates[0].clone())))
+                .map(|node| node.full_label.as_str()),
+            Some("candidate-0 · 3 files")
+        );
+        assert!(matches!(
+            app.full_mindmap
+                .as_ref()
+                .unwrap()
+                .materialized_folders
+                .get(&candidates[0]),
+            Some(workspace_mindmap::MaterializedFolder::Verified {
+                recursive_supported_file_count: tree::RecursiveFileCount::Exact(3),
+                ..
+            })
+        ));
+        // Verification reveals only the recursive count. Expanding the
+        // folder removes that count-only fact and owns the real branch load.
+        let _ = app.update(Message::FullMindmapToggleNode(WorkspaceNodeId::Folder(
+            candidates[0].clone(),
+        )));
+        let full = app.full_mindmap.as_ref().unwrap();
+        assert!(full.pending_folder_loads.contains_key(&candidates[0]));
+        assert!(!full.materialized_folders.contains_key(&candidates[0]));
+        assert_eq!(app.full_mindmap_progress, None);
+        assert_eq!(app.workspace.as_deref(), Some(root.as_path()));
+    }
+
+    #[test]
+    fn full_mindmap_deselect_survives_exact_empty_verification_normalization() {
+        let (mut app, _root, candidates) = verification_test_app(1);
+        let _ = app.begin_full_mindmap_verification_wave();
+        let request = verification_request_for(&app, &candidates[0]);
+
+        let _ = app.update(Message::FullMindmapDeselect);
+        let full = app.full_mindmap.as_ref().unwrap();
+        assert_eq!(full.selected, None);
+        assert_eq!(full.focus_request, None);
+        assert!(!full.panel_open);
+        assert!(full.verification_wave.is_some());
+
+        let _ = app.update(Message::FullMindmapVerificationLoaded {
+            request,
+            result: Ok((
+                candidates[0].clone(),
+                tree::ExpandedFolderSnapshot {
+                    folders: Vec::new(),
+                    files: Vec::new(),
+                    recursive_supported_file_count: tree::RecursiveFileCount::Exact(0),
+                    truncated: false,
+                },
+            )),
+        });
+        let full = app.full_mindmap.as_ref().unwrap();
+        assert_eq!(full.selected, None);
+        assert_eq!(full.focus_request, None);
+        assert!(!full.panel_open);
+    }
+
+    #[test]
+    fn full_mindmap_verification_wave_is_fixed_and_bounded() {
+        let (mut app, _root, candidates) =
+            verification_test_app(FULL_MINDMAP_VERIFICATION_CONCURRENCY + 1);
+        let _ = app.begin_full_mindmap_verification_wave();
+        let wave = app
+            .full_mindmap
+            .as_ref()
+            .unwrap()
+            .verification_wave
+            .as_ref()
+            .unwrap();
+        assert_eq!(
+            wave.candidates.len(),
+            FULL_MINDMAP_VERIFICATION_CONCURRENCY + 1
+        );
+        assert_eq!(wave.in_flight.len(), FULL_MINDMAP_VERIFICATION_CONCURRENCY);
+        assert_eq!(wave.next_index, FULL_MINDMAP_VERIFICATION_CONCURRENCY);
+        assert_eq!(app.full_mindmap_progress.unwrap().total, candidates.len());
+
+        let request = verification_request_for(&app, &candidates[0]);
+        let _ = app.update(Message::FullMindmapVerificationLoaded {
+            request,
+            result: Err("permission denied".into()),
+        });
+        let wave = app
+            .full_mindmap
+            .as_ref()
+            .unwrap()
+            .verification_wave
+            .as_ref()
+            .unwrap();
+        assert_eq!(wave.checked, 1);
+        assert_eq!(wave.next_index, candidates.len());
+        assert_eq!(app.full_mindmap_progress.unwrap().checked, 1);
+        let folder = WorkspaceNodeId::Folder(candidates[0].clone());
+        let graph = app.full_mindmap_graph().unwrap();
+        let index = graph
+            .index_of(&folder)
+            .expect("unavailable folder remains visible");
+        assert_eq!(
+            graph.nodes[index].full_label,
+            "candidate-0 · count unavailable"
+        );
+    }
+
+    #[test]
+    fn full_mindmap_verification_overflow_leaves_exact_unqueued_excess_visible() {
+        let excess = 3;
+        let total = FULL_MINDMAP_VERIFICATION_MAX_CANDIDATES + excess;
+        let (mut app, _root, candidates) = verification_test_app(total);
+        let _ = app.begin_full_mindmap_verification_wave();
+        let wave = app
+            .full_mindmap
+            .as_ref()
+            .unwrap()
+            .verification_wave
+            .as_ref()
+            .unwrap();
+        assert_eq!(
+            wave.candidates.len(),
+            FULL_MINDMAP_VERIFICATION_MAX_CANDIDATES
+        );
+        assert_eq!(
+            app.full_mindmap_progress.unwrap().total,
+            FULL_MINDMAP_VERIFICATION_MAX_CANDIDATES
+        );
+
+        let graph = app.full_mindmap_graph().unwrap();
+        let excess_visible = candidates[FULL_MINDMAP_VERIFICATION_MAX_CANDIDATES..]
+            .iter()
+            .filter_map(|path| {
+                graph
+                    .index_of(&WorkspaceNodeId::Folder(path.clone()))
+                    .map(|index| &graph.nodes[index].full_label)
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(excess_visible.len(), excess);
+        assert!(excess_visible
+            .iter()
+            .all(|label| label.ends_with(" · scan limit reached")));
+    }
+
+    fn followup_verification_test_app() -> (
+        App,
+        PathBuf,
+        PathBuf,
+        PathBuf,
+        PathBuf,
+        PendingFullMindmapFolderLoad,
+    ) {
+        let root = PathBuf::from("/followup-root");
+        let branch = root.join("branch");
+        let child = branch.join("new-child");
+        let other = root.join("other");
+        let root_node = Node {
+            path: root.clone(),
+            name: "followup-root".into(),
+            is_dir: true,
+            children: vec![
+                Node {
+                    path: branch.clone(),
+                    name: "branch".into(),
+                    is_dir: true,
+                    children: Vec::new(),
+                    recursive_supported_file_count: Some(tree::RecursiveFileCount::LowerBound(1)),
+                },
+                Node {
+                    path: other.clone(),
+                    name: "other".into(),
+                    is_dir: true,
+                    children: Vec::new(),
+                    recursive_supported_file_count: Some(tree::RecursiveFileCount::LowerBound(0)),
+                },
+            ],
+            recursive_supported_file_count: Some(tree::RecursiveFileCount::LowerBound(1)),
+        };
+        let mut app = App::default();
+        app.workspace = Some(root.clone());
+        app.workspace_tree = Some(root_node);
+        app.workspace_snapshot_show_hidden = false;
+        let mut full = App::new_full_mindmap_state();
+        full.expanded.extend([root.clone(), branch.clone()]);
+        full.selected = Some(WorkspaceNodeId::Folder(branch.clone()));
+        let pending = PendingFullMindmapFolderLoad {
+            id: 900,
+            workspace_root: root.clone(),
+            folder: branch.clone(),
+            show_hidden: false,
+        };
+        full.pending_folder_loads
+            .insert(branch.clone(), pending.clone());
+        app.full_mindmap = Some(full);
+        (app, root, branch, child, other, pending)
+    }
+
+    #[test]
+    fn full_mindmap_materialized_child_stays_hidden_until_followup_exact_zero() {
+        let (mut app, root, branch, child, other, pending) = followup_verification_test_app();
+        let _ = app.begin_full_mindmap_verification_wave();
+        let old_wave_id = app
+            .full_mindmap
+            .as_ref()
+            .unwrap()
+            .verification_wave
+            .as_ref()
+            .unwrap()
+            .id;
+        let branch_snapshot = tree::ExpandedFolderSnapshot {
+            folders: vec![Node {
+                path: child.clone(),
+                name: "new-child".into(),
+                is_dir: true,
+                children: Vec::new(),
+                recursive_supported_file_count: Some(tree::RecursiveFileCount::LowerBound(0)),
+            }],
+            files: Vec::new(),
+            recursive_supported_file_count: tree::RecursiveFileCount::LowerBound(1),
+            truncated: false,
+        };
+        let _ = app.update(Message::FullMindmapFolderLoaded {
+            request: pending,
+            result: Ok((branch.clone(), branch_snapshot)),
+        });
+        assert!(app
+            .full_mindmap_graph()
+            .unwrap()
+            .node(&WorkspaceNodeId::Folder(child.clone()))
+            .is_none());
+        assert!(
+            app.full_mindmap
+                .as_ref()
+                .unwrap()
+                .verification_followup_pending
+        );
+
+        let old_request = verification_request_for(&app, &other);
+        assert_eq!(old_request.wave_id, old_wave_id);
+        let _ = app.update(Message::FullMindmapVerificationLoaded {
+            request: old_request,
+            result: Ok((
+                other.clone(),
+                tree::ExpandedFolderSnapshot {
+                    folders: Vec::new(),
+                    files: Vec::new(),
+                    recursive_supported_file_count: tree::RecursiveFileCount::Exact(2),
+                    truncated: false,
+                },
+            )),
+        });
+        let followup_request = verification_request_for(&app, &child);
+        assert_ne!(followup_request.wave_id, old_wave_id);
+        assert!(app
+            .full_mindmap_graph()
+            .unwrap()
+            .node(&WorkspaceNodeId::Folder(child.clone()))
+            .is_none());
+
+        let _ = app.update(Message::FullMindmapVerificationLoaded {
+            request: followup_request,
+            result: Ok((
+                child.clone(),
+                tree::ExpandedFolderSnapshot {
+                    folders: Vec::new(),
+                    files: Vec::new(),
+                    recursive_supported_file_count: tree::RecursiveFileCount::Exact(0),
+                    truncated: false,
+                },
+            )),
+        });
+        assert!(app
+            .full_mindmap_graph()
+            .unwrap()
+            .node(&WorkspaceNodeId::Folder(child))
+            .is_none());
+        assert_eq!(app.workspace.as_deref(), Some(root.as_path()));
+    }
+
+    #[test]
+    fn full_mindmap_collapse_restarts_wave_for_other_expanded_parents() {
+        let root = PathBuf::from("/collapse-restart-root");
+        let left = root.join("left");
+        let right = root.join("right");
+        let left_child = left.join("left-child");
+        let right_child = right.join("right-child");
+        let child = |path: PathBuf| Node {
+            name: path.file_name().unwrap().to_string_lossy().into_owned(),
+            path,
+            is_dir: true,
+            children: Vec::new(),
+            recursive_supported_file_count: Some(tree::RecursiveFileCount::LowerBound(0)),
+        };
+        let root_node = Node {
+            path: root.clone(),
+            name: "collapse-restart-root".into(),
+            is_dir: true,
+            children: vec![
+                Node {
+                    path: left.clone(),
+                    name: "left".into(),
+                    is_dir: true,
+                    children: vec![child(left_child.clone())],
+                    recursive_supported_file_count: Some(tree::RecursiveFileCount::LowerBound(1)),
+                },
+                Node {
+                    path: right.clone(),
+                    name: "right".into(),
+                    is_dir: true,
+                    children: vec![child(right_child.clone())],
+                    recursive_supported_file_count: Some(tree::RecursiveFileCount::LowerBound(1)),
+                },
+            ],
+            recursive_supported_file_count: Some(tree::RecursiveFileCount::LowerBound(2)),
+        };
+        let mut app = App::default();
+        app.workspace = Some(root.clone());
+        app.workspace_tree = Some(root_node);
+        app.workspace_snapshot_show_hidden = false;
+        let mut full = App::new_full_mindmap_state();
+        full.expanded
+            .extend([root.clone(), left.clone(), right.clone()]);
+        full.selected = Some(WorkspaceNodeId::Folder(left.clone()));
+        app.full_mindmap = Some(full);
+        let _ = app.begin_full_mindmap_verification_wave();
+        assert!(app
+            .full_mindmap_graph()
+            .unwrap()
+            .node(&WorkspaceNodeId::Folder(right_child.clone()))
+            .is_none());
+
+        let _ = app.update(Message::FullMindmapToggleNode(WorkspaceNodeId::Folder(
+            left.clone(),
+        )));
+        assert!(!app.full_mindmap.as_ref().unwrap().expanded.contains(&left));
+        assert!(app
+            .full_mindmap_graph()
+            .unwrap()
+            .node(&WorkspaceNodeId::Folder(right_child))
+            .is_none());
+    }
+
+    #[test]
+    fn full_mindmap_stale_prior_wave_completion_cannot_reveal_after_restart() {
+        let (mut app, _root, candidates) = verification_test_app(1);
+        let _ = app.begin_full_mindmap_verification_wave();
+        let stale = verification_request_for(&app, &candidates[0]);
+        let old_wave_id = stale.wave_id;
+        let _ = app.begin_full_mindmap_verification_wave();
+        let current = verification_request_for(&app, &candidates[0]);
+        assert_ne!(current.wave_id, old_wave_id);
+        let _ = app.update(Message::FullMindmapVerificationLoaded {
+            request: stale,
+            result: Ok((
+                candidates[0].clone(),
+                tree::ExpandedFolderSnapshot {
+                    folders: Vec::new(),
+                    files: Vec::new(),
+                    recursive_supported_file_count: tree::RecursiveFileCount::Exact(9),
+                    truncated: false,
+                },
+            )),
+        });
+        assert_eq!(
+            app.full_mindmap
+                .as_ref()
+                .unwrap()
+                .verification_wave
+                .as_ref()
+                .unwrap()
+                .checked,
+            0
+        );
+        assert!(app
+            .full_mindmap_graph()
+            .unwrap()
+            .node(&WorkspaceNodeId::Folder(candidates[0].clone()))
+            .is_none());
+    }
+
+    #[test]
+    fn full_mindmap_verification_stale_result_cannot_reveal_after_cancel() {
+        let (mut app, _root, candidates) = verification_test_app(1);
+        let _ = app.begin_full_mindmap_verification_wave();
+        let request = verification_request_for(&app, &candidates[0]);
+        app.cancel_full_mindmap_verification();
+        assert!(app
+            .full_mindmap_graph()
+            .unwrap()
+            .node(&WorkspaceNodeId::Folder(candidates[0].clone()))
+            .is_some());
+        let _ = app.update(Message::FullMindmapVerificationLoaded {
+            request,
+            result: Ok((
+                candidates[0].clone(),
+                tree::ExpandedFolderSnapshot {
+                    folders: Vec::new(),
+                    files: Vec::new(),
+                    recursive_supported_file_count: tree::RecursiveFileCount::Exact(4),
+                    truncated: false,
+                },
+            )),
+        });
+        assert!(app.full_mindmap_progress.is_none());
+        assert!(app
+            .full_mindmap_graph()
+            .unwrap()
+            .node(&WorkspaceNodeId::Folder(candidates[0].clone()))
+            .is_some());
+    }
+
+    #[test]
+    fn full_mindmap_verification_rejects_same_wave_wrong_request_id() {
+        let (mut app, _root, candidates) = verification_test_app(1);
+        let _ = app.begin_full_mindmap_verification_wave();
+        let mut request = verification_request_for(&app, &candidates[0]);
+        request.id = request.id.wrapping_add(1);
+        let _ = app.update(Message::FullMindmapVerificationLoaded {
+            request,
+            result: Ok((
+                candidates[0].clone(),
+                tree::ExpandedFolderSnapshot {
+                    folders: Vec::new(),
+                    files: Vec::new(),
+                    recursive_supported_file_count: tree::RecursiveFileCount::Exact(1),
+                    truncated: false,
+                },
+            )),
+        });
+        assert_eq!(app.full_mindmap_progress.unwrap().checked, 0);
+        assert!(app
+            .full_mindmap_graph()
+            .unwrap()
+            .node(&WorkspaceNodeId::Folder(candidates[0].clone()))
+            .is_none());
+    }
+
+    fn complete_full_mindmap_workspace_load(app: &mut App) -> PendingFullMindmapWorkspaceLoad {
+        let request = app
+            .full_mindmap
+            .as_ref()
+            .and_then(|full| full.pending_workspace_load.clone())
+            .expect("expected a pending Full Mindmap workspace load");
+        let snapshot = tree::build_workspace(&request.path, app.show_hidden).unwrap();
+        let _ = app.update(Message::FullMindmapWorkspaceLoaded {
+            request: request.clone(),
+            result: Ok((request.path.clone(), snapshot)),
+        });
+        complete_full_mindmap_folder_loads(app);
+        request
+    }
+
+    fn complete_full_mindmap_folder_loads(app: &mut App) {
+        loop {
+            let requests = app
+                .full_mindmap
+                .as_ref()
+                .map(|full| {
+                    full.pending_folder_loads
+                        .values()
+                        .cloned()
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            if requests.is_empty() {
+                break;
+            }
+            for request in requests {
+                let snapshot =
+                    tree::load_expanded_folder(&request.folder, request.show_hidden).unwrap();
+                let _ = app.update(Message::FullMindmapFolderLoaded {
+                    request: request.clone(),
+                    result: Ok((request.folder.clone(), snapshot)),
+                });
+            }
+        }
+    }
+
+    fn settle_full_mindmap_preview(app: &mut App) -> PendingFullMindmapPreview {
+        let request = app
+            .full_mindmap
+            .as_ref()
+            .and_then(|full| full.pending_preview_settle.clone())
+            .expect("expected a pending Full Mindmap preview settle");
+        let _ = app.update(Message::FullMindmapPreviewSettle { request });
+        app.full_mindmap
+            .as_ref()
+            .and_then(|full| full.pending_preview.clone())
+            .expect("settled preview should own a read request")
+    }
+
+    fn accept_full_mindmap_preview(
+        app: &mut App,
+        request: &PendingFullMindmapPreview,
+        path: PathBuf,
+        source: String,
+    ) {
+        let parsed = parse_full_mindmap_preview_blocking(path.clone(), source.clone());
+        let _ = app.update(Message::FullMindmapPreviewLoaded {
+            request: request.clone(),
+            result: Ok((path.clone(), source)),
+        });
+        let _ = app.update(Message::FullMindmapPreviewParsed {
+            request: request.clone(),
+            result: Ok(parsed),
+        });
+    }
+
+    #[test]
+    fn full_mindmap_without_workspace_adopts_home_in_background() {
+        let mut app = App::default();
+        let _ = app.enter_full_mindmap();
+
+        let full = app.full_mindmap.as_ref().unwrap();
+        assert_eq!(
+            full.pending_workspace_load.as_ref().map(|load| &load.path),
+            Picker::home().as_ref()
+        );
+        assert!(app.workspace.is_none(), "entry indexing must stay async");
+        assert_eq!(app.view_mode, ViewMode::Rendered);
+    }
+
+    #[test]
+    fn full_mindmap_without_project_adopts_current_file_parent_and_preview() {
+        let dir = full_mindmap_test_dir("current-parent");
+        let file = dir.join("readme.md");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(&file, "# Project\n").unwrap();
+
+        let mut app = App::default();
+        app.file = Some(file.clone());
+        app.source = "# Project\n".into();
+        let _ = app.enter_full_mindmap();
+
+        assert_eq!(
+            app.full_mindmap
+                .as_ref()
+                .and_then(|full| full.pending_workspace_load.as_ref())
+                .map(|load| load.path.as_path()),
+            Some(dir.as_path())
+        );
+        complete_full_mindmap_workspace_load(&mut app);
+        let preview_request = app
+            .full_mindmap
+            .as_ref()
+            .and_then(|full| full.pending_preview.clone())
+            .expect("current-file preview should own a parse request");
+        let parsed = parse_full_mindmap_preview_blocking(file.clone(), app.source.clone());
+        let _ = app.update(Message::FullMindmapPreviewParsed {
+            request: preview_request,
+            result: Ok(parsed),
+        });
+
+        assert_eq!(app.workspace.as_deref(), Some(dir.as_path()));
+        assert!(!app.sidebar_open);
+        assert_eq!(
+            app.full_mindmap.as_ref().unwrap().selected,
+            Some(WorkspaceNodeId::File(file.clone()))
+        );
+        assert_eq!(
+            app.full_mindmap.as_ref().unwrap().focus_request,
+            Some(WorkspaceNodeId::File(file.clone()))
+        );
+        assert!(matches!(
+            app.full_mindmap.as_ref().unwrap().preview,
+            FullMindmapPreview::Document { ref path, .. } if path == &file
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn full_mindmap_standard_picker_file_waits_for_parent_index_before_opening() {
+        let dir = full_mindmap_test_dir("picker-file-index");
+        let file = dir.join("readme.md");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(&file, "# Project\n").unwrap();
+
+        let mut app = App::default();
+        app.full_mindmap = Some(App::new_full_mindmap_state());
+
+        let _ = app.update(Message::PickerOpenFile(file.clone()));
+        let pending = app
+            .full_mindmap
+            .as_ref()
+            .unwrap()
+            .pending_workspace_load
+            .as_ref()
+            .unwrap();
+        assert_eq!(pending.path, dir);
+        assert_eq!(pending.open_after.as_ref(), Some(&file));
+        assert!(app.full_mindmap.as_ref().unwrap().pending_open.is_none());
+
+        complete_full_mindmap_workspace_load(&mut app);
+        assert_eq!(app.workspace.as_deref(), Some(dir.as_path()));
+        assert_eq!(
+            app.full_mindmap
+                .as_ref()
+                .and_then(|full| full.pending_open.as_ref())
+                .map(|pending| pending.path.as_path()),
+            Some(file.as_path())
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn full_mindmap_enter_makes_selected_folder_the_new_root() {
+        let dir = full_mindmap_test_dir("keyboard-root");
+        let parent = dir.join("parent");
+        let project = parent.join("project");
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::write(project.join("readme.md"), "# Project\n").unwrap();
+
+        let mut app = App::default();
+        app.set_workspace(parent.clone(), false);
+        let mut full = full_workspace_state(&parent);
+        full.selected = Some(WorkspaceNodeId::Folder(project.clone()));
+        app.full_mindmap = Some(full);
+
+        let _ = app.update(Message::FullMindmapActivate);
+        assert_eq!(
+            app.full_mindmap
+                .as_ref()
+                .and_then(|full| full.pending_workspace_load.as_ref())
+                .map(|load| load.path.as_path()),
+            Some(project.as_path())
+        );
+        complete_full_mindmap_workspace_load(&mut app);
+        assert_eq!(app.workspace.as_deref(), Some(project.as_path()));
+        assert_eq!(
+            app.full_mindmap.as_ref().unwrap().selected,
+            Some(WorkspaceNodeId::Root(project.clone()))
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn full_mindmap_space_toggles_workspace_folder_and_keeps_selection() {
+        let dir = full_mindmap_test_dir("keyboard-workspace");
+        let folder = dir.join("notes");
+        let file = folder.join("guide.md");
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(&file, "# Guide\n").unwrap();
+
+        let mut app = App::default();
+        app.set_workspace(dir.clone(), false);
+        app.full_mindmap = Some(full_workspace_state(&dir));
+        app.full_mindmap.as_mut().unwrap().selected = Some(WorkspaceNodeId::Folder(folder.clone()));
+
+        assert!(matches!(
+            full_mindmap_space_message(),
+            Message::FullMindmapToggleSelected
+        ));
+        let _ = app.update(full_mindmap_space_message());
+
+        let full = app.full_mindmap.as_ref().unwrap();
+        assert!(full.expanded.contains(&folder));
+        assert_eq!(full.selected, Some(WorkspaceNodeId::Folder(folder.clone())));
+        assert!(app
+            .full_mindmap_graph()
+            .unwrap()
+            .node(&WorkspaceNodeId::File(file.clone()))
+            .is_some());
+
+        let _ = app.update(full_mindmap_space_message());
+        let full = app.full_mindmap.as_ref().unwrap();
+        assert!(!full.expanded.contains(&folder));
+        assert_eq!(full.selected, Some(WorkspaceNodeId::Folder(folder.clone())));
+        assert!(app
+            .full_mindmap_graph()
+            .unwrap()
+            .node(&WorkspaceNodeId::File(file))
+            .is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn full_mindmap_expands_interrupted_shell_without_rerooting() {
+        let dir = full_mindmap_test_dir("lazy-interrupted-shell");
+        let documents = dir.join("Documents");
+        let notes = documents.join("Notes");
+        let guide = notes.join("guide.md");
+        let overview = documents.join("overview.md");
+        std::fs::create_dir_all(&notes).unwrap();
+        std::fs::write(&guide, "# Guide\n").unwrap();
+        std::fs::write(&overview, "# Overview\n").unwrap();
+
+        let mut app = App::default();
+        app.set_workspace(dir.clone(), false);
+        let tree = app.workspace_tree.as_mut().unwrap();
+        let documents_node = tree
+            .children
+            .iter_mut()
+            .find(|node| node.path == documents)
+            .unwrap();
+        documents_node.children.clear();
+        documents_node.recursive_supported_file_count =
+            Some(tree::RecursiveFileCount::LowerBound(0));
+        tree.recursive_supported_file_count = Some(tree::RecursiveFileCount::LowerBound(0));
+        app.workspace_truncated = true;
+        app.full_mindmap = Some(App::new_full_mindmap_state());
+        {
+            let full = app.full_mindmap.as_mut().unwrap();
+            full.expanded.insert(dir.clone());
+            full.selected = Some(WorkspaceNodeId::Folder(documents.clone()));
+        }
+
+        let _ = app.update(Message::FullMindmapToggleSelected);
+        assert_eq!(app.workspace.as_deref(), Some(dir.as_path()));
+        assert!(app
+            .full_mindmap
+            .as_ref()
+            .unwrap()
+            .pending_folder_loads
+            .contains_key(&documents));
+        assert!(app
+            .full_mindmap_graph()
+            .unwrap()
+            .node(&WorkspaceNodeId::Status(
+                documents.clone(),
+                workspace_mindmap::WorkspaceStatus::LoadingFiles,
+            ))
+            .is_some());
+
+        complete_full_mindmap_folder_loads(&mut app);
+        let graph = app.full_mindmap_graph().unwrap();
+        assert!(graph
+            .node(&WorkspaceNodeId::Folder(notes.clone()))
+            .is_some());
+        assert!(graph
+            .node(&WorkspaceNodeId::File(overview.clone()))
+            .is_some());
+        assert_eq!(app.workspace.as_deref(), Some(dir.as_path()));
+
+        let _ = app.update(Message::FullMindmapNavigate(MindmapDir::Right));
+        assert_eq!(
+            app.full_mindmap.as_ref().unwrap().selected,
+            Some(WorkspaceNodeId::Folder(notes))
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn full_mindmap_lazy_exact_empty_shell_is_pruned_and_selection_normalized() {
+        let dir = full_mindmap_test_dir("lazy-empty-shell");
+        let empty = dir.join("empty");
+        std::fs::create_dir_all(&empty).unwrap();
+
+        let mut app = App::default();
+        app.set_workspace(dir.clone(), false);
+        let tree = app.workspace_tree.as_mut().unwrap();
+        tree.children.push(Node {
+            path: empty.clone(),
+            name: "empty".into(),
+            is_dir: true,
+            children: Vec::new(),
+            recursive_supported_file_count: Some(tree::RecursiveFileCount::LowerBound(0)),
+        });
+        tree.recursive_supported_file_count = Some(tree::RecursiveFileCount::LowerBound(0));
+        app.workspace_truncated = true;
+        app.full_mindmap = Some(App::new_full_mindmap_state());
+        {
+            let full = app.full_mindmap.as_mut().unwrap();
+            full.expanded.insert(dir.clone());
+            full.selected = Some(WorkspaceNodeId::Folder(empty.clone()));
+        }
+
+        let _ = app.update(Message::FullMindmapToggleSelected);
+        complete_full_mindmap_folder_loads(&mut app);
+
+        assert!(app
+            .full_mindmap_graph()
+            .unwrap()
+            .node(&WorkspaceNodeId::Folder(empty))
+            .is_none());
+        assert_eq!(
+            app.full_mindmap.as_ref().unwrap().selected,
+            Some(WorkspaceNodeId::Root(dir.clone()))
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn full_mindmap_lazy_exact_empty_nested_shell_selects_nearest_ancestor() {
+        let dir = full_mindmap_test_dir("lazy-empty-nested-shell");
+        let documents = dir.join("Documents");
+        let shell = documents.join("Shopee");
+        std::fs::create_dir_all(&shell).unwrap();
+        std::fs::write(documents.join("guide.md"), "# Guide\n").unwrap();
+
+        let mut app = App::default();
+        app.set_workspace(dir.clone(), false);
+        let tree = app.workspace_tree.as_mut().unwrap();
+        let documents_node = tree
+            .children
+            .iter_mut()
+            .find(|node| node.path == documents)
+            .unwrap();
+        documents_node.children.push(Node {
+            path: shell.clone(),
+            name: "Shopee".into(),
+            is_dir: true,
+            children: Vec::new(),
+            recursive_supported_file_count: Some(tree::RecursiveFileCount::LowerBound(0)),
+        });
+        documents_node.recursive_supported_file_count =
+            Some(tree::RecursiveFileCount::LowerBound(0));
+        tree.recursive_supported_file_count = Some(tree::RecursiveFileCount::LowerBound(0));
+        app.workspace_truncated = true;
+        app.full_mindmap = Some(App::new_full_mindmap_state());
+        {
+            let full = app.full_mindmap.as_mut().unwrap();
+            full.expanded.insert(dir.clone());
+            full.expanded.insert(documents.clone());
+            full.selected = Some(WorkspaceNodeId::Folder(shell.clone()));
+        }
+
+        let _ = app.update(Message::FullMindmapToggleSelected);
+        complete_full_mindmap_folder_loads(&mut app);
+
+        let graph = app.full_mindmap_graph().unwrap();
+        assert!(graph.node(&WorkspaceNodeId::Folder(shell)).is_none());
+        assert!(graph
+            .node(&WorkspaceNodeId::Folder(documents.clone()))
+            .is_some());
+        assert_eq!(
+            app.full_mindmap.as_ref().unwrap().selected,
+            Some(WorkspaceNodeId::Folder(documents))
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn full_mindmap_collapse_evicts_branch_and_rejects_pre_reexpand_result() {
+        let dir = full_mindmap_test_dir("lazy-collapse-stale");
+        let folder = dir.join("notes");
+        let file = folder.join("a.md");
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(&file, "# A\n").unwrap();
+
+        let mut app = App::default();
+        app.set_workspace(dir.clone(), false);
+        let _ = app.enter_full_mindmap();
+        complete_full_mindmap_folder_loads(&mut app);
+        let folder_id = WorkspaceNodeId::Folder(folder.clone());
+
+        let _ = app.update(Message::FullMindmapToggleNode(folder_id.clone()));
+        let first = app
+            .full_mindmap
+            .as_ref()
+            .unwrap()
+            .pending_folder_loads
+            .get(&folder)
+            .cloned()
+            .unwrap();
+        assert!(app
+            .full_mindmap_graph()
+            .unwrap()
+            .node(&WorkspaceNodeId::Status(
+                folder.clone(),
+                workspace_mindmap::WorkspaceStatus::LoadingFiles,
+            ))
+            .is_some());
+
+        let _ = app.update(Message::FullMindmapToggleNode(folder_id.clone()));
+        let full = app.full_mindmap.as_ref().unwrap();
+        assert!(!full.pending_folder_loads.contains_key(&folder));
+        assert!(!full.materialized_folders.contains_key(&folder));
+
+        let _ = app.update(Message::FullMindmapToggleNode(folder_id));
+        let second = app
+            .full_mindmap
+            .as_ref()
+            .unwrap()
+            .pending_folder_loads
+            .get(&folder)
+            .cloned()
+            .unwrap();
+        assert_ne!(first, second);
+        let snapshot = tree::load_expanded_folder(&folder, false).unwrap();
+        let _ = app.update(Message::FullMindmapFolderLoaded {
+            request: first,
+            result: Ok((folder.clone(), snapshot.clone())),
+        });
+        assert_eq!(
+            app.full_mindmap
+                .as_ref()
+                .unwrap()
+                .pending_folder_loads
+                .get(&folder),
+            Some(&second)
+        );
+        assert!(!app
+            .full_mindmap
+            .as_ref()
+            .unwrap()
+            .materialized_folders
+            .contains_key(&folder));
+
+        let _ = app.update(Message::FullMindmapFolderLoaded {
+            request: second,
+            result: Ok((folder, snapshot)),
+        });
+        assert!(app
+            .full_mindmap_graph()
+            .unwrap()
+            .node(&WorkspaceNodeId::File(file))
+            .is_some());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn full_mindmap_folder_results_are_stale_across_filter_root_and_reentry() {
+        let dir = full_mindmap_test_dir("lazy-generation-stale");
+        let other = full_mindmap_test_dir("lazy-generation-other");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::create_dir_all(&other).unwrap();
+        std::fs::write(dir.join("a.md"), "# A\n").unwrap();
+        let snapshot = tree::load_expanded_folder(&dir, false).unwrap();
+
+        let pending_root = |app: &App| {
+            app.full_mindmap
+                .as_ref()
+                .unwrap()
+                .pending_folder_loads
+                .get(&dir)
+                .cloned()
+                .unwrap()
+        };
+
+        let mut hidden_app = App::default();
+        hidden_app.set_workspace(dir.clone(), false);
+        let _ = hidden_app.enter_full_mindmap();
+        let hidden_stale = pending_root(&hidden_app);
+        let _ = hidden_app.update(Message::ToggleHidden);
+        let _ = hidden_app.update(Message::FullMindmapFolderLoaded {
+            request: hidden_stale,
+            result: Ok((dir.clone(), snapshot.clone())),
+        });
+        assert!(!hidden_app
+            .full_mindmap
+            .as_ref()
+            .unwrap()
+            .materialized_folders
+            .contains_key(&dir));
+
+        let mut root_app = App::default();
+        root_app.set_workspace(dir.clone(), false);
+        let _ = root_app.enter_full_mindmap();
+        let root_stale = pending_root(&root_app);
+        let _ = root_app.update(Message::FullMindmapSetRoot(other.clone()));
+        let workspace_request = root_app
+            .full_mindmap
+            .as_ref()
+            .unwrap()
+            .pending_workspace_load
+            .clone();
+        let _ = root_app.update(Message::FullMindmapFolderLoaded {
+            request: root_stale,
+            result: Ok((dir.clone(), snapshot.clone())),
+        });
+        assert_eq!(
+            root_app
+                .full_mindmap
+                .as_ref()
+                .unwrap()
+                .pending_workspace_load,
+            workspace_request
+        );
+        assert!(!root_app
+            .full_mindmap
+            .as_ref()
+            .unwrap()
+            .materialized_folders
+            .contains_key(&dir));
+
+        let mut reentry_app = App::default();
+        reentry_app.set_workspace(dir.clone(), false);
+        let _ = reentry_app.enter_full_mindmap();
+        let reentry_stale = pending_root(&reentry_app);
+        let _ = reentry_app.update(Message::ExitFullMindmap);
+        let _ = reentry_app.enter_full_mindmap();
+        let replacement = pending_root(&reentry_app);
+        assert_ne!(reentry_stale, replacement);
+        let _ = reentry_app.update(Message::FullMindmapFolderLoaded {
+            request: reentry_stale,
+            result: Ok((dir.clone(), snapshot)),
+        });
+        assert_eq!(
+            reentry_app
+                .full_mindmap
+                .as_ref()
+                .unwrap()
+                .pending_folder_loads
+                .get(&dir),
+            Some(&replacement)
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&other);
+    }
+
+    #[test]
+    fn full_mindmap_right_expands_and_selects_first_child_in_one_step() {
+        let dir = full_mindmap_test_dir("keyboard-right");
+        let folder = dir.join("notes");
+        let first = folder.join("a.md");
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(&first, "# A\n").unwrap();
+
+        let mut app = App::default();
+        app.set_workspace(dir.clone(), false);
+        app.full_mindmap = Some(full_workspace_state(&dir));
+        app.full_mindmap.as_mut().unwrap().selected = Some(WorkspaceNodeId::Folder(folder.clone()));
+
+        let _ = app.update(Message::FullMindmapNavigate(MindmapDir::Right));
+
+        let full = app.full_mindmap.as_ref().unwrap();
+        assert!(full.expanded.contains(&folder));
+        assert_eq!(full.selected, Some(WorkspaceNodeId::File(first)));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn full_mindmap_left_at_workspace_root_moves_to_parent_workspace() {
+        let dir = full_mindmap_test_dir("workspace-parent");
+        let parent = dir.join("parent");
+        let project = parent.join("project");
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::write(project.join("readme.md"), "# Project\n").unwrap();
+
+        let mut app = App::default();
+        app.set_workspace(project.clone(), false);
+        let mut full = full_workspace_state(&project);
+        full.pending_open = Some(PendingFullMindmapOpen {
+            id: 1,
+            path: project.join("readme.md"),
+        });
+        full.pending_preview = Some(PendingFullMindmapPreview {
+            id: 2,
+            path: project.join("readme.md"),
+        });
+        full.preview = FullMindmapPreview::Loading(project.join("readme.md"));
+        app.full_mindmap = Some(full);
+
+        let _ = app.update(Message::FullMindmapNavigate(MindmapDir::Left));
+        assert!(app
+            .full_mindmap
+            .as_ref()
+            .unwrap()
+            .pending_workspace_load
+            .is_some());
+        complete_full_mindmap_workspace_load(&mut app);
+
+        assert_eq!(app.workspace.as_deref(), Some(parent.as_path()));
+        let full = app.full_mindmap.as_ref().unwrap();
+        assert_eq!(full.selected, Some(WorkspaceNodeId::Root(parent.clone())));
+        assert_eq!(full.expanded, HashSet::from([parent.clone()]));
+        assert!(app
+            .full_mindmap_graph()
+            .unwrap()
+            .node(&WorkspaceNodeId::Folder(project))
+            .is_some());
+        assert!(full.pending_open.is_none());
+        assert!(full.pending_preview.is_none());
+        assert!(matches!(full.preview, FullMindmapPreview::None));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn full_mindmap_root_parent_navigation_preserves_dirty_document() {
+        let dir = full_mindmap_test_dir("workspace-parent-dirty");
+        let parent = dir.join("parent");
+        let project = parent.join("project");
+        let current = project.join("current.md");
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::write(&current, "# Current\n").unwrap();
+
+        let mut app = App::default();
+        app.set_workspace(project.clone(), false);
+        app.file = Some(current.clone());
+        app.source = "# Draft\n".into();
+        app.saved_source = "# Saved\n".into();
+        app.editor = Some(iced::widget::text_editor::Content::with_text("# Draft\n"));
+        app.dirty = true;
+        app.full_mindmap = Some(full_workspace_state(&project));
+
+        let _ = app.update(Message::FullMindmapNavigate(MindmapDir::Left));
+        complete_full_mindmap_workspace_load(&mut app);
+
+        assert_eq!(app.workspace.as_deref(), Some(parent.as_path()));
+        assert_eq!(app.file.as_deref(), Some(current.as_path()));
+        assert_eq!(app.source, "# Draft\n");
+        assert_eq!(app.saved_source, "# Saved\n");
+        assert_eq!(
+            app.editor.as_ref().map(|editor| editor.text()),
+            Some("# Draft\n".into())
+        );
+        assert!(app.dirty);
+        assert_eq!(
+            app.full_mindmap.as_ref().unwrap().selected,
+            Some(WorkspaceNodeId::Root(parent))
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn full_mindmap_root_parent_navigation_ignores_late_file_open() {
+        let dir = full_mindmap_test_dir("workspace-parent-late-open");
+        let parent = dir.join("parent");
+        let project = parent.join("project");
+        let next = project.join("next.md");
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::write(&next, "# Next\n").unwrap();
+
+        let mut app = App::default();
+        app.set_workspace(project.clone(), false);
+        app.full_mindmap = Some(full_workspace_state(&project));
+        let _ = app.begin_full_mindmap_open(next.clone());
+        let request = app
+            .full_mindmap
+            .as_ref()
+            .unwrap()
+            .pending_open
+            .clone()
+            .unwrap();
+
+        let _ = app.update(Message::FullMindmapNavigate(MindmapDir::Left));
+        let _ = app.update(Message::FullMindmapFileLoaded {
+            request,
+            result: Ok((next, "# Stale\n".into())),
+        });
+        complete_full_mindmap_workspace_load(&mut app);
+
+        assert_eq!(app.workspace.as_deref(), Some(parent.as_path()));
+        assert!(app.full_mindmap.is_some());
+        assert_eq!(app.file, None);
+        assert_eq!(
+            app.full_mindmap.as_ref().unwrap().selected,
+            Some(WorkspaceNodeId::Root(parent))
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn full_mindmap_file_enter_opens_document_mindmap_and_focuses_first_child() {
+        let dir = full_mindmap_test_dir("file-enter-document-mindmap");
+        let file = dir.join("guide.md");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(&file, "# Guide\n## Details\n").unwrap();
+
+        let mut app = App::default();
+        app.set_workspace(dir.clone(), false);
+        let mut full = full_workspace_state(&dir);
+        full.selected = Some(WorkspaceNodeId::File(file.clone()));
+        app.full_mindmap = Some(full);
+        assert_eq!(app.view_mode, ViewMode::Rendered);
+
+        let _ = app.update(Message::FullMindmapActivate);
+        let request = app
+            .full_mindmap
+            .as_ref()
+            .and_then(|full| full.pending_open.clone())
+            .expect("Enter should own a background file request");
+        let _ = app.update(Message::FullMindmapFileLoaded {
+            request,
+            result: Ok((file.clone(), "# Guide\n## Details\n".into())),
+        });
+
+        assert!(app.full_mindmap.is_none());
+        assert_eq!(app.view_mode, ViewMode::Mindmap);
+        assert_eq!(app.file.as_deref(), Some(file.as_path()));
+        let first_heading = app
+            .ast
+            .iter()
+            .find_map(|(id, block)| matches!(block, Block::Heading { .. }).then_some(*id));
+        assert_eq!(app.mindmap_selected, first_heading);
+        assert!(app.mindmap_panel_open);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn full_mindmap_file_enter_from_clean_zen_ends_in_document_mindmap() {
+        let dir = full_mindmap_test_dir("file-enter-clean-zen");
+        let old_file = dir.join("old.md");
+        let file = dir.join("guide.md");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(&old_file, "# Old\n").unwrap();
+        std::fs::write(&file, "# Guide\n## Details\n").unwrap();
+
+        let mut app = App::default();
+        app.file = Some(old_file);
+        app.source = "# Old\n".into();
+        app.saved_source = app.source.clone();
+        app.sidebar_open = true;
+        app.show_footer = false;
+        app.search_open = true;
+        let _ = app.enter_zen_edit_mode();
+        assert_eq!(app.view_mode, ViewMode::Raw);
+        assert!(app.editor.is_some());
+        app.set_workspace(dir.clone(), false);
+
+        let mut full = full_workspace_state(&dir);
+        full.selected = Some(WorkspaceNodeId::File(file.clone()));
+        app.full_mindmap = Some(full);
+        app.dirty = false;
+
+        let _ = app.update(Message::FullMindmapActivate);
+        let request = app
+            .full_mindmap
+            .as_ref()
+            .and_then(|full| full.pending_open.clone())
+            .expect("Enter should own a background file request");
+        let _ = app.update(Message::FullMindmapFileLoaded {
+            request,
+            result: Ok((file.clone(), "# Guide\n## Details\n".into())),
+        });
+
+        assert!(app.full_mindmap.is_none());
+        assert_eq!(app.view_mode, ViewMode::Mindmap);
+        assert!(app.editor.is_none());
+        assert!(app.zen_restore.is_none());
+        assert_eq!(app.file.as_deref(), Some(file.as_path()));
+        let first_heading = app
+            .ast
+            .iter()
+            .find_map(|(id, block)| matches!(block, Block::Heading { .. }).then_some(*id));
+        assert_eq!(app.mindmap_selected, first_heading);
+        assert!(app.sidebar_open);
+        assert!(!app.show_footer);
+        assert!(app.search_open);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn full_mindmap_dirty_file_enter_still_blocks_open() {
+        let dir = full_mindmap_test_dir("file-enter-dirty");
+        let file = dir.join("guide.md");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(&file, "# Guide\n").unwrap();
+
+        let mut app = App::default();
+        app.set_workspace(dir.clone(), false);
+        let mut full = full_workspace_state(&dir);
+        full.selected = Some(WorkspaceNodeId::File(file));
+        app.full_mindmap = Some(full);
+        app.source = "unsaved current".into();
+        app.saved_source = "saved current".into();
+        app.dirty = true;
+
+        let _ = app.update(Message::FullMindmapActivate);
+        assert!(app.full_mindmap.as_ref().unwrap().pending_open.is_none());
+        assert!(app.full_mindmap.is_some());
+        assert!(app
+            .toast
+            .as_ref()
+            .is_some_and(|toast| toast.text.contains("unsaved edits")));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn document_mindmap_root_left_returns_and_focuses_current_file() {
+        let dir = full_mindmap_test_dir("document-root-left");
+        let file = dir.join("guide.md");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(&file, "# Guide\n## Details\n").unwrap();
+
+        let mut app = App::default();
+        app.set_workspace(dir.clone(), false);
+        app.file = Some(file.clone());
+        app.source = "# Guide\n## Details\n".into();
+        app.saved_source = app.source.clone();
+        app.view_mode = ViewMode::Mindmap;
+        app.load_ast_from_source();
+        app.mindmap_focus_first_child();
+        let top_heading = app
+            .mindmap_selected
+            .expect("first heading should be selected");
+
+        let _ = app.update(Message::MindmapNavigate(MindmapDir::Left));
+        assert!(app.full_mindmap.is_some());
+        assert_eq!(app.view_mode, ViewMode::Mindmap);
+        assert_eq!(app.workspace.as_deref(), Some(dir.as_path()));
+        // The bridge records the file as the viewport target immediately;
+        // selection remains on the visible root until its branch listing is
+        // accepted, so the first rendered graph cannot consume root focus.
+        assert_eq!(
+            app.full_mindmap.as_ref().unwrap().focus_request,
+            Some(WorkspaceNodeId::File(file.clone()))
+        );
+        // Document and Full Mindmap selections are intentionally distinct; the
+        // underlying document heading remains selected while the workspace
+        // bridge takes ownership of the visible navigator.
+        assert_eq!(app.mindmap_selected, Some(top_heading));
+
+        complete_full_mindmap_folder_loads(&mut app);
+        assert_eq!(
+            app.full_mindmap.as_ref().unwrap().selected,
+            Some(WorkspaceNodeId::File(file.clone()))
+        );
+        assert_eq!(
+            app.full_mindmap.as_ref().unwrap().focus_request,
+            Some(WorkspaceNodeId::File(file.clone()))
+        );
+        assert!(app
+            .full_mindmap_graph()
+            .unwrap()
+            .node(&WorkspaceNodeId::File(file))
+            .is_some());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn document_mindmap_root_left_deselect_cancels_deferred_file_selection() {
+        let dir = full_mindmap_test_dir("document-root-left-deselect");
+        let file = dir.join("guide.md");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(&file, "# Guide\n").unwrap();
+
+        let mut app = App::default();
+        app.set_workspace(dir.clone(), false);
+        app.file = Some(file.clone());
+        app.source = "# Guide\n".into();
+        app.saved_source = app.source.clone();
+        app.view_mode = ViewMode::Mindmap;
+        app.load_ast_from_source();
+        app.mindmap_focus_first_child();
+
+        let _ = app.update(Message::MindmapNavigate(MindmapDir::Left));
+        let full = app.full_mindmap.as_ref().unwrap();
+        assert_eq!(full.deferred_file_selection, Some(file.clone()));
+        assert!(full.pending_folder_loads.values().next().is_some());
+
+        let _ = app.update(Message::FullMindmapDeselect);
+        let full = app.full_mindmap.as_ref().unwrap();
+        assert_eq!(full.selected, None);
+        assert_eq!(full.focus_request, None);
+        assert_eq!(full.deferred_file_selection, None);
+        assert!(!full.panel_open);
+
+        // A late accepted folder result must not resurrect the bridge's stale
+        // file selection or schedule a read-only preview after cancellation.
+        complete_full_mindmap_folder_loads(&mut app);
+        let full = app.full_mindmap.as_ref().unwrap();
+        assert_eq!(full.selected, None);
+        assert_eq!(full.focus_request, None);
+        assert_eq!(full.deferred_file_selection, None);
+        assert!(!full.panel_open);
+        assert!(matches!(full.preview, FullMindmapPreview::None));
+        assert!(full.pending_preview.is_none());
+        assert!(full.pending_preview_settle.is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn document_mindmap_root_left_toggle_cancels_deferred_file_selection() {
+        let dir = full_mindmap_test_dir("document-root-left-toggle");
+        let file = dir.join("guide.md");
+        let other = dir.join("other");
+        std::fs::create_dir_all(&other).unwrap();
+        std::fs::write(&file, "# Guide\n").unwrap();
+        std::fs::write(other.join("note.md"), "# Other\n").unwrap();
+
+        let mut app = App::default();
+        app.set_workspace(dir.clone(), false);
+        app.file = Some(file.clone());
+        app.source = "# Guide\n".into();
+        app.saved_source = app.source.clone();
+        app.view_mode = ViewMode::Mindmap;
+        app.load_ast_from_source();
+        app.mindmap_focus_first_child();
+
+        let _ = app.update(Message::MindmapNavigate(MindmapDir::Left));
+        assert_eq!(
+            app.full_mindmap.as_ref().unwrap().deferred_file_selection,
+            Some(file)
+        );
+
+        let other_id = WorkspaceNodeId::Folder(other.clone());
+        let _ = app.update(Message::FullMindmapToggleNode(other_id.clone()));
+        let full = app.full_mindmap.as_ref().unwrap();
+        assert_eq!(full.deferred_file_selection, None);
+        assert_eq!(full.selected, Some(other_id.clone()));
+        assert_eq!(full.focus_request, Some(other_id.clone()));
+
+        complete_full_mindmap_folder_loads(&mut app);
+        let full = app.full_mindmap.as_ref().unwrap();
+        assert_eq!(full.selected, Some(other_id.clone()));
+        assert_eq!(full.focus_request, Some(other_id));
+        assert!(!full.panel_open);
+        assert!(full.pending_preview.is_none());
+        assert!(full.pending_preview_settle.is_none());
+        assert!(matches!(full.preview, FullMindmapPreview::None));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn full_mindmap_toggle_cancels_non_preserve_workspace_loads() {
+        for select_root in [false, true] {
+            let label = if select_root {
+                "toggle-cancels-root-load"
+            } else {
+                "toggle-cancels-parent-load"
+            };
+            let dir = full_mindmap_test_dir(label);
+            let old_root = dir.join("old");
+            let next_root = dir.join("next");
+            std::fs::create_dir_all(&old_root).unwrap();
+            std::fs::create_dir_all(&next_root).unwrap();
+            std::fs::write(old_root.join("old.md"), "# Old\n").unwrap();
+            std::fs::write(next_root.join("next.md"), "# Next\n").unwrap();
+
+            let mut app = App::default();
+            app.set_workspace(old_root.clone(), false);
+            app.full_mindmap = Some(full_workspace_state(&old_root));
+            let old_id = WorkspaceNodeId::Root(old_root.clone());
+            app.full_mindmap.as_mut().unwrap().focus_request = Some(old_id.clone());
+
+            let _ = app.begin_full_mindmap_workspace_load(
+                next_root.clone(),
+                select_root,
+                None,
+                false,
+                false,
+                false,
+            );
+            let request = app
+                .full_mindmap
+                .as_ref()
+                .unwrap()
+                .pending_workspace_load
+                .clone()
+                .unwrap();
+
+            let _ = app.update(Message::FullMindmapToggleNode(old_id.clone()));
+            let full = app.full_mindmap.as_ref().unwrap();
+            assert!(full.pending_workspace_load.is_none());
+            assert_eq!(full.deferred_file_selection, None);
+            assert_eq!(full.selected, Some(old_id.clone()));
+            assert_eq!(full.focus_request, Some(old_id.clone()));
+
+            let snapshot = tree::build_workspace(&next_root, false).unwrap();
+            let _ = app.update(Message::FullMindmapWorkspaceLoaded {
+                request,
+                result: Ok((next_root, snapshot)),
+            });
+            let full = app.full_mindmap.as_ref().unwrap();
+            assert_eq!(app.workspace.as_deref(), Some(old_root.as_path()));
+            assert_eq!(full.selected, Some(old_id.clone()));
+            assert_eq!(full.focus_request, Some(old_id));
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+
+    #[test]
+    fn full_mindmap_deselect_cancels_non_preserve_workspace_loads() {
+        for select_root in [false, true] {
+            let label = if select_root {
+                "deselect-cancels-root-load"
+            } else {
+                "deselect-cancels-parent-load"
+            };
+            let dir = full_mindmap_test_dir(label);
+            let old_root = dir.join("old");
+            let next_root = dir.join("next");
+            std::fs::create_dir_all(&old_root).unwrap();
+            std::fs::create_dir_all(&next_root).unwrap();
+            std::fs::write(old_root.join("old.md"), "# Old\n").unwrap();
+            std::fs::write(next_root.join("next.md"), "# Next\n").unwrap();
+
+            let mut app = App::default();
+            app.set_workspace(old_root.clone(), false);
+            app.full_mindmap = Some(full_workspace_state(&old_root));
+            let _ = app.begin_full_mindmap_workspace_load(
+                next_root.clone(),
+                select_root,
+                None,
+                false,
+                false,
+                false,
+            );
+            let request = app
+                .full_mindmap
+                .as_ref()
+                .unwrap()
+                .pending_workspace_load
+                .clone()
+                .unwrap();
+
+            let _ = app.update(Message::FullMindmapDeselect);
+            let full = app.full_mindmap.as_ref().unwrap();
+            assert!(full.pending_workspace_load.is_none());
+            assert_eq!(full.selected, None);
+            assert_eq!(full.focus_request, None);
+            assert!(!full.panel_open);
+
+            let snapshot = tree::build_workspace(&next_root, false).unwrap();
+            let _ = app.update(Message::FullMindmapWorkspaceLoaded {
+                request,
+                result: Ok((next_root, snapshot)),
+            });
+            let full = app.full_mindmap.as_ref().unwrap();
+            assert_eq!(app.workspace.as_deref(), Some(old_root.as_path()));
+            assert_eq!(full.selected, None);
+            assert_eq!(full.focus_request, None);
+            assert!(!full.panel_open);
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+
+    #[test]
+    fn document_mindmap_root_left_adopts_current_file_parent_outside_workspace() {
+        let dir = full_mindmap_test_dir("document-root-left-adopt");
+        let old_root = dir.join("old-root");
+        let current_root = dir.join("current-root");
+        let file = current_root.join("guide.md");
+        std::fs::create_dir_all(&old_root).unwrap();
+        std::fs::create_dir_all(&current_root).unwrap();
+        std::fs::write(&file, "# Guide\n").unwrap();
+
+        let mut app = App::default();
+        app.set_workspace(old_root.clone(), false);
+        app.file = Some(file.clone());
+        app.source = "# Guide\n".into();
+        app.saved_source = app.source.clone();
+        app.view_mode = ViewMode::Mindmap;
+        app.load_ast_from_source();
+        app.mindmap_focus_first_child();
+
+        let _ = app.update(Message::MindmapNavigate(MindmapDir::Left));
+        let request = app
+            .full_mindmap
+            .as_ref()
+            .and_then(|full| full.pending_workspace_load.as_ref())
+            .expect("outside-workspace return should adopt the current parent");
+        assert_eq!(request.path, current_root);
+
+        complete_full_mindmap_workspace_load(&mut app);
+        assert_eq!(app.workspace.as_deref(), Some(current_root.as_path()));
+        assert_eq!(
+            app.full_mindmap.as_ref().unwrap().selected,
+            Some(WorkspaceNodeId::File(file.clone()))
+        );
+        assert_eq!(
+            app.full_mindmap.as_ref().unwrap().focus_request,
+            Some(WorkspaceNodeId::File(file.clone()))
+        );
+        assert!(app
+            .full_mindmap_graph()
+            .unwrap()
+            .node(&WorkspaceNodeId::File(file))
+            .is_some());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn document_mindmap_root_left_adopts_parent_from_broad_unindexed_workspace() {
+        let dir = full_mindmap_test_dir("document-root-left-broad-workspace");
+        let broad_root = dir.join("broad-root");
+        let file_parent = broad_root.join("deep/project/docs/plans");
+        let file = file_parent.join("design.md");
+        std::fs::create_dir_all(&file_parent).unwrap();
+        std::fs::write(&file, "# Design\n").unwrap();
+
+        let mut app = App::default();
+        app.set_workspace(broad_root.clone(), false);
+        // Model a bounded workspace such as `/`: the current file is
+        // lexically beneath the root, but it is not in the accepted file
+        // index and therefore cannot be guaranteed to materialize in the
+        // rendered WorkspaceGraph.
+        app.workspace_files.retain(|path| path != &file);
+        app.file = Some(file.clone());
+        app.source = "# Design\n".into();
+        app.saved_source = app.source.clone();
+        app.view_mode = ViewMode::Mindmap;
+        app.load_ast_from_source();
+        app.mindmap_focus_first_child();
+
+        let _ = app.update(Message::MindmapNavigate(MindmapDir::Left));
+        let request = app
+            .full_mindmap
+            .as_ref()
+            .and_then(|full| full.pending_workspace_load.as_ref())
+            .expect("an unindexed file must adopt its directly renderable parent");
+        assert_eq!(request.path, file_parent);
+        assert_ne!(request.path, broad_root);
+
+        complete_full_mindmap_workspace_load(&mut app);
+        assert_eq!(app.workspace.as_deref(), file.parent());
+        assert_eq!(
+            app.full_mindmap.as_ref().unwrap().selected,
+            Some(WorkspaceNodeId::File(file.clone()))
+        );
+        assert_eq!(
+            app.full_mindmap.as_ref().unwrap().focus_request,
+            Some(WorkspaceNodeId::File(file))
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn document_mindmap_nested_left_remains_document_navigation() {
+        let file = PathBuf::from("/nested-left.md");
+        let mut app = App::default();
+        app.file = Some(file);
+        app.source = "# Top\n## Nested\n".into();
+        app.saved_source = app.source.clone();
+        app.view_mode = ViewMode::Mindmap;
+        app.load_ast_from_source();
+        let headings = app
+            .ast
+            .iter()
+            .filter_map(|(id, block)| matches!(block, Block::Heading { .. }).then_some(*id))
+            .collect::<Vec<_>>();
+        assert_eq!(headings.len(), 2);
+        app.mindmap_selected = Some(headings[1]);
+
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        runtime.block_on(async {
+            let _ = app.update(Message::MindmapNavigate(MindmapDir::Left));
+        });
+        assert!(app.full_mindmap.is_none());
+        assert_eq!(app.view_mode, ViewMode::Mindmap);
+        assert_eq!(app.mindmap_selected, Some(headings[0]));
+    }
+
+    #[test]
+    fn document_root_left_has_consistent_no_selection_boundary() {
+        let dir = full_mindmap_test_dir("document-root-left-no-selection");
+        let file = dir.join("guide.md");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(&file, "# Guide\n").unwrap();
+
+        let mut app = App::default();
+        app.file = Some(file);
+        app.source = "# Guide\n".into();
+        app.saved_source = app.source.clone();
+        app.view_mode = ViewMode::Mindmap;
+        app.load_ast_from_source();
+        app.mindmap_selected = None;
+
+        let _ = app.update(Message::MindmapNavigate(MindmapDir::Left));
+        assert!(app.full_mindmap.is_some());
+        assert_eq!(app.view_mode, ViewMode::Mindmap);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn stale_full_mindmap_file_and_workspace_loads_cannot_switch_modes() {
+        let dir = full_mindmap_test_dir("document-bridge-stale");
+        let old_root = dir.join("old-root");
+        let current_root = dir.join("current-root");
+        let next_root = dir.join("next-root");
+        let first = old_root.join("first.md");
+        let second = old_root.join("second.md");
+        let current = current_root.join("current.md");
+        std::fs::create_dir_all(&old_root).unwrap();
+        std::fs::create_dir_all(&current_root).unwrap();
+        std::fs::create_dir_all(&next_root).unwrap();
+        std::fs::write(&first, "# First\n").unwrap();
+        std::fs::write(&second, "# Second\n").unwrap();
+        std::fs::write(&current, "# Current\n").unwrap();
+
+        let mut app = App::default();
+        app.set_workspace(old_root.clone(), false);
+        app.full_mindmap = Some(full_workspace_state(&old_root));
+        app.full_mindmap.as_mut().unwrap().selected = Some(WorkspaceNodeId::File(first.clone()));
+        let _ = app.update(Message::FullMindmapActivate);
+        let stale_file = app
+            .full_mindmap
+            .as_ref()
+            .unwrap()
+            .pending_open
+            .clone()
+            .unwrap();
+        let _ = app.begin_full_mindmap_open(second.clone());
+        let current_file_request = app
+            .full_mindmap
+            .as_ref()
+            .unwrap()
+            .pending_open
+            .clone()
+            .unwrap();
+        let _ = app.update(Message::FullMindmapFileLoaded {
+            request: stale_file,
+            result: Ok((first, "# Stale\n".into())),
+        });
+        assert!(app.full_mindmap.is_some());
+        assert_eq!(app.view_mode, ViewMode::Rendered);
+        assert_eq!(app.file, None);
+        assert_eq!(
+            app.full_mindmap.as_ref().unwrap().pending_open,
+            Some(current_file_request.clone())
+        );
+        let _ = app.update(Message::FullMindmapFileLoaded {
+            request: current_file_request,
+            result: Ok((second.clone(), "# Second\n".into())),
+        });
+        assert!(app.full_mindmap.is_none());
+        assert_eq!(app.view_mode, ViewMode::Mindmap);
+        assert_eq!(app.file.as_deref(), Some(second.as_path()));
+
+        // A separate stale workspace completion must not strand the bridge or
+        // alter the document mode while a newer root request owns Full Mindmap.
+        let mut bridge = App::default();
+        bridge.set_workspace(old_root.clone(), false);
+        bridge.file = Some(current.clone());
+        bridge.source = "# Current\n".into();
+        bridge.saved_source = bridge.source.clone();
+        bridge.view_mode = ViewMode::Mindmap;
+        bridge.load_ast_from_source();
+        bridge.mindmap_focus_first_child();
+        let _ = bridge.update(Message::MindmapNavigate(MindmapDir::Left));
+        let stale_workspace = bridge
+            .full_mindmap
+            .as_ref()
+            .and_then(|full| full.pending_workspace_load.clone())
+            .unwrap();
+        let _ = bridge.update(Message::FullMindmapSetRoot(next_root.clone()));
+        let replacement = bridge
+            .full_mindmap
+            .as_ref()
+            .and_then(|full| full.pending_workspace_load.clone())
+            .unwrap();
+        let stale_snapshot = tree::build_workspace(&stale_workspace.path, false).unwrap();
+        let _ = bridge.update(Message::FullMindmapWorkspaceLoaded {
+            request: stale_workspace,
+            result: Ok((replacement.path.clone(), stale_snapshot)),
+        });
+        assert_eq!(
+            bridge
+                .full_mindmap
+                .as_ref()
+                .and_then(|full| full.pending_workspace_load.clone()),
+            Some(replacement)
+        );
+        assert!(bridge.full_mindmap.is_some());
+        assert_eq!(bridge.view_mode, ViewMode::Mindmap);
+        assert_eq!(bridge.workspace.as_deref(), Some(old_root.as_path()));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn full_mindmap_return_to_files_refreshes_stale_hidden_sidebar_off_thread() {
+        let dir = full_mindmap_test_dir("return-hidden-refresh");
+        let visible = dir.join("visible.md");
+        let hidden = dir.join(".hidden.md");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(&visible, "# Visible\n").unwrap();
+        std::fs::write(&hidden, "# Hidden\n").unwrap();
+
+        let mut app = App::default();
+        app.set_workspace(dir.clone(), false);
+        app.full_mindmap = Some(full_workspace_state(&dir));
+        let _ = app.update(Message::ToggleHidden);
+        assert!(app.show_hidden);
+        assert!(!app.workspace_files.contains(&hidden));
+        assert!(!app.workspace_snapshot_show_hidden);
+
+        let _ = app.update(Message::FullMindmapReturnToFiles);
+        let request = app
+            .full_mindmap
+            .as_ref()
+            .and_then(|full| full.pending_workspace_load.clone())
+            .expect("return should wait for a background sidebar refresh");
+        assert!(request.return_to_files_after);
+        assert!(app.full_mindmap.is_some());
+        assert!(!app.workspace_files.contains(&hidden));
+
+        complete_full_mindmap_workspace_load(&mut app);
+        assert!(app.full_mindmap.is_none());
+        assert!(app.sidebar_open);
+        assert_eq!(app.sidebar_tab, SidebarTab::Files);
+        assert!(app.workspace_files.contains(&visible));
+        assert!(app.workspace_files.contains(&hidden));
+        assert!(app.workspace_snapshot_show_hidden);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn full_mindmap_normal_exit_messages_reconcile_hidden_snapshot_before_exit() {
+        for (label, exit_message) in [
+            ("escape", Message::ExitFullMindmap),
+            ("toggle-shortcut", Message::ToggleFullMindmap),
+        ] {
+            let dir = full_mindmap_test_dir(label);
+            let hidden = dir.join(".hidden.md");
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join("visible.md"), "# Visible\n").unwrap();
+            std::fs::write(&hidden, "# Hidden\n").unwrap();
+
+            let mut app = App::default();
+            app.set_workspace(dir.clone(), false);
+            app.dirty = true;
+            app.source = "unsaved".into();
+            app.full_mindmap = Some(full_workspace_state(&dir));
+            let _ = app.update(Message::ToggleHidden);
+
+            let _ = app.update(exit_message);
+            let request = app
+                .full_mindmap
+                .as_ref()
+                .and_then(|full| full.pending_workspace_load.clone())
+                .expect("exit should wait for the reconciled snapshot");
+            assert!(request.exit_after_refresh);
+            assert!(!request.return_to_files_after);
+            assert!(!app.workspace_files.contains(&hidden));
+
+            complete_full_mindmap_workspace_load(&mut app);
+            assert!(app.full_mindmap.is_none());
+            assert!(app.workspace_files.contains(&hidden));
+            assert!(!app.sidebar_open);
+            assert!(app.dirty);
+            assert_eq!(app.source, "unsaved");
+
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+
+    #[test]
+    fn full_mindmap_hidden_workspace_refresh_is_background_additive_and_stale_safe() {
+        let dir = full_mindmap_test_dir("workspace-hidden-refresh");
+        let visible = dir.join("visible.md");
+        let hidden_dir = dir.join(".hidden");
+        let hidden = hidden_dir.join("secret.md");
+        std::fs::create_dir_all(&hidden_dir).unwrap();
+        std::fs::write(&visible, "# Visible\n").unwrap();
+        std::fs::write(&hidden, "# Hidden\n").unwrap();
+
+        let mut app = App::default();
+        app.set_workspace(dir.clone(), false);
+        let mut full = full_workspace_state(&dir);
+        full.selected = Some(WorkspaceNodeId::File(visible.clone()));
+        app.full_mindmap = Some(full);
+
+        let _ = app.update(Message::ToggleHidden);
+        let shown_request = app
+            .full_mindmap
+            .as_ref()
+            .unwrap()
+            .pending_workspace_load
+            .clone()
+            .expect("hidden toggle must schedule a background workspace refresh");
+        assert!(shown_request.preserve_navigation);
+        assert!(!app.workspace_files.contains(&hidden));
+
+        // A second toggle supersedes the first request. Its late completion
+        // must not reintroduce hidden files under the newer hidden-off intent.
+        let shown_snapshot = tree::build_workspace(&dir, true).unwrap();
+        let _ = app.update(Message::ToggleHidden);
+        let hidden_request = app
+            .full_mindmap
+            .as_ref()
+            .unwrap()
+            .pending_workspace_load
+            .clone()
+            .unwrap();
+        assert_ne!(shown_request, hidden_request);
+        let _ = app.update(Message::FullMindmapWorkspaceLoaded {
+            request: shown_request,
+            result: Ok((dir.clone(), shown_snapshot)),
+        });
+        assert_eq!(
+            app.full_mindmap.as_ref().unwrap().pending_workspace_load,
+            Some(hidden_request)
+        );
+        assert!(!app.workspace_files.contains(&hidden));
+
+        complete_full_mindmap_workspace_load(&mut app);
+        assert!(app.workspace_files.contains(&visible));
+        assert!(!app.workspace_files.contains(&hidden));
+        assert_eq!(
+            app.full_mindmap.as_ref().unwrap().selected,
+            Some(WorkspaceNodeId::File(visible.clone()))
+        );
+
+        let _ = app.update(Message::ToggleHidden);
+        complete_full_mindmap_workspace_load(&mut app);
+        let graph = app.full_mindmap_graph().unwrap();
+        assert!(graph
+            .node(&WorkspaceNodeId::File(visible.clone()))
+            .is_some());
+        assert!(app.workspace_files.contains(&hidden));
+        assert!(graph.node(&WorkspaceNodeId::Folder(hidden_dir)).is_some());
+        assert_eq!(
+            app.full_mindmap.as_ref().unwrap().selected,
+            Some(WorkspaceNodeId::File(visible))
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn full_mindmap_deselect_survives_preserve_navigation_hidden_refresh() {
+        let dir = full_mindmap_test_dir("workspace-hidden-deselect-race");
+        let visible = dir.join("visible.md");
+        let hidden = dir.join(".hidden.md");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(&visible, "# Visible\n").unwrap();
+        std::fs::write(&hidden, "# Hidden\n").unwrap();
+
+        let mut app = App::default();
+        app.set_workspace(dir.clone(), false);
+        let mut full = full_workspace_state(&dir);
+        let visible_id = WorkspaceNodeId::File(visible.clone());
+        full.selected = Some(visible_id.clone());
+        full.focus_request = Some(visible_id);
+        app.full_mindmap = Some(full);
+
+        let _ = app.update(Message::ToggleHidden);
+        let request = app
+            .full_mindmap
+            .as_ref()
+            .unwrap()
+            .pending_workspace_load
+            .clone()
+            .unwrap();
+        assert!(request.preserve_navigation);
+
+        let _ = app.update(Message::FullMindmapDeselect);
+        let full = app.full_mindmap.as_ref().unwrap();
+        assert_eq!(full.pending_workspace_load, Some(request));
+        assert_eq!(full.deferred_file_selection, None);
+        assert_eq!(full.selected, None);
+        assert_eq!(full.focus_request, None);
+        assert!(!full.panel_open);
+
+        let accepted = complete_full_mindmap_workspace_load(&mut app);
+        assert!(accepted.preserve_navigation);
+        assert!(app.workspace_files.contains(&visible));
+        assert!(app.workspace_files.contains(&hidden));
+        assert!(app.workspace_snapshot_show_hidden);
+        let full = app.full_mindmap.as_ref().unwrap();
+        assert!(full.pending_workspace_load.is_none());
+        assert_eq!(full.selected, None);
+        assert_eq!(full.focus_request, None);
+        assert!(!full.panel_open);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn full_mindmap_hidden_refresh_survives_selection_and_keeps_latest_valid_node() {
+        let dir = full_mindmap_test_dir("workspace-hidden-selection-race");
+        let first = dir.join("first.md");
+        let second = dir.join("second.md");
+        let hidden = dir.join(".secret.md");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(&first, "# First\n").unwrap();
+        std::fs::write(&second, "# Second\n").unwrap();
+        std::fs::write(&hidden, "# Hidden\n").unwrap();
+
+        let mut app = App::default();
+        app.set_workspace(dir.clone(), false);
+        let mut full = full_workspace_state(&dir);
+        full.selected = Some(WorkspaceNodeId::File(first.clone()));
+        app.full_mindmap = Some(full);
+
+        let _ = app.update(Message::ToggleHidden);
+        let request = app
+            .full_mindmap
+            .as_ref()
+            .unwrap()
+            .pending_workspace_load
+            .clone()
+            .unwrap();
+        let _ = app.update(Message::FullMindmapSelectNode(WorkspaceNodeId::File(
+            second.clone(),
+        )));
+        assert_eq!(
+            app.full_mindmap.as_ref().unwrap().pending_workspace_load,
+            Some(request.clone())
+        );
+
+        let snapshot = tree::build_workspace(&dir, true).unwrap();
+        let _ = app.update(Message::FullMindmapWorkspaceLoaded {
+            request,
+            result: Ok((dir.clone(), snapshot)),
+        });
+        complete_full_mindmap_folder_loads(&mut app);
+
+        let graph = app.full_mindmap_graph().unwrap();
+        assert!(graph.node(&WorkspaceNodeId::File(first)).is_some());
+        assert!(graph.node(&WorkspaceNodeId::File(second.clone())).is_some());
+        assert!(graph.node(&WorkspaceNodeId::File(hidden)).is_some());
+        assert_eq!(
+            app.full_mindmap.as_ref().unwrap().selected,
+            Some(WorkspaceNodeId::File(second))
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn full_mindmap_hidden_refresh_preserves_pending_preview_and_completion() {
+        let dir = full_mindmap_test_dir("workspace-hidden-preview-race");
+        let file = dir.join("preview.md");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(&file, "# Preview\n").unwrap();
+        std::fs::write(dir.join(".hidden.md"), "# Hidden\n").unwrap();
+
+        let mut app = App::default();
+        app.set_workspace(dir.clone(), false);
+        app.full_mindmap = Some(full_workspace_state(&dir));
+        let _ = app.update(Message::ToggleHidden);
+        let workspace_request = app
+            .full_mindmap
+            .as_ref()
+            .unwrap()
+            .pending_workspace_load
+            .clone()
+            .unwrap();
+        let _ = app.update(Message::FullMindmapSelectNode(WorkspaceNodeId::File(
+            file.clone(),
+        )));
+        let preview_request = settle_full_mindmap_preview(&mut app);
+
+        let snapshot = tree::build_workspace(&dir, true).unwrap();
+        let _ = app.update(Message::FullMindmapWorkspaceLoaded {
+            request: workspace_request,
+            result: Ok((dir.clone(), snapshot)),
+        });
+        assert_eq!(
+            app.full_mindmap.as_ref().unwrap().pending_preview,
+            Some(preview_request.clone())
+        );
+
+        accept_full_mindmap_preview(
+            &mut app,
+            &preview_request,
+            file.clone(),
+            "# Preview\n".into(),
+        );
+        assert!(app.full_mindmap.as_ref().unwrap().pending_preview.is_none());
+        assert!(matches!(
+            &app.full_mindmap.as_ref().unwrap().preview,
+            FullMindmapPreview::Document { path, .. } if path == &file
+        ));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn full_mindmap_hidden_refresh_serializes_open_in_both_completion_orders() {
+        for stale_first in [true, false] {
+            let label = if stale_first {
+                "workspace-hidden-open-stale-first"
+            } else {
+                "workspace-hidden-open-current-first"
+            };
+            let dir = full_mindmap_test_dir(label);
+            let file = dir.join("open.md");
+            let hidden = dir.join(".hidden.md");
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(&file, "# Open\n").unwrap();
+            std::fs::write(&hidden, "# Hidden\n").unwrap();
+
+            let mut app = App::default();
+            app.set_workspace(dir.clone(), false);
+            let mut full = full_workspace_state(&dir);
+            full.selected = Some(WorkspaceNodeId::File(file.clone()));
+            app.full_mindmap = Some(full);
+            let _ = app.update(Message::ToggleHidden);
+            let stale_refresh = app
+                .full_mindmap
+                .as_ref()
+                .unwrap()
+                .pending_workspace_load
+                .clone()
+                .unwrap();
+
+            let _ = app.update(Message::FullMindmapActivate);
+            let accepted_refresh = app
+                .full_mindmap
+                .as_ref()
+                .unwrap()
+                .pending_workspace_load
+                .clone()
+                .expect("activation should supersede the filter refresh");
+            assert_ne!(stale_refresh, accepted_refresh);
+            assert_eq!(accepted_refresh.open_after.as_ref(), Some(&file));
+            assert!(app.full_mindmap.as_ref().unwrap().pending_open.is_none());
+
+            let hidden_snapshot = tree::build_workspace(&dir, true).unwrap();
+            if stale_first {
+                let _ = app.update(Message::FullMindmapWorkspaceLoaded {
+                    request: stale_refresh.clone(),
+                    result: Ok((dir.clone(), hidden_snapshot.clone())),
+                });
+                assert_eq!(
+                    app.full_mindmap.as_ref().unwrap().pending_workspace_load,
+                    Some(accepted_refresh.clone())
+                );
+                assert!(app.full_mindmap.as_ref().unwrap().pending_open.is_none());
+            }
+
+            let _ = app.update(Message::FullMindmapWorkspaceLoaded {
+                request: accepted_refresh,
+                result: Ok((dir.clone(), hidden_snapshot.clone())),
+            });
+            let open_request = app
+                .full_mindmap
+                .as_ref()
+                .unwrap()
+                .pending_open
+                .clone()
+                .expect("file read starts only after the snapshot is accepted");
+            assert!(app.workspace_snapshot_show_hidden);
+            assert!(app.workspace_files.contains(&hidden));
+
+            if !stale_first {
+                let _ = app.update(Message::FullMindmapWorkspaceLoaded {
+                    request: stale_refresh,
+                    result: Ok((dir.clone(), hidden_snapshot)),
+                });
+                assert_eq!(
+                    app.full_mindmap.as_ref().unwrap().pending_open,
+                    Some(open_request.clone())
+                );
+            }
+
+            let _ = app.update(Message::FullMindmapFileLoaded {
+                request: open_request,
+                result: Ok((file.clone(), "# Open\n".into())),
+            });
+            assert!(app.full_mindmap.is_none());
+            assert_eq!(app.file.as_deref(), Some(file.as_path()));
+            assert_eq!(app.source, "# Open\n");
+            assert!(app.workspace_snapshot_show_hidden);
+            assert!(app.workspace_files.contains(&hidden));
+
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+
+    #[test]
+    fn full_mindmap_refresh_open_respects_dirty_guard_and_pending_exit() {
+        let dir = full_mindmap_test_dir("workspace-hidden-open-guards");
+        let file = dir.join("open.md");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(&file, "# Open\n").unwrap();
+        std::fs::write(dir.join(".hidden.md"), "# Hidden\n").unwrap();
+
+        let mut dirty_app = App::default();
+        dirty_app.set_workspace(dir.clone(), false);
+        let mut dirty_full = full_workspace_state(&dir);
+        dirty_full.selected = Some(WorkspaceNodeId::File(file.clone()));
+        dirty_app.full_mindmap = Some(dirty_full);
+        dirty_app.dirty = true;
+        let _ = dirty_app.update(Message::ToggleHidden);
+        let refresh = dirty_app
+            .full_mindmap
+            .as_ref()
+            .unwrap()
+            .pending_workspace_load
+            .clone()
+            .unwrap();
+        let _ = dirty_app.update(Message::FullMindmapActivate);
+        let dirty_full = dirty_app.full_mindmap.as_ref().unwrap();
+        assert_eq!(dirty_full.pending_workspace_load, Some(refresh));
+        assert!(dirty_full.pending_open.is_none());
+        assert!(dirty_app.toast.is_some());
+
+        let mut exiting_app = App::default();
+        exiting_app.set_workspace(dir.clone(), false);
+        let mut exiting_full = full_workspace_state(&dir);
+        exiting_full.selected = Some(WorkspaceNodeId::File(file));
+        exiting_app.full_mindmap = Some(exiting_full);
+        let _ = exiting_app.update(Message::ToggleHidden);
+        let _ = exiting_app.update(Message::ExitFullMindmap);
+        let exit_refresh = exiting_app
+            .full_mindmap
+            .as_ref()
+            .unwrap()
+            .pending_workspace_load
+            .clone()
+            .unwrap();
+        assert!(exit_refresh.exit_after_refresh);
+        let _ = exiting_app.update(Message::FullMindmapActivate);
+        let exiting_full = exiting_app.full_mindmap.as_ref().unwrap();
+        assert_eq!(
+            exiting_full.pending_workspace_load,
+            Some(exit_refresh.clone())
+        );
+        assert!(exiting_full.pending_open.is_none());
+        assert!(exit_refresh.open_after.is_none());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn full_mindmap_hidden_refresh_failure_reverts_filter_and_remains_visible() {
+        let dir = full_mindmap_test_dir("workspace-hidden-refresh-failure");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("visible.md"), "# Visible\n").unwrap();
+
+        let mut app = App::default();
+        app.set_workspace(dir.clone(), false);
+        app.full_mindmap = Some(full_workspace_state(&dir));
+        let _ = app.update(Message::ToggleHidden);
+        let request = app
+            .full_mindmap
+            .as_ref()
+            .unwrap()
+            .pending_workspace_load
+            .clone()
+            .unwrap();
+
+        let _ = app.update(Message::FullMindmapWorkspaceLoaded {
+            request,
+            result: Err("permission denied".into()),
+        });
+
+        let full = app
+            .full_mindmap
+            .as_ref()
+            .expect("ordinary failure stays open");
+        assert!(full.pending_workspace_load.is_none());
+        assert!(full
+            .load_error
+            .as_deref()
+            .is_some_and(|error| error.contains("permission denied")));
+        assert_eq!(app.show_hidden, app.workspace_snapshot_show_hidden);
+        assert!(!app.show_hidden);
+        assert!(app.error.is_none());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn full_mindmap_exit_refresh_failure_never_traps_and_surfaces_error() {
+        for (label, exit_message, expect_files) in [
+            ("exit-error", Message::ExitFullMindmap, false),
+            ("toggle-exit-error", Message::ToggleFullMindmap, false),
+            ("files-exit-error", Message::FullMindmapReturnToFiles, true),
+        ] {
+            let dir = full_mindmap_test_dir(label);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join("visible.md"), "# Visible\n").unwrap();
+
+            let mut app = App::default();
+            app.set_workspace(dir.clone(), false);
+            app.full_mindmap = Some(full_workspace_state(&dir));
+            let _ = app.update(Message::ToggleHidden);
+            let _ = app.update(exit_message);
+            let request = app
+                .full_mindmap
+                .as_ref()
+                .unwrap()
+                .pending_workspace_load
+                .clone()
+                .expect("exit should wait for reconciliation");
+            assert!(request.exit_after_refresh);
+
+            let _ = app.update(Message::FullMindmapWorkspaceLoaded {
+                request,
+                result: Err("workspace disappeared".into()),
+            });
+
+            assert!(app.full_mindmap.is_none());
+            assert_eq!(app.show_hidden, app.workspace_snapshot_show_hidden);
+            assert!(!app.show_hidden);
+            assert!(app
+                .error
+                .as_deref()
+                .is_some_and(|error| error.contains("workspace disappeared")));
+            assert_eq!(app.sidebar_open, expect_files);
+            if expect_files {
+                assert_eq!(app.sidebar_tab, SidebarTab::Files);
+            }
+
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+
+    #[test]
+    fn full_mindmap_cycles_its_own_panel_width() {
+        let dir = full_mindmap_test_dir("panel-width");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("readme.md"), "# Project\n").unwrap();
+
+        let mut app = App::default();
+        app.set_workspace(dir.clone(), false);
+        let mut full = full_workspace_state(&dir);
+        full.panel_open = false;
+        full.panel_drag = Some((MIND_PANEL_DEFAULT, Some(400.0)));
+        app.full_mindmap = Some(full);
+        app.window_size = Some(iced::Size::new(1200.0, 800.0));
+        app.mindmap_panel_width = 333.0;
+
+        let _ = app.update(Message::FullMindmapCyclePanelWidth);
+        let full = app.full_mindmap.as_ref().unwrap();
+        assert!(full.panel_open);
+        assert!(full.panel_drag.is_none());
+        assert_eq!(full.panel_step, 1);
+        assert_eq!(full.panel_width, 600.0);
+
+        let _ = app.update(Message::FullMindmapCyclePanelWidth);
+        assert_eq!(app.full_mindmap.as_ref().unwrap().panel_width, 720.0);
+        let _ = app.update(Message::FullMindmapCyclePanelWidth);
+        assert_eq!(app.full_mindmap.as_ref().unwrap().panel_width, 400.0);
+        assert_eq!(app.mindmap_panel_width, 333.0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn full_mindmap_focus_preserves_user_panel_visibility() {
+        let dir = full_mindmap_test_dir("panel-visibility");
+        let folder = dir.join("notes");
+        let file = folder.join("guide.md");
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(&file, "# Guide\n").unwrap();
+
+        let mut app = App::default();
+        app.set_workspace(dir.clone(), false);
+        app.full_mindmap = Some(full_workspace_state(&dir));
+        assert!(!app.full_mindmap.as_ref().unwrap().panel_open);
+
+        let _ = app.update(Message::FullMindmapSelectNode(WorkspaceNodeId::File(
+            file.clone(),
+        )));
+        assert!(!app.full_mindmap.as_ref().unwrap().panel_open);
+
+        let _ = app.update(Message::FullMindmapToggleNode(WorkspaceNodeId::Folder(
+            folder.clone(),
+        )));
+        assert!(!app.full_mindmap.as_ref().unwrap().panel_open);
+
+        let _ = app.update(Message::FullMindmapTogglePanel);
+        assert!(app.full_mindmap.as_ref().unwrap().panel_open);
+        let _ = app.update(Message::FullMindmapDeselect);
+        assert!(app.full_mindmap.as_ref().unwrap().panel_open);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn full_mindmap_panel_width_uses_default_before_first_resize() {
+        let mut app = App::default();
+        app.full_mindmap = Some(App::new_full_mindmap_state());
+        let _ = app.update(Message::FullMindmapCyclePanelWidth);
+        assert_eq!(
+            app.full_mindmap.as_ref().unwrap().panel_width,
+            MIND_PANEL_DEFAULT
+        );
+    }
+
+    #[test]
+    fn full_mindmap_file_selection_previews_without_mutating_dirty_document() {
+        let dir = full_mindmap_test_dir("preview");
+        std::fs::create_dir_all(&dir).unwrap();
+        let preview_file = dir.join("preview.md");
+        std::fs::write(&preview_file, "# Preview\n\nContent\n").unwrap();
+
+        let mut app = App::default();
+        app.set_workspace(dir.clone(), false);
+        app.file = Some(std::path::PathBuf::from("current.md"));
+        app.source = "unsaved current document".into();
+        app.saved_source = "saved current document".into();
+        app.dirty = true;
+        app.full_mindmap = Some(full_workspace_state(&dir));
+
+        let _ = app.update(Message::FullMindmapSelectNode(WorkspaceNodeId::File(
+            preview_file.clone(),
+        )));
+        assert!(app.full_mindmap.as_ref().unwrap().pending_preview.is_none());
+        assert!(app
+            .full_mindmap
+            .as_ref()
+            .unwrap()
+            .pending_preview_settle
+            .is_some());
+        let request = settle_full_mindmap_preview(&mut app);
+        assert!(matches!(
+            app.full_mindmap.as_ref().unwrap().preview,
+            FullMindmapPreview::Loading(_)
+        ));
+
+        accept_full_mindmap_preview(
+            &mut app,
+            &request,
+            preview_file.clone(),
+            "# Preview\n\nContent\n".into(),
+        );
+
+        assert!(matches!(
+            app.full_mindmap.as_ref().unwrap().preview,
+            FullMindmapPreview::Document { ref path, .. } if path == &preview_file
+        ));
+        assert_eq!(
+            app.file.as_deref(),
+            Some(std::path::Path::new("current.md"))
+        );
+        assert_eq!(app.source, "unsaved current document");
+        assert!(app.dirty);
+        let _preview_view = app.view();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn full_mindmap_preview_selection_waits_for_settle_before_read() {
+        let dir = full_mindmap_test_dir("preview-settle");
+        let file = dir.join("preview.md");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(&file, "# Preview\n").unwrap();
+
+        let mut app = App::default();
+        app.set_workspace(dir.clone(), false);
+        app.full_mindmap = Some(full_workspace_state(&dir));
+
+        let _ = app.update(Message::FullMindmapSelectNode(WorkspaceNodeId::File(
+            file.clone(),
+        )));
+        let settle = app
+            .full_mindmap
+            .as_ref()
+            .unwrap()
+            .pending_preview_settle
+            .clone()
+            .expect("file selection should own a settle timer");
+        assert!(app.full_mindmap.as_ref().unwrap().pending_preview.is_none());
+        assert!(matches!(
+            app.full_mindmap.as_ref().unwrap().preview,
+            FullMindmapPreview::Loading(ref path) if path == &file
+        ));
+
+        let _ = app.update(Message::FullMindmapPreviewSettle { request: settle });
+        let preview_request = app
+            .full_mindmap
+            .as_ref()
+            .unwrap()
+            .pending_preview
+            .clone()
+            .expect("settle should start the bounded read");
+        assert!(app
+            .full_mindmap
+            .as_ref()
+            .unwrap()
+            .pending_preview_settle
+            .is_none());
+        accept_full_mindmap_preview(
+            &mut app,
+            &preview_request,
+            file.clone(),
+            "# Preview\n".into(),
+        );
+        assert!(matches!(
+            app.full_mindmap.as_ref().unwrap().preview,
+            FullMindmapPreview::Document { ref path, .. } if path == &file
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn full_mindmap_preview_settle_uses_300ms_without_changing_document_panel() {
+        assert_eq!(MINDMAP_PANEL_SETTLE_MS, 75);
+        assert_eq!(FULL_MINDMAP_PREVIEW_SETTLE_MS, 300);
+        assert_ne!(FULL_MINDMAP_PREVIEW_SETTLE_MS, MINDMAP_PANEL_SETTLE_MS);
+    }
+
+    #[test]
+    fn full_mindmap_preview_keeps_blocks_beyond_legacy_caps() {
+        let dir = full_mindmap_test_dir("preview-complete-blocks");
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("large.md");
+        let mut source = String::new();
+        for index in 0..(crate::virt::VIRT_MIN_BLOCKS + 12) {
+            source.push_str(&format!("# Heading {index}\n\n{}\n\n", "x".repeat(1200)));
+        }
+        std::fs::write(&file, &source).unwrap();
+
+        let mut app = App::default();
+        app.set_workspace(dir.clone(), false);
+        app.full_mindmap = Some(full_workspace_state(&dir));
+        let _ = app.update(Message::FullMindmapSelectNode(WorkspaceNodeId::File(
+            file.clone(),
+        )));
+        let request = settle_full_mindmap_preview(&mut app);
+        let _ = app.update(Message::FullMindmapPreviewLoaded {
+            request: request.clone(),
+            result: Ok((file.clone(), source.clone())),
+        });
+        // Large complete previews parse off-thread in production. Feed the
+        // accepted worker result directly here so this regression remains
+        // deterministic without waiting on the runtime task scheduler.
+        let parsed = parse_full_mindmap_preview_blocking(file.clone(), source);
+        let _ = app.update(Message::FullMindmapPreviewParsed {
+            request,
+            result: Ok(parsed),
+        });
+
+        let full = app.full_mindmap.as_ref().unwrap();
+        match &full.preview {
+            FullMindmapPreview::Document {
+                blocks, truncated, ..
+            } => {
+                assert!(blocks.len() > MIND_PANEL_MAX_BLOCKS);
+                assert!(!truncated);
+            }
+            other => panic!("expected complete document preview, got {other:?}"),
+        }
+        assert!(full.preview_window.active);
+        assert!(full.preview_window.display.len() > MIND_PANEL_MAX_BLOCKS);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn full_mindmap_preview_virtual_window_is_owned_and_ranges_large_documents() {
+        let file = PathBuf::from("preview.md");
+        let blocks = (0..320)
+            .map(|index| {
+                (
+                    BlockId(index),
+                    Block::Paragraph(vec![Inline::Text("x".repeat(80))]),
+                )
+            })
+            .collect::<Vec<_>>();
+        let mut app = App::default();
+        app.virt_window.range = (7, 9);
+        app.virt_window.active = true;
+        app.full_mindmap = Some(App::new_full_mindmap_state());
+        {
+            let full = app.full_mindmap.as_mut().unwrap();
+            full.selected = Some(WorkspaceNodeId::File(file.clone()));
+            full.preview = FullMindmapPreview::Document {
+                path: file,
+                blocks: blocks.clone(),
+                truncated: false,
+                shape: None,
+                assets: None,
+            };
+        }
+        app.rebuild_full_mindmap_preview_here();
+
+        let full = app.full_mindmap.as_ref().unwrap();
+        assert!(full.preview_window.active);
+        assert!(full.preview_window.range.1 - full.preview_window.range.0 < blocks.len());
+        assert!(full.preview_window.bottom_spacer().is_some());
+        // Building the panel must not mutate the normal document window.
+        assert_eq!(app.virt_window.range, (7, 9));
+        assert!(app.virt_window.active);
+    }
+
+    #[test]
+    fn full_mindmap_preview_geometry_refresh_discards_sparse_height_adjustments() {
+        let file = PathBuf::from("geometry.md");
+        let blocks = (0..320)
+            .map(|index| {
+                (
+                    BlockId(index),
+                    Block::Paragraph(vec![Inline::Text("x".into())]),
+                )
+            })
+            .collect::<Vec<_>>();
+        let mut app = App::default();
+        let mut full = App::new_full_mindmap_state();
+        full.selected = Some(WorkspaceNodeId::File(file.clone()));
+        full.preview_identity = Some(PendingFullMindmapPreview {
+            id: 1,
+            path: file.clone(),
+        });
+        full.preview = FullMindmapPreview::Document {
+            path: file,
+            blocks,
+            truncated: false,
+            shape: None,
+            assets: None,
+        };
+        app.full_mindmap = Some(full);
+        app.rebuild_full_mindmap_preview_here();
+        let dpos = 10;
+        let base = app
+            .full_mindmap
+            .as_ref()
+            .unwrap()
+            .preview_window
+            .prefix_at(dpos + 1);
+        app.full_mindmap
+            .as_mut()
+            .unwrap()
+            .preview_window
+            .apply_height_delta(dpos, 120.0);
+        assert_eq!(
+            app.full_mindmap
+                .as_ref()
+                .unwrap()
+                .preview_window
+                .prefix_at(dpos + 1),
+            base + 120.0
+        );
+
+        // Theme/font/panel-width/window-bound changes all route through this
+        // helper. They invalidate real measured heights and sparse deltas
+        // before rebuilding the retained worker shape.
+        let _ = app.refresh_full_mindmap_preview_heights();
+        assert_eq!(
+            app.full_mindmap
+                .as_ref()
+                .unwrap()
+                .preview_window
+                .prefix_at(dpos + 1),
+            base
+        );
+    }
+
+    #[test]
+    fn full_mindmap_preview_asset_prime_is_visible_range_bounded() {
+        let file = PathBuf::from("asset-heavy.md");
+        let blocks = (0..320u64)
+            .map(|index| {
+                (
+                    BlockId(index),
+                    Block::Paragraph(vec![Inline::Text("visible".into())]),
+                )
+            })
+            .collect::<Vec<_>>();
+        let mut by_block = HashMap::new();
+        for (id, _) in &blocks {
+            by_block.insert(
+                *id,
+                vec![FullMindmapPreviewAsset::Image(format!(
+                    "https://example.test/{}.png",
+                    id.0
+                ))],
+            );
+        }
+        let mut full = App::new_full_mindmap_state();
+        full.selected = Some(WorkspaceNodeId::File(file.clone()));
+        full.preview_identity = Some(PendingFullMindmapPreview {
+            id: 1,
+            path: file.clone(),
+        });
+        full.preview = FullMindmapPreview::Document {
+            path: file,
+            blocks,
+            truncated: false,
+            shape: None,
+            assets: Some(Arc::new(FullMindmapPreviewAssetIndex { by_block })),
+        };
+        let mut app = App::default();
+        app.full_mindmap = Some(full);
+        app.rebuild_full_mindmap_preview_here();
+        let _ = app.prime_full_mindmap_preview_assets();
+        let full = app.full_mindmap.as_ref().unwrap();
+        assert!(full.preview_loading_images.len() <= FULL_MINDMAP_PREVIEW_ASSET_BATCH);
+        assert!(full.preview_asset_cursor <= FULL_MINDMAP_PREVIEW_ASSET_BATCH);
+    }
+
+    #[test]
+    fn full_mindmap_preview_failed_image_is_terminal_for_current_wave() {
+        let file = PathBuf::from("asset-failure.md");
+        let url = "https://example.test/permanent.png".to_string();
+        let blocks = vec![(
+            BlockId(0),
+            Block::Image {
+                url: url.clone(),
+                alt: "permanent failure".into(),
+            },
+        )];
+        let mut by_block = HashMap::new();
+        by_block.insert(
+            BlockId(0),
+            vec![FullMindmapPreviewAsset::Image(url.clone())],
+        );
+        let mut full = App::new_full_mindmap_state();
+        full.selected = Some(WorkspaceNodeId::File(file.clone()));
+        full.preview_identity = Some(PendingFullMindmapPreview {
+            id: 1,
+            path: file.clone(),
+        });
+        full.preview = FullMindmapPreview::Document {
+            path: file,
+            blocks,
+            truncated: false,
+            shape: None,
+            assets: Some(Arc::new(FullMindmapPreviewAssetIndex { by_block })),
+        };
+        let mut app = App::default();
+        app.full_mindmap = Some(full);
+        app.rebuild_full_mindmap_preview_here();
+        let _ = app.prime_full_mindmap_preview_assets();
+        let identity = FullMindmapPreviewIdentity {
+            namespace: app.full_mindmap.as_ref().unwrap().preview_namespace,
+            request: app
+                .full_mindmap
+                .as_ref()
+                .unwrap()
+                .preview_identity
+                .clone()
+                .unwrap(),
+        };
+        assert!(app
+            .full_mindmap
+            .as_ref()
+            .unwrap()
+            .preview_loading_images
+            .contains_key(&url));
+        let range = app.full_mindmap.as_ref().unwrap().preview_window.range;
+        let wave = app.full_mindmap.as_ref().unwrap().preview_asset_wave_id;
+
+        // The accepted failure is terminal for this identity/range. The
+        // handler still primes the next descriptor, but never re-dispatches
+        // the same permanently failing URL.
+        let _ = app.update(Message::FullMindmapPreviewImageFetched {
+            identity,
+            range,
+            wave,
+            url: url.clone(),
+            result: Err("permanent failure".into()),
+        });
+        let full = app.full_mindmap.as_ref().unwrap();
+        assert!(full.preview_failed_images.contains(&url));
+        assert!(full.preview_loading_images.is_empty());
+        assert!(matches!(
+            app.image_cache.get(&url),
+            Some(ImageState::Failed)
+        ));
+
+        // Identity-less legacy document completion cannot replace a
+        // preview-owned terminal failure with a late successful fetch.
+        let _ = app.update(Message::ImageFetched(url.clone(), Ok(vec![1, 2, 3])));
+        assert!(app
+            .full_mindmap
+            .as_ref()
+            .unwrap()
+            .preview_failed_images
+            .contains(&url));
+        assert!(matches!(
+            app.image_cache.get(&url),
+            Some(ImageState::Failed)
+        ));
+
+        // A same-range prime (including a cursor replay caused by another
+        // layout callback) keeps the failed sentinel terminal rather than
+        // deleting it and starting an unbounded retry loop.
+        app.full_mindmap.as_mut().unwrap().preview_asset_cursor = 0;
+        let _ = app.prime_full_mindmap_preview_assets();
+        let full = app.full_mindmap.as_ref().unwrap();
+        assert!(full.preview_loading_images.is_empty());
+        assert!(full.preview_failed_images.contains(&url));
+        assert!(matches!(
+            app.image_cache.get(&url),
+            Some(ImageState::Failed)
+        ));
+    }
+
+    #[test]
+    fn full_mindmap_preview_old_wave_failure_cannot_mutate_reentered_range() {
+        let file = PathBuf::from("asset-wave-reentry.md");
+        let url = "https://example.test/retry-on-range.png".to_string();
+        let blocks = vec![
+            (
+                BlockId(0),
+                Block::Image {
+                    url: url.clone(),
+                    alt: "range A".into(),
+                },
+            ),
+            (
+                BlockId(1),
+                Block::Image {
+                    url: url.clone(),
+                    alt: "range B".into(),
+                },
+            ),
+        ];
+        let mut by_block = HashMap::new();
+        by_block.insert(
+            BlockId(0),
+            vec![FullMindmapPreviewAsset::Image(url.clone())],
+        );
+        by_block.insert(
+            BlockId(1),
+            vec![FullMindmapPreviewAsset::Image(url.clone())],
+        );
+        let mut full = App::new_full_mindmap_state();
+        full.selected = Some(WorkspaceNodeId::File(file.clone()));
+        full.preview_identity = Some(PendingFullMindmapPreview {
+            id: 1,
+            path: file.clone(),
+        });
+        full.preview = FullMindmapPreview::Document {
+            path: file,
+            blocks,
+            truncated: false,
+            shape: None,
+            assets: Some(Arc::new(FullMindmapPreviewAssetIndex { by_block })),
+        };
+        let mut app = App::default();
+        app.full_mindmap = Some(full);
+        app.rebuild_full_mindmap_preview_here();
+        app.full_mindmap.as_mut().unwrap().preview_window.range = (0, 1);
+        let _ = app.prime_full_mindmap_preview_assets();
+        let identity = FullMindmapPreviewIdentity {
+            namespace: app.full_mindmap.as_ref().unwrap().preview_namespace,
+            request: app
+                .full_mindmap
+                .as_ref()
+                .unwrap()
+                .preview_identity
+                .clone()
+                .unwrap(),
+        };
+        let wave_a = app.full_mindmap.as_ref().unwrap().preview_asset_wave_id;
+        assert_eq!(
+            app.full_mindmap
+                .as_ref()
+                .unwrap()
+                .preview_loading_images
+                .get(&url)
+                .unwrap()
+                .range,
+            (0, 1)
+        );
+
+        // Move off-screen. The old Loading sentinel is drained before the
+        // new wave, so a hung A request cannot consume the 64-item cap.
+        app.full_mindmap.as_mut().unwrap().preview_window.range = (1, 2);
+        let _ = app.prime_full_mindmap_preview_assets();
+        let wave_b = app.full_mindmap.as_ref().unwrap().preview_asset_wave_id;
+        assert_ne!(wave_a, wave_b);
+        assert_eq!(
+            app.full_mindmap
+                .as_ref()
+                .unwrap()
+                .preview_loading_images
+                .get(&url)
+                .unwrap()
+                .range,
+            (1, 2)
+        );
+
+        // Re-enter A before its original request completes. The monotonic
+        // wave id distinguishes this A from the old A even though the range
+        // and URL are identical.
+        app.full_mindmap.as_mut().unwrap().preview_window.range = (0, 1);
+        let _ = app.prime_full_mindmap_preview_assets();
+        let wave_a2 = app.full_mindmap.as_ref().unwrap().preview_asset_wave_id;
+        assert_ne!(wave_a, wave_a2);
+        assert_ne!(wave_b, wave_a2);
+        assert_eq!(
+            app.full_mindmap
+                .as_ref()
+                .unwrap()
+                .preview_loading_images
+                .get(&url)
+                .unwrap()
+                .wave,
+            wave_a2
+        );
+
+        // The old A failure is stale: it must not mark the re-entered A wave
+        // terminal or remove its current Loading sentinel.
+        let _ = app.update(Message::FullMindmapPreviewImageFetched {
+            identity: identity.clone(),
+            range: (0, 1),
+            wave: wave_a,
+            url: url.clone(),
+            result: Err("old range failure".into()),
+        });
+        let full = app.full_mindmap.as_ref().unwrap();
+        assert!(!full.preview_failed_images.contains(&url));
+        assert_eq!(full.preview_loading_images.get(&url).unwrap().wave, wave_a2);
+        assert!(matches!(
+            app.image_cache.get(&url),
+            Some(ImageState::Loading)
+        ));
+
+        // The current wave's failure is accepted once and remains terminal
+        // across same-range cursor re-primes.
+        let _ = app.update(Message::FullMindmapPreviewImageFetched {
+            identity,
+            range: (0, 1),
+            wave: wave_a2,
+            url: url.clone(),
+            result: Err("current range failure".into()),
+        });
+        let full = app.full_mindmap.as_ref().unwrap();
+        assert!(full.preview_failed_images.contains(&url));
+        assert!(full.preview_loading_images.is_empty());
+        assert!(matches!(
+            app.image_cache.get(&url),
+            Some(ImageState::Failed)
+        ));
+        app.full_mindmap.as_mut().unwrap().preview_asset_cursor = 0;
+        let _ = app.prime_full_mindmap_preview_assets();
+        assert!(app
+            .full_mindmap
+            .as_ref()
+            .unwrap()
+            .preview_loading_images
+            .is_empty());
+    }
+
+    #[test]
+    fn full_mindmap_preview_duplicate_diagram_completion_cannot_overwrite_ready() {
+        let file = PathBuf::from("diagram-wave.md");
+        let mut full = App::new_full_mindmap_state();
+        full.selected = Some(WorkspaceNodeId::File(file.clone()));
+        full.preview_identity = Some(PendingFullMindmapPreview {
+            id: 1,
+            path: file.clone(),
+        });
+        full.preview = FullMindmapPreview::Document {
+            path: file,
+            blocks: Vec::new(),
+            truncated: false,
+            shape: None,
+            assets: None,
+        };
+        full.preview_window.range = (0, 1);
+        let mut app = App::default();
+        let theme_id = app.diagram_theme_id;
+        let key = (77, theme_id);
+        app.full_mindmap = Some(full);
+        let identity = FullMindmapPreviewIdentity {
+            namespace: app.full_mindmap.as_ref().unwrap().preview_namespace,
+            request: app
+                .full_mindmap
+                .as_ref()
+                .unwrap()
+                .preview_identity
+                .clone()
+                .unwrap(),
+        };
+        let range = (0, 1);
+        let wave = app.full_mindmap.as_ref().unwrap().preview_asset_wave_id;
+        let owner = FullMindmapPreviewAssetIdentity {
+            preview: identity.clone(),
+            range,
+            wave,
+        };
+        app.diagram_cache
+            .put(key, crate::diagram::DiagramState::Pending);
+        app.full_mindmap
+            .as_mut()
+            .unwrap()
+            .preview_pending_diagrams
+            .insert(key, owner);
+        let rendered = crate::diagram::RenderOutput {
+            svg: vec![1, 2, 3],
+            rgba: vec![255, 0, 0, 255],
+            w: 1,
+            h: 1,
+        };
+        let _ = app.update(Message::FullMindmapPreviewDiagramRendered {
+            identity: identity.clone(),
+            range,
+            wave,
+            hash: key.0,
+            theme_id,
+            result: Ok(rendered),
+        });
+        assert!(app
+            .full_mindmap
+            .as_ref()
+            .unwrap()
+            .preview_pending_diagrams
+            .is_empty());
+        assert!(matches!(
+            app.diagram_cache.peek(&key),
+            Some(crate::diagram::DiagramState::Ready { .. })
+        ));
+
+        // The current identity is still valid, but its Pending owner is gone.
+        // A duplicate late Err must not replace the accepted Ready result.
+        let _ = app.update(Message::FullMindmapPreviewDiagramRendered {
+            identity,
+            range,
+            wave,
+            hash: key.0,
+            theme_id,
+            result: Err("late duplicate".into()),
+        });
+        assert!(matches!(
+            app.diagram_cache.peek(&key),
+            Some(crate::diagram::DiagramState::Ready { .. })
+        ));
+    }
+
+    #[test]
+    fn full_mindmap_preview_selection_resets_window_and_stale_measurement() {
+        let dir = full_mindmap_test_dir("preview-window-stale");
+        std::fs::create_dir_all(&dir).unwrap();
+        let first = dir.join("first.md");
+        let second = dir.join("second.md");
+        std::fs::write(&first, "# First\n").unwrap();
+        std::fs::write(&second, "# Second\n").unwrap();
+
+        let mut app = App::default();
+        app.set_workspace(dir.clone(), false);
+        app.full_mindmap = Some(full_workspace_state(&dir));
+        let _ = app.update(Message::FullMindmapSelectNode(WorkspaceNodeId::File(
+            first.clone(),
+        )));
+        let first_request = settle_full_mindmap_preview(&mut app);
+        accept_full_mindmap_preview(&mut app, &first_request, first.clone(), "# First\n".into());
+        app.full_mindmap
+            .as_mut()
+            .unwrap()
+            .preview_height_cache
+            .set_measured(BlockId(0), 777.0);
+        let old_generation = app.full_mindmap.as_ref().unwrap().preview_generation;
+        let _ = app.update(Message::FullMindmapSelectNode(WorkspaceNodeId::File(
+            second.clone(),
+        )));
+        let full = app.full_mindmap.as_ref().unwrap();
+        assert!(full.preview_generation > old_generation);
+        assert!(full.preview_window.display.is_empty());
+        assert_ne!(
+            full.preview_height_cache.get(BlockId(0), &Block::Rule),
+            777.0
+        );
+
+        let current = settle_full_mindmap_preview(&mut app);
+        accept_full_mindmap_preview(&mut app, &current, second.clone(), "# Second\n".into());
+        let full = app.full_mindmap.as_ref().unwrap();
+        let generation = full.preview_generation;
+        let namespace = full.preview_namespace;
+        let identity = full.preview_identity.as_ref().unwrap().id;
+        let _ = app.update(Message::FullMindmapPreviewBlockHeightsMeasured {
+            path: first,
+            namespace,
+            identity,
+            generation: generation.saturating_sub(1),
+            measured: vec![(BlockId(0), 9999.0)],
+            at_offset: 0.0,
+        });
+        assert!(matches!(
+            &app.full_mindmap.as_ref().unwrap().preview,
+            FullMindmapPreview::Document { path, .. } if path == &second
+        ));
+        assert_ne!(
+            app.full_mindmap
+                .as_ref()
+                .unwrap()
+                .preview_height_cache
+                .get(BlockId(0), &Block::Rule),
+            9999.0
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn full_mindmap_stale_preview_settle_after_new_selection_is_ignored() {
+        let dir = full_mindmap_test_dir("preview-settle-stale");
+        let first = dir.join("first.md");
+        let second = dir.join("second.md");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(&first, "# First\n").unwrap();
+        std::fs::write(&second, "# Second\n").unwrap();
+
+        let mut app = App::default();
+        app.set_workspace(dir.clone(), false);
+        app.full_mindmap = Some(full_workspace_state(&dir));
+        let _ = app.update(Message::FullMindmapSelectNode(WorkspaceNodeId::File(first)));
+        let stale = app
+            .full_mindmap
+            .as_ref()
+            .unwrap()
+            .pending_preview_settle
+            .clone()
+            .unwrap();
+        let _ = app.update(Message::FullMindmapSelectNode(WorkspaceNodeId::File(
+            second.clone(),
+        )));
+        let current = app
+            .full_mindmap
+            .as_ref()
+            .unwrap()
+            .pending_preview_settle
+            .clone()
+            .unwrap();
+        assert_ne!(stale, current);
+
+        let _ = app.update(Message::FullMindmapPreviewSettle { request: stale });
+        assert_eq!(
+            app.full_mindmap
+                .as_ref()
+                .and_then(|full| full.pending_preview_settle.clone()),
+            Some(current.clone())
+        );
+        assert!(app.full_mindmap.as_ref().unwrap().pending_preview.is_none());
+
+        let _ = app.update(Message::FullMindmapPreviewSettle { request: current });
+        assert_eq!(
+            app.full_mindmap
+                .as_ref()
+                .and_then(|full| full.pending_preview.as_ref().map(|request| &request.path)),
+            Some(&second)
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn full_mindmap_preview_reset_keeps_settle_worker_alive() {
+        let dir = full_mindmap_test_dir("preview-settle-worker-rearm");
+        let file = dir.join("preview.md");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(&file, "# Preview\n").unwrap();
+
+        let mut app = App::default();
+        app.set_workspace(dir.clone(), false);
+        app.full_mindmap = Some(full_workspace_state(&dir));
+        let _ = app.update(Message::FullMindmapSelectNode(WorkspaceNodeId::File(
+            file.clone(),
+        )));
+        let full = app.full_mindmap.as_ref().unwrap();
+        assert!(full.pending_preview_settle.is_some());
+        assert!(full.preview_settle_worker_started);
+        assert!(matches!(&full.preview, FullMindmapPreview::Loading(path) if path == &file));
+        // Resetting while the timer/read is in flight clears only the watch
+        // value. The persistent stream remains the sole worker and can own a
+        // later selection without leaving a dead receiver behind.
+        app.reset_full_mindmap_preview_window();
+        assert!(
+            app.full_mindmap
+                .as_ref()
+                .unwrap()
+                .preview_settle_worker_started
+        );
+        let _ = app.update(Message::FullMindmapSelectNode(WorkspaceNodeId::File(
+            file.clone(),
+        )));
+        assert!(app
+            .full_mindmap
+            .as_ref()
+            .unwrap()
+            .pending_preview_settle
+            .is_some());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn full_mindmap_first_preview_selection_delivers_settle_to_worker() {
+        let dir = full_mindmap_test_dir("preview-settle-worker-first-selection");
+        let file = dir.join("preview.md");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(&file, "# Preview\n").unwrap();
+
+        let mut app = App::default();
+        app.set_workspace(dir.clone(), false);
+        app.full_mindmap = Some(full_workspace_state(&dir));
+        assert!(
+            !app.full_mindmap
+                .as_ref()
+                .unwrap()
+                .preview_settle_worker_started
+        );
+
+        // This is the production call order: the first selection starts the
+        // persistent worker and publishes its request in one update. Observe
+        // the actual settle stream from a receiver created after scheduling;
+        // no test-only send after subscription can hide a missed first wake.
+        let _worker_task = app.schedule_full_mindmap_preview(Some(file.clone()));
+        let request = app
+            .full_mindmap
+            .as_ref()
+            .and_then(|full| full.pending_preview_settle.clone())
+            .expect("first selection should own a pending settle");
+        assert!(
+            app.full_mindmap
+                .as_ref()
+                .unwrap()
+                .preview_settle_worker_started
+        );
+        let receiver = app
+            .full_mindmap
+            .as_ref()
+            .unwrap()
+            .preview_settle_tx
+            .subscribe();
+
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        runtime.block_on(async {
+            use futures::StreamExt;
+            let mut stream = Box::pin(full_mindmap_preview_settle_stream(receiver));
+
+            assert_eq!(
+                tokio::time::timeout(std::time::Duration::from_secs(2), stream.next(),)
+                    .await
+                    .expect("first settle should not remain pending"),
+                Some(request),
+            );
+        });
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn full_mindmap_preview_settle_stream_reuses_one_latest_only_worker() {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        runtime.block_on(async {
+            use futures::StreamExt;
+
+            let (sender, receiver) = tokio::sync::watch::channel(None);
+            let mut stream = Box::pin(full_mindmap_preview_settle_stream(receiver));
+            let first = PendingFullMindmapPreviewSettle {
+                id: 1,
+                path: PathBuf::from("/preview/first.md"),
+            };
+            sender.send(Some(first.clone())).unwrap();
+            assert_eq!(
+                tokio::time::timeout(std::time::Duration::from_secs(2), stream.next())
+                    .await
+                    .unwrap(),
+                Some(first)
+            );
+
+            let second = PendingFullMindmapPreviewSettle {
+                id: 2,
+                path: PathBuf::from("/preview/second.md"),
+            };
+            // Replacing the watch value wakes the same stream; no second
+            // settle worker is needed for a later selection.
+            sender.send(Some(second.clone())).unwrap();
+            assert_eq!(
+                tokio::time::timeout(std::time::Duration::from_secs(2), stream.next())
+                    .await
+                    .unwrap(),
+                Some(second)
+            );
+        });
+    }
+
+    #[test]
+    fn full_mindmap_stale_preview_parse_after_new_selection_is_ignored() {
+        let dir = full_mindmap_test_dir("preview-parse-stale");
+        let first = dir.join("first.md");
+        let second = dir.join("second.md");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(&first, "# First\n").unwrap();
+        std::fs::write(&second, "# Second\n").unwrap();
+
+        let mut app = App::default();
+        app.set_workspace(dir.clone(), false);
+        app.full_mindmap = Some(full_workspace_state(&dir));
+        let _ = app.update(Message::FullMindmapSelectNode(WorkspaceNodeId::File(
+            first.clone(),
+        )));
+        let first_request = settle_full_mindmap_preview(&mut app);
+        let large_source = format!(
+            "# First\n\n{}",
+            "x".repeat(FULL_MINDMAP_PREVIEW_STALE_SOURCE_BYTES)
+        );
+        let _ = app.update(Message::FullMindmapPreviewLoaded {
+            request: first_request.clone(),
+            result: Ok((first.clone(), large_source)),
+        });
+        assert_eq!(
+            app.full_mindmap.as_ref().unwrap().pending_preview.as_ref(),
+            Some(&first_request)
+        );
+
+        let _ = app.update(Message::FullMindmapSelectNode(WorkspaceNodeId::File(
+            second.clone(),
+        )));
+        let _second_request = settle_full_mindmap_preview(&mut app);
+        let stale_preview = parse_full_mindmap_preview_blocking(first.clone(), "# First\n".into());
+        let _ = app.update(Message::FullMindmapPreviewParsed {
+            request: first_request,
+            result: Ok(stale_preview),
+        });
+        assert_eq!(
+            app.full_mindmap
+                .as_ref()
+                .unwrap()
+                .pending_preview
+                .as_ref()
+                .map(|pending| &pending.path),
+            Some(&second)
+        );
+        assert!(matches!(
+            &app.full_mindmap.as_ref().unwrap().preview,
+            FullMindmapPreview::Loading(path) if path == &second
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn full_mindmap_preview_loaded_defers_parse_for_short_source() {
+        let dir = full_mindmap_test_dir("preview-parse-deferred");
+        let file = dir.join("preview.md");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(&file, "# Preview\n").unwrap();
+
+        let mut app = App::default();
+        app.set_workspace(dir.clone(), false);
+        app.full_mindmap = Some(full_workspace_state(&dir));
+        let _ = app.update(Message::FullMindmapSelectNode(WorkspaceNodeId::File(
+            file.clone(),
+        )));
+        let request = settle_full_mindmap_preview(&mut app);
+        let source = "# Preview\n".to_string();
+
+        // Loaded only hands source ownership to the worker. It must not parse
+        // or materialize blocks synchronously on the update thread.
+        let _ = app.update(Message::FullMindmapPreviewLoaded {
+            request: request.clone(),
+            result: Ok((file.clone(), source.clone())),
+        });
+        assert_eq!(
+            app.full_mindmap
+                .as_ref()
+                .and_then(|full| full.pending_preview.as_ref()),
+            Some(&request)
+        );
+        assert!(matches!(
+            app.full_mindmap.as_ref().unwrap().preview,
+            FullMindmapPreview::Loading(ref path) if path == &file
+        ));
+
+        let parsed = parse_full_mindmap_preview_blocking(file.clone(), source);
+        let _ = app.update(Message::FullMindmapPreviewParsed {
+            request,
+            result: Ok(parsed),
+        });
+        assert!(matches!(
+            app.full_mindmap.as_ref().unwrap().preview,
+            FullMindmapPreview::Document { ref path, .. } if path == &file
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn full_mindmap_preview_measurement_coalesces_and_releases_empty_result() {
+        let root = PathBuf::from("/preview-measurement-coalesced");
+        let file = root.join("preview.md");
+        let blocks = (0..320u64)
+            .map(|index| {
+                (
+                    BlockId(index),
+                    Block::Paragraph(vec![crate::ast::Inline::Text("x".into())]),
+                )
+            })
+            .collect();
+        let mut full = App::new_full_mindmap_state();
+        full.selected = Some(WorkspaceNodeId::File(file.clone()));
+        full.preview = FullMindmapPreview::Document {
+            path: file.clone(),
+            blocks,
+            truncated: false,
+            shape: None,
+            assets: None,
+        };
+        full.preview_identity = Some(PendingFullMindmapPreview {
+            id: 1,
+            path: file.clone(),
+        });
+        let mut app = App::default();
+        app.full_mindmap = Some(full);
+        app.rebuild_full_mindmap_preview_here();
+        assert!(app.full_mindmap.as_ref().unwrap().preview_window.active);
+
+        let _first = app.measure_full_mindmap_preview_heights();
+        assert!(
+            app.full_mindmap
+                .as_ref()
+                .unwrap()
+                .preview_measurement_pending
+        );
+        let _second = app.measure_full_mindmap_preview_heights();
+        assert!(
+            app.full_mindmap
+                .as_ref()
+                .unwrap()
+                .preview_measurement_pending
+        );
+
+        let full = app.full_mindmap.as_ref().unwrap();
+        let generation = full.preview_generation;
+        let namespace = full.preview_namespace;
+        let identity = full.preview_identity.as_ref().unwrap().id;
+        let _ = app.update(Message::FullMindmapPreviewBlockHeightsMeasured {
+            path: file.clone(),
+            namespace,
+            identity,
+            generation,
+            measured: vec![(BlockId(0), 24.0)],
+            at_offset: 0.0,
+        });
+        assert!(app
+            .full_mindmap
+            .as_ref()
+            .unwrap()
+            .preview_height_cache
+            .is_measured(BlockId(0)));
+        assert!(
+            !app.full_mindmap
+                .as_ref()
+                .unwrap()
+                .preview_measurement_pending
+        );
+
+        // A later operation may find no new IDs (for example while the
+        // widget tree is being replaced); its empty completion still clears
+        // the guard without creating a dispatch loop.
+        let _third = app.measure_full_mindmap_preview_heights();
+        assert!(
+            app.full_mindmap
+                .as_ref()
+                .unwrap()
+                .preview_measurement_pending
+        );
+        let full = app.full_mindmap.as_ref().unwrap();
+        let generation = full.preview_generation;
+        let namespace = full.preview_namespace;
+        let identity = full.preview_identity.as_ref().unwrap().id;
+        let file = app
+            .full_mindmap
+            .as_ref()
+            .and_then(|full| match &full.preview {
+                FullMindmapPreview::Document { path, .. } => Some(path.clone()),
+                _ => None,
+            })
+            .unwrap();
+        let range = app.full_mindmap.as_ref().unwrap().preview_window.range;
+        assert_eq!(
+            app.full_mindmap.as_ref().unwrap().preview_measurement_range,
+            Some(range)
+        );
+        let _ = app.update(Message::FullMindmapPreviewBlockHeightsMeasured {
+            path: file,
+            namespace,
+            identity,
+            generation,
+            measured: Vec::new(),
+            at_offset: 0.0,
+        });
+        assert!(
+            !app.full_mindmap
+                .as_ref()
+                .unwrap()
+                .preview_measurement_pending
+        );
+    }
+
+    #[test]
+    fn full_mindmap_stale_preview_worker_exits_before_parsing() {
+        let cancel = Arc::new(AtomicU64::new(7));
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let result = runtime.block_on(parse_full_mindmap_preview_guarded(
+            PathBuf::from("/does-not-exist.md"),
+            Arc::from("# stale"),
+            cancel,
+            6,
+            Arc::new(tokio::sync::Semaphore::new(3)),
+        ));
+        assert!(matches!(
+            result,
+            Err(error) if error == FULL_MINDMAP_PREVIEW_CANCELLED
+        ));
+    }
+
+    #[test]
+    fn full_mindmap_preview_settle_cancels_on_folder_selection_and_exit() {
+        let dir = full_mindmap_test_dir("preview-settle-cancel");
+        let file = dir.join("preview.md");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(&file, "# Preview\n").unwrap();
+
+        let mut folder_app = App::default();
+        folder_app.set_workspace(dir.clone(), false);
+        folder_app.full_mindmap = Some(full_workspace_state(&dir));
+        let _ = folder_app.update(Message::FullMindmapSelectNode(WorkspaceNodeId::File(
+            file.clone(),
+        )));
+        let stale_folder = folder_app
+            .full_mindmap
+            .as_ref()
+            .unwrap()
+            .pending_preview_settle
+            .clone()
+            .unwrap();
+        let _ = folder_app.update(Message::FullMindmapSelectNode(WorkspaceNodeId::Root(
+            dir.clone(),
+        )));
+        assert!(folder_app
+            .full_mindmap
+            .as_ref()
+            .unwrap()
+            .pending_preview_settle
+            .is_none());
+        let _ = folder_app.update(Message::FullMindmapPreviewSettle {
+            request: stale_folder,
+        });
+        assert!(folder_app
+            .full_mindmap
+            .as_ref()
+            .unwrap()
+            .pending_preview
+            .is_none());
+
+        let mut exit_app = App::default();
+        exit_app.set_workspace(dir.clone(), false);
+        exit_app.full_mindmap = Some(full_workspace_state(&dir));
+        let _ = exit_app.update(Message::FullMindmapSelectNode(WorkspaceNodeId::File(
+            file.clone(),
+        )));
+        let stale_exit = exit_app
+            .full_mindmap
+            .as_ref()
+            .unwrap()
+            .pending_preview_settle
+            .clone()
+            .unwrap();
+        let _ = exit_app.update(Message::ExitFullMindmap);
+        assert!(exit_app.full_mindmap.is_none());
+        let _ = exit_app.update(Message::FullMindmapPreviewSettle {
+            request: stale_exit,
+        });
+        assert!(exit_app.full_mindmap.is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn full_mindmap_enter_bypasses_preview_settle_and_opens_immediately() {
+        let dir = full_mindmap_test_dir("preview-settle-enter");
+        let file = dir.join("open.md");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(&file, "# Open\n").unwrap();
+
+        let mut app = App::default();
+        app.set_workspace(dir.clone(), false);
+        let mut full = full_workspace_state(&dir);
+        full.selected = Some(WorkspaceNodeId::File(file.clone()));
+        app.full_mindmap = Some(full);
+        let _ = app.update(Message::FullMindmapSelectNode(WorkspaceNodeId::File(
+            file.clone(),
+        )));
+        let stale_settle = app
+            .full_mindmap
+            .as_ref()
+            .unwrap()
+            .pending_preview_settle
+            .clone()
+            .unwrap();
+
+        let _ = app.update(Message::FullMindmapActivate);
+        let open_request = app
+            .full_mindmap
+            .as_ref()
+            .and_then(|full| full.pending_open.clone())
+            .expect("Enter should start file activation immediately");
+        assert!(app
+            .full_mindmap
+            .as_ref()
+            .unwrap()
+            .pending_preview_settle
+            .is_none());
+        assert!(app.full_mindmap.as_ref().unwrap().pending_preview.is_none());
+        let _ = app.update(Message::FullMindmapPreviewSettle {
+            request: stale_settle,
+        });
+        assert_eq!(
+            app.full_mindmap
+                .as_ref()
+                .and_then(|full| full.pending_open.clone()),
+            Some(open_request.clone())
+        );
+        let _ = app.update(Message::FullMindmapFileLoaded {
+            request: open_request,
+            result: Ok((file.clone(), "# Open\n".into())),
+        });
+        assert!(app.full_mindmap.is_none());
+        assert_eq!(app.view_mode, ViewMode::Mindmap);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn full_mindmap_ready_preview_selection_does_not_duplicate_request() {
+        let dir = full_mindmap_test_dir("preview-ready");
+        let file = dir.join("ready.md");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(&file, "# Ready\n").unwrap();
+
+        let mut app = App::default();
+        app.set_workspace(dir.clone(), false);
+        let mut full = full_workspace_state(&dir);
+        full.selected = Some(WorkspaceNodeId::File(file.clone()));
+        full.preview = FullMindmapPreview::Document {
+            path: file.clone(),
+            blocks: Vec::new(),
+            truncated: false,
+            shape: None,
+            assets: None,
+        };
+        app.full_mindmap = Some(full);
+        app.full_mindmap_request_seq = 41;
+
+        let _ = app.update(Message::FullMindmapSelectNode(WorkspaceNodeId::File(
+            file.clone(),
+        )));
+        let full = app.full_mindmap.as_ref().unwrap();
+        assert_eq!(app.full_mindmap_request_seq, 41);
+        assert!(full.pending_preview_settle.is_none());
+        assert!(full.pending_preview.is_none());
+        assert!(matches!(
+            &full.preview,
+            FullMindmapPreview::Document { path, .. } if path == &file
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn full_mindmap_entry_previews_the_already_open_workspace_file() {
+        let dir = full_mindmap_test_dir("initial-preview");
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("current.md");
+        std::fs::write(&file, "# Current\n\nPreview me\n").unwrap();
+
+        let mut app = App::default();
+        app.set_workspace(dir.clone(), false);
+        app.file = Some(file.clone());
+        app.source = "# Current\n\nPreview me\n".into();
+        app.saved_source = app.source.clone();
+
+        let _ = app.enter_full_mindmap();
+        complete_full_mindmap_folder_loads(&mut app);
+        let preview_request = app
+            .full_mindmap
+            .as_ref()
+            .and_then(|full| full.pending_preview.clone())
+            .expect("entry preview should own a parse request");
+        let parsed = parse_full_mindmap_preview_blocking(file.clone(), app.source.clone());
+        let _ = app.update(Message::FullMindmapPreviewParsed {
+            request: preview_request,
+            result: Ok(parsed),
+        });
+
+        let full = app.full_mindmap.as_ref().unwrap();
+        assert_eq!(full.selected, Some(WorkspaceNodeId::File(file.clone())));
+        assert!(matches!(
+            &full.preview,
+            FullMindmapPreview::Document { path, .. } if path == &file
+        ));
+        assert!(full.pending_preview.is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn full_mindmap_ignores_stale_preview_completion() {
+        let dir = full_mindmap_test_dir("stale-preview");
+        std::fs::create_dir_all(&dir).unwrap();
+        let first = dir.join("first.md");
+        let second = dir.join("second.md");
+        std::fs::write(&first, "# First\n").unwrap();
+        std::fs::write(&second, "# Second\n").unwrap();
+
+        let mut app = App::default();
+        app.set_workspace(dir.clone(), false);
+        app.full_mindmap = Some(full_workspace_state(&dir));
+        let _ = app.update(Message::FullMindmapSelectNode(WorkspaceNodeId::File(
+            first.clone(),
+        )));
+        let stale = settle_full_mindmap_preview(&mut app);
+        let _ = app.update(Message::FullMindmapSelectNode(WorkspaceNodeId::File(
+            second.clone(),
+        )));
+        let current = settle_full_mindmap_preview(&mut app);
+
+        let _ = app.update(Message::FullMindmapPreviewLoaded {
+            request: stale,
+            result: Ok((first, "# Stale\n".into())),
+        });
+
+        assert_eq!(
+            app.full_mindmap
+                .as_ref()
+                .and_then(|full| full.pending_preview.clone()),
+            Some(current)
+        );
+        assert!(matches!(
+            app.full_mindmap.as_ref().unwrap().preview,
+            FullMindmapPreview::Loading(ref path) if path == &second
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn full_mindmap_preview_reader_keeps_complete_source_before_parsing() {
+        let dir = full_mindmap_test_dir("preview-complete-source");
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("large.md");
+        std::fs::write(&file, "x".repeat(MIND_PANEL_MAX_TEXT_BYTES * 2)).unwrap();
+
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let (_, source) = runtime.block_on(load_full_mindmap_preview(file)).unwrap();
+        assert_eq!(source.len(), MIND_PANEL_MAX_TEXT_BYTES * 2);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn full_mindmap_view_builds_while_loading_and_after_workspace_acceptance() {
+        let mut app = App::default();
+        let _ = app.enter_full_mindmap();
+        {
+            let _loading_view = app.view();
+        }
+
+        let dir = full_mindmap_test_dir("view");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("readme.md"), "# Project\n").unwrap();
+        app.set_workspace(dir.clone(), false);
+        {
+            let _workspace_view = app.view();
+        }
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn full_mindmap_expansion_is_independent_from_document_and_sidebar_state() {
+        let root = std::path::PathBuf::from("/workspace");
+        let folder = root.join("src");
+        let mut app = App::default();
+        app.workspace = Some(root.clone());
+        app.workspace_tree = Some(Node {
+            path: root.clone(),
+            name: "workspace".into(),
+            is_dir: true,
+            children: vec![Node {
+                path: folder.clone(),
+                name: "src".into(),
+                is_dir: true,
+                children: vec![Node {
+                    path: folder.join("app.rs"),
+                    name: "app.rs".into(),
+                    is_dir: false,
+                    children: Vec::new(),
+                    recursive_supported_file_count: None,
+                }],
+                recursive_supported_file_count: Some(tree::RecursiveFileCount::Exact(1)),
+            }],
+            recursive_supported_file_count: Some(tree::RecursiveFileCount::Exact(1)),
+        });
+        app.full_mindmap = Some(full_workspace_state(&root));
+        app.expanded.insert(root.clone());
+        app.mindmap_collapsed.insert(BlockId(99));
+
+        let _ = app.update(Message::FullMindmapToggleNode(WorkspaceNodeId::Folder(
+            folder.clone(),
+        )));
+
+        assert!(app
+            .full_mindmap
+            .as_ref()
+            .unwrap()
+            .expanded
+            .contains(&folder));
+        assert!(!app.expanded.contains(&folder));
+        assert!(app.mindmap_collapsed.contains(&BlockId(99)));
+    }
+
+    #[test]
+    fn full_mindmap_file_open_successfully_loads_and_exits() {
+        let dir = full_mindmap_test_dir("open");
+        std::fs::create_dir_all(&dir).unwrap();
+        let old = dir.join("old.md");
+        let new = dir.join("new.md");
+        std::fs::write(&old, "# Old\n").unwrap();
+        std::fs::write(&new, "# New\n").unwrap();
+
+        let mut app = App::default();
+        app.workspace = Some(dir.clone());
+        app.workspace_tree = Some(tree::build(&dir, false));
+        app.file = Some(old.clone());
+        app.source = "# Old\n".into();
+        app.saved_source = app.source.clone();
+        app.full_mindmap = Some(full_workspace_state(&dir));
+
+        let _ = app.begin_full_mindmap_open(new.clone());
+        let request = app
+            .full_mindmap
+            .as_ref()
+            .unwrap()
+            .pending_open
+            .clone()
+            .unwrap();
+        let _ = app.update(Message::FullMindmapFileLoaded {
+            request,
+            result: Ok((new.clone(), "# New\n".into())),
+        });
+
+        assert!(app.full_mindmap.is_none());
+        assert_eq!(app.file.as_deref(), Some(new.as_path()));
+        assert_eq!(app.source, "# New\n");
+        assert!(!app.dirty);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn ipc_open_exits_full_mindmap_before_loading_document() {
+        let old = std::path::PathBuf::from("/workspace/old.md");
+        let new = std::path::PathBuf::from("/workspace/new.md");
+        let mut app = App::default();
+        app.file = Some(old);
+        app.source = "# Old\n".into();
+        app.saved_source = app.source.clone();
+        app.full_mindmap = Some(full_workspace_state(std::path::Path::new("/workspace")));
+
+        let _ = app.update(Message::Ipc(
+            crate::ipc::Request {
+                id: 1,
+                cmd: crate::ipc::Cmd::Open {
+                    file: new.to_string_lossy().into_owned(),
+                    line: Some(4),
+                    section: Some("Target".into()),
+                    focus: crate::ipc::FocusBehavior::Suppress,
+                },
+            },
+            std::sync::Arc::new(std::sync::Mutex::new(None)),
+        ));
+
+        assert!(app.full_mindmap.is_none());
+        assert!(app.pending_ipc_file_open.is_none());
+        assert_eq!(app.pending_nav.as_ref().and_then(|nav| nav.line), Some(4));
+        assert_eq!(
+            app.pending_nav
+                .as_ref()
+                .and_then(|nav| nav.section.as_deref()),
+            Some("Target")
+        );
+
+        let _ = app.update(Message::FileLoaded(Ok((
+            new.clone(),
+            "# New\n\n# Target\n".into(),
+        ))));
+
+        assert!(app.full_mindmap.is_none());
+        assert_eq!(app.file.as_deref(), Some(new.as_path()));
+        assert!(app.pending_nav.is_none());
+    }
+
+    #[test]
+    fn ipc_reveal_exits_full_mindmap_before_loading_document() {
+        let old = std::path::PathBuf::from("/workspace/old.md");
+        let new = std::path::PathBuf::from("/workspace/new.md");
+        let mut app = App::default();
+        app.file = Some(old);
+        app.source = "# Old\n".into();
+        app.saved_source = app.source.clone();
+        app.full_mindmap = Some(full_workspace_state(std::path::Path::new("/workspace")));
+
+        let _ = app.update(Message::Ipc(
+            crate::ipc::Request {
+                id: 1,
+                cmd: crate::ipc::Cmd::Reveal {
+                    file: new.to_string_lossy().into_owned(),
+                    focus: crate::ipc::FocusBehavior::Suppress,
+                },
+            },
+            std::sync::Arc::new(std::sync::Mutex::new(None)),
+        ));
+
+        assert!(app.full_mindmap.is_none());
+        assert!(app.pending_ipc_file_open.is_none());
+        assert!(app.pending_nav.is_none());
+
+        let _ = app.update(Message::FileLoaded(Ok((new.clone(), "# New\n".into()))));
+
+        assert!(app.full_mindmap.is_none());
+        assert_eq!(app.file.as_deref(), Some(new.as_path()));
+    }
+
+    #[test]
+    fn ipc_open_waits_for_stale_full_mindmap_snapshot_before_loading() {
+        let dir = full_mindmap_test_dir("ipc-open-stale-snapshot");
+        let old = dir.join("old.md");
+        let new = dir.join("new.md");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(&old, "# Old\n").unwrap();
+        std::fs::write(&new, "# New\n").unwrap();
+
+        let mut app = App::default();
+        app.set_workspace(dir.clone(), false);
+        app.file = Some(old);
+        app.source = "# Old\n".into();
+        app.saved_source = app.source.clone();
+        app.full_mindmap = Some(full_workspace_state(&dir));
+        app.show_hidden = true;
+
+        let _ = app.update(Message::Ipc(
+            crate::ipc::Request {
+                id: 1,
+                cmd: crate::ipc::Cmd::Open {
+                    file: new.to_string_lossy().into_owned(),
+                    line: Some(3),
+                    section: Some("New".into()),
+                    focus: crate::ipc::FocusBehavior::Suppress,
+                },
+            },
+            std::sync::Arc::new(std::sync::Mutex::new(None)),
+        ));
+
+        assert!(app.full_mindmap.is_some());
+        assert!(app.pending_nav.is_none());
+        assert!(app.pending_ipc_file_open.is_some());
+        let workspace_request = app
+            .full_mindmap
+            .as_ref()
+            .and_then(|full| full.pending_workspace_load.clone())
+            .expect("stale snapshot should delay the exit");
+        assert!(workspace_request.exit_after_refresh);
+
+        let snapshot = tree::build_workspace(&dir, true).unwrap();
+        let _ = app.update(Message::FullMindmapWorkspaceLoaded {
+            request: workspace_request,
+            result: Ok((dir.clone(), snapshot)),
+        });
+
+        assert!(app.full_mindmap.is_none());
+        assert!(app.pending_ipc_file_open.is_none());
+        assert_eq!(app.pending_nav.as_ref().and_then(|nav| nav.line), Some(3));
+
+        let _ = app.update(Message::FileLoaded(Ok((new.clone(), "# New\n".into()))));
+
+        assert!(app.full_mindmap.is_none());
+        assert_eq!(app.file.as_deref(), Some(new.as_path()));
+        assert!(app.pending_nav.is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn ipc_open_survives_full_mindmap_root_change_during_reconciliation() {
+        let dir = full_mindmap_test_dir("ipc-open-root-change");
+        let old_root = dir.join("old-root");
+        let new_root = dir.join("new-root");
+        let old = old_root.join("old.md");
+        let new = new_root.join("new.md");
+        std::fs::create_dir_all(&old_root).unwrap();
+        std::fs::create_dir_all(&new_root).unwrap();
+        std::fs::write(&old, "# Old\n").unwrap();
+        std::fs::write(&new, "# New\n").unwrap();
+
+        let mut app = App::default();
+        app.set_workspace(old_root.clone(), false);
+        app.file = Some(old);
+        app.source = "# Old\n".into();
+        app.saved_source = app.source.clone();
+        app.full_mindmap = Some(full_workspace_state(&old_root));
+        app.show_hidden = true;
+
+        let _ = app.update(Message::Ipc(
+            crate::ipc::Request {
+                id: 1,
+                cmd: crate::ipc::Cmd::Open {
+                    file: new.to_string_lossy().into_owned(),
+                    line: Some(3),
+                    section: Some("New".into()),
+                    focus: crate::ipc::FocusBehavior::Suppress,
+                },
+            },
+            std::sync::Arc::new(std::sync::Mutex::new(None)),
+        ));
+
+        let stale_request = app
+            .full_mindmap
+            .as_ref()
+            .and_then(|full| full.pending_workspace_load.clone())
+            .expect("stale snapshot should delay the exit");
+        assert!(stale_request.exit_after_refresh);
+        assert!(app.pending_ipc_file_open.is_some());
+
+        let _ = app.update(Message::FullMindmapSetRoot(new_root.clone()));
+        let root_request = app
+            .full_mindmap
+            .as_ref()
+            .and_then(|full| full.pending_workspace_load.clone())
+            .expect("root change should replace the stale refresh");
+        assert_eq!(root_request.path, new_root);
+        assert!(root_request.exit_after_refresh);
+        assert!(app.pending_ipc_file_open.is_some());
+
+        let stale_snapshot = tree::build_workspace(&old_root, true).unwrap();
+        let _ = app.update(Message::FullMindmapWorkspaceLoaded {
+            request: stale_request,
+            result: Ok((old_root.clone(), stale_snapshot)),
+        });
+        assert_eq!(
+            app.full_mindmap
+                .as_ref()
+                .and_then(|full| full.pending_workspace_load.clone()),
+            Some(root_request.clone())
+        );
+
+        let root_snapshot = tree::build_workspace(&new_root, true).unwrap();
+        let _ = app.update(Message::FullMindmapWorkspaceLoaded {
+            request: root_request,
+            result: Ok((new_root.clone(), root_snapshot)),
+        });
+
+        assert!(app.full_mindmap.is_none());
+        assert!(app.pending_ipc_file_open.is_none());
+        assert_eq!(app.pending_nav.as_ref().and_then(|nav| nav.line), Some(3));
+
+        let _ = app.update(Message::FileLoaded(Ok((new.clone(), "# New\n".into()))));
+        assert_eq!(app.file.as_deref(), Some(new.as_path()));
+        assert!(app.pending_nav.is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn full_mindmap_dirty_open_and_late_completion_preserve_current_editor() {
+        let root = std::path::PathBuf::from("/workspace");
+        let old = root.join("old.md");
+        let new = root.join("new.md");
+        let mut app = App::default();
+        app.file = Some(old.clone());
+        app.source = "saved".into();
+        app.saved_source = "saved".into();
+        app.full_mindmap = Some(full_workspace_state(&root));
+        app.dirty = true;
+
+        let _ = app.begin_full_mindmap_open(new.clone());
+        assert!(app.full_mindmap.as_ref().unwrap().pending_open.is_none());
+        assert_eq!(app.file.as_deref(), Some(old.as_path()));
+        assert!(app.full_mindmap.is_some());
+
+        app.dirty = false;
+        let _ = app.begin_full_mindmap_open(new.clone());
+        let request = app
+            .full_mindmap
+            .as_ref()
+            .unwrap()
+            .pending_open
+            .clone()
+            .unwrap();
+        app.editor = Some(iced::widget::text_editor::Content::with_text(
+            "unsaved editor",
+        ));
+        app.dirty = true;
+        let _ = app.update(Message::FullMindmapFileLoaded {
+            request,
+            result: Ok((new, "new file".into())),
+        });
+
+        assert!(app.full_mindmap.is_some());
+        assert!(app.full_mindmap.as_ref().unwrap().pending_open.is_none());
+        assert_eq!(app.file.as_deref(), Some(old.as_path()));
+        assert_eq!(
+            app.editor.as_ref().map(|editor| editor.text()),
+            Some("unsaved editor".into())
+        );
+        assert!(app.dirty);
+    }
+
+    #[test]
+    fn full_mindmap_ignores_stale_async_file_completion() {
+        let root = std::path::PathBuf::from("/workspace");
+        let mut app = App::default();
+        app.full_mindmap = Some(full_workspace_state(&root));
+        let first = root.join("first.md");
+        let second = root.join("second.md");
+
+        let _ = app.begin_full_mindmap_open(first.clone());
+        let stale = app
+            .full_mindmap
+            .as_ref()
+            .unwrap()
+            .pending_open
+            .clone()
+            .unwrap();
+        let _ = app.begin_full_mindmap_open(second.clone());
+        let current = app
+            .full_mindmap
+            .as_ref()
+            .unwrap()
+            .pending_open
+            .clone()
+            .unwrap();
+
+        let _ = app.update(Message::FullMindmapFileLoaded {
+            request: stale,
+            result: Err("stale failure".into()),
+        });
+
+        assert_eq!(
+            app.full_mindmap
+                .as_ref()
+                .and_then(|full| full.pending_open.clone()),
+            Some(current)
+        );
+        assert!(app.full_mindmap.as_ref().unwrap().load_error.is_none());
+    }
+
+    #[test]
+    fn full_mindmap_workspace_switch_cancels_inflight_file_open() {
+        let dir = full_mindmap_test_dir("workspace-switch");
+        let first_workspace = dir.join("first");
+        let second_workspace = dir.join("second");
+        let first_file = first_workspace.join("first.md");
+        std::fs::create_dir_all(&first_workspace).unwrap();
+        std::fs::create_dir_all(&second_workspace).unwrap();
+        std::fs::write(&first_file, "# First\n").unwrap();
+
+        let mut app = App::default();
+        app.set_workspace(first_workspace.clone(), false);
+        app.full_mindmap = Some(full_workspace_state(&first_workspace));
+        let _ = app.begin_full_mindmap_open(first_file.clone());
+        let request = app
+            .full_mindmap
+            .as_ref()
+            .unwrap()
+            .pending_open
+            .clone()
+            .unwrap();
+
+        // This is the normal \"Open Folder…\" fallback while Full Mindmap is
+        // active. It must supersede the old pending file read.
+        let _ = app.update(Message::OpenWorkspace(second_workspace.clone()));
+        assert_eq!(app.workspace.as_deref(), Some(first_workspace.as_path()));
+        assert_eq!(
+            app.full_mindmap
+                .as_ref()
+                .and_then(|full| full.pending_workspace_load.as_ref())
+                .map(|pending| pending.path.as_path()),
+            Some(second_workspace.as_path())
+        );
+        complete_full_mindmap_workspace_load(&mut app);
+        assert_eq!(app.workspace.as_deref(), Some(second_workspace.as_path()));
+        assert!(app.full_mindmap.as_ref().unwrap().pending_open.is_none());
+
+        let _ = app.update(Message::FullMindmapFileLoaded {
+            request,
+            result: Ok((first_file, "# Stale\n".into())),
+        });
+        assert!(app.full_mindmap.is_some());
+        assert!(app.file.is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn full_mindmap_ignores_stale_workspace_index_completion() {
+        let dir = full_mindmap_test_dir("workspace-index-stale");
+        let first = dir.join("first");
+        let second = dir.join("second");
+        std::fs::create_dir_all(&first).unwrap();
+        std::fs::create_dir_all(&second).unwrap();
+
+        let mut app = App::default();
+        app.full_mindmap = Some(App::new_full_mindmap_state());
+        let _ =
+            app.begin_full_mindmap_workspace_load(first.clone(), false, None, false, false, false);
+        let stale = app
+            .full_mindmap
+            .as_ref()
+            .unwrap()
+            .pending_workspace_load
+            .clone()
+            .unwrap();
+        let _ =
+            app.begin_full_mindmap_workspace_load(second.clone(), false, None, false, false, false);
+        let current = app
+            .full_mindmap
+            .as_ref()
+            .unwrap()
+            .pending_workspace_load
+            .clone()
+            .unwrap();
+
+        let _ = app.update(Message::FullMindmapWorkspaceLoaded {
+            request: stale,
+            result: Ok((first.clone(), tree::build_workspace(&first, false).unwrap())),
+        });
+
+        assert!(app.workspace.is_none());
+        assert_eq!(
+            app.full_mindmap.as_ref().unwrap().pending_workspace_load,
+            Some(current)
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn full_mindmap_layout_cache_reuses_graph_and_node_allocations() {
+        let dir = full_mindmap_test_dir("graph-cache-arc");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("readme.md"), "# Project\n").unwrap();
+
+        let mut app = App::default();
+        app.set_workspace(dir.clone(), false);
+        app.full_mindmap = Some(full_workspace_state(&dir));
+
+        let first = app.full_mindmap_graph().unwrap();
+        let second = app.full_mindmap_graph().unwrap();
+        assert!(std::sync::Arc::ptr_eq(&first, &second));
+        assert!(std::sync::Arc::ptr_eq(&first.nodes, &second.nodes));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn full_mindmap_request_ids_survive_exit_and_reentry() {
+        let root = std::path::PathBuf::from("/workspace");
+        let path = root.join("same.md");
+        let mut app = App::default();
+        app.full_mindmap = Some(full_workspace_state(&root));
+        let _ = app.begin_full_mindmap_open(path.clone());
+        let old_request = app
+            .full_mindmap
+            .as_ref()
+            .unwrap()
+            .pending_open
+            .clone()
+            .unwrap();
+
+        let _ = app.update(Message::ExitFullMindmap);
+        app.full_mindmap = Some(full_workspace_state(&root));
+        let _ = app.begin_full_mindmap_open(path.clone());
+        let current_request = app
+            .full_mindmap
+            .as_ref()
+            .unwrap()
+            .pending_open
+            .clone()
+            .unwrap();
+        assert_ne!(old_request.id, current_request.id);
+
+        let _ = app.update(Message::FullMindmapFileLoaded {
+            request: old_request.clone(),
+            result: Err("stale failure".into()),
+        });
+        assert_eq!(
+            app.full_mindmap
+                .as_ref()
+                .and_then(|full| full.pending_open.clone()),
+            Some(current_request.clone())
+        );
+        assert!(app.full_mindmap.as_ref().unwrap().load_error.is_none());
+
+        let _ = app.update(Message::FullMindmapFileLoaded {
+            request: old_request,
+            result: Ok((path, "# Stale\n".into())),
+        });
+        assert!(app.full_mindmap.is_some());
+        assert_eq!(
+            app.full_mindmap
+                .as_ref()
+                .and_then(|full| full.pending_open.clone()),
+            Some(current_request)
+        );
+        assert!(app.file.is_none());
+    }
+
+    #[test]
+    fn full_mindmap_exit_restores_underlying_navigation_state_unchanged() {
+        let mut app = App::default();
+        app.file = Some(std::path::PathBuf::from("note.md"));
+        app.source = "draft".into();
+        app.saved_source = "saved".into();
+        app.view_mode = ViewMode::Raw;
+        app.editor = Some(iced::widget::text_editor::Content::with_text("draft"));
+        app.sidebar_open = true;
+        app.sidebar_tab = SidebarTab::Outline;
+        app.search_open = true;
+        app.show_footer = false;
+        app.full_mindmap = Some(full_workspace_state(std::path::Path::new("/workspace")));
+
+        let _ = app.update(Message::ExitFullMindmap);
+
+        assert!(app.full_mindmap.is_none());
+        assert_eq!(app.view_mode, ViewMode::Raw);
+        assert_eq!(
+            app.editor.as_ref().map(|editor| editor.text()),
+            Some("draft".into())
+        );
+        assert!(app.sidebar_open);
+        assert_eq!(app.sidebar_tab, SidebarTab::Outline);
+        assert!(app.search_open);
+        assert!(!app.show_footer);
     }
 }

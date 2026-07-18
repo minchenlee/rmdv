@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>rmdv: Native Markdown Viewer for Developers — Rust, No Electron</title>
-<meta name="description" content="Free open-source Rust markdown viewer. Mermaid, Graphviz DOT, LaTeX math, and PDFs render natively — no Electron, no JS. ~150ms cold start, ~70MB on 10k-line docs. Agent-controllable via IPC.">
+<meta name="description" content="Free open-source Rust markdown viewer. Native Mermaid, Graphviz DOT, LaTeX math, mind maps, and local PDF-to-Markdown extraction. No Electron or embedded browser. Agent-controllable via IPC.">
 <meta name="author" content="Min-Chen Lee">
 <meta name="keywords" content="markdown viewer, markdown reader, rust, native app, no electron, obsidian alternative, typora alternative, glow alternative, mermaid, tree-sitter, coding agents">
 <link rel="canonical" href="https://rmdv.mclee.dev/">
@@ -32,13 +32,10 @@
 <link rel="icon" href="assets/favicon-32.png" sizes="32x32" type="image/png">
 <link rel="icon" href="assets/icon-64.png" sizes="64x64" type="image/png">
 <link rel="apple-touch-icon" href="assets/icon-180.png">
-<link rel="preload" href="assets/fonts/inter-400.woff2" as="font" type="font/woff2" crossorigin>
-<link rel="preload" href="assets/fonts/inter-600.woff2" as="font" type="font/woff2" crossorigin>
-<link rel="preload" href="assets/fonts/inter-700.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="preload" href="assets/fonts/jbmono-400.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="stylesheet" href="style.css">
 <script>
-// Set theme before first paint — no flash. Mark JS-on so motion styles apply.
+// Set the theme before first paint so there is no flash.
 (function () {
   var t = localStorage.getItem('rmdv-theme');
   if (!t) t = matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
@@ -78,9 +75,9 @@
       "applicationCategory": "DeveloperApplication",
       "applicationSubCategory": "Markdown Viewer",
       "operatingSystem": ["macOS", "Linux", "Windows"],
-      "softwareVersion": "0.3.0",
+      "softwareVersion": "0.4.0",
       "datePublished": "2026-05-10",
-      "dateModified": "2026-06-14",
+      "dateModified": "2026-07-10",
       "releaseNotes": "https://github.com/minchenlee/rmdv/releases",
       "license": "https://opensource.org/licenses/MIT",
       "isAccessibleForFree": true,
@@ -89,7 +86,7 @@
         "price": "0",
         "priceCurrency": "USD"
       },
-      "description": "rmdv is a free, open-source native markdown viewer written in Rust. It renders Markdown, Mermaid diagrams, Graphviz DOT graphs, LaTeX math, JSON/YAML mind maps, and PDFs without a browser, Electron, or JavaScript runtime. Cold-start to first paint is ~150 ms; a 10,000-line document parses in 8.1 ms using ~70 MB of memory.",
+      "description": "rmdv is a free, open-source native markdown viewer written in Rust. It renders Markdown, Mermaid diagrams, Graphviz DOT graphs, LaTeX math, and JSON/YAML mind maps without a browser, Electron, or JavaScript runtime. On macOS and Linux, text PDFs are extracted locally to Markdown via PDFium.",
       "featureList": [
         "Folder workspace browser with file tree",
         "Fuzzy file finder (Cmd+P)",
@@ -103,14 +100,12 @@
         "In-document search (Cmd+F)",
         "Live reload on file change",
         "Auto-update with SHA-256 verification, signed and notarized on macOS",
-        "Light and dark themes (One Dark, GitHub, Solarized, Gruvbox, Nord, Dracula, Tokyo Night)",
+        "Ten built-in theme presets (One Light/Dark, GitHub Light/Dark, Solarized Light/Dark, Gruvbox, Nord, Dracula, Tokyo Night)",
         "Keyboard-first navigation (vim j/k/g/G)",
         "Edit mode (Cmd+E)",
         "Heading fold (Cmd+K 0-6)",
         "IPC socket API — controllable by AI coding agents via the rmdv CLI returning one-line JSON"
       ],
-      "memoryRequirements": "~70 MB on a 10,000-line document",
-      "storageRequirements": "~30 MB",
       "inLanguage": "en",
       "image": "https://rmdv.mclee.dev/assets/og-cover.png",
       "screenshot": [
@@ -141,7 +136,7 @@
           "name": "How is rmdv different from Obsidian?",
           "acceptedAnswer": {
             "@type": "Answer",
-            "text": "rmdv is a read-focused viewer, not a note-linking knowledge base. It opens any folder instantly without vault setup, uses ~70 MB of memory on a 10,000-line document (versus 300+ MB for Obsidian), and starts in ~150 ms. It has no plugin ecosystem, but it renders Mermaid diagrams and LaTeX math natively — Obsidian requires plugins for both."
+            "text": "rmdv is a read-focused viewer, not a note-linking knowledge base. It opens folders without vault setup and has no plugin ecosystem. Mermaid diagrams and LaTeX math render natively."
           }
         },
         {
@@ -181,7 +176,7 @@
           "name": "How do I install rmdv?",
           "acceptedAnswer": {
             "@type": "Answer",
-            "text": "On macOS, download the signed and notarized .dmg from github.com/minchenlee/rmdv/releases. On Linux, download the x86_64 AppImage from the same page. To build from source on any platform including Windows: install Rust 1.80 or newer, then run: git clone https://github.com/minchenlee/rmdv && cd rmdv && cargo build --release."
+            "text": "On macOS, download the signed and notarized .dmg from github.com/minchenlee/rmdv/releases. On Linux, download the x86_64 AppImage from the same page. To build from source, install Rust 1.80 or newer, then run: git clone https://github.com/minchenlee/rmdv && cd rmdv && cargo build --release. Windows builds use cargo build --release --no-default-features because PDF extraction is macOS/Linux only."
           }
         },
         {
@@ -189,7 +184,7 @@
           "name": "Is rmdv faster than Electron-based markdown viewers?",
           "acceptedAnswer": {
             "@type": "Answer",
-            "text": "rmdv is a ~30 MB native binary with no Electron, no webview, and no JavaScript runtime. Cold start to first paint is ~150 ms on an M2 MacBook Air. A 10,000-line document parses in 8.1 ms and uses 70 MB of memory. Electron-based apps typically start in 1–3 seconds and use significantly more memory."
+            "text": "rmdv is a native Rust application with no Electron, embedded webview, or JavaScript runtime. Historical v0.2.0 benchmarks on an Apple M2 MacBook Pro measured first view at about 150 ms and parsing a 10,000-line document at 8.1 ms; current builds may differ."
           }
         }
       ]
@@ -222,7 +217,7 @@
           "@type": "HowToStep",
           "position": 4,
           "name": "Build from source (all platforms including Windows)",
-          "text": "Install Rust 1.80 or newer from https://rustup.rs. Clone the repo: git clone https://github.com/minchenlee/rmdv. Build: cd rmdv && cargo build --release. Run: ./target/release/rmdv"
+          "text": "Install Rust 1.80 or newer from https://rustup.rs. Clone the repo: git clone https://github.com/minchenlee/rmdv. Build: cd rmdv && cargo build --release. On Windows, use cargo build --release --no-default-features. Run: ./target/release/rmdv"
         }
       ]
     },
@@ -266,11 +261,10 @@
   <!-- ───────────────────────── hero -->
   <section class="hero">
     <pre id="hero-ghost" class="hero-ghost" aria-hidden="true"></pre>
-    <h1>Markdown, rendered<br>at <span class="accent">native speed</span>.</h1>
+    <h1>A native Markdown viewer,<br>written in <span class="accent">Rust</span>.</h1>
     <p class="tagline">
-      rmdv is a free, open-source markdown viewer written in Rust.
-      No Electron, no webview, no JS runtime — just a ~30&nbsp;MB binary
-      that paints before your fonts finish loading.
+      Free and open source. No Electron, no webview, no JavaScript runtime.
+      Built for reading Markdown folders with native rendering and IPC control.
     </p>
     <div class="cta">
       <a class="btn primary" id="dl-primary" href="#install">Download</a>
@@ -285,8 +279,8 @@
   </section>
 
   <!-- ───────────────────────── why -->
-  <section id="why" class="reveal">
-    <h2><span class="h-mark">##</span> Why rmdv — a faster Markdown viewer</h2>
+  <section id="why">
+    <h2><span class="h-mark">##</span> Why rmdv</h2>
     <p>
       For reading folders of <code>.md</code> files without spinning up Obsidian's vault,
       Typora's editor weight, or a static-site build. Open a folder. Read.
@@ -310,138 +304,67 @@
   </section>
 
   <!-- ───────────────────────── perf -->
-  <section id="fast" class="reveal">
-    <h2><span class="h-mark">##</span> Rust-fast, measurably</h2>
-    <div class="stats">
-      <div class="stat"><strong>~150<em>ms</em></strong><span>cold start to first paint</span></div>
-      <div class="stat"><strong>8.1<em>ms</em></strong><span>to parse a 10k-line document</span></div>
-      <div class="stat"><strong>70<em>MB</em></strong><span>memory on that same document<br>(was 453 MB)</span></div>
-      <div class="stat"><strong>~30<em>MB</em></strong><span>single binary, no runtime</span></div>
+  <section id="fast">
+    <h2><span class="h-mark">##</span> Historical measurements</h2>
+    <div class="perf">
+      <div class="row"><span class="metric">cold start to first paint</span><span class="value"><b>~150 ms</b></span></div>
+      <div class="row"><span class="metric">parse a 10,000-line document</span><span class="value"><b>8.1 ms</b></span></div>
     </div>
     <p class="fine">
-      Measured on an M2 MacBook Air (16&nbsp;GB), median of 5 runs.
-      Numbers, methodology, and how to reproduce: <a href="https://github.com/minchenlee/rmdv/blob/main/docs/benchmarks.md">docs/benchmarks.md</a>.
-      The renderer is viewport-aware — only visible blocks become widgets, so memory stays flat no matter how long the document grows.
+      v0.2.0 benchmark on an Apple M2 MacBook Pro, median of 5 runs; current builds may differ.
+      Methodology and reproduction steps are in <a href="https://github.com/minchenlee/rmdv/blob/main/docs/benchmarks.md">docs/benchmarks.md</a>.
+      The renderer is viewport-aware: only visible blocks become widgets.
     </p>
   </section>
 
   <!-- ───────────────────────── features -->
-  <section id="features" class="reveal">
+  <section id="features">
     <h2><span class="h-mark">##</span> Features</h2>
 
-    <!-- Carousel 1 — reading & rendering -->
-    <div class="carousel" data-carousel aria-roledescription="carousel" aria-label="Reading and rendering">
-      <p class="carousel-label">Reading &amp; rendering</p>
-      <div class="carousel-viewport">
-        <ul class="carousel-track" data-track>
-          <li class="slide" aria-roledescription="slide" aria-label="Workspace browser (1 of 4)">
-            <figure class="slide-shot">
-              <img src="assets/shot-workspace.webp" alt="rmdv showing a folder file tree beside a rendered document" loading="lazy" decoding="async" width="1600" height="957">
-            </figure>
-            <div class="slide-copy">
-              <h3>Workspace browser</h3>
-              <p>Open a folder, get a file tree. Fuzzy-jump to any file with <kbd data-mod>⌘</kbd><kbd>P</kbd>.</p>
-            </div>
-          </li>
-          <li class="slide" aria-roledescription="slide" aria-label="Diagrams and math (2 of 4)">
-            <figure class="slide-shot">
-              <img src="assets/shot-diagrams.webp" alt="A Mermaid flowchart rendered natively in rmdv" loading="lazy" decoding="async" width="1600" height="1005">
-            </figure>
-            <div class="slide-copy">
-              <h3>Diagrams &amp; math</h3>
-              <p>Mermaid and Graphviz DOT render natively. Block LaTeX via a pure-Rust layout engine — zero JS, zero webview.</p>
-            </div>
-          </li>
-          <li class="slide" aria-roledescription="slide" aria-label="Tree-sitter highlighting (3 of 4)">
-            <figure class="slide-shot">
-              <img src="assets/shot-treesitter.webp" alt="Syntax-highlighted Rust and Java code blocks" loading="lazy" decoding="async" width="1600" height="1005">
-            </figure>
-            <div class="slide-copy">
-              <h3>Tree-sitter highlighting</h3>
-              <p>Rust, Python, TS, Go, C/C++, Java, SQL, Bash and more — real parsers, not regex.</p>
-            </div>
-          </li>
-          <li class="slide" aria-roledescription="slide" aria-label="Light and dark themes (4 of 4)">
-            <figure class="slide-shot">
-              <img src="assets/shot-themes.webp" alt="The demo vault shown in a light theme" loading="lazy" decoding="async" width="1600" height="1005">
-            </figure>
-            <div class="slide-copy">
-              <h3>Light / dark themes</h3>
-              <p>One Dark, GitHub, Solarized, Gruvbox, Nord, Dracula, Tokyo Night… follows the system, or press <kbd data-mod>⌘</kbd><kbd>T</kbd>.</p>
-            </div>
-          </li>
-        </ul>
-        <button type="button" class="carousel-btn carousel-btn--prev" data-prev aria-label="Previous feature">
-          <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" focusable="false"><path d="M15 5l-7 7 7 7" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    <div class="shots">
+      <figure class="shot-card">
+        <button class="shot-trigger" type="button" aria-label="View full-size workspace screenshot">
+          <img src="assets/shot-workspace.webp" alt="rmdv showing a folder file tree beside a rendered document" loading="lazy" decoding="async" width="1600" height="957">
         </button>
-        <button type="button" class="carousel-btn carousel-btn--next" data-next aria-label="Next feature">
-          <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" focusable="false"><path d="M9 5l7 7-7 7" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        <figcaption><b>Workspace browser.</b> Open a folder, get a file tree. Fuzzy-jump to any file with <kbd data-mod>⌘</kbd><kbd>P</kbd>.</figcaption>
+      </figure>
+      <figure class="shot-card">
+        <button class="shot-trigger" type="button" aria-label="View full-size diagrams screenshot">
+          <img src="assets/shot-diagrams.webp" alt="A Mermaid flowchart rendered natively in rmdv" loading="lazy" decoding="async" width="1600" height="1005">
         </button>
-      </div>
-      <div class="carousel-nav">
-        <div class="carousel-dots" data-dots aria-hidden="true"></div>
-      </div>
-    </div>
-
-    <!-- Carousel 2 — navigation & ops -->
-    <div class="carousel" data-carousel aria-roledescription="carousel" aria-label="Navigation and operations">
-      <p class="carousel-label">Navigation &amp; ops</p>
-      <div class="carousel-viewport">
-        <ul class="carousel-track" data-track>
-          <li class="slide" aria-roledescription="slide" aria-label="Mindmap view (1 of 4)">
-            <figure class="slide-shot">
-              <img src="assets/shot-mindmap.webp" alt="A JSON config file shown as a collapsible data mind map" loading="lazy" decoding="async" width="1600" height="1005">
-            </figure>
-            <div class="slide-copy">
-              <h3>Mindmap view</h3>
-              <p>Any document as a collapsible mindmap with <kbd data-mod>⌘</kbd><kbd>M</kbd>. Arrow keys walk the tree, preview panel follows.</p>
-            </div>
-          </li>
-          <li class="slide" aria-roledescription="slide" aria-label="Vault-wide search (2 of 4)">
-            <figure class="slide-shot">
-              <img src="assets/shot-search.webp" alt="A deeply nested document with outline and breadcrumb navigation" loading="lazy" decoding="async" width="1600" height="1005">
-            </figure>
-            <div class="slide-copy">
-              <h3>Vault-wide search</h3>
-              <p><kbd data-mod>⌘</kbd><kbd>⇧</kbd><kbd>F</kbd> searches every file in the workspace, Zed-style full-page results.</p>
-            </div>
-          </li>
-          <li class="slide" aria-roledescription="slide" aria-label="Live reload (3 of 4)">
-            <figure class="slide-shot">
-              <img src="assets/shot-livereload.webp" alt="A notes document with task lists and tables, updated live" loading="lazy" decoding="async" width="1600" height="1005">
-            </figure>
-            <div class="slide-copy">
-              <h3>Live reload</h3>
-              <p>Edits from your editor appear instantly. Only changed code blocks re-highlight.</p>
-            </div>
-          </li>
-          <li class="slide" aria-roledescription="slide" aria-label="Auto-update (4 of 4)">
-            <figure class="slide-shot">
-              <img src="assets/shot-autoupdate.webp" alt="The rmdv demo vault README, with the app ready to auto-update" loading="lazy" decoding="async" width="1600" height="1005">
-            </figure>
-            <div class="slide-copy">
-              <h3>Auto-update</h3>
-              <p>Checks GitHub releases, verifies SHA-256, swaps itself in place. Signed + notarized on macOS.</p>
-            </div>
-          </li>
-        </ul>
-        <button type="button" class="carousel-btn carousel-btn--prev" data-prev aria-label="Previous feature">
-          <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" focusable="false"><path d="M15 5l-7 7 7 7" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        <figcaption><b>Diagrams and math.</b> Mermaid and Graphviz DOT render natively. Block LaTeX runs on a pure-Rust layout engine. No JS, no webview.</figcaption>
+      </figure>
+      <figure class="shot-card">
+        <button class="shot-trigger" type="button" aria-label="View full-size syntax-highlighting screenshot">
+          <img src="assets/shot-treesitter.webp" alt="Syntax-highlighted Rust and Java code blocks" loading="lazy" decoding="async" width="1600" height="1005">
         </button>
-        <button type="button" class="carousel-btn carousel-btn--next" data-next aria-label="Next feature">
-          <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" focusable="false"><path d="M9 5l7 7-7 7" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        <figcaption><b>Tree-sitter highlighting.</b> Rust, Python, TS, Go, C/C++, Java, SQL, Bash and more. Real parsers, not regex.</figcaption>
+      </figure>
+      <figure class="shot-card">
+        <button class="shot-trigger" type="button" aria-label="View full-size mindmap screenshot">
+          <img src="assets/shot-mindmap.webp" alt="A JSON config file shown as a collapsible data mind map" loading="lazy" decoding="async" width="1600" height="1005">
         </button>
-      </div>
-      <div class="carousel-nav">
-        <div class="carousel-dots" data-dots aria-hidden="true"></div>
-      </div>
+        <figcaption><b>Mindmap view.</b> Any document as a collapsible mindmap with <kbd data-mod>⌘</kbd><kbd>M</kbd>. Arrow keys walk the tree.</figcaption>
+      </figure>
+      <figure class="shot-card">
+        <button class="shot-trigger" type="button" aria-label="View full-size vault-search screenshot">
+          <img src="assets/shot-search.webp" alt="A deeply nested document with outline and breadcrumb navigation" loading="lazy" decoding="async" width="1600" height="1005">
+        </button>
+        <figcaption><b>Vault-wide search.</b> <kbd data-mod>⌘</kbd><kbd>⇧</kbd><kbd>F</kbd> searches every file in the workspace, with full-page results.</figcaption>
+      </figure>
+      <figure class="shot-card">
+        <button class="shot-trigger" type="button" aria-label="View full-size themes screenshot">
+          <img src="assets/shot-themes.webp" alt="The demo vault shown in a light theme" loading="lazy" decoding="async" width="1600" height="1005">
+        </button>
+        <figcaption><b>Light and dark themes.</b> One Dark, GitHub, Solarized, Gruvbox, Nord, Dracula, Tokyo Night. Follows the system, or press <kbd data-mod>⌘</kbd><kbd>T</kbd>.</figcaption>
+      </figure>
     </div>
   </section>
 
   <!-- ───────────────────────── keyboard -->
-  <section id="keyboard" class="reveal">
+  <section id="keyboard">
     <h2><span class="h-mark">##</span> Keyboard-first</h2>
-    <p>Everything reachable without the mouse. The scroll keys work on this page — try them.</p>
+    <p>Everything is reachable without the mouse. The scroll keys work on this page; try them.</p>
     <div class="keys">
       <div class="keyrow"><span class="cap"><kbd data-mod>⌘</kbd><kbd>P</kbd></span><span>fuzzy file finder</span></div>
       <div class="keyrow"><span class="cap"><kbd data-mod>⌘</kbd><kbd>⇧</kbd><kbd>P</kbd></span><span>command palette</span></div>
@@ -459,12 +382,12 @@
   </section>
 
   <!-- ───────────────────────── agents -->
-  <section id="agents" class="reveal">
-    <h2><span class="h-mark">##</span> Built for coding agents</h2>
+  <section id="agents">
+    <h2><span class="h-mark">##</span> Scriptable over IPC</h2>
     <p>
-      rmdv is single-instance with an IPC socket. Claude Code, Codex, or any agent
-      can drive the window the human is reading — open files, jump to sections,
-      switch view modes — without touching the keyboard.
+      rmdv runs as a single instance behind a Unix socket. Any process can drive the
+      open window from the command line: open a file, jump to a heading, switch view
+      mode. Every command returns one line of JSON.
     </p>
     <pre class="code" data-lang="bash"><code><span class="c"># open a file at a specific line</span>
 rmdv path/to/spec.md --line 42
@@ -474,65 +397,64 @@ rmdv goto --section <span class="s">"API/Authentication"</span>
 rmdv mode mindmap
 rmdv current                          <span class="c"># prints JSON state</span>
 
-<span class="c"># stateless — no window needed</span>
+<span class="c"># stateless: no window needed</span>
 rmdv list-sections spec.md | jq -r <span class="s">'.[].path'</span></code></pre>
     <p class="fine">
-      Every command returns one line of JSON. Your agent writes a doc, opens it at the
-      right heading, and keeps working while you read.
+      This makes rmdv easy to wire into editor plugins, shell scripts, or a coding agent
+      such as Claude Code or Codex: write a doc, open it at the right heading, keep working.
     </p>
-    <p class="fine">rmdv is the only markdown viewer in this category with a stable IPC CLI: a single-instance process, a well-defined JSON protocol, and no GUI interaction required.</p>
   </section>
 
   <!-- ───────────────────────── faq -->
-  <section id="faq" class="reveal">
+  <section id="faq">
     <h2><span class="h-mark">##</span> FAQ</h2>
-    <dl class="faq-list">
+    <div class="faq-list">
 
-      <div class="faq-item">
-        <dt>Is rmdv free and open source?</dt>
-        <dd>Yes. rmdv is MIT-licensed and free to use, modify, and distribute. Source code is at <a href="https://github.com/minchenlee/rmdv">github.com/minchenlee/rmdv</a>.</dd>
-      </div>
+      <details class="faq-item">
+        <summary>Is rmdv free and open source?</summary>
+        <p>Yes. rmdv is MIT-licensed and free to use, modify, and distribute. Source code is at <a href="https://github.com/minchenlee/rmdv">github.com/minchenlee/rmdv</a>.</p>
+      </details>
 
-      <div class="faq-item">
-        <dt>How is rmdv different from Obsidian?</dt>
-        <dd>rmdv is a read-focused viewer, not a note-linking knowledge base. It opens any folder instantly without vault setup, uses ~70&nbsp;MB of memory on a 10,000-line document (versus 300+&nbsp;MB for Obsidian), and starts in ~150&nbsp;ms. It has no plugin ecosystem, but it renders Mermaid diagrams and LaTeX math natively — Obsidian requires plugins for both.</dd>
-      </div>
+      <details class="faq-item">
+        <summary>How is rmdv different from Obsidian?</summary>
+        <p>rmdv is a read-focused viewer, not a note-linking knowledge base. It opens folders without vault setup and has no plugin ecosystem. Mermaid diagrams and LaTeX math render natively.</p>
+      </details>
 
-      <div class="faq-item">
-        <dt>How is rmdv different from Typora?</dt>
-        <dd>Typora is a paid ($15) editor-first app for macOS and Windows. rmdv is free, open source, read-focused, and also runs on Linux. It renders Mermaid diagrams and LaTeX math without a webview; Typora uses an embedded browser for rendering.</dd>
-      </div>
+      <details class="faq-item">
+        <summary>How is rmdv different from Typora?</summary>
+        <p>Typora is a paid ($15) editor-first app for macOS and Windows. rmdv is free, open source, read-focused, and also runs on Linux. It renders Mermaid diagrams and LaTeX math without a webview; Typora uses an embedded browser for rendering.</p>
+      </details>
 
-      <div class="faq-item">
-        <dt>Does rmdv work offline?</dt>
-        <dd>Yes. rmdv is a native desktop application with no cloud dependency. All rendering — Markdown, Mermaid diagrams, LaTeX math, mindmaps, PDF text extraction — happens locally with no network requests at runtime.</dd>
-      </div>
+      <details class="faq-item">
+        <summary>Does rmdv work offline?</summary>
+        <p>Yes. rmdv is a native desktop application with no cloud dependency. All rendering (Markdown, Mermaid diagrams, LaTeX math, mindmaps, PDF text extraction) happens locally, with no network requests at runtime.</p>
+      </details>
 
-      <div class="faq-item">
-        <dt>What diagram and math formats does rmdv support?</dt>
-        <dd>rmdv renders Mermaid diagrams (all major diagram types) and Graphviz DOT graphs natively in Rust. Block LaTeX math (<code>$$…$$</code>) is rendered by a pure-Rust layout engine — no JavaScript, no KaTeX.</dd>
-      </div>
+      <details class="faq-item">
+        <summary>What diagram and math formats does rmdv support?</summary>
+        <p>rmdv renders Mermaid diagrams (all major diagram types) and Graphviz DOT graphs natively in Rust. Block LaTeX math (<code>$$…$$</code>) is rendered by a pure-Rust layout engine, with no JavaScript and no KaTeX.</p>
+      </details>
 
-      <div class="faq-item">
-        <dt>How does rmdv work with Claude Code or other AI coding agents?</dt>
-        <dd>rmdv runs as a single instance with a Unix socket IPC interface. An agent uses the <code>rmdv</code> CLI to open files, jump to specific headings, or switch view modes programmatically. Every command returns one line of JSON. The agent can keep a spec file open in rmdv at the exact section the human needs while continuing its own work.</dd>
-      </div>
+      <details class="faq-item">
+        <summary>How does rmdv work with Claude Code or other AI coding agents?</summary>
+        <p>rmdv runs as a single instance with a Unix socket IPC interface. An agent uses the <code>rmdv</code> CLI to open files, jump to specific headings, or switch view modes programmatically. Every command returns one line of JSON. The agent can keep a spec file open in rmdv at the exact section the human needs while continuing its own work.</p>
+      </details>
 
-      <div class="faq-item">
-        <dt>How do I install rmdv?</dt>
-        <dd>On macOS, download the signed and notarized .dmg from <a href="https://github.com/minchenlee/rmdv/releases">github.com/minchenlee/rmdv/releases</a>. On Linux, download the x86_64 AppImage from the same page. To build from source on any platform including Windows: install Rust 1.80 or newer, then run <code>git clone https://github.com/minchenlee/rmdv &amp;&amp; cd rmdv &amp;&amp; cargo build --release</code>.</dd>
-      </div>
+      <details class="faq-item">
+        <summary>How do I install rmdv?</summary>
+        <p>On macOS, download the signed and notarized .dmg from <a href="https://github.com/minchenlee/rmdv/releases">github.com/minchenlee/rmdv/releases</a>. On Linux, download the x86_64 AppImage from the same page. To build from source, install Rust 1.80 or newer, then run <code>git clone https://github.com/minchenlee/rmdv &amp;&amp; cd rmdv &amp;&amp; cargo build --release</code>. Windows builds use <code>cargo build --release --no-default-features</code> because PDF extraction is macOS/Linux only.</p>
+      </details>
 
-      <div class="faq-item">
-        <dt>Is rmdv faster than Electron-based markdown viewers?</dt>
-        <dd>rmdv is a ~30&nbsp;MB native binary with no Electron, no webview, and no JavaScript runtime. Cold start to first paint is ~150&nbsp;ms on an M2 MacBook Air. A 10,000-line document parses in 8.1&nbsp;ms and uses 70&nbsp;MB of memory. Electron-based apps typically start in 1–3 seconds and use significantly more memory.</dd>
-      </div>
+      <details class="faq-item">
+        <summary>Is rmdv faster than Electron-based markdown viewers?</summary>
+        <p>rmdv is a native Rust application with no Electron, embedded webview, or JavaScript runtime. Historical v0.2.0 benchmarks on an Apple M2 MacBook Pro measured first view at about 150&nbsp;ms and parsing a 10,000-line document at 8.1&nbsp;ms; current builds may differ.</p>
+      </details>
 
-    </dl>
+    </div>
   </section>
 
   <!-- ───────────────────────── install -->
-  <section id="install" class="reveal">
+  <section id="install">
     <h2><span class="h-mark">##</span> Install</h2>
     <div class="installs">
       <div class="inst">
@@ -550,7 +472,7 @@ rmdv list-sections spec.md | jq -r <span class="s">'.[].path'</span></code></pre
         <h3>From source</h3>
         <pre class="code" data-lang="bash"><code>git clone https://github.com/minchenlee/rmdv
 cd rmdv &amp;&amp; cargo build --release</code></pre>
-        <p class="fine">Rust 1.80+. Windows builds this way too.</p>
+        <p class="fine">Rust 1.80+. Windows builds use <code>cargo build --release --no-default-features</code>.</p>
       </div>
     </div>
   </section>
@@ -562,7 +484,8 @@ cd rmdv &amp;&amp; cargo build --release</code></pre>
       · <a href="https://github.com/minchenlee/rmdv/releases">changelog</a>
       · built with <a href="https://iced.rs">Iced</a>
     </p>
-    <p class="fine">Plain HTML + CSS + a few KB of JS. No framework. It loads the way rmdv starts.</p>
+    <p class="fine">Plain HTML, CSS, and a few KB of JS. No framework.</p>
+    <p class="fine">rmdv was developed with extensive assistance from Claude via <a href="https://claude.com/claude-code">Claude Code</a>. The <a href="https://github.com/minchenlee/rmdv">source is open</a>; judge it on its merits.</p>
   </footer>
 
 </main>

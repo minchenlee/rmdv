@@ -13,7 +13,9 @@
 //! before delegating a normal tag-checked positional diff. Blocks that stay in
 //! the window keep their widget state (shaped `rich_text` paragraphs) no
 //! matter how far the window slid; vacated slots become empty trees that the
-//! tag check rebuilds safely.
+//! tag check rebuilds safely. Preview callers can select the fresh-diff mode,
+//! which keeps this wrapper boundary but clears all child trees on a range or
+//! document namespace change.
 
 use iced::advanced::widget::{tree, Operation, Tree, Widget};
 use iced::advanced::{layout, mouse, overlay, renderer, Clipboard, Layout, Shell};
@@ -32,6 +34,8 @@ pub enum RowKey {
 pub struct KeyedBody<'a, Message, Theme, Renderer> {
     keys: Vec<RowKey>,
     content: Element<'a, Message, Theme, Renderer>,
+    rebuild_on_key_change: bool,
+    generation: (u64, u64),
 }
 
 impl<'a, Message, Theme, Renderer> KeyedBody<'a, Message, Theme, Renderer> {
@@ -40,15 +44,40 @@ impl<'a, Message, Theme, Renderer> KeyedBody<'a, Message, Theme, Renderer> {
         keys: Vec<RowKey>,
         content: impl Into<Element<'a, Message, Theme, Renderer>>,
     ) -> Self {
+        Self::with_mode(keys, content, false, (0, 0))
+    }
+
+    /// Construct a preview body that keeps the keyed wrapper's safe tree
+    /// boundary but drops all child trees when the materialized range or
+    /// namespace changes. This avoids positional downcasts without paying a
+    /// full rebuild on every steady-state frame.
+    pub fn new_fresh(
+        keys: Vec<RowKey>,
+        content: impl Into<Element<'a, Message, Theme, Renderer>>,
+        generation: (u64, u64),
+    ) -> Self {
+        Self::with_mode(keys, content, true, generation)
+    }
+
+    fn with_mode(
+        keys: Vec<RowKey>,
+        content: impl Into<Element<'a, Message, Theme, Renderer>>,
+        rebuild_on_key_change: bool,
+        generation: (u64, u64),
+    ) -> Self {
         Self {
             keys,
             content: content.into(),
+            rebuild_on_key_change,
+            generation,
         }
     }
 }
 
 struct State {
     keys: Vec<RowKey>,
+    generation: (u64, u64),
+    rebuild_on_key_change: bool,
 }
 
 /// Rearrange `trees` (parallel to `old` keys) into `new` key order. Keys
@@ -60,8 +89,7 @@ fn reorder_by_keys(trees: &mut Vec<Tree>, old: &[RowKey], new: &[RowKey]) {
         // the plain positional diff.
         return;
     }
-    let mut by_key: HashMap<RowKey, Tree> =
-        old.iter().copied().zip(trees.drain(..)).collect();
+    let mut by_key: HashMap<RowKey, Tree> = old.iter().copied().zip(trees.drain(..)).collect();
     *trees = new
         .iter()
         .map(|k| by_key.remove(k).unwrap_or_else(Tree::empty))
@@ -80,6 +108,8 @@ where
     fn state(&self) -> tree::State {
         tree::State::new(State {
             keys: self.keys.clone(),
+            generation: self.generation,
+            rebuild_on_key_change: self.rebuild_on_key_change,
         })
     }
 
@@ -90,11 +120,23 @@ where
     fn diff(&self, tree: &mut Tree) {
         {
             let state = tree.state.downcast_mut::<State>();
-            if state.keys != self.keys {
+            if state.keys != self.keys
+                || state.rebuild_on_key_change != self.rebuild_on_key_change
+                || (self.rebuild_on_key_change && state.generation != self.generation)
+            {
                 if let Some(inner) = tree.children.get_mut(0) {
-                    reorder_by_keys(&mut inner.children, &state.keys, &self.keys);
+                    if self.rebuild_on_key_change || state.rebuild_on_key_change {
+                        // Keep the outer wrapper and its tag-checked child
+                        // boundary, but force the inner Column to construct
+                        // fresh children for a new preview range/document.
+                        inner.children.clear();
+                    } else {
+                        reorder_by_keys(&mut inner.children, &state.keys, &self.keys);
+                    }
                 }
                 state.keys.clone_from(&self.keys);
+                state.generation = self.generation;
+                state.rebuild_on_key_change = self.rebuild_on_key_change;
             }
         }
         tree.diff_children(std::slice::from_ref(&self.content));
@@ -225,6 +267,8 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use iced::advanced::widget::Widget;
+    use iced::widget::{button, text, Column};
 
     #[test]
     fn reorder_moves_overlap_and_fills_holes() {
@@ -249,5 +293,41 @@ mod tests {
         let mut trees: Vec<Tree> = vec![];
         reorder_by_keys(&mut trees, &old, &[RowKey::Block(2)]);
         assert!(trees.is_empty(), "mismatched inputs must be left untouched");
+    }
+
+    #[test]
+    fn fresh_diff_rebuilds_mixed_rows_without_positional_downcast() {
+        type TestBody = KeyedBody<'static, (), iced::Theme, iced::Renderer>;
+
+        let first_column = Column::new()
+            .push(button("stateful").on_press(()))
+            .push(text("stateless"));
+        let first = TestBody::new_fresh(
+            vec![RowKey::Block(1), RowKey::Block(2)],
+            first_column,
+            (0, 10),
+        );
+        let first_element: iced::Element<'static, (), iced::Theme, iced::Renderer> = first.into();
+        let mut tree = Tree::new(&first_element);
+
+        // The range now contains the opposite widget shapes under unrelated
+        // keys. Fresh mode must clear the old child trees before Column's
+        // positional diff, so this exercises the historical downcast panic
+        // boundary directly.
+        let second_column = Column::new()
+            .push(text("stateless first"))
+            .push(button("stateful second").on_press(()));
+        let second = TestBody::new_fresh(
+            vec![RowKey::Block(3), RowKey::Block(4)],
+            second_column,
+            (0, 11),
+        );
+        second.diff(&mut tree);
+
+        assert_eq!(tree.children.len(), 1);
+        assert_eq!(tree.children[0].children.len(), 2);
+        let state = tree.state.downcast_ref::<State>();
+        assert_eq!(state.generation, (0, 11));
+        assert_eq!(state.keys, vec![RowKey::Block(3), RowKey::Block(4)]);
     }
 }

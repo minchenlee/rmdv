@@ -2,7 +2,7 @@
 
 > Native Rust desktop Markdown viewer with Mermaid diagrams, LaTeX math, mind-map mode, and agent-controllable IPC. Free, MIT-licensed. No Electron, no browser, no runtime.
 
-rmdv (Rust Markdown Viewer) is a read-focused desktop app for macOS, Windows, and Linux. It renders Markdown files, Mermaid and Graphviz DOT diagrams, block LaTeX math, and JSON/YAML mind maps natively using a pure-Rust GUI stack (Iced 0.14). A single binary (~30 MB) with no external runtime. Its unique property among Markdown viewers is a scriptable IPC socket: any program or AI agent (Claude Code, Codex, Cursor, shell scripts) can drive the running window — open files, scroll to sections, switch view modes, take screenshots — via the `rmdv` CLI returning one-line JSON.
+rmdv (Rust Markdown Viewer) is a read-focused desktop app for macOS, Windows, and Linux. It renders Markdown files, Mermaid and Graphviz DOT diagrams, block LaTeX math, and JSON/YAML mind maps using a pure-Rust GUI stack (Iced 0.14). On macOS and Linux, text PDFs can be extracted locally to Markdown via PDFium. Its scriptable IPC socket lets programs and AI agents (Claude Code, Codex, Cursor, shell scripts) drive the running window — open files, scroll to sections, switch view modes, take screenshots — through the `rmdv` CLI returning one-line JSON.
 
 ## Product
 
@@ -11,16 +11,14 @@ rmdv (Rust Markdown Viewer) is a read-focused desktop app for macOS, Windows, an
 ## Source and releases
 
 - [GitHub repository](https://github.com/minchenlee/rmdv): Source code, issue tracker, pull requests. MIT license.
-- [Releases](https://github.com/minchenlee/rmdv/releases): Pre-built binaries for macOS (signed + notarized), Linux, and Windows. SHA-256 verified. Latest: v0.3.0 (2026-06-14).
+- [Releases](https://github.com/minchenlee/rmdv/releases): Pre-built binaries for macOS (signed + notarized), Linux, and Windows. SHA-256 verified. Latest: v0.4.0 (2026-06-23).
 
 ## Key facts
 
-rmdv is the only Markdown viewer with an agent-controllable IPC socket. Measured on an M2 MacBook Air 16 GB (median of 5 runs):
+rmdv has an agent-controllable IPC socket. Historical v0.2.0 benchmarks were measured on an Apple M2 MacBook Pro (median of 5 runs; current builds may differ):
 
 - Cold start to first paint: ~150 ms
 - Parse time for a 10,000-line document: 8.1 ms
-- Memory on a 10,000-line document: ~70 MB (viewport-aware renderer; was 453 MB before v0.2.2)
-- Binary size: ~30 MB (static, no runtime)
 
 ## Features
 
@@ -35,7 +33,7 @@ rmdv is the only Markdown viewer with an agent-controllable IPC socket. Measured
 - In-document search (⌘F)
 - Live reload on file save
 - Auto-update: checks GitHub releases, SHA-256 verifies, signed and notarized on macOS
-- Themes: One Dark, GitHub, Solarized, Gruvbox, Nord, Dracula, Tokyo Night
+- Themes: 10 built-in presets — One Light/Dark, GitHub Light/Dark, Solarized Light/Dark, Gruvbox, Nord, Dracula, Tokyo Night
 - Keyboard-first navigation: j/k/g/G, ⌘↑/⌘↓, heading fold ⌘K 0–6
 - Edit mode (⌘E)
 - IPC CLI: `rmdv open <path>`, `rmdv goto --line N`, `rmdv goto --section <name>`, `rmdv mode mindmap`, `rmdv current`, `rmdv list-sections <path>`; all return one-line JSON
@@ -60,7 +58,7 @@ rmdv is the only option that is free, open-source, native (non-Electron), cross-
 
 - macOS: download the signed + notarized `.dmg` (Apple Silicon or Intel) from https://github.com/minchenlee/rmdv/releases and drag rmdv to Applications.
 - Linux: download the x86_64 AppImage from the same page, `chmod +x` it, and run.
-- From source (any platform incl. Windows): install Rust 1.80+ from https://rustup.rs, then `git clone https://github.com/minchenlee/rmdv && cd rmdv && cargo build --release`.
+- From source: install Rust 1.80+ from https://rustup.rs, then `git clone https://github.com/minchenlee/rmdv && cd rmdv && cargo build --release`. Windows builds use `cargo build --release --no-default-features` because PDF extraction is macOS/Linux only.
 
 ## Author and license
 
