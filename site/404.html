@@ -13,9 +13,7 @@
 <link rel="icon" href="assets/favicon-32.png" sizes="32x32" type="image/png">
 <link rel="icon" href="assets/icon-64.png" sizes="64x64" type="image/png">
 <link rel="apple-touch-icon" href="assets/icon-180.png">
-<link rel="preload" href="assets/fonts/inter-400.woff2" as="font" type="font/woff2" crossorigin>
-<link rel="preload" href="assets/fonts/inter-600.woff2" as="font" type="font/woff2" crossorigin>
-<link rel="preload" href="assets/fonts/inter-700.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="assets/fonts/jbmono-400.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="stylesheet" href="style.css">
 <script>
 // Set theme before first paint — no flash. Mark JS-on so motion styles apply.
@@ -36,10 +34,9 @@
       <span>rmdv</span>
     </a>
     <nav class="top-nav">
-      <a href="/#features">Features</a>
-      <a href="/#keyboard">Keyboard</a>
+      <a href="/#workspace">Workspace</a>
+      <a href="/#controls">Controls</a>
       <a href="/#agents">Agents</a>
-      <a href="/#faq">FAQ</a>
       <a href="/#install">Install</a>
       <a href="https://github.com/minchenlee/rmdv" class="gh">GitHub</a>
     </nav>
@@ -48,34 +45,37 @@
 
 <main id="top">
 
-  <section class="hero">
-    <p class="h-mark" aria-hidden="true"># 404</p>
-    <h1>Page not <span class="accent">found</span>.</h1>
-    <p class="tagline">
-      That path doesn't exist on rmdv.mclee.dev — it may have moved or never been here.
-      rmdv is a free, open-source markdown viewer written in Rust; here's the way back.
-    </p>
-    <div class="cta">
-      <a class="btn primary" href="/">Back to home</a>
-      <a class="btn" href="https://github.com/minchenlee/rmdv">Source on GitHub</a>
+  <section class="workspace-hero not-found-shell" aria-labelledby="not-found-title">
+    <aside class="workspace-rail" aria-label="Missing page details">
+      <div class="rail-path"><span>rmdv.mclee.dev</span><strong>/404</strong></div>
+      <nav class="rail-tree" aria-label="Helpful links">
+        <a class="current" href="/"><span>↩</span> README.md</a>
+        <a href="/#workspace"><span>├</span> workspace</a>
+        <a href="/#controls"><span>├</span> controls</a>
+        <a href="/#install"><span>└</span> install</a>
+      </nav>
+      <dl class="rail-facts">
+        <div><dt>status</dt><dd>404</dd></div>
+        <div><dt>file</dt><dd>not found</dd></div>
+      </dl>
+    </aside>
+    <div class="reader-hero">
+      <div class="document-path"><span>404.md</span><span>missing</span></div>
+      <div class="hero-copy">
+        <h1 id="not-found-title">This page isn't in the workspace.</h1>
+        <p>The path may have moved, or it may never have existed. The project, releases, and install instructions are still where you expect them.</p>
+        <div class="cta">
+          <a class="btn primary" href="/">Return to README</a>
+          <a class="btn" href="https://github.com/minchenlee/rmdv/releases">Browse releases</a>
+        </div>
+        <p class="runtime-note">404 · no file at this path</p>
+      </div>
     </div>
-
-    <nav class="cta" aria-label="Helpful links">
-      <a class="btn small" href="/#install">Install</a>
-      <a class="btn small" href="/#features">Features</a>
-      <a class="btn small" href="/#faq">FAQ</a>
-      <a class="btn small" href="https://github.com/minchenlee/rmdv/releases">Releases</a>
-    </nav>
   </section>
-
-  <div class="md-hr" aria-hidden="true">---</div>
   <footer>
-    <p>
-      MIT licensed · <a href="https://github.com/minchenlee/rmdv">github.com/minchenlee/rmdv</a>
-      · <a href="https://github.com/minchenlee/rmdv/releases">changelog</a>
-      · built with <a href="https://iced.rs">Iced</a>
-    </p>
-    <p class="fine">Native Rust markdown viewer. No Electron, no webview, no JS runtime.</p>
+    <div><strong>rmdv</strong><span>Native Markdown workspace viewer</span></div>
+    <p>MIT licensed · <a href="https://github.com/minchenlee/rmdv">source</a> · <a href="https://github.com/minchenlee/rmdv/releases">changelog</a></p>
+    <p class="fine">Native Rust Markdown viewer. No Electron, no webview, no JavaScript runtime in the app.</p>
   </footer>
 
 </main>

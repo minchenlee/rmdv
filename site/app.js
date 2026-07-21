@@ -1,4 +1,4 @@
-// rmdv.mclee.dev — keyboard layer. Mirrors the app's bindings.
+// rmdv.mclee.dev — website keyboard layer; app bindings remain documentation.
 (function () {
   'use strict';
 
@@ -126,7 +126,7 @@
     }
   }
   function closeOverlays() {
-    let was = !palette.hidden || !cheat.hidden;
+    const was = !palette.hidden || !cheat.hidden;
     palette.hidden = true;
     cheat.hidden = true;
     if (was) {
@@ -153,7 +153,7 @@
     { label: 'Open GitHub repository', hint: '', run: () => { location.href = 'https://github.com/minchenlee/rmdv'; } },
     { label: 'View releases / changelog', hint: '', run: () => { location.href = 'https://github.com/minchenlee/rmdv/releases'; } },
     { label: 'Copy: cargo build --release', hint: '', run: () => navigator.clipboard?.writeText('git clone https://github.com/minchenlee/rmdv && cd rmdv && cargo build --release') },
-    { label: 'Keyboard shortcuts', hint: '?', run: () => openOverlay(cheat) },
+    { label: 'Keyboard shortcuts', hint: mac ? '⌘/' : 'Ctrl+/', run: () => openOverlay(cheat) },
   ];
 
   let filtered = commands;
@@ -225,24 +225,51 @@
   // ── global keys ────────────────────────────────────────
   const SCROLL = 90;
   document.addEventListener('keydown', (e) => {
+    // Shadow-DOM controls can handle a key before it reaches this document
+    // listener. Do not let a handled event trigger a second page shortcut.
+    if (e.defaultPrevented) return;
+
     const mod = mac ? e.metaKey : e.ctrlKey;
-    // ⌘⇧P — the app's own palette binding. The site teaches only real keys.
-    const paletteKey = mod && e.shiftKey && e.key.toLowerCase() === 'p';
+    const typing = document.activeElement?.matches(
+      'input, textarea, select, [contenteditable="true"]'
+    );
+
+    // Browsers such as Firefox reserve ⌘⇧P / Ctrl⇧P before a page can receive
+    // it. Plain p is reliable and follows the website's j/k/g/G/t key model.
+    const paletteKey = !e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey
+      && e.key === 'p' && !typing;
     if (paletteKey) {
       e.preventDefault();
-      palette.hidden ? openOverlay(palette) : closeOverlays();
+      if (palette.hidden) openOverlay(palette);
+      echo('p');
       return;
     }
 
-    if (e.key === 'Escape') { if (closeOverlays()) e.preventDefault(); return; }
+    // ⌘/ (Ctrl+/ elsewhere) — same shortcut as rmdv's native help sheet.
+    const shortcutsKey = mod && !e.shiftKey && e.key === '/';
+    if (shortcutsKey) {
+      e.preventDefault();
+      cheat.hidden ? openOverlay(cheat) : closeOverlays();
+      echo('/');
+      return;
+    }
+
+    if (e.key === 'Escape') {
+      if (closeOverlays()) e.preventDefault();
+      return;
+    }
+
+    // App shortcuts shown in the controls table are documentation only. The
+    // website does not capture them or override browser/system behavior.
+    if (!palette.hidden || !cheat.hidden) return;
+    const inControl = document.activeElement?.matches(
+      'input, textarea, select, button, summary, a, sticker-forge, [contenteditable="true"]'
+    );
 
     // Everything below: plain keys only — never steal native keyboard behavior
     // from an interactive control (in particular, Space toggles a FAQ summary).
-    if (!palette.hidden || !cheat.hidden) return;
     if (e.metaKey || e.ctrlKey || e.altKey) return;
-    if (document.activeElement?.matches(
-      'input, textarea, select, button, summary, a, [contenteditable="true"]'
-    )) return;
+    if (inControl) return;
 
     switch (e.key) {
       case 'j': window.scrollBy({ top: SCROLL }); echo('j'); break;
@@ -254,7 +281,6 @@
         e.preventDefault();
         break;
       case 't': toggleTheme(); echo('t'); break;
-      case '?': openOverlay(cheat); echo('?'); break;
       default: return;
     }
   });
@@ -284,7 +310,7 @@
       lightbox.classList.remove('in');
       const finish = () => {
         lightbox.hidden = true;
-        lbImg.src = '';
+        lbImg.src = 'assets/shot-hero-960.webp';
         stage.classList.remove('zoomed');
         if (lastFocus && lastFocus.focus) lastFocus.focus();
       };
@@ -311,5 +337,54 @@
     document.addEventListener('keydown', (e) => {
       if (e.key === 'Escape' && !lightbox.hidden) { e.preventDefault(); closeLightbox(); }
     });
+  }
+
+  // ── AI sticker — Sticker Forge's real WebGL peel renderer ──
+  const aiSticker = $('#ai-sticker');
+  if (aiSticker) {
+    const stickerSource = () => ({
+      type: 'text',
+      text: '100% AI',
+      color: getComputedStyle(document.documentElement).getPropertyValue('--accent').trim()
+        || 'rgb(217, 119, 87)',
+      fontFamily: 'Arial Rounded MT Bold, Arial Black, sans-serif',
+      fontWeight: 900,
+    });
+
+    // The renderer keeps its canvas keyboard-focusable for peel controls. Hide
+    // only its browser focus ring so the interactive sticker stays accessible
+    // without adding a bright rectangle over the hero artwork.
+    const hideStickerFocusRing = () => {
+      const canvas = aiSticker.shadowRoot?.querySelector('canvas');
+      if (!canvas) return;
+      canvas.style.setProperty('outline', 'none', 'important');
+      canvas.style.setProperty('box-shadow', 'none', 'important');
+    };
+
+    import('./assets/sticker-forge.es.js')
+      .then(async () => {
+        await customElements.whenDefined('sticker-forge');
+        aiSticker.setOptions({
+          outline: { width: 18, color: '#ffffff' },
+          shadow: { color: '#19191d', opacity: .22, blur: 22, distance: 16, angle: 42 },
+          peel: { radius: .12, stiffness: .72, grabWidth: 64, maxAngle: 3.55, release: 'reset' },
+          sound: { enabled: true, volume: .68 },
+          back: { color: '#f7f5f2', gloss: .7, roughness: .3 },
+          tilt: -6,
+          quality: 'high',
+        });
+        await aiSticker.setSource(stickerSource());
+        hideStickerFocusRing();
+        requestAnimationFrame(hideStickerFocusRing);
+
+        const themeObserver = new MutationObserver(() => {
+          void aiSticker.setSource(stickerSource()).then(hideStickerFocusRing);
+        });
+        themeObserver.observe(document.documentElement, {
+          attributes: true,
+          attributeFilter: ['data-theme'],
+        });
+      })
+      .catch(() => aiSticker.classList.add('is-fallback'));
   }
 })();
