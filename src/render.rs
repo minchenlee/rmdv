@@ -675,6 +675,56 @@ fn render_block<'a>(
 
 type RtSpan<'a> = iced::advanced::text::Span<'a, Message, iced::Font>;
 
+/// `Inter` and the bundled monospace font deliberately do not contain CJK
+/// glyphs. cosmic-text can normally find a system fallback, but it matches
+/// fallback faces against the requested style/family first. On macOS that
+/// means an `Inter Italic` CJK run has no matching PingFang face, and a
+/// monospace CJK run has no matching monospace face, so both become tofu.
+/// Keep CJK runs on the normal reader family for fallback while preserving
+/// the requested style for Latin and other scripts.
+fn is_cjk_fallback_char(c: char) -> bool {
+    matches!(
+        c as u32,
+        0x2E80..=0x2FFF // CJK radicals, symbols, and punctuation
+            | 0x3000..=0x303F // CJK symbols and punctuation
+            | 0x3040..=0x30FF // Hiragana and Katakana
+            | 0x3100..=0x312F // Bopomofo
+            | 0x31A0..=0x31BF // Bopomofo extensions
+            | 0x3400..=0x4DBF // CJK unified ideographs extension A
+            | 0x4E00..=0x9FFF // CJK unified ideographs
+            | 0xAC00..=0xD7AF // Hangul syllables
+            | 0xF900..=0xFAFF // CJK compatibility ideographs
+            | 0xFF00..=0xFFEF // Fullwidth and halfwidth forms
+            | 0x20000..=0x2FA1F // CJK unified ideographs extensions
+    )
+}
+
+/// Visit contiguous CJK/non-CJK runs without splitting a UTF-8 character.
+fn for_text_runs<'a>(text_str: &'a str, mut visit: impl FnMut(&'a str, bool)) {
+    let mut run_start = 0usize;
+    let mut run_is_cjk: Option<bool> = None;
+
+    for (idx, c) in text_str.char_indices() {
+        let is_cjk = is_cjk_fallback_char(c);
+        match run_is_cjk {
+            None => run_is_cjk = Some(is_cjk),
+            Some(previous) if previous != is_cjk => {
+                visit(&text_str[run_start..idx], previous);
+                run_start = idx;
+                run_is_cjk = Some(is_cjk);
+            }
+            Some(_) => {}
+        }
+    }
+
+    if run_start < text_str.len() {
+        visit(
+            &text_str[run_start..],
+            run_is_cjk.expect("a non-empty text run has a classification"),
+        );
+    }
+}
+
 /// `rich_text` whose link spans dispatch their carried `Message` on click.
 /// The span `Link` type is `Message`, so the click handler is the identity.
 fn rich_text_links<'a>(spans: Vec<RtSpan<'a>>) -> Element<'a, Message> {
@@ -716,15 +766,20 @@ fn make_span<'a>(
     pal: &Palette,
     size: f32,
     st: &Style,
-    monospace: bool,
+    code: bool,
+    cjk: bool,
     bg: Option<iced::Color>,
 ) -> RtSpan<'a> {
-    let mut font = if monospace {
+    let mut font = if code && !cjk {
         iced::Font::MONOSPACE
     } else {
         iced::Font::with_name("Inter")
     };
-    if st.italic {
+    // CJK fonts generally do not ship italic faces. Asking cosmic-text for
+    // one prevents it from selecting the normal CJK fallback face, so keep
+    // the CJK glyphs upright and let Latin/other scripts carry the italic
+    // styling.
+    if st.italic && !cjk {
         font.style = iced::font::Style::Italic;
     }
     if st.bold {
@@ -736,7 +791,7 @@ fn make_span<'a>(
     }
     if let Some(c) = bg {
         s = s.background(c);
-    } else if monospace {
+    } else if code {
         s = s.background(pal.code_bg);
     }
     if let Some(url) = &st.link {
@@ -750,6 +805,20 @@ fn make_span<'a>(
     s
 }
 
+fn push_styled_runs<'a>(
+    text_str: &'a str,
+    pal: &Palette,
+    size: f32,
+    st: &Style,
+    code: bool,
+    bg: Option<iced::Color>,
+    out: &mut Vec<RtSpan<'a>>,
+) {
+    for_text_runs(text_str, |run, cjk| {
+        out.push(make_span(run, pal, size, st, code, cjk, bg));
+    });
+}
+
 fn push_text_with_hl<'a>(
     text_str: &'a str,
     pal: &Palette,
@@ -760,7 +829,7 @@ fn push_text_with_hl<'a>(
     ctx: &mut HlCtx<'_>,
 ) {
     if ctx.query.is_empty() {
-        out.push(make_span(text_str, pal, size, st, monospace, None));
+        push_styled_runs(text_str, pal, size, st, monospace, None, out);
         return;
     }
     let lower_text = text_str.to_lowercase();
@@ -769,14 +838,7 @@ fn push_text_with_hl<'a>(
     while let Some(rel) = lower_text[cursor..].find(&lower_q) {
         let abs = cursor + rel;
         if abs > cursor {
-            out.push(make_span(
-                &text_str[cursor..abs],
-                pal,
-                size,
-                st,
-                monospace,
-                None,
-            ));
+            push_styled_runs(&text_str[cursor..abs], pal, size, st, monospace, None, out);
         }
         let end = abs + lower_q.len();
         let is_current = ctx.current_in_block == Some(ctx.counter);
@@ -785,27 +847,39 @@ fn push_text_with_hl<'a>(
         } else {
             ctx.pal.match_bg
         };
-        out.push(make_span(
-            &text_str[abs..end],
-            pal,
-            size,
-            st,
-            monospace,
-            Some(bg),
-        ));
+        push_styled_runs(&text_str[abs..end], pal, size, st, monospace, Some(bg), out);
         ctx.counter += 1;
         cursor = end;
     }
     if cursor < text_str.len() {
-        out.push(make_span(
-            &text_str[cursor..],
-            pal,
-            size,
-            st,
-            monospace,
-            None,
-        ));
+        push_styled_runs(&text_str[cursor..], pal, size, st, monospace, None, out);
     }
+}
+
+fn push_code_runs<'a>(
+    text_str: &'a str,
+    color: iced::Color,
+    size: f32,
+    bg: Option<iced::Color>,
+    out: &mut Vec<RtSpan<'a>>,
+) {
+    for_text_runs(text_str, |run, cjk| {
+        let mut s = span(run)
+            .font(if cjk {
+                // Use the normal reader family so the platform CJK fallback
+                // can provide glyphs; no platform has a universal CJK mono
+                // face that can be relied on here.
+                iced::Font::with_name("Inter")
+            } else {
+                iced::Font::MONOSPACE
+            })
+            .size(size)
+            .color(color);
+        if let Some(c) = bg {
+            s = s.background(c);
+        }
+        out.push(s);
+    });
 }
 
 fn push_code_with_hl<'a>(
@@ -817,12 +891,7 @@ fn push_code_with_hl<'a>(
     ctx: &mut HlCtx<'_>,
 ) {
     if ctx.query.is_empty() {
-        out.push(
-            span(text_str)
-                .font(iced::Font::MONOSPACE)
-                .size(size)
-                .color(color),
-        );
+        push_code_runs(text_str, color, size, None, out);
         return;
     }
     let lower_text = text_str.to_lowercase();
@@ -831,12 +900,7 @@ fn push_code_with_hl<'a>(
     while let Some(rel) = lower_text[cursor..].find(&lower_q) {
         let abs = cursor + rel;
         if abs > cursor {
-            out.push(
-                span(&text_str[cursor..abs])
-                    .font(iced::Font::MONOSPACE)
-                    .size(size)
-                    .color(color),
-            );
+            push_code_runs(&text_str[cursor..abs], color, size, None, out);
         }
         let end = abs + lower_q.len();
         let is_current = ctx.current_in_block == Some(ctx.counter);
@@ -845,23 +909,12 @@ fn push_code_with_hl<'a>(
         } else {
             ctx.pal.match_bg
         };
-        out.push(
-            span(&text_str[abs..end])
-                .font(iced::Font::MONOSPACE)
-                .size(size)
-                .color(color)
-                .background(bg),
-        );
+        push_code_runs(&text_str[abs..end], color, size, Some(bg), out);
         ctx.counter += 1;
         cursor = end;
     }
     if cursor < text_str.len() {
-        out.push(
-            span(&text_str[cursor..])
-                .font(iced::Font::MONOSPACE)
-                .size(size)
-                .color(color),
-        );
+        push_code_runs(&text_str[cursor..], color, size, None, out);
     }
     let _ = pal;
 }
@@ -1353,5 +1406,31 @@ pub fn style_color(s: crate::ast::HlStyle, pal: &Palette) -> iced::Color {
         Variable => sx.variable,
         Punctuation => sx.punctuation,
         Plain => pal.fg,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::for_text_runs;
+
+    #[test]
+    fn cjk_runs_are_split_without_breaking_utf8() {
+        let mut runs = Vec::new();
+        for_text_runs("A中文。B日本語C한국어D", |run, cjk| {
+            runs.push((run.to_string(), cjk));
+        });
+
+        assert_eq!(
+            runs,
+            vec![
+                ("A".to_string(), false),
+                ("中文。".to_string(), true),
+                ("B".to_string(), false),
+                ("日本語".to_string(), true),
+                ("C".to_string(), false),
+                ("한국어".to_string(), true),
+                ("D".to_string(), false),
+            ]
+        );
     }
 }
