@@ -4,13 +4,14 @@ Last verified: 2026-07-21 CST (Asia/Taipei)
 Stale after: 7 days
 Canonical repository: `/Users/liminchen/Documents/GitHub/mdv`
 Expected branch: `main`; always resolve its live HEAD before mutation.
-Last verified main base: `origin/main@4311fbf9a342e8d60d1248a5203809710d5f056e`.
+Last verified main base: `origin/main@05770409b7da32574e1ff5bed2f9c5e59c7ebaf6`.
 Authority: This is a routing snapshot. Verify Git, GitHub, runtime identity, and manual evidence before mutation.
 
 ## Current outcome
 
-Prepare the v0.6.0 release from the merged CLI/file-association, CJK rendering,
-and landing-site changes. Publication remains a separate decision.
+v0.6.0 is merged, tagged, and published with platform artifacts and verified
+checksums/manifest. The site deployment remains blocked by missing Cloudflare
+credentials.
 
 ## v0.6.0 release preparation
 
@@ -22,8 +23,15 @@ and landing-site changes. Publication remains a separate decision.
   installation, CJK rendering, and native regression smoke.
 - Local Apple Silicon release binary and packaged `.app` passed; the packaged
   `Info.plist` contains the four expected file-association groups.
-- No v0.6.0 tag, GitHub release, signed artifact publication, or site deployment
-  has been performed.
+- PR #14 merged to `main` at `0577040`; tag `v0.6.0` and GitHub Release are
+  published.
+- Release workflow `29830450638` built and uploaded Linux, macOS arm64, macOS
+  Intel, and Windows artifacts; the publish job generated `SHA256SUMS` and
+  `latest.json`, and both were verified against the published assets.
+- macOS artifacts are ad-hoc sealed because `APPLE_CERTIFICATE` was absent;
+  they are not Developer ID signed or notarized.
+- Site deploy run `29830565893` failed because `CLOUDFLARE_API_TOKEN` was not
+  configured; the live site remains on v0.5.0.
 
 ## v0.5.0 release
 
@@ -55,8 +63,8 @@ The complete portfolio, including P2 and deferred work, is in
 
 - Do not push, open or merge a PR, tag, release, publish artifacts, or deploy
   without an explicit owner request.
-- `main` and `origin/main` resolve to `4311fbf`; local release preparation is
-  isolated on `codex/release-v0.6.0`.
+- `main` and `origin/main` contain the PR #14 merge line; tag `v0.6.0` points
+  to merge commit `0577040`.
 - The site deploy workflow still requires `CLOUDFLARE_API_TOKEN` and
   `CLOUDFLARE_ACCOUNT_ID`; deployment remains pending until those credentials
   are available.
@@ -64,17 +72,17 @@ The complete portfolio, including P2 and deferred work, is in
 
 ## Next safe actions
 
-1. Run the full local Rust, site, and packaging checks on the v0.6.0 branch.
-2. Build and inspect the final platform artifacts, including the Windows gate.
-3. Request explicit tag/release/deploy authority only after the exact candidate
-   and remaining blockers are accepted.
+1. Add `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID`, rerun the manual site
+   deploy, and verify the live homepage plus `llms.txt`.
+2. Add Apple signing/notarization secrets before claiming notarized macOS
+   artifacts in a future release.
 
 ## Verification state
 
 ### Verified now
 
-- `main` and `origin/main` both resolve to `4311fbf`; the release preparation
-  branch is clean before its release-content changes.
+- `main` and `origin/main` contain PR #14; tag `v0.6.0` points to merge commit
+  `0577040`, and the release candidate branch was clean before merge.
 - Owner-reported manual acceptance passed for the merged release scope: Finder
   associations, CLI reset/installation, CJK rendering, and native regression
   smoke.
@@ -86,6 +94,12 @@ The complete portfolio, including P2 and deferred work, is in
   `cargo test --lib` (321 passed), `cargo test --tests`, `cargo build --release
   --bin rmdv`, and the Apple Silicon package build passed. The binary and app
   bundle report version 0.6.0.
+- GitHub release workflow `29830450638` passed all four platform jobs and the
+  publish job; the public release contains two macOS DMGs, two macOS updater
+  tarballs, one Linux AppImage, two Windows executables, `SHA256SUMS`, and
+  `latest.json`.
+- Live `https://rmdv.mclee.dev/` and `/llms.txt` were checked after the failed
+  deploy and still report v0.5.0.
 
 - Before MDV-012 mutation, local `main` and `origin/main` both resolved to
   `7a0514dd9a2bb9079449ebf7780ef317b184ac42`.
@@ -131,10 +145,10 @@ The complete portfolio, including P2 and deferred work, is in
 
 ### Not verified
 
-- Final signed/notarized macOS artifacts, Linux AppImage, and Windows installer
-  have not been built from the v0.6.0 candidate.
-- Windows compilation/package behavior has not been proven on a Windows runner.
-- The site has not been deployed or live-verified for v0.6.0.
+- v0.6.0 macOS artifacts are not Developer ID signed or notarized because the
+  release secrets were absent; they are ad-hoc sealed.
+- The site has not been deployed or live-verified for v0.6.0 because the
+  Cloudflare credentials are missing.
 
 ## Routes
 
