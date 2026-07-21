@@ -685,14 +685,18 @@ type RtSpan<'a> = iced::advanced::text::Span<'a, Message, iced::Font>;
 fn is_cjk_fallback_char(c: char) -> bool {
     matches!(
         c as u32,
-        0x2E80..=0x2FFF // CJK radicals, symbols, and punctuation
+        0x1100..=0x11FF // Hangul Jamo
+            | 0x2E80..=0x2FFF // CJK radicals, symbols, and punctuation
             | 0x3000..=0x303F // CJK symbols and punctuation
             | 0x3040..=0x30FF // Hiragana and Katakana
             | 0x3100..=0x312F // Bopomofo
+            | 0x3130..=0x318F // Hangul compatibility Jamo
             | 0x31A0..=0x31BF // Bopomofo extensions
             | 0x3400..=0x4DBF // CJK unified ideographs extension A
             | 0x4E00..=0x9FFF // CJK unified ideographs
+            | 0xA960..=0xA97F // Hangul Jamo extended-A
             | 0xAC00..=0xD7AF // Hangul syllables
+            | 0xD7B0..=0xD7FF // Hangul Jamo extended-B
             | 0xF900..=0xFAFF // CJK compatibility ideographs
             | 0xFF00..=0xFFEF // Fullwidth and halfwidth forms
             | 0x20000..=0x2FA1F // CJK unified ideographs extensions
@@ -1411,7 +1415,46 @@ pub fn style_color(s: crate::ast::HlStyle, pal: &Palette) -> iced::Color {
 
 #[cfg(test)]
 mod tests {
-    use super::for_text_runs;
+    use super::{for_text_runs, is_cjk_fallback_char};
+
+    #[test]
+    fn hangul_jamo_boundaries_use_cjk_fallback() {
+        for codepoint in [
+            0x1100, 0x11FF, // Hangul Jamo
+            0x3130, 0x318F, // Hangul compatibility Jamo
+            0xA960, 0xA97F, // Hangul Jamo extended-A
+            0xD7B0, 0xD7FF, // Hangul Jamo extended-B
+        ] {
+            assert!(
+                is_cjk_fallback_char(char::from_u32(codepoint).unwrap()),
+                "U+{codepoint:04X} should use CJK fallback"
+            );
+        }
+
+        for codepoint in [0x10FF, 0x1200, 0x3190, 0xA95F, 0xA980, 0xE000] {
+            assert!(
+                !is_cjk_fallback_char(char::from_u32(codepoint).unwrap()),
+                "U+{codepoint:04X} should not use CJK fallback"
+            );
+        }
+    }
+
+    #[test]
+    fn decomposed_hangul_jamo_stays_in_one_cjk_run() {
+        let mut runs = Vec::new();
+        for_text_runs("A한B", |run, cjk| {
+            runs.push((run.to_string(), cjk));
+        });
+
+        assert_eq!(
+            runs,
+            vec![
+                ("A".to_string(), false),
+                ("한".to_string(), true),
+                ("B".to_string(), false),
+            ]
+        );
+    }
 
     #[test]
     fn cjk_runs_are_split_without_breaking_utf8() {

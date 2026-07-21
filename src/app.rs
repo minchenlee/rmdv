@@ -472,6 +472,10 @@ impl ImageCache {
 
 const SIDEBAR_WIDTH: f32 = 280.0;
 const READING_MAX: f32 = 780.0;
+const KEYBOARD_BUTTON_HEIGHT: f32 = 26.0; // 14px text at 1.3 line-height + 4px vertical padding on each side.
+const KEYBOARD_BUTTON_BOTTOM_PAD: f32 = 12.0;
+const KEYBOARD_BUTTON_FOOTER_BOTTOM_PAD: f32 = 44.0;
+const ZEN_EDITOR_OVERLAY_CLEARANCE: f32 = 2.0;
 /// Top padding of the body scrollable's content (`Padding::from([56, 32])` in
 /// `view`). Virt-window math works in body-relative px; every conversion from
 /// scrollable offsets must subtract this.
@@ -508,6 +512,18 @@ const FULL_MINDMAP_PREVIEW_ASSET_BATCH: usize = 64;
 /// with their `scan limit reached` lower-bound label.
 const FULL_MINDMAP_VERIFICATION_CONCURRENCY: usize = 4;
 const FULL_MINDMAP_VERIFICATION_MAX_CANDIDATES: usize = 256;
+
+/// Keep the raw editor's final line above the floating keyboard shortcut
+/// button. Its footer-aware bottom offset is also the clearance needed for
+/// the status footer beneath it.
+fn zen_editor_bottom_inset(footer_visible: bool) -> f32 {
+    let shortcut_bottom_pad = if footer_visible {
+        KEYBOARD_BUTTON_FOOTER_BOTTOM_PAD
+    } else {
+        KEYBOARD_BUTTON_BOTTOM_PAD
+    };
+    shortcut_bottom_pad + KEYBOARD_BUTTON_HEIGHT + ZEN_EDITOR_OVERLAY_CLEARANCE
+}
 
 fn mindmap_panel_width_for_step(step: usize, window_size: Option<iced::Size>) -> f32 {
     let target = window_size
@@ -7978,6 +7994,10 @@ impl App {
             .last_scroll_at
             .is_some_and(|t| t.elapsed() < std::time::Duration::from_millis(SCROLLER_FADE_MS));
         let full_mindmap = self.full_mindmap.is_some();
+        let footer_visible = !full_mindmap
+            && self.show_footer
+            && self.file.is_some()
+            && self.view_mode != ViewMode::Mindmap;
 
         let reader: Element<'_, Message> = if full_mindmap {
             self.full_mindmap_view(pal, recently_scrolled)
@@ -8087,7 +8107,7 @@ impl App {
                         .padding(iced::Padding {
                             top: 0.0,
                             right: 32.0,
-                            bottom: 0.0,
+                            bottom: zen_editor_bottom_inset(footer_visible),
                             left: 64.0,
                         })
                         .highlight_with::<crate::md_highlight::MdHighlighter>(
@@ -8283,10 +8303,6 @@ impl App {
         };
         // Status footer floats over the reader (content scrolls behind it),
         // pinned bottom-right. Shown for any open document except mindmap.
-        let footer_visible = !full_mindmap
-            && self.show_footer
-            && self.file.is_some()
-            && self.view_mode != ViewMode::Mindmap;
         let footer_layer: Element<'_, Message> = if footer_visible {
             status_footer(&self.source, pal)
         } else {
@@ -8299,7 +8315,11 @@ impl App {
             && self.view_mode != ViewMode::Mindmap
             && self.overlay == Overlay::None
         {
-            let bottom_pad = if footer_visible { 44.0 } else { 12.0 };
+            let bottom_pad = if footer_visible {
+                KEYBOARD_BUTTON_FOOTER_BOTTOM_PAD
+            } else {
+                KEYBOARD_BUTTON_BOTTOM_PAD
+            };
             container(iced::widget::tooltip(
                 ghost_lu(ic::KEYBOARD, pal).on_press(Message::ToggleShortcuts),
                 container(text("Keyboard shortcuts  ⌘/").size(12).color(pal.fg))
@@ -11853,6 +11873,18 @@ mod tests {
             Some(Message::FontSizeReset)
         ));
         assert!(reader_font_size_shortcut(&Key::Character("+".into()), Modifiers::NONE,).is_none());
+    }
+
+    #[test]
+    fn zen_editor_bottom_inset_clears_floating_shortcut_layers() {
+        assert_eq!(zen_editor_bottom_inset(false), 40.0);
+        assert_eq!(zen_editor_bottom_inset(true), 72.0);
+        assert_eq!(
+            zen_editor_bottom_inset(true),
+            KEYBOARD_BUTTON_FOOTER_BOTTOM_PAD
+                + KEYBOARD_BUTTON_HEIGHT
+                + ZEN_EDITOR_OVERLAY_CLEARANCE
+        );
     }
 
     #[test]
