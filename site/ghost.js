@@ -1,4 +1,4 @@
-// rmdv.mclee.dev — hero ASCII ghost. A Ghostty-style homage: a plasma noise
+// rmdv.mclee.dev — footer ASCII wordmark. A Ghostty-style homage: a plasma noise
 // field flowing through a fixed ghost silhouette, rendered into a <pre>.
 //
 // Perf contract (this site targets 100/100 PageSpeed):
@@ -9,11 +9,11 @@
 //   • paused when the tab is hidden, the window is blurred, or the art scrolls
 //     out of view (IntersectionObserver) — idles at ~0% CPU
 //   • the <pre> reserves its height in CSS, so animating it causes zero CLS
-//   • does not touch the LCP element (the preloaded hero screenshot)
+//   • lives after the install section and does not touch the LCP element
 (function () {
   'use strict';
 
-  const art = document.getElementById('hero-ghost');
+  const art = document.getElementById('footer-wordmark');
   if (!art) return;
 
   // ── 30 fps accumulator ticker (mirrors Ghostty's own throttle) ──────────────
@@ -149,8 +149,8 @@
   const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
 
   // Boot is deferred to browser idle so the first paint never lands inside the
-  // page-load window — keeps Total Blocking Time clean. The art sits below the
-  // fold-adjacent headline; nothing waits on it.
+  // page-load window — keeps Total Blocking Time clean. The art sits in the
+  // footer; nothing above it waits on the animation.
   function boot() {
     if (reduced) {
       renderFrame();

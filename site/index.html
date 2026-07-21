@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>rmdv: Native Markdown Viewer with Full Mindmap Workspaces — Rust, No Electron</title>
+<title>rmdv: Native Markdown Viewer with Full Mindmap Workspaces: Rust, No Electron</title>
 <meta name="description" content="Native Rust Markdown viewer with Full Mindmap workspace navigation, Mermaid, Graphviz, LaTeX math, local PDF extraction, and agent-controllable IPC. No Electron or embedded browser.">
 <meta name="author" content="Min-Chen Lee">
 <meta name="keywords" content="markdown viewer, markdown reader, rust, native app, no electron, obsidian alternative, typora alternative, glow alternative, mermaid, tree-sitter, coding agents">
@@ -12,7 +12,7 @@
 <meta name="theme-color" content="#282c34" media="(prefers-color-scheme: dark)">
 <meta name="color-scheme" content="light dark">
 <!-- Open Graph -->
-<meta property="og:title" content="rmdv: Native Markdown Viewer with Full Mindmap Workspaces — Rust, No Electron">
+<meta property="og:title" content="rmdv: Native Markdown Viewer with Full Mindmap Workspaces: Rust, No Electron">
 <meta property="og:description" content="See the shape of a Markdown workspace. Native Rust rendering and keyboard-first Full Mindmap navigation, with no Electron.">
 <meta property="og:url" content="https://rmdv.mclee.dev/">
 <meta property="og:type" content="website">
@@ -25,10 +25,10 @@
 <meta property="og:image:alt" content="Screenshot of rmdv rendering a README: sidebar file tree on the left, formatted markdown with syntax-highlighted code blocks on the right.">
 <!-- Twitter -->
 <meta name="twitter:card" content="summary_large_image">
-<meta name="twitter:title" content="rmdv: Native Markdown Viewer with Full Mindmap Workspaces — Rust, No Electron">
+<meta name="twitter:title" content="rmdv: Native Markdown Viewer with Full Mindmap Workspaces: Rust, No Electron">
 <meta name="twitter:description" content="See the shape of a Markdown workspace. Native Rust rendering and keyboard-first Full Mindmap navigation, with no Electron.">
 <meta name="twitter:image" content="https://rmdv.mclee.dev/assets/og-cover.png">
-<meta name="twitter:image:alt" content="rmdv — Markdown, rendered at native speed.">
+<meta name="twitter:image:alt" content="rmdv: Markdown rendered at native speed.">
 <link rel="icon" href="assets/favicon-32.png" sizes="32x32" type="image/png">
 <link rel="icon" href="assets/icon-64.png" sizes="64x64" type="image/png">
 <link rel="apple-touch-icon" href="assets/icon-180.png">
@@ -107,7 +107,7 @@
         "Edit mode (Cmd+E)",
         "Zen editing with unsaved-edit protection across navigation",
         "Heading fold (Cmd+K 0-6)",
-        "IPC socket API — controllable by AI coding agents via the rmdv CLI returning one-line JSON"
+        "IPC socket API, controllable by AI coding agents via the rmdv CLI returning one-line JSON"
       ],
       "inLanguage": "en",
       "image": "https://rmdv.mclee.dev/assets/og-cover.png",
@@ -164,7 +164,7 @@
           "name": "Does rmdv work offline?",
           "acceptedAnswer": {
             "@type": "Answer",
-            "text": "Yes. rmdv is a native desktop application with no cloud dependency. All rendering — Markdown, Mermaid diagrams, LaTeX math, mindmaps, PDF text extraction — happens locally with no network requests at runtime."
+            "text": "Yes. rmdv is a native desktop application with no cloud dependency. Markdown, Mermaid diagrams, LaTeX math, mindmaps, and PDF text extraction all happen locally with no network requests at runtime."
           }
         },
         {
@@ -172,7 +172,7 @@
           "name": "What diagram and math formats does rmdv support?",
           "acceptedAnswer": {
             "@type": "Answer",
-            "text": "rmdv renders Mermaid diagrams (all major diagram types) and Graphviz DOT graphs natively in Rust. Block LaTeX math ($$...$$) is rendered by a pure-Rust layout engine — no JavaScript, no KaTeX."
+            "text": "rmdv renders Mermaid diagrams (all major diagram types) and Graphviz DOT graphs natively in Rust. Block LaTeX math ($$...$$) uses a pure-Rust layout engine with no JavaScript and no KaTeX."
           }
         },
         {
@@ -217,13 +217,13 @@
           "@type": "HowToStep",
           "position": 2,
           "name": "Install on macOS",
-          "text": "Open the .dmg and drag rmdv to Applications. On first launch, macOS may ask you to confirm opening a downloaded app — click Open. rmdv checks for updates automatically on each launch."
+          "text": "Open the .dmg and drag rmdv to Applications. On first launch, macOS may ask you to confirm opening a downloaded app; click Open. rmdv checks for updates automatically on each launch."
         },
         {
           "@type": "HowToStep",
           "position": 3,
           "name": "Install on Linux",
-          "text": "Make the AppImage executable with: chmod +x rmdv-*.AppImage — then run it directly: ./rmdv-*.AppImage"
+          "text": "Make the AppImage executable with: chmod +x rmdv-*.AppImage. Then run it directly: ./rmdv-*.AppImage"
         },
         {
           "@type": "HowToStep",
@@ -240,7 +240,7 @@
         {
           "@type": "ListItem",
           "position": 1,
-          "name": "rmdv — Native Markdown Viewer",
+          "name": "rmdv: Native Markdown Viewer",
           "item": "https://rmdv.mclee.dev/"
         }
       ]
@@ -258,10 +258,9 @@
       <span>rmdv</span>
     </a>
     <nav class="top-nav">
-      <a href="#features">Features</a>
-      <a href="#keyboard">Keyboard</a>
+      <a href="#workspace">Workspace</a>
+      <a href="#controls">Controls</a>
       <a href="#agents">Agents</a>
-      <a href="#faq">FAQ</a>
       <a href="#install">Install</a>
       <a href="https://github.com/minchenlee/rmdv" class="gh">GitHub</a>
     </nav>
@@ -269,250 +268,212 @@
 </header>
 
 <main id="top">
+  <section class="workspace-hero" aria-labelledby="hero-title">
+    <aside class="workspace-rail" aria-label="rmdv product summary">
+      <div class="rail-path"><span>~/projects</span><strong>/rmdv</strong></div>
+      <nav class="rail-tree" aria-label="Page outline">
+        <a class="current" href="#top"><span>▾</span> README.md</a>
+        <a href="#workspace"><span>├</span> workspace</a>
+        <a href="#rendering"><span>├</span> rendering</a>
+        <a href="#controls"><span>├</span> controls</a>
+        <a href="#agents"><span>└</span> ipc</a>
+      </nav>
+      <dl class="rail-facts">
+        <div><dt>runtime</dt><dd>native Rust</dd></div>
+        <div><dt>license</dt><dd>MIT</dd></div>
+        <div><dt>release</dt><dd>v0.5.0</dd></div>
+      </dl>
+      <button class="palette-hint" id="palette-hint" type="button">
+        <span>Run a page command</span><kbd data-key="p">p</kbd>
+      </button>
+    </aside>
 
-  <!-- ───────────────────────── hero -->
-  <section class="hero">
-    <pre id="hero-ghost" class="hero-ghost" aria-hidden="true"></pre>
-    <h1>A native Markdown viewer,<br>written in <span class="accent">Rust</span>.</h1>
-    <p class="tagline">
-      Free and open source. No Electron, no webview, no JavaScript runtime.
-      Built for reading Markdown folders with native rendering and IPC control.
-    </p>
-    <div class="cta">
-      <a class="btn primary" id="dl-primary" href="#install">Download</a>
-      <a class="btn" href="https://github.com/minchenlee/rmdv">Source on GitHub</a>
+    <div class="reader-hero">
+      <div class="document-path"><span>README.md</span><span>preview</span></div>
+      <div class="hero-copy">
+        <h1 id="hero-title">Read the whole Markdown workspace.</h1>
+        <p>
+          rmdv opens a folder as a fast, native reading surface: file tree,
+          rendered documents, mindmaps, diagrams, search, and a command line
+          that can keep the right section in view.
+        </p>
+        <div class="cta">
+          <a class="btn primary" id="dl-primary" href="#install">Download</a>
+          <a class="btn" href="https://github.com/minchenlee/rmdv">Browse the source</a>
+        </div>
+        <p class="runtime-note">No Electron · no webview · no JavaScript runtime in the app · 100% made with AI</p>
+      </div>
+      <figure class="hero-capture">
+        <button class="shot-trigger" type="button" aria-label="View full-size rmdv workspace screenshot">
+          <img src="assets/shot-hero.webp"
+               srcset="assets/shot-hero-960.webp 960w, assets/shot-hero.webp 1920w"
+               sizes="(max-width: 800px) 100vw, 980px"
+               alt="rmdv showing a project file tree beside its rendered README" width="1920" height="1149">
+        </button>
+        <sticker-forge class="ai-sticker" id="ai-sticker" text="100% AI"
+                       aria-label="Interactive 100% AI sticker">
+          <span class="ai-sticker-fallback">100% AI</span>
+        </sticker-forge>
+        <figcaption><span>README.md</span><span>One Dark · 100%</span></figcaption>
+      </figure>
     </div>
-    <figure class="shot" hidden>
-      <img id="shot-img" src="assets/shot-hero.webp"
-           srcset="assets/shot-hero-960.webp 960w, assets/shot-hero.webp 1920w"
-           sizes="(max-width: 760px) 100vw, 760px"
-           alt="rmdv rendering its own README: sidebar file tree, rendered markdown with syntax-highlighted code" width="1920" height="1149">
-    </figure>
   </section>
 
-  <!-- ───────────────────────── why -->
-  <section id="why">
-    <h2><span class="h-mark">##</span> Why rmdv</h2>
-    <p>
-      For reading folders of <code>.md</code> files without spinning up Obsidian's vault,
-      Typora's editor weight, or a static-site build. Open a folder. Read.
-    </p>
-    <div class="table-wrap">
-      <table>
-        <thead>
-          <tr><th></th><th>rmdv</th><th>Marky</th><th>Marked&nbsp;2</th><th>Glow</th><th>Obsidian</th><th>Typora</th></tr>
-        </thead>
-        <tbody>
-          <tr><th scope="row">Free</th><td class="y">✓</td><td class="y">✓</td><td class="n">$14</td><td class="y">✓</td><td class="m">freemium</td><td class="n">$15</td></tr>
-          <tr><th scope="row">Open source</th><td class="y">✓</td><td class="y">✓</td><td class="n">—</td><td class="y">✓</td><td class="n">—</td><td class="n">—</td></tr>
-          <tr><th scope="row">Native, no webview</th><td class="y">✓</td><td class="m">Tauri</td><td class="y">✓</td><td class="y">✓</td><td class="n">—</td><td class="m">partial</td></tr>
-          <tr><th scope="row">Windows</th><td class="y">✓</td><td class="n">—</td><td class="n">—</td><td class="y">✓</td><td class="y">✓</td><td class="y">✓</td></tr>
-          <tr><th scope="row">Folder workspace</th><td class="y">✓</td><td class="y">✓</td><td class="n">—</td><td class="n">—</td><td class="y">✓</td><td class="n">—</td></tr>
-          <tr><th scope="row">Read-only focus</th><td class="y">✓</td><td class="y">✓</td><td class="y">✓</td><td class="y">✓</td><td class="n">—</td><td class="n">—</td></tr>
-          <tr><th scope="row">Agent-controllable (IPC)</th><td class="y">✓</td><td class="n">—</td><td class="n">—</td><td class="n">—</td><td class="n">—</td><td class="n">—</td></tr>
-        </tbody>
-      </table>
-    </div>
-  </section>
-
-  <!-- ───────────────────────── perf -->
-  <section id="fast">
-    <h2><span class="h-mark">##</span> Historical measurements</h2>
-    <div class="perf">
-      <div class="row"><span class="metric">cold start to first paint</span><span class="value"><b>~150 ms</b></span></div>
-      <div class="row"><span class="metric">parse a 10,000-line document</span><span class="value"><b>8.1 ms</b></span></div>
-    </div>
-    <p class="fine">
-      v0.2.0 benchmark on an Apple M2 MacBook Pro, median of 5 runs; current builds may differ.
-      Methodology and reproduction steps are in <a href="https://github.com/minchenlee/rmdv/blob/main/docs/benchmarks.md">docs/benchmarks.md</a>.
-      The renderer is viewport-aware: only visible blocks become widgets.
-    </p>
-  </section>
-
-  <!-- ───────────────────────── features -->
-  <section id="features">
-    <h2><span class="h-mark">##</span> Features</h2>
-
-    <div class="shots">
-      <figure class="shot-card">
-        <button class="shot-trigger" type="button" aria-label="View full-size workspace screenshot">
-          <img src="assets/shot-workspace.webp" alt="rmdv showing a folder file tree beside a rendered document" loading="lazy" decoding="async" width="1600" height="957">
-        </button>
-        <figcaption><b>Workspace browser.</b> Open a folder, get a file tree. Fuzzy-jump to any file with <kbd data-mod>⌘</kbd><kbd>P</kbd>.</figcaption>
-      </figure>
-      <figure class="shot-card">
-        <button class="shot-trigger" type="button" aria-label="View full-size diagrams screenshot">
-          <img src="assets/shot-diagrams.webp" alt="A Mermaid flowchart rendered natively in rmdv" loading="lazy" decoding="async" width="1600" height="1005">
-        </button>
-        <figcaption><b>Diagrams and math.</b> Mermaid and Graphviz DOT render natively. Block LaTeX runs on a pure-Rust layout engine. No JS, no webview.</figcaption>
-      </figure>
-      <figure class="shot-card">
-        <button class="shot-trigger" type="button" aria-label="View full-size syntax-highlighting screenshot">
-          <img src="assets/shot-treesitter.webp" alt="Syntax-highlighted Rust and Java code blocks" loading="lazy" decoding="async" width="1600" height="1005">
-        </button>
-        <figcaption><b>Tree-sitter highlighting.</b> Rust, Python, TS, Go, C/C++, Java, SQL, Bash and more. Real parsers, not regex.</figcaption>
-      </figure>
-      <figure class="shot-card">
+  <section class="chapter" id="workspace">
+    <header class="chapter-heading">
+      <h2>A folder becomes a workspace.</h2>
+      <p>Open existing files where they already live. There is no import step, vault format, or hidden copy.</p>
+    </header>
+    <div class="chapter-body">
+      <figure class="product-capture capture-wide">
         <button class="shot-trigger" type="button" aria-label="View full-size Full Mindmap workspace screenshot">
-          <img src="assets/shot-full-mindmap.webp" alt="rmdv Full Mindmap workspace showing a folder graph, selected Markdown file, and read-only preview panel" loading="lazy" decoding="async" width="1223" height="768">
+          <img src="assets/shot-full-mindmap.webp" alt="Full Mindmap showing a folder graph, selected Markdown file, and read-only preview" loading="lazy" decoding="async" width="1223" height="768">
         </button>
-        <figcaption><b>Full Mindmap workspace.</b> See folders and files as one navigable graph with <kbd data-mod>⌘</kbd><kbd>⇧</kbd><kbd>M</kbd>. Arrow keys move through the tree, <kbd>Space</kbd> expands a branch, and <kbd>Enter</kbd> opens the selected file.</figcaption>
+        <figcaption>Full Mindmap keeps the folder graph and selected document visible together.</figcaption>
       </figure>
-      <figure class="shot-card">
-        <button class="shot-trigger" type="button" aria-label="View full-size mindmap screenshot">
-          <img src="assets/shot-mindmap.webp" alt="A JSON config file shown as a collapsible data mind map" loading="lazy" decoding="async" width="1600" height="1005">
-        </button>
-        <figcaption><b>Mindmap view.</b> Any document as a collapsible mindmap with <kbd data-mod>⌘</kbd><kbd>M</kbd>. Arrow keys walk the tree.</figcaption>
-      </figure>
-      <figure class="shot-card">
-        <button class="shot-trigger" type="button" aria-label="View full-size vault-search screenshot">
-          <img src="assets/shot-search.webp" alt="A deeply nested document with outline and breadcrumb navigation" loading="lazy" decoding="async" width="1600" height="1005">
-        </button>
-        <figcaption><b>Vault-wide search.</b> <kbd data-mod>⌘</kbd><kbd>⇧</kbd><kbd>F</kbd> searches every file in the workspace, with full-page results.</figcaption>
-      </figure>
-      <figure class="shot-card">
-        <button class="shot-trigger" type="button" aria-label="View full-size themes screenshot">
-          <img src="assets/shot-themes.webp" alt="The demo vault shown in a light theme" loading="lazy" decoding="async" width="1600" height="1005">
-        </button>
-        <figcaption><b>Light and dark themes.</b> One Dark, GitHub, Solarized, Gruvbox, Nord, Dracula, Tokyo Night. Follows the system, or press <kbd data-mod>⌘</kbd><kbd>T</kbd>.</figcaption>
-      </figure>
+      <dl class="capability-list">
+        <div data-app-shortcut="open-file"><dt>Browse</dt><dd>A familiar file tree and fuzzy finder for moving between documents.</dd><dd><kbd data-mod>⌘</kbd><kbd>P</kbd></dd></div>
+        <div data-app-shortcut="full-mindmap"><dt>Map</dt><dd>Document mindmaps for structure; Full Mindmap for workspace navigation.</dd><dd><kbd data-mod>⌘</kbd><kbd>⇧</kbd><kbd>M</kbd></dd></div>
+        <div data-app-shortcut="search-all"><dt>Search</dt><dd>Search one document or the whole folder without leaving the reader.</dd><dd><kbd data-mod>⌘</kbd><kbd>⇧</kbd><kbd>F</kbd></dd></div>
+        <div data-app-shortcut="toggle-zen"><dt>Edit</dt><dd>Make a focused change in place, with unsaved work protected across navigation.</dd><dd><kbd data-mod>⌘</kbd><kbd>E</kbd></dd></div>
+      </dl>
     </div>
   </section>
 
-  <!-- ───────────────────────── keyboard -->
-  <section id="keyboard">
-    <h2><span class="h-mark">##</span> Keyboard-first</h2>
-    <p>Everything is reachable without the mouse. The scroll keys work on this page; try them.</p>
-    <div class="keys">
-      <div class="keyrow"><span class="cap"><kbd data-mod>⌘</kbd><kbd>P</kbd></span><span>fuzzy file finder</span></div>
-      <div class="keyrow"><span class="cap"><kbd data-mod>⌘</kbd><kbd>⇧</kbd><kbd>P</kbd></span><span>command palette</span></div>
-      <div class="keyrow"><span class="cap"><kbd data-mod>⌘</kbd><kbd>F</kbd></span><span>search in document</span></div>
-      <div class="keyrow"><span class="cap"><kbd data-mod>⌘</kbd><kbd>⇧</kbd><kbd>F</kbd></span><span>search whole vault</span></div>
-      <div class="keyrow"><span class="cap"><kbd data-mod>⌘</kbd><kbd>B</kbd></span><span>toggle sidebar</span></div>
-      <div class="keyrow"><span class="cap"><kbd data-mod>⌘</kbd><kbd>M</kbd></span><span>mindmap view</span></div>
-      <div class="keyrow"><span class="cap"><kbd data-mod>⌘</kbd><kbd>⇧</kbd><kbd>M</kbd></span><span>Full Mindmap workspace</span></div>
-      <div class="keyrow"><span class="cap"><kbd>=</kbd><kbd>−</kbd></span><span>zoom the active mindmap canvas</span></div>
-      <div class="keyrow"><span class="cap"><kbd>0</kbd></span><span>reset mindmap zoom</span></div>
-      <div class="keyrow"><span class="cap"><kbd data-mod>⌘</kbd><kbd>⌥</kbd><kbd>W</kbd></span><span>cycle Full Mindmap preview-panel width</span></div>
-      <div class="keyrow"><span class="cap"><kbd data-mod>⌘</kbd><kbd>E</kbd></span><span>edit mode</span></div>
-      <div class="keyrow"><span class="cap"><kbd data-mod>⌘</kbd><kbd>K</kbd><kbd>0–6</kbd></span><span>fold headings to level</span></div>
-      <div class="keyrow"><span class="cap"><kbd data-key="j">j</kbd><kbd data-key="k">k</kbd></span><span>scroll down / up</span></div>
-      <div class="keyrow"><span class="cap"><kbd data-key="g">g</kbd><kbd data-key="G">G</kbd></span><span>top / bottom</span></div>
-      <div class="keyrow"><span class="cap"><kbd data-mod>⌘</kbd><kbd>T</kbd></span><span>toggle theme</span></div>
-      <div class="keyrow"><span class="cap"><kbd data-mod>⌘</kbd><kbd>/</kbd></span><span>all shortcuts, in-app</span></div>
+  <section class="chapter" id="rendering">
+    <header class="chapter-heading">
+      <h2>The document stays the visual focus.</h2>
+      <p>Markdown, code, diagrams, math, JSON, YAML, and text PDFs are rendered locally with the same restrained interface around them.</p>
+    </header>
+    <div class="capture-sequence">
+      <figure class="product-capture capture-primary">
+        <button class="shot-trigger" type="button" aria-label="View full-size diagrams screenshot">
+          <img src="assets/shot-diagrams.webp" alt="A Mermaid flowchart rendered natively inside rmdv" loading="lazy" decoding="async" width="1600" height="1005">
+        </button>
+        <figcaption><strong>Diagrams and math.</strong> Mermaid and Graphviz DOT render natively; block LaTeX uses a pure-Rust layout engine.</figcaption>
+      </figure>
+      <div class="capture-pair">
+        <figure class="product-capture">
+          <button class="shot-trigger" type="button" aria-label="View full-size syntax screenshot">
+            <img src="assets/shot-treesitter.webp" alt="Syntax-highlighted Rust and Java code blocks" loading="lazy" decoding="async" width="1600" height="1005">
+          </button>
+          <figcaption><strong>Real parsers.</strong> Tree-sitter highlighting for Rust, Python, TypeScript, Go, C, Java, SQL, Bash, and more.</figcaption>
+        </figure>
+        <figure class="product-capture">
+          <button class="shot-trigger" type="button" aria-label="View full-size mindmap screenshot">
+            <img src="assets/shot-mindmap.webp" alt="A JSON configuration file shown as a collapsible data mindmap" loading="lazy" decoding="async" width="1600" height="1005">
+          </button>
+          <figcaption><strong>Structure on demand.</strong> Any Markdown, JSON, or YAML document can become a navigable tree.</figcaption>
+        </figure>
+      </div>
     </div>
   </section>
 
-  <!-- ───────────────────────── agents -->
-  <section id="agents">
-    <h2><span class="h-mark">##</span> Scriptable over IPC</h2>
-    <p>
-      rmdv runs as a single instance behind a Unix socket. Any process can drive the
-      open window from the command line: open a file, jump to a heading, switch view
-      mode. Every command returns one line of JSON.
-    </p>
-    <pre class="code" data-lang="bash"><code><span class="c"># open a file at a specific line</span>
+  <section class="chapter" id="controls">
+    <header class="chapter-heading">
+      <h2>Built around the keys you already use.</h2>
+      <p>The table uses the reader's native app bindings and names. Try <kbd data-key="j">j</kbd> and <kbd data-key="k">k</kbd> on this page, or press <kbd data-mod>⌘</kbd><kbd data-key="/">/</kbd> for website shortcuts.</p>
+    </header>
+    <div class="command-table" role="list" aria-label="rmdv reader keyboard shortcuts">
+      <div class="command-row" role="listitem" data-app-shortcut="open-file"><span>Find File in Workspace</span><span>fuzzy file finder</span><span class="cap"><kbd data-mod>⌘</kbd><kbd>P</kbd></span></div>
+      <div class="command-row" role="listitem" data-app-shortcut="search-all"><span>Search All Files</span><span>workspace-wide search</span><span class="cap"><kbd data-mod>⌘</kbd><kbd>⇧</kbd><kbd>F</kbd></span></div>
+      <div class="command-row" role="listitem" data-app-shortcut="document-mindmap"><span>Toggle Mindmap</span><span>current document as a tree</span><span class="cap"><kbd data-mod>⌘</kbd><kbd>M</kbd></span></div>
+      <div class="command-row" role="listitem" data-app-shortcut="full-mindmap"><span>Toggle Full Mindmap Mode</span><span>folder and file workspace graph</span><span class="cap"><kbd data-mod>⌘</kbd><kbd>⇧</kbd><kbd>M</kbd></span></div>
+      <div class="command-row" role="listitem" data-app-shortcut="toggle-zen"><span>Toggle Zen Edit</span><span>focused editor for text documents</span><span class="cap"><kbd data-mod>⌘</kbd><kbd>E</kbd></span></div>
+      <div class="command-row" role="listitem" data-app-shortcut="fold-headings"><span>Fold to Level</span><span>press a level after the chord</span><span class="cap"><kbd data-mod>⌘</kbd><kbd>K</kbd><span class="key-then">then</span><kbd>0–6</kbd></span></div>
+      <div class="command-row" role="listitem" data-app-shortcut="scroll-document"><span>Scroll Document</span><span>down / up · top / bottom</span><span class="cap"><kbd data-key="j">j</kbd><kbd data-key="k">k</kbd><kbd data-key="g">g</kbd><kbd data-key="G">G</kbd></span></div>
+    </div>
+    <p class="shortcut-note">On Windows and Linux, rmdv uses Ctrl instead of <kbd data-mod>⌘</kbd>. The seven app shortcuts above are shown for reference and are not captured by this website.</p>
+  </section>
+
+  <section class="chapter" id="agents">
+    <header class="chapter-heading">
+      <h2>The reader has a command line.</h2>
+      <p>Shell scripts, editor extensions, and coding agents can keep the running window on the file and heading a person needs. Each command returns one line of JSON.</p>
+    </header>
+    <div class="agent-layout">
+      <pre class="code" data-lang="bash"><code><span class="c"># open a spec at the relevant line</span>
 rmdv path/to/spec.md --line 42
 
-<span class="c"># navigate the running instance</span>
+<span class="c"># move the existing window</span>
 rmdv goto --section <span class="s">"API/Authentication"</span>
 rmdv mode mindmap
-rmdv current                          <span class="c"># prints JSON state</span>
+rmdv current
 
-<span class="c"># stateless: no window needed</span>
+<span class="c"># inspect a file without opening a window</span>
 rmdv list-sections spec.md | jq -r <span class="s">'.[].path'</span></code></pre>
-    <p class="fine">
-      This makes rmdv easy to wire into editor plugins, shell scripts, or a coding agent
-      such as Claude Code or Codex: write a doc, open it at the right heading, keep working.
-    </p>
-  </section>
-
-  <!-- ───────────────────────── faq -->
-  <section id="faq">
-    <h2><span class="h-mark">##</span> FAQ</h2>
-    <div class="faq-list">
-
-      <details class="faq-item">
-        <summary>Is rmdv free and open source?</summary>
-        <p>Yes. rmdv is MIT-licensed and free to use, modify, and distribute. Source code is at <a href="https://github.com/minchenlee/rmdv">github.com/minchenlee/rmdv</a>.</p>
-      </details>
-
-      <details class="faq-item">
-        <summary>What is the difference between document Mindmap and Full Mindmap?</summary>
-        <p>Document Mindmap (<kbd data-mod>⌘</kbd><kbd>M</kbd>) turns the current Markdown, JSON, or YAML document into a tree. Full Mindmap (<kbd data-mod>⌘</kbd><kbd>⇧</kbd><kbd>M</kbd>) is an app-level workspace navigator: it shows the folders and files in a workspace and lets you preview or open a selected file. The two surfaces are separate, so entering one does not overwrite the other.</p>
-      </details>
-
-      <details class="faq-item">
-        <summary>How is rmdv different from Obsidian?</summary>
-        <p>rmdv is a read-focused viewer, not a note-linking knowledge base. It opens folders without vault setup and has no plugin ecosystem. Mermaid diagrams and LaTeX math render natively.</p>
-      </details>
-
-      <details class="faq-item">
-        <summary>How is rmdv different from Typora?</summary>
-        <p>Typora is a paid ($15) editor-first app for macOS and Windows. rmdv is free, open source, read-focused, and also runs on Linux. It renders Mermaid diagrams and LaTeX math without a webview; Typora uses an embedded browser for rendering.</p>
-      </details>
-
-      <details class="faq-item">
-        <summary>Does rmdv work offline?</summary>
-        <p>Yes. rmdv is a native desktop application with no cloud dependency. All rendering (Markdown, Mermaid diagrams, LaTeX math, mindmaps, PDF text extraction) happens locally, with no network requests at runtime.</p>
-      </details>
-
-      <details class="faq-item">
-        <summary>What diagram and math formats does rmdv support?</summary>
-        <p>rmdv renders Mermaid diagrams (all major diagram types) and Graphviz DOT graphs natively in Rust. Block LaTeX math (<code>$$…$$</code>) is rendered by a pure-Rust layout engine, with no JavaScript and no KaTeX.</p>
-      </details>
-
-      <details class="faq-item">
-        <summary>How does rmdv work with Claude Code or other AI coding agents?</summary>
-        <p>rmdv runs as a single instance with a Unix socket IPC interface. An agent uses the <code>rmdv</code> CLI to open files, jump to specific headings, or switch view modes programmatically. Every command returns one line of JSON. The agent can keep a spec file open in rmdv at the exact section the human needs while continuing its own work.</p>
-      </details>
-
-      <details class="faq-item">
-        <summary>How do I install rmdv?</summary>
-        <p>On macOS, download the signed and notarized .dmg from <a href="https://github.com/minchenlee/rmdv/releases">github.com/minchenlee/rmdv/releases</a>. On Linux, download the x86_64 AppImage from the same page. To build from source, install Rust 1.80 or newer, then run <code>git clone https://github.com/minchenlee/rmdv &amp;&amp; cd rmdv &amp;&amp; cargo build --release</code>. Windows builds use <code>cargo build --release --no-default-features</code> because PDF extraction is macOS/Linux only.</p>
-      </details>
-
-      <details class="faq-item">
-        <summary>Is rmdv faster than Electron-based markdown viewers?</summary>
-        <p>rmdv is a native Rust application with no Electron, embedded webview, or JavaScript runtime. Historical v0.2.0 benchmarks on an Apple M2 MacBook Pro measured first view at about 150&nbsp;ms and parsing a 10,000-line document at 8.1&nbsp;ms; current builds may differ.</p>
-      </details>
-
+      <div class="agent-notes">
+        <p><strong>One native instance.</strong> Commands talk to the running app over a local socket.</p>
+        <p><strong>Useful state, not prose.</strong> Machine-readable responses make the interface dependable in scripts.</p>
+        <p><strong>Human stays oriented.</strong> An agent can reveal its source material at the exact section being discussed.</p>
+      </div>
     </div>
   </section>
 
-  <!-- ───────────────────────── install -->
-  <section id="install">
-    <h2><span class="h-mark">##</span> Install</h2>
-    <div class="installs">
-      <div class="inst">
+  <section class="chapter" id="evidence">
+    <header class="chapter-heading">
+      <h2>Small enough to feel immediate.</h2>
+      <p>The renderer is viewport-aware: only visible blocks become widgets. These historical measurements are evidence, not current guarantees.</p>
+    </header>
+    <div class="measurement-table">
+      <div><span>Cold start to first paint</span><strong>~150 ms</strong></div>
+      <div><span>Parse a 10,000-line document</span><strong>8.1 ms</strong></div>
+    </div>
+    <p class="fine">v0.2.0 on an Apple M2 MacBook Pro, median of five runs; current builds may differ. <a href="https://github.com/minchenlee/rmdv/blob/main/docs/benchmarks.md">Read the methodology.</a></p>
+  </section>
+
+  <section class="chapter" id="faq">
+    <header class="chapter-heading">
+      <h2>Before you install.</h2>
+      <p>The important boundaries, stated plainly.</p>
+    </header>
+    <dl class="answer-list">
+      <div><dt>Is rmdv free and open source?</dt><dd>Yes. rmdv is MIT-licensed and free to use, modify, and distribute. The <a href="https://github.com/minchenlee/rmdv">source is public on GitHub</a>.</dd></div>
+      <div><dt>What is the difference between document Mindmap and Full Mindmap?</dt><dd>Document Mindmap turns the current Markdown, JSON, or YAML file into a tree. Full Mindmap is a separate workspace navigator for folders and files, with a read-only preview.</dd></div>
+      <div><dt>How is rmdv different from Obsidian?</dt><dd>rmdv is a read-focused viewer, not a note-linking knowledge base. It opens folders without vault setup and has no plugin ecosystem.</dd></div>
+      <div><dt>How is rmdv different from Typora?</dt><dd>Typora is a paid editor-first app. rmdv is free, open source, read-focused, and runs on macOS, Linux, and Windows.</dd></div>
+      <div><dt>Does rmdv work offline?</dt><dd>Yes. Rendering, diagrams, math, mindmaps, and supported PDF text extraction happen locally with no cloud dependency.</dd></div>
+      <div><dt>What diagram and math formats are supported?</dt><dd>Mermaid, Graphviz DOT, and block LaTeX are rendered natively, without JavaScript or KaTeX.</dd></div>
+      <div><dt>How does rmdv work with coding agents?</dt><dd>The <code>rmdv</code> CLI can open files, jump to headings, change view modes, and return current state as JSON over local IPC.</dd></div>
+      <div><dt>How do I install it?</dt><dd>Use the signed macOS disk image, the Linux AppImage, or build from source with Rust 1.80 or newer. Windows builds disable the PDF feature.</dd></div>
+      <div><dt>Is it faster than Electron-based viewers?</dt><dd>rmdv has no Electron, webview, or JavaScript runtime. Historical v0.2.0 measurements found about 150 ms to first view; current builds may differ.</dd></div>
+    </dl>
+  </section>
+
+  <section class="install-chapter" id="install">
+    <div class="install-intro">
+      <h2>Open the folder. Start reading.</h2>
+      <p>Free, open source, and available as a native desktop app.</p>
+    </div>
+    <div class="install-options">
+      <div class="install-row">
         <h3>macOS</h3>
-        <p><a class="btn small" data-asset="aarch64.dmg" href="https://github.com/minchenlee/rmdv/releases/latest">Apple Silicon .dmg</a>
-           <a class="btn small" data-asset="x86_64.dmg" href="https://github.com/minchenlee/rmdv/releases/latest">Intel .dmg</a></p>
-        <p class="fine">Signed &amp; notarized. Auto-updates from inside the app.</p>
+        <p>Signed, notarized, and self-updating.</p>
+        <span><a class="btn small" data-asset="aarch64.dmg" href="https://github.com/minchenlee/rmdv/releases/latest">Apple Silicon</a><a class="btn small" data-asset="x86_64.dmg" href="https://github.com/minchenlee/rmdv/releases/latest">Intel</a></span>
       </div>
-      <div class="inst">
+      <div class="install-row">
         <h3>Linux</h3>
-        <p><a class="btn small" data-asset="x86_64.AppImage" href="https://github.com/minchenlee/rmdv/releases/latest">x86_64 AppImage</a></p>
-        <p class="fine">Single file, self-updating.</p>
+        <p>A single self-updating AppImage.</p>
+        <span><a class="btn small" data-asset="x86_64.AppImage" href="https://github.com/minchenlee/rmdv/releases/latest">x86_64 AppImage</a></span>
       </div>
-      <div class="inst wide">
-        <h3>From source</h3>
+      <div class="install-source">
+        <div><h3>Build from source</h3><p>Rust 1.80+. Windows uses <code>--no-default-features</code>.</p></div>
         <pre class="code" data-lang="bash"><code>git clone https://github.com/minchenlee/rmdv
 cd rmdv &amp;&amp; cargo build --release</code></pre>
-        <p class="fine">Rust 1.80+. Windows builds use <code>cargo build --release --no-default-features</code>.</p>
       </div>
     </div>
   </section>
 
-  <div class="md-hr" aria-hidden="true">---</div>
-  <footer>
-    <p>
-      MIT licensed · <a href="https://github.com/minchenlee/rmdv">github.com/minchenlee/rmdv</a>
-      · <a href="https://github.com/minchenlee/rmdv/releases">changelog</a>
-      · built with <a href="https://iced.rs">Iced</a>
-    </p>
-    <p class="fine">Plain HTML, CSS, and a few KB of JS. No framework.</p>
-    <p class="fine">rmdv was developed with extensive assistance from Claude via <a href="https://claude.com/claude-code">Claude Code</a>. The <a href="https://github.com/minchenlee/rmdv">source is open</a>; judge it on its merits.</p>
+  <footer class="site-footer">
+    <div class="footer-wordmark-pane" aria-hidden="true">
+      <div class="footer-terminal-bar"><span>rmdv: native markdown workspace viewer</span><span>[EOF]</span></div>
+      <pre id="footer-wordmark" class="footer-wordmark"></pre>
+    </div>
+    <div class="footer-meta">
+      <div class="footer-identity"><strong>rmdv</strong><span>Open the folder. Start reading.</span></div>
+      <p class="footer-links">MIT licensed · <a href="https://github.com/minchenlee/rmdv">source</a> · <a href="https://github.com/minchenlee/rmdv/releases">changelog</a> · built with <a href="https://iced.rs">Iced</a></p>
+      <p class="fine footer-note">Plain HTML, CSS, and a few KB of JS. rmdv is 100% made with AI, with human taste checks and final decisions by Min-Chen Lee, using <a href="https://claude.com/claude-code">Claude Code</a>. The <a href="https://github.com/minchenlee/rmdv">source is open</a>; judge it on its merits.</p>
+    </div>
   </footer>
 
 </main>
@@ -529,7 +490,7 @@ cd rmdv &amp;&amp; cargo build --release</code></pre>
 <!-- ───────────────────────── cheatsheet -->
 <div class="overlay" id="cheat" hidden>
   <div class="panel cheat-panel" role="dialog" aria-modal="true" aria-label="Keyboard shortcuts" tabindex="-1">
-    <h3>Keyboard shortcuts — this page</h3>
+    <h3>Keyboard shortcuts for this website</h3>
     <div class="cheat-cols">
       <div class="cheat-col">
         <h4 class="cheat-h">Scroll</h4>
@@ -547,12 +508,12 @@ cd rmdv &amp;&amp; cargo build --release</code></pre>
       </div>
       <div class="cheat-col">
         <h4 class="cheat-h">Help</h4>
-        <div class="keyrow"><span class="cap"><kbd data-mod>⌘</kbd><kbd>⇧</kbd><kbd>P</kbd></span><span>palette</span></div>
-        <div class="keyrow"><span class="cap"><kbd data-key="?">?</kbd></span><span>cheatsheet</span></div>
+        <div class="keyrow"><span class="cap"><kbd data-key="p">p</kbd></span><span>palette</span></div>
+        <div class="keyrow"><span class="cap"><kbd data-mod>⌘</kbd><kbd data-key="/">/</kbd></span><span>shortcut sheet</span></div>
         <div class="keyrow"><span class="cap"><kbd>Esc</kbd></span><span>close overlay</span></div>
       </div>
     </div>
-    <p class="fine">The app itself has many more — press <kbd data-mod>⌘</kbd><kbd>/</kbd> inside rmdv.</p>
+    <p class="fine">The native rmdv app uses the same shortcut.</p>
   </div>
 </div>
 
@@ -562,7 +523,7 @@ cd rmdv &amp;&amp; cargo build --release</code></pre>
 <div class="lightbox" id="lightbox" hidden>
   <button type="button" class="lightbox-close" id="lightbox-close" aria-label="Close image">×</button>
   <div class="lightbox-stage" id="lightbox-stage">
-    <img id="lightbox-img" alt="">
+      <img id="lightbox-img" src="assets/shot-hero-960.webp" alt="">
   </div>
   <p class="lightbox-hint">Click image to zoom · Esc to close</p>
 </div>

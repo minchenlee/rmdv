@@ -1,16 +1,17 @@
 # rmdv — project status
 
-Last verified: 2026-07-18 21:45 CST (Asia/Taipei)
+Last verified: 2026-07-19 14:59 CST (Asia/Taipei)
 Stale after: 7 days
 Canonical repository: `/Users/liminchen/Documents/GitHub/mdv`
 Expected branch: `main`; always resolve its live HEAD before mutation.
-Last verified main base: `origin/main@33b7d8f806fc5caee617469664a2065f2e3bb9ee`.
+Last verified main base: `origin/main@7a0514dd9a2bb9079449ebf7780ef317b184ac42`.
 Authority: This is a routing snapshot. Verify Git, GitHub, runtime identity, and manual evidence before mutation.
 
 ## Current outcome
 
-Release rmdv v0.5.0 from the accepted Full Mindmap and Zoom Controls `main`
-line, with public documentation, site metadata, and release assets aligned.
+Review the preferred Impeccable landing-site variant with its restored ASCII
+terminal footer and native-matched static shortcut reference, then decide whether
+it should become a commit. Publication remains a separate decision.
 
 ## v0.5.0 release
 
@@ -23,19 +24,14 @@ line, with public documentation, site metadata, and release assets aligned.
 - Release commit `b67161c` is published as tag `v0.5.0`; GitHub release
   workflow `29645918474` built all platform artifacts, checksums, and
   `latest.json` successfully.
-- The first site deployment attempt (`29646511085`) failed because the
-  workflow installed Wrangler 3.90.0, which could not consume the repository's
-  JSONC static-assets config. The deployment fix pins Wrangler 4.112.0.
-- The retry (`29646699009`) confirmed Wrangler 4.112.0 reads the config, then
-  stopped because `CLOUDFLARE_API_TOKEN` is not configured in GitHub Actions;
-  `CLOUDFLARE_ACCOUNT_ID` is also absent. The site deployment remains pending
-  until the owner adds those secrets.
+- Site deployment retry `29646699009` confirmed Wrangler 4.112.0 reads the
+  static-assets config, then stopped because `CLOUDFLARE_API_TOKEN` and
+  `CLOUDFLARE_ACCOUNT_ID` are absent from GitHub Actions.
 
 ## Live workstreams
 
 | ID | State | Owner | Outcome | Acceptance | Plan |
 | --- | --- | --- | --- | --- | --- |
-| MDV-010 | ready | unassigned | Reconcile the divergent local `main` without replaying behavior already present in remote `main`. | Patch-equivalence review, clean isolated candidate, focused and cross-boundary tests; no publish without owner approval. | [`docs/plans/active/MDV-010-local-main-reconciliation.md`](docs/plans/active/MDV-010-local-main-reconciliation.md) |
 | MDV-001 | ready | unassigned | Prove the Windows IPC lifetime fix on an actual Windows CI runner. | Windows build/package succeeds and the run proves non-empty app/setup executables with hashes plus a downloadable artifact. | [`docs/plans/active/MDV-001-windows-build-verification.md`](docs/plans/active/MDV-001-windows-build-verification.md) |
 | MDV-002 | ready | unassigned | Bound search result and highlight-cache memory without changing visible search behavior. | Explicit budgets, truncation behavior, focused regressions, and measured memory evidence. | [`docs/plans/active/MDV-002-search-highlight-memory-bounds.md`](docs/plans/active/MDV-002-search-highlight-memory-bounds.md) |
 | MDV-009 | ready | unassigned | Retarget and review Zoom Controls against the merged Full Mindmap implementation. | Clean isolated candidate, focused interaction tests, full relevant suites, and native zoom acceptance. | [`docs/plans/active/MDV-009-mindmap-zoom-controls-integration.md`](docs/plans/active/MDV-009-mindmap-zoom-controls-integration.md) |
@@ -47,65 +43,83 @@ The complete portfolio, including P2 and deferred work, is in
 
 - Do not push, open or merge a PR, tag, release, publish artifacts, or deploy
   without an explicit owner request.
-- Local `main` and `origin/main` have diverged. Preserve the local commits, but
-  determine patch equivalence before choosing cherry-pick, reimplementation, or
-  archival; never force-update either line as part of ordinary reconciliation.
+- The first redesign is preserved in named stash commit `5c78ae9`; the current
+  working tree is the uncommitted, owner-preferred Impeccable variant with the
+  ASCII terminal footer and static shortcut reference. Do not describe either
+  as committed or live.
+- The current candidate is isolated on `codex/site-impeccable-redesign` in
+  `.codex/worktrees/site-impeccable-redesign`; the original
+  `codex/fix-cjk-rendering` checkout retains its unrelated Rust, demo, and
+  MDV-010 work.
+- Scoped transfer stash `fe4a0af` remains as a recoverable backup until the
+  isolated candidate is intentionally committed.
+- Local `main` and `origin/main` both resolved to `7a0514d`; MDV-010 is deferred
+  unless historical reconciliation is requested or divergence recurs.
 - The Windows release job remains best-effort (`continue-on-error: true`).
-  Changing that release policy is a product/release decision, not an automatic
-  consequence of making the job pass.
 
 ## Next safe actions
 
-1. Execute MDV-010 in a fresh isolated branch from current `origin/main`,
-   classifying each local-main-only patch before applying anything.
-2. Prepare MDV-001 as a bounded Windows CI candidate; request publish authority
-   only when the exact diff and acceptance command are ready.
-3. Define MDV-002's explicit byte budgets and observable truncation contract
-   before implementing search/highlight memory bounds.
+1. Review the terminal footer inside the current Impeccable variant and
+   decide whether this candidate is ready to commit.
+2. If committing, stage only the isolated site and control-plane paths shown by
+   this worktree's status.
+3. If live publication is requested later, add the Cloudflare credentials,
+   dispatch the manual workflow, and verify the live domain separately.
 
 ## Verification state
 
 ### Verified now
 
-- The control-plane candidate contained exactly 20 documentation/instruction
-  paths and no product source or workflow changes. Independent re-review closed
-  all actionable findings with `VERDICT: PASS`.
-- Strict four-layer and root/`src`/`src/ipc`/`tests`/`site`/`demo` AGENTS audits,
-  link checks, whitespace checks, and `git diff --check` passed on the candidate.
-- GitHub PR #8 is merged into `main` as
-  `a8f8348619829199b53ad761d07293b1f419bba3`; its final head was
-  `19715ae1ce840fcedfa72705011e4abc0f40b892`.
-- GitHub reported remote `main@f75918c` and zero open pull requests immediately
-  before publication at 2026-07-18 17:32 CST. Resolve the live post-merge HEAD.
-- After fetching `origin/main`, local `main` is 5 commits behind and 8 commits
-  ahead; `feat/mindmap-zoom-controls` is 6 behind and 10 ahead. These counts
-  describe Git ancestry, not missing behavior.
-- GitHub's latest published release is `v0.4.0` (published 2026-06-23); no
-  release action was taken in this refactor.
+- Before MDV-012 mutation, local `main` and `origin/main` both resolved to
+  `7a0514dd9a2bb9079449ebf7780ef317b184ac42`.
+- The first redesign was backed up with tracked and untracked files, then the
+  checkout returned to the clean original base before the second design began.
+- The Impeccable variant replaces the centered sales page with a literal product
+  workspace, using an outline rail, document path, real product captures,
+  row-based capabilities, a matching 404, and structural mobile collapse.
+- Browser checks passed at 1440×900 and 390×844 in both themes with no horizontal
+  overflow. All lazy captures loaded, and theme, palette, focus restoration,
+  lightbox, and keyboard scrolling were exercised.
+- JavaScript syntax, JSON-LD, duplicate IDs, local assets, exact CSP hashes,
+  contrast roles, the Impeccable detector, and `git diff --check` passed.
+- The animated ASCII wordmark now closes the page inside a fixed dark terminal
+  footer with an `[EOF]` bar and project metadata. Removing it from the hero puts
+  the real product capture immediately after the introduction. The footer fits
+  1440×900 and 390×844 layouts in both page themes, animates only in view,
+  pauses offscreen, and retains its one-frame reduced-motion path.
+- The landing page now presents seven reader shortcut rows using the current
+  native names and bindings. Full Mindmap is explicit, the fold chord is shown
+  as `⌘K` then `0–6`, and the website shortcut sheet is labeled separately. The
+  saved `node site/check-shortcuts.mjs` contract verifies the HTML rows,
+  structured feature keys, cross-platform modifier handling, and Rust
+  handlers/native labels together. It also fails if the removed preview
+  interaction returns.
+- The rejected shortcut-preview layer and its `Try UI` controls were removed.
+  The seven app-table chords are not captured; website `⌘/`, `j/k/g/G`, `t`,
+  Space, and `p` interactions remain. Browser checks at 1440×900 and 390×844 found
+  all seven static rows, no preview controls or dialog, no horizontal overflow,
+  and no console warnings or errors; the shortcut sheet uses the same `⌘/`
+  binding as the native app. The website palette uses plain `p` because browsers
+  can reserve `⌘⇧P`; it opened from body and focused-button contexts, then
+  accepted `p` as query text once its input owned focus.
 
 ### Recorded only
 
-- Pre-publication snapshot: the isolated
-  `/Users/liminchen/Documents/GitHub/mdv/.codex/worktrees/agent-project-system`
-  checkout started clean at `f75918c`, then carried the reviewed 20-path
-  control-plane diff on `codex/agent-project-system`.
-- The archived pre-control-plane status records PR #8's final automated gates:
-  298/298 library tests, all integration targets, default/no-default/PDF checks,
-  touched-file rustfmt, `git diff --check`, and an optimized release build.
-- The same history records native acceptance of the root-Left c9watch
-  reproduction after verifying the active executable with `lsof`.
-- Local Zen, CJK, Windows IPC, screenshot, site, and Zoom branch evidence is
-  retained in the archived status. It was not rerun for this docs-only refactor.
+- Release commit `b67161c` remains published as tag `v0.5.0`; workflow
+  `29645918474` recorded successful platform artifacts, checksums, and
+  `latest.json`.
+- Historical Rust, native UI, Full Mindmap, Zoom, Zen, CJK, packaging, and
+  screenshot evidence remains in `docs/status-history/`. It was not rerun for
+  this static-site-only outcome.
 
 ### Not verified
 
-- No Rust, site, native GUI, packaging, signing, release, or deployment check
-  was rerun for this documentation-only refactor.
+- Neither redesign is committed, pushed, published, or checked on the live
+  domain. The public site remains unchanged.
+- No Rust, native GUI, packaging, signing, or release check was rerun.
 - Windows compilation/package behavior has not been proven on a Windows runner.
 - Zoom Controls has not been retargeted to or manually accepted on current
   `origin/main`.
-- The local-main-only commits have not yet been classified as already present,
-  still needed, or obsolete relative to the PR #8 squash result.
 
 ## Routes
 
