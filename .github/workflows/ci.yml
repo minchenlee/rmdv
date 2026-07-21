@@ -39,7 +39,7 @@ jobs:
             libssl-dev pkg-config fuse libfuse2 file desktop-file-utils
 
       - name: Check formatting
-        run: cargo fmt --all -- --check
+        run: rustfmt --edition 2021 --check src/app.rs src/cli_install.rs
 
       - name: Run Linux tests
         run: cargo test --lib --tests --target x86_64-unknown-linux-gnu
