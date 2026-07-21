@@ -42,6 +42,7 @@ made it the dominant closing gesture of a dark terminal-style footer.
 
 ## Authority boundary
 
-The preferred site candidate remains uncommitted and was not pushed, published,
-deployed, or verified on the live domain. The unrelated Rust and CJK changes in
-the current `codex/fix-cjk-rendering` checkout were not modified.
+The preferred site candidate is included in ready-for-review PR #13 at commit
+`d22826d`; it has not been merged, published, deployed, or verified on the live
+domain. The unrelated Rust and CJK changes in the current
+`codex/fix-cjk-rendering` checkout were not modified.

@@ -1,6 +1,6 @@
 # rmdv — project status
 
-Last verified: 2026-07-19 14:59 CST (Asia/Taipei)
+Last verified: 2026-07-21 CST (Asia/Taipei)
 Stale after: 7 days
 Canonical repository: `/Users/liminchen/Documents/GitHub/mdv`
 Expected branch: `main`; always resolve its live HEAD before mutation.
@@ -9,9 +9,9 @@ Authority: This is a routing snapshot. Verify Git, GitHub, runtime identity, and
 
 ## Current outcome
 
-Review the preferred Impeccable landing-site variant with its restored ASCII
-terminal footer and native-matched static shortcut reference, then decide whether
-it should become a commit. Publication remains a separate decision.
+Review PR #13 for the preferred Impeccable landing-site variant with its restored
+ASCII terminal footer, native-matched static shortcut reference, and interactive
+AI disclosure sticker. Publication remains a separate decision.
 
 ## v0.5.0 release
 
@@ -43,27 +43,24 @@ The complete portfolio, including P2 and deferred work, is in
 
 - Do not push, open or merge a PR, tag, release, publish artifacts, or deploy
   without an explicit owner request.
-- The first redesign is preserved in named stash commit `5c78ae9`; the current
-  working tree is the uncommitted, owner-preferred Impeccable variant with the
-  ASCII terminal footer and static shortcut reference. Do not describe either
-  as committed or live.
+- The first redesign is preserved in named stash commit `5c78ae9`; the
+  owner-preferred Impeccable variant is committed as `d22826d` and proposed in
+  PR #13. It is not merged, published, or live.
 - The current candidate is isolated on `codex/site-impeccable-redesign` in
   `.codex/worktrees/site-impeccable-redesign`; the original
   `codex/fix-cjk-rendering` checkout retains its unrelated Rust, demo, and
   MDV-010 work.
-- Scoped transfer stash `fe4a0af` remains as a recoverable backup until the
-  isolated candidate is intentionally committed.
+- Scoped transfer stash `fe4a0af` remains as a recoverable backup; do not remove
+  it as part of ordinary PR work.
 - Local `main` and `origin/main` both resolved to `7a0514d`; MDV-010 is deferred
   unless historical reconciliation is requested or divergence recurs.
 - The Windows release job remains best-effort (`continue-on-error: true`).
 
 ## Next safe actions
 
-1. Review the terminal footer inside the current Impeccable variant and
-   decide whether this candidate is ready to commit.
-2. If committing, stage only the isolated site and control-plane paths shown by
-   this worktree's status.
-3. If live publication is requested later, add the Cloudflare credentials,
+1. Review PR #13 and merge it only after the owner is satisfied with review and
+   checks.
+2. If live publication is requested later, add the Cloudflare credentials,
    dispatch the manual workflow, and verify the live domain separately.
 
 ## Verification state
@@ -114,8 +111,8 @@ The complete portfolio, including P2 and deferred work, is in
 
 ### Not verified
 
-- Neither redesign is committed, pushed, published, or checked on the live
-  domain. The public site remains unchanged.
+- PR #13 is open and ready for review at commit `d22826d`; the public site
+  remains unchanged because no deployment or merge has occurred.
 - No Rust, native GUI, packaging, signing, or release check was rerun.
 - Windows compilation/package behavior has not been proven on a Windows runner.
 - Zoom Controls has not been retargeted to or manually accepted on current

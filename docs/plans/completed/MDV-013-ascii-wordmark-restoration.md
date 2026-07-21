@@ -41,6 +41,6 @@ campaign-style composition.
 
 ## Authority boundary
 
-The preferred site variant remains uncommitted and was not pushed, published,
-deployed, or verified on the live domain. Unrelated Rust and demo work present
-in the checkout was not changed.
+The preferred site variant is included in ready-for-review PR #13 at commit
+`d22826d`; it has not been merged, published, deployed, or verified on the live
+domain. Unrelated Rust and demo work present in the checkout was not changed.

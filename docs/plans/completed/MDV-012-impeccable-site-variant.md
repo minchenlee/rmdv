@@ -50,6 +50,5 @@ marketing scaffolds, wide ghost shadows, and ornamental motion are absent.
 
 ## Remaining authority boundary
 
-The Impeccable variant remains uncommitted in the working tree. Choosing a
-variant, committing, pushing, publishing, and verifying the live domain are
-separate owner decisions.
+The Impeccable variant is committed as `d22826d` and proposed in ready-for-review
+PR #13. It has not been merged, published, or verified on the live domain.

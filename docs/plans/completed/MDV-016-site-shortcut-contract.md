@@ -65,6 +65,7 @@ exercised because the Rust behavior itself was not changed.
 
 ## Authority boundary
 
-The website candidate remains uncommitted and was not pushed, published,
-deployed, or verified on the live domain. The unrelated Rust and CJK changes in
-the current `codex/fix-cjk-rendering` checkout were not modified.
+The website candidate is included in ready-for-review PR #13 at commit
+`d22826d`; it has not been merged, published, deployed, or verified on the live
+domain. The unrelated Rust and CJK changes in the current
+`codex/fix-cjk-rendering` checkout were not modified.
