@@ -134,14 +134,13 @@ jobs:
           # The updater payload: a tarball of the signed (+ stapled) .app.
           tar -C "$OUT" -czf "dist/rmdv_${TAG}_${ARCH}.app.tar.gz" rmdv.app
 
-          # Build the dmg by hand from the signed app (hdiutil preserves the
-          # signature; cargo-packager's dmg path would not).
-          STAGE="$RUNNER_TEMP/dmg-stage"
-          rm -rf "$STAGE"; mkdir -p "$STAGE"
-          cp -R "$APP" "$STAGE/"
-          ln -s /Applications "$STAGE/Applications"
-          hdiutil create -volname rmdv -srcfolder "$STAGE" -ov -format UDZO \
-            "dist/rmdv_${TAG}_${ARCH}.dmg"
+          # Build the dmg by hand from the signed app. This persists a Finder
+          # background, icon positions, and drag-to-Applications layout in
+          # the image before compression; cargo-packager's dmg path would not.
+          bash scripts/create-macos-dmg.sh \
+            "$APP" \
+            "dist/rmdv_${TAG}_${ARCH}.dmg" \
+            "assets/dmg-background-terminal.png"
           # Notarize + staple the dmg too, so the downloaded installer is clean.
           if [ -n "${APPLE_SIGNING_IDENTITY:-}" ]; then
             xcrun notarytool submit "dist/rmdv_${TAG}_${ARCH}.dmg" \

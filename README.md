@@ -65,6 +65,14 @@ Download the latest build from [Releases](https://github.com/minchenlee/rmdv/rel
 - macOS Intel: `rmdv_*_x86_64.dmg`
 - Linux x86-64: `rmdv-*-x86_64.AppImage` (`chmod +x` then run)
 
+After opening the macOS app for the first time, use the CLI installation toast
+or run `Install CLI` from the command palette. This creates
+`/usr/local/bin/rmdv`, pointing to the binary inside the app bundle.
+
+On Linux, launch the AppImage once and use the same toast or command-palette
+action. This creates `~/.local/bin/rmdv`, pointing to the AppImage. Keep
+`~/.local/bin` on your `PATH` if your shell does not already include it.
+
 ### From source
 
     git clone https://github.com/minchenlee/rmdv && cd rmdv

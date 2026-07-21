@@ -188,7 +188,7 @@
           "name": "How do I install rmdv?",
           "acceptedAnswer": {
             "@type": "Answer",
-            "text": "On macOS, download the signed and notarized .dmg from github.com/minchenlee/rmdv/releases. On Linux, download the x86_64 AppImage from the same page. To build from source, install Rust 1.80 or newer, then run: git clone https://github.com/minchenlee/rmdv && cd rmdv && cargo build --release. Windows builds use cargo build --release --no-default-features because PDF extraction is macOS/Linux only."
+            "text": "On macOS, download the signed and notarized .dmg from github.com/minchenlee/rmdv/releases and drag rmdv to Applications. After opening the app, use the Install CLI command to make rmdv available in Terminal. On Linux, download the x86_64 AppImage, launch it once, and use the same Install CLI command; it creates ~/.local/bin/rmdv, which must be on PATH. To build from source, install Rust 1.80 or newer, then run: git clone https://github.com/minchenlee/rmdv && cd rmdv && cargo build --release. Windows builds use cargo build --release --no-default-features because PDF extraction is macOS/Linux only."
           }
         },
         {
@@ -217,13 +217,13 @@
           "@type": "HowToStep",
           "position": 2,
           "name": "Install on macOS",
-          "text": "Open the .dmg and drag rmdv to Applications. On first launch, macOS may ask you to confirm opening a downloaded app — click Open. rmdv checks for updates automatically on each launch."
+          "text": "Open the .dmg and drag rmdv to Applications. On first launch, macOS may ask you to confirm opening a downloaded app — click Open. Use the Install CLI command from the command palette to make rmdv available in /usr/local/bin. rmdv checks for updates automatically on each launch."
         },
         {
           "@type": "HowToStep",
           "position": 3,
           "name": "Install on Linux",
-          "text": "Make the AppImage executable with: chmod +x rmdv-*.AppImage — then run it directly: ./rmdv-*.AppImage"
+          "text": "Make the AppImage executable with: chmod +x rmdv-*.AppImage — then run it directly: ./rmdv-*.AppImage. Use Install CLI from the command palette to create ~/.local/bin/rmdv; add ~/.local/bin to PATH if needed."
         },
         {
           "@type": "HowToStep",
@@ -469,7 +469,7 @@ rmdv list-sections spec.md | jq -r <span class="s">'.[].path'</span></code></pre
 
       <details class="faq-item">
         <summary>How do I install rmdv?</summary>
-        <p>On macOS, download the signed and notarized .dmg from <a href="https://github.com/minchenlee/rmdv/releases">github.com/minchenlee/rmdv/releases</a>. On Linux, download the x86_64 AppImage from the same page. To build from source, install Rust 1.80 or newer, then run <code>git clone https://github.com/minchenlee/rmdv &amp;&amp; cd rmdv &amp;&amp; cargo build --release</code>. Windows builds use <code>cargo build --release --no-default-features</code> because PDF extraction is macOS/Linux only.</p>
+        <p>On macOS, download the signed and notarized <code>.dmg</code> from <a href="https://github.com/minchenlee/rmdv/releases">github.com/minchenlee/rmdv/releases</a> and drag rmdv to Applications. After opening the app, use the Install CLI command from the command palette to make rmdv available in Terminal. On Linux, download the x86_64 AppImage, launch it once, and use the same Install CLI command; it creates <code>~/.local/bin/rmdv</code>, which must be on <code>PATH</code>. To build from source, install Rust 1.80 or newer, then run <code>git clone https://github.com/minchenlee/rmdv &amp;&amp; cd rmdv &amp;&amp; cargo build --release</code>. Windows builds use <code>cargo build --release --no-default-features</code> because PDF extraction is macOS/Linux only.</p>
       </details>
 
       <details class="faq-item">
@@ -488,12 +488,12 @@ rmdv list-sections spec.md | jq -r <span class="s">'.[].path'</span></code></pre
         <h3>macOS</h3>
         <p><a class="btn small" data-asset="aarch64.dmg" href="https://github.com/minchenlee/rmdv/releases/latest">Apple Silicon .dmg</a>
            <a class="btn small" data-asset="x86_64.dmg" href="https://github.com/minchenlee/rmdv/releases/latest">Intel .dmg</a></p>
-        <p class="fine">Signed &amp; notarized. Auto-updates from inside the app.</p>
+        <p class="fine">Signed &amp; notarized. Open the app and use <code>Install CLI</code> from the command palette to enable Terminal access. Auto-updates from inside the app.</p>
       </div>
       <div class="inst">
         <h3>Linux</h3>
         <p><a class="btn small" data-asset="x86_64.AppImage" href="https://github.com/minchenlee/rmdv/releases/latest">x86_64 AppImage</a></p>
-        <p class="fine">Single file, self-updating.</p>
+        <p class="fine">Single file, self-updating. Use <code>Install CLI</code> to add a user-level shell command.</p>
       </div>
       <div class="inst wide">
         <h3>From source</h3>

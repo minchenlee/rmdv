@@ -95,6 +95,13 @@ authors = ["minchenlee"]
 icons = ["assets/icon.icns", "assets/icon.ico", "assets/icon.png"]
 category = "Utility"
 homepage = "https://github.com/minchenlee/rmdv"
+file-associations = [
+    { extensions = ["md", "markdown", "mdown", "mkdn", "mkd"], name = "Markdown document", role = "editor" },
+    { extensions = ["txt", "text"], name = "Plain text document", role = "editor" },
+    { extensions = ["json", "yaml", "yml", "toml"], name = "Structured text document", role = "editor" },
+    { extensions = ["tex"], name = "LaTeX document", role = "editor" },
+    { extensions = ["pdf"], name = "PDF document", role = "viewer" },
+]
 
 [package.metadata.packager.macos]
 minimum-system-version = "10.13"

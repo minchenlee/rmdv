@@ -2,6 +2,7 @@ pub mod app;
 pub mod ast;
 pub mod bench;
 pub mod cli;
+pub mod cli_install;
 pub mod config_migrate;
 pub mod data_mindmap;
 pub mod diagram;

@@ -726,6 +726,10 @@ pub enum Message {
     /// compensation fight the landing).
     BlockHeightsMeasured(Vec<(crate::ast::BlockId, f32)>, f32),
     ToastExpire(u64),
+    /// Install the CLI symlink from the packaged app.
+    InstallCli,
+    /// Result of the asynchronous CLI installation attempt.
+    CliInstallFinished(Result<(), String>),
     /// An update was downloaded + verified and is ready to install.
     UpdateAvailable(crate::update::ReadyUpdate),
     /// User confirmed install: self-replace + relaunch.
@@ -1131,6 +1135,13 @@ pub struct App {
 pub struct Toast {
     pub id: u64,
     pub text: String,
+    pub action: Option<ToastAction>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ToastAction {
+    pub label: String,
+    pub message: Message,
 }
 
 impl Default for App {
@@ -2806,13 +2817,34 @@ impl App {
     }
 
     fn show_toast(&mut self, text: String) -> Task<Message> {
+        self.show_toast_with_action(text, None)
+    }
+
+    fn show_cli_install_prompt(&mut self) -> Task<Message> {
+        self.show_toast_with_action(
+            "Install the rmdv CLI to use rmdv from Terminal".to_string(),
+            Some(ToastAction {
+                label: "Install CLI".to_string(),
+                message: Message::InstallCli,
+            }),
+        )
+    }
+
+    fn show_toast_with_action(
+        &mut self,
+        text: String,
+        action: Option<ToastAction>,
+    ) -> Task<Message> {
         self.toast_seq = self.toast_seq.wrapping_add(1);
         let id = self.toast_seq;
-        self.toast = Some(Toast { id, text });
+        let duration = if action.is_some() {
+            std::time::Duration::from_secs(8)
+        } else {
+            std::time::Duration::from_millis(1500)
+        };
+        self.toast = Some(Toast { id, text, action });
         Task::perform(
-            async {
-                tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
-            },
+            async move { tokio::time::sleep(duration).await },
             move |_| Message::ToastExpire(id),
         )
     }
@@ -2971,7 +3003,13 @@ impl App {
             Ok(Some(ready)) => Message::UpdateAvailable(ready),
             _ => Message::DismissUpdate,
         });
-        (app, Task::batch([task, update_check]))
+        let cli_prompt =
+            if crate::cli_install::should_offer() && !crate::cli_install::is_installed() {
+                app.show_cli_install_prompt()
+            } else {
+                Task::none()
+            };
+        (app, Task::batch([task, update_check, cli_prompt]))
     }
 
     /// Returns the next theme in cycle order: all built-in presets followed
@@ -4358,7 +4396,7 @@ impl App {
         } else {
             Message::MindmapCyclePanelWidth
         };
-        vec![
+        let mut items = vec![
             ("Open Folder…  ⌘O", Message::OpenFolderPicker),
             ("Find File in Workspace…  ⌘P", Message::OpenFileFinder),
             ("Toggle Sidebar  ⌘B", Message::ToggleSidebar),
@@ -4390,7 +4428,12 @@ impl App {
             ),
             ("Show Keyboard Shortcuts  ⌘/", Message::ToggleShortcuts),
             ("Take Screenshot", Message::TakeScreenshot),
-        ]
+        ];
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
+        if crate::cli_install::should_offer() {
+            items.push(("Install CLI", Message::InstallCli));
+        }
+        items
     }
 
     fn filtered_files(&self) -> Vec<(PathBuf, String, i32)> {
@@ -6663,6 +6706,26 @@ impl App {
                 }
                 Task::none()
             }
+            Message::InstallCli => {
+                let install =
+                    Task::perform(crate::cli_install::install(), Message::CliInstallFinished);
+                Task::batch([self.show_toast("Installing rmdv CLI…".to_string()), install])
+            }
+            Message::CliInstallFinished(result) => match result {
+                Ok(()) => {
+                    let location = crate::cli_install::install_path()
+                        .map(|path| path.display().to_string())
+                        .unwrap_or_else(|| "the user CLI directory".to_string());
+                    self.show_toast(format!("rmdv CLI installed in {location}"))
+                }
+                Err(error) => self.show_toast_with_action(
+                    format!("Could not install rmdv CLI: {error}"),
+                    Some(ToastAction {
+                        label: "Try Again".to_string(),
+                        message: Message::InstallCli,
+                    }),
+                ),
+            },
             Message::UpdateAvailable(ready) => {
                 self.pending_update = Some(ready);
                 Task::none()
@@ -8344,7 +8407,7 @@ impl App {
         ]
         .into();
         let toast_layer: Element<'_, Message> = match &self.toast {
-            Some(t) => toast_overlay(&t.text, pal),
+            Some(t) => toast_overlay(t, pal),
             None => Space::new().into(),
         };
         // Progress has its own neutral layer and never replaces the ordinary
@@ -8464,9 +8527,27 @@ fn status_footer<'a>(source: &str, pal: Palette) -> Element<'a, Message> {
         .into()
 }
 
-fn toast_overlay<'a>(text: &str, pal: Palette) -> Element<'a, Message> {
-    use iced::widget::{container, text as text_w};
-    let bubble = container(text_w(text.to_string()).size(13.5).color(pal.fg))
+fn toast_overlay<'a>(toast: &Toast, pal: Palette) -> Element<'a, Message> {
+    use iced::widget::{button, container, text as text_w};
+    let mut content = irow![text_w(toast.text.clone()).size(13.5).color(pal.fg)]
+        .spacing(10)
+        .align_y(iced::alignment::Vertical::Center);
+    if let Some(action) = &toast.action {
+        let action_button = button(text_w(action.label.clone()).size(12.5).color(pal.accent_fg))
+            .padding(Padding::from([5, 10]))
+            .style(move |_, _| button::Style {
+                background: Some(Background::Color(pal.accent)),
+                text_color: pal.accent_fg,
+                border: Border {
+                    radius: 999.0.into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            })
+            .on_press(action.message.clone());
+        content = content.push(action_button);
+    }
+    let bubble = container(content)
         .padding([8, 14])
         .style(move |_| container::Style {
             background: Some(pal.surface.into()),
