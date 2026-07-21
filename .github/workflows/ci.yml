@@ -60,10 +60,26 @@ jobs:
           mkdir -p "$APPDIR/usr/bin" dist
           cp "$BIN" "$APPDIR/usr/bin/rmdv"
 
-          # PDFium is dlopen'd from next to the executable at runtime.
-          SO=$(find target/x86_64-unknown-linux-gnu/release -name 'libpdfium.so' -type f -print -quit)
-          if [ -z "$SO" ]; then SO=$(find target -name 'libpdfium.so' -type f -print -quit); fi
-          if [ -z "$SO" ]; then echo "libpdfium.so not found"; exit 1; fi
+          # PDFium .so must sit next to the binary (dlopen searches current_exe
+          # dir). liteparse's build script normally copies it into the build
+          # tree, but its source cache is the authoritative fallback when that
+          # best-effort copy is absent.
+          PDFIUM_CACHE_ROOT="${XDG_CACHE_HOME:-$HOME/.cache}/pdfium-rs"
+          SO=""
+          if [ -d target/x86_64-unknown-linux-gnu/release ]; then
+            SO=$(find target/x86_64-unknown-linux-gnu/release -name 'libpdfium.so' -type f -print -quit)
+          fi
+          if [ -z "$SO" ] && [ -d target ]; then
+            SO=$(find target -name 'libpdfium.so' -type f -print -quit)
+          fi
+          if [ -z "$SO" ] && [ -d "$PDFIUM_CACHE_ROOT" ]; then
+            SO=$(find "$PDFIUM_CACHE_ROOT" -name 'libpdfium.so' -type f -print -quit)
+          fi
+          if [ -z "$SO" ]; then
+            echo "libpdfium.so not found; searched target/x86_64-unknown-linux-gnu/release, target, and $PDFIUM_CACHE_ROOT" >&2
+            exit 1
+          fi
+          echo "Selected PDFium: $SO"
           cp "$SO" "$APPDIR/usr/bin/libpdfium.so"
 
           cp assets/icon.png "$APPDIR/rmdv.png"
