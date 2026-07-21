@@ -184,7 +184,12 @@ jobs:
         # PDF support is on (default feature). PDFium's libpdfium.so is
         # dlopen'd at runtime from next to the binary; the AppImage step below
         # copies it into usr/bin alongside rmdv. (Windows still opts out.)
-        run: cargo build --release --target x86_64-unknown-linux-gnu
+        run: |
+          # The cargo cache can restore the binary without the PDFium runtime
+          # library because liteparse's build-script output is not cached.
+          # Rebuild that package so it refreshes the copy in target/*/deps.
+          cargo clean -p liteparse-pdfium-sys --target x86_64-unknown-linux-gnu
+          cargo build --release --target x86_64-unknown-linux-gnu
 
       - name: Build AppImage
         env:
