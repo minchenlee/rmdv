@@ -34,7 +34,8 @@ It is separate from the Rust application and has no Cargo build boundary.
 
 ## Commands
 
-- There is no repository-local site build or test command; review static changes against the files above and `git diff --check`.
+- There is no site build command; review static changes against the files above and `git diff --check`.
+- `node site/check-shortcuts.mjs` — verify the static app-shortcut reference against the native bindings in `src/app.rs` and guard its non-interactive boundary.
 - `wrangler deploy` — the deployment command configured by the repository's manual workflow; run only when publishing is explicitly in scope.
 
 ## Editing constraints

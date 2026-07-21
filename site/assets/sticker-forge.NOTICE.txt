@@ -1,0 +1,6 @@
+Sticker Forge
+https://github.com/CatsJuice/sticker-forge
+
+Vendored from commit 26540be9a961a0715a959d08cf3ffe9118cb3d38.
+Copyright (c) 2026 CatsJuice. Licensed under the MIT License; see
+sticker-forge.LICENSE.txt in this directory.
