@@ -472,6 +472,10 @@ impl ImageCache {
 
 const SIDEBAR_WIDTH: f32 = 280.0;
 const READING_MAX: f32 = 780.0;
+const KEYBOARD_BUTTON_HEIGHT: f32 = 26.0; // 14px text at 1.3 line-height + 4px vertical padding on each side.
+const KEYBOARD_BUTTON_BOTTOM_PAD: f32 = 12.0;
+const KEYBOARD_BUTTON_FOOTER_BOTTOM_PAD: f32 = 44.0;
+const ZEN_EDITOR_OVERLAY_CLEARANCE: f32 = 2.0;
 /// Top padding of the body scrollable's content (`Padding::from([56, 32])` in
 /// `view`). Virt-window math works in body-relative px; every conversion from
 /// scrollable offsets must subtract this.
@@ -508,6 +512,18 @@ const FULL_MINDMAP_PREVIEW_ASSET_BATCH: usize = 64;
 /// with their `scan limit reached` lower-bound label.
 const FULL_MINDMAP_VERIFICATION_CONCURRENCY: usize = 4;
 const FULL_MINDMAP_VERIFICATION_MAX_CANDIDATES: usize = 256;
+
+/// Keep the raw editor's final line above the floating keyboard shortcut
+/// button. Its footer-aware bottom offset is also the clearance needed for
+/// the status footer beneath it.
+fn zen_editor_bottom_inset(footer_visible: bool) -> f32 {
+    let shortcut_bottom_pad = if footer_visible {
+        KEYBOARD_BUTTON_FOOTER_BOTTOM_PAD
+    } else {
+        KEYBOARD_BUTTON_BOTTOM_PAD
+    };
+    shortcut_bottom_pad + KEYBOARD_BUTTON_HEIGHT + ZEN_EDITOR_OVERLAY_CLEARANCE
+}
 
 fn mindmap_panel_width_for_step(step: usize, window_size: Option<iced::Size>) -> f32 {
     let target = window_size
@@ -908,7 +924,6 @@ struct PendingIpcFileOpen {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ZenRestoreState {
     pub sidebar_open: bool,
-    pub show_footer: bool,
     pub search_open: bool,
 }
 
@@ -1294,12 +1309,10 @@ impl App {
         if self.zen_restore.is_none() {
             self.zen_restore = Some(ZenRestoreState {
                 sidebar_open: self.sidebar_open,
-                show_footer: self.show_footer,
                 search_open: self.search_open,
             });
         }
         self.sidebar_open = false;
-        self.show_footer = true;
         self.search_open = false;
         self.overlay = Overlay::None;
         self.mindmap_panel_drag = None;
@@ -1331,7 +1344,6 @@ impl App {
     fn restore_zen_chrome(&mut self) {
         if let Some(restore) = self.zen_restore.take() {
             self.sidebar_open = restore.sidebar_open;
-            self.show_footer = restore.show_footer;
             self.search_open = restore.search_open;
         }
     }
@@ -3993,30 +4005,12 @@ impl App {
             .direction(slim_scroll_direction())
             .style(move |_, status| sleek_scrollable_style(status, pal_c, recently_scrolled));
         // Scrollable fills the available height (short content stays centered via
-        // center_y; long content scrolls). The hint row pins to the bottom.
+        // center_y; long content scrolls). Keyboard hints live on the map canvas,
+        // not in this content panel.
         let body = container(scrolled)
             .height(Length::Fill)
             .center_y(Length::Fill);
-        let hint_divider = container(Space::new().height(1.0))
-            .width(Length::Fill)
-            .style(move |_| container::Style {
-                background: Some(pal_c.rule.into()),
-                ..Default::default()
-            });
-        let hint = container(hint_pills(
-            &[
-                ("←↑→↓", "move"),
-                ("Space", "fold"),
-                ("= / −", "zoom"),
-                ("⌘⌥B", "panel"),
-                ("⌘B", "sidebar"),
-            ],
-            pal_c,
-        ))
-        .padding(Padding::from([8, 16]))
-        .width(Length::Fill)
-        .clip(true);
-        container(column![body, hint_divider, hint])
+        container(body)
             .width(Length::Fixed(panel_width))
             .height(Length::Fill)
             .style(move |_| container::Style {
@@ -4104,10 +4098,15 @@ impl App {
                     .as_ref()
                     .is_some_and(|request| request.preserve_navigation));
         let hint_items: &[(&str, &str)] = match selected_is_file {
-            true => &[("←↑→↓", "move"), ("Enter", "open")],
-            false => &[("←↑→↓", "move"), ("Space", "fold"), ("Enter", "root")],
+            true => &[("←↑→↓", "move"), ("= / −", "zoom"), ("Enter", "open")],
+            false => &[
+                ("←↑→↓", "move"),
+                ("Space", "fold"),
+                ("= / −", "zoom"),
+                ("Enter", "root"),
+            ],
         };
-        let canvas: Element<'_, Message> = stack![canvas, full_mindmap_hint(hint_items, pal)]
+        let canvas: Element<'_, Message> = stack![canvas, floating_mindmap_hint(hint_items, pal)]
             .width(Length::Fill)
             .height(Length::Fill)
             .into();
@@ -7995,6 +7994,10 @@ impl App {
             .last_scroll_at
             .is_some_and(|t| t.elapsed() < std::time::Duration::from_millis(SCROLLER_FADE_MS));
         let full_mindmap = self.full_mindmap.is_some();
+        let footer_visible = !full_mindmap
+            && self.show_footer
+            && self.file.is_some()
+            && self.view_mode != ViewMode::Mindmap;
 
         let reader: Element<'_, Message> = if full_mindmap {
             self.full_mindmap_view(pal, recently_scrolled)
@@ -8065,6 +8068,16 @@ impl App {
                     .width(Length::Fill)
                     .height(Length::Fill)
                     .into();
+                let canvas_with_hint: Element<'_, Message> = stack![
+                    canvas_el,
+                    floating_mindmap_hint(
+                        &[("←↑→↓", "move"), ("Space", "fold"), ("= / −", "zoom"),],
+                        pal,
+                    ),
+                ]
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .into();
                 if self.mindmap_panel_open {
                     let panel = self.mindmap_panel_view(
                         &pal,
@@ -8073,9 +8086,9 @@ impl App {
                         self.mindmap_panel_width,
                     );
                     let handle = mindmap_panel_resize_handle(pal);
-                    irow![canvas_el, handle, panel].into()
+                    irow![canvas_with_hint, handle, panel].into()
                 } else {
-                    canvas_el
+                    canvas_with_hint
                 }
             } else if self.view_mode == ViewMode::Raw {
                 if let Some(ed) = self.editor.as_ref() {
@@ -8092,9 +8105,9 @@ impl App {
                         .line_height(iced::widget::text::LineHeight::Relative(1.55))
                         .height(Length::Fill)
                         .padding(iced::Padding {
-                            top: 48.0,
+                            top: 0.0,
                             right: 32.0,
-                            bottom: 24.0,
+                            bottom: zen_editor_bottom_inset(footer_visible),
                             left: 64.0,
                         })
                         .highlight_with::<crate::md_highlight::MdHighlighter>(
@@ -8290,10 +8303,6 @@ impl App {
         };
         // Status footer floats over the reader (content scrolls behind it),
         // pinned bottom-right. Shown for any open document except mindmap.
-        let footer_visible = !full_mindmap
-            && self.show_footer
-            && self.file.is_some()
-            && self.view_mode != ViewMode::Mindmap;
         let footer_layer: Element<'_, Message> = if footer_visible {
             status_footer(&self.source, pal)
         } else {
@@ -8306,7 +8315,11 @@ impl App {
             && self.view_mode != ViewMode::Mindmap
             && self.overlay == Overlay::None
         {
-            let bottom_pad = if footer_visible { 44.0 } else { 12.0 };
+            let bottom_pad = if footer_visible {
+                KEYBOARD_BUTTON_FOOTER_BOTTOM_PAD
+            } else {
+                KEYBOARD_BUTTON_BOTTOM_PAD
+            };
             container(iced::widget::tooltip(
                 ghost_lu(ic::KEYBOARD, pal).on_press(Message::ToggleShortcuts),
                 container(text("Keyboard shortcuts  ⌘/").size(12).color(pal.fg))
@@ -10733,8 +10746,8 @@ fn picker_hint_footer<'a>(pal: Palette) -> Element<'a, Message> {
 }
 
 /// A compact inline row of `key — label` hint pills, matching the picker footer
-/// style (surface_alt cap, rule border, subtle label). Reused for the mindmap
-/// panel footer and the sidebar tab-row hint.
+/// style (surface_alt cap, rule border, subtle label). Reused for floating mind
+/// map hints and the sidebar tab-row hint.
 fn hint_pills<'a>(items: &[(&'a str, &'a str)], pal: Palette) -> Element<'a, Message> {
     let mut row = irow![].align_y(iced::Alignment::Center);
     for (i, (k, label)) in items.iter().enumerate() {
@@ -10762,9 +10775,9 @@ fn hint_pills<'a>(items: &[(&'a str, &'a str)], pal: Palette) -> Element<'a, Mes
     row.into()
 }
 
-/// Floating Full Mindmap keyboard hint. It sits over the canvas so the panel
-/// remains dedicated to the selected file or folder preview.
-fn full_mindmap_hint<'a>(items: &[(&'a str, &'a str)], pal: Palette) -> Element<'a, Message> {
+/// Floating mind map keyboard hint. It sits over the canvas so side panels
+/// remain dedicated to their selected document or folder preview.
+fn floating_mindmap_hint<'a>(items: &[(&'a str, &'a str)], pal: Palette) -> Element<'a, Message> {
     let island = container(hint_pills(items, pal))
         .padding(Padding::from([8, 16]))
         .clip(true)
@@ -11863,7 +11876,19 @@ mod tests {
     }
 
     #[test]
-    fn zen_entry_hides_sidebar_search_and_keeps_footer() {
+    fn zen_editor_bottom_inset_clears_floating_shortcut_layers() {
+        assert_eq!(zen_editor_bottom_inset(false), 40.0);
+        assert_eq!(zen_editor_bottom_inset(true), 72.0);
+        assert_eq!(
+            zen_editor_bottom_inset(true),
+            KEYBOARD_BUTTON_FOOTER_BOTTOM_PAD
+                + KEYBOARD_BUTTON_HEIGHT
+                + ZEN_EDITOR_OVERLAY_CLEARANCE
+        );
+    }
+
+    #[test]
+    fn zen_entry_hides_sidebar_search_and_preserves_footer() {
         let mut app = App::default();
         app.file = Some(std::path::PathBuf::from("note.md"));
         app.source = "# Title\n\nBody".into();
@@ -11893,7 +11918,7 @@ mod tests {
         app.search_open = true;
 
         let _ = app.enter_zen_edit_mode();
-        assert!(app.show_footer);
+        assert!(!app.show_footer);
         let _ = app.exit_zen_edit_mode();
 
         assert_eq!(app.view_mode, ViewMode::Rendered);
@@ -11901,6 +11926,26 @@ mod tests {
         assert!(!app.show_footer);
         assert!(app.search_open);
         assert!(app.zen_restore.is_none());
+    }
+
+    #[test]
+    fn footer_visibility_persists_across_zen_view_cycles() {
+        let mut app = App::default();
+        app.file = Some(std::path::PathBuf::from("note.md"));
+        app.source = "before".into();
+        app.show_footer = true;
+
+        let _ = app.enter_zen_edit_mode();
+        // Simulate toggling the footer off while editing.
+        app.show_footer = false;
+        let _ = app.exit_zen_edit_mode();
+
+        assert!(!app.show_footer);
+
+        let _ = app.enter_zen_edit_mode();
+        assert!(!app.show_footer);
+        let _ = app.exit_zen_edit_mode();
+        assert!(!app.show_footer);
     }
 
     #[test]
@@ -11968,7 +12013,7 @@ mod tests {
         assert!(app.dirty);
         assert!(app.pending_nav.is_none());
         assert!(!app.sidebar_open);
-        assert!(app.show_footer);
+        assert!(!app.show_footer);
         assert!(!app.search_open);
         assert!(app.zen_restore.is_some());
         assert!(app

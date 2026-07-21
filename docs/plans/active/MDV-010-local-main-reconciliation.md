@@ -1,6 +1,6 @@
 # MDV-010 — Reconcile local and remote main
 
-State: ready
+State: deferred
 Owner / accountable lead: unassigned
 Active writer: none
 Created: 2026-07-18
@@ -51,6 +51,8 @@ merged work or losing the local branch as evidence.
 
 - [x] Record 2026-07-18 ancestry: local `main` is 5 behind / 8 ahead of
   `origin/main@f75918c`.
+- [x] Re-check after the v0.5.0 release line: local `main` and `origin/main`
+  both resolve to `7a0514d`, so the original divergence predicate is absent.
 - [ ] Build the patch-equivalence classification.
 - [ ] Produce and verify the isolated candidate.
 - [ ] Present the integration/archival decision to the owner.
@@ -60,11 +62,13 @@ merged work or losing the local branch as evidence.
 | Date | Decision | Evidence / reason |
 | --- | --- | --- |
 | 2026-07-18 | Compare behavior before applying commits. | PR #8 was squash-merged, so commit ancestry alone overstates missing work. |
+| 2026-07-18 | Defer while local and remote `main` are identical. | The patch-equivalence audit was not completed, so the task is not done; however, ordinary reconciliation has no current divergent branch to operate on. |
 
 ## Blockers and escalation
 
-- Remote publication and final branch disposition require explicit owner
-  authority after the candidate and evidence are available.
+- Revisit only if the owner requests an audit of historical local
+  `main@67564e5`, or if local and remote `main` diverge again. Remote publication
+  and final branch disposition still require explicit owner authority.
 
 ## Final evidence
 
