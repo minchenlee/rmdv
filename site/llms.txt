@@ -11,7 +11,7 @@ rmdv (Rust Markdown Viewer) is a read-focused desktop app for macOS, Windows, an
 ## Source and releases
 
 - [GitHub repository](https://github.com/minchenlee/rmdv): Source code, issue tracker, pull requests. MIT license.
-- [Releases](https://github.com/minchenlee/rmdv/releases): Pre-built binaries for macOS (signed + notarized), Linux, and Windows. SHA-256 verified. Latest: v0.5.0 (2026-07-18).
+- [Releases](https://github.com/minchenlee/rmdv/releases): Pre-built binaries for macOS (signed + notarized), Linux, and Windows. SHA-256 verified. Latest: v0.6.0 (2026-07-21).
 
 ## Key facts
 
