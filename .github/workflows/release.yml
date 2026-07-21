@@ -134,14 +134,13 @@ jobs:
           # The updater payload: a tarball of the signed (+ stapled) .app.
           tar -C "$OUT" -czf "dist/rmdv_${TAG}_${ARCH}.app.tar.gz" rmdv.app
 
-          # Build the dmg by hand from the signed app (hdiutil preserves the
-          # signature; cargo-packager's dmg path would not).
-          STAGE="$RUNNER_TEMP/dmg-stage"
-          rm -rf "$STAGE"; mkdir -p "$STAGE"
-          cp -R "$APP" "$STAGE/"
-          ln -s /Applications "$STAGE/Applications"
-          hdiutil create -volname rmdv -srcfolder "$STAGE" -ov -format UDZO \
-            "dist/rmdv_${TAG}_${ARCH}.dmg"
+          # Build the dmg by hand from the signed app. This persists a Finder
+          # background, icon positions, and drag-to-Applications layout in
+          # the image before compression; cargo-packager's dmg path would not.
+          bash scripts/create-macos-dmg.sh \
+            "$APP" \
+            "dist/rmdv_${TAG}_${ARCH}.dmg" \
+            "assets/dmg-background-terminal.png"
           # Notarize + staple the dmg too, so the downloaded installer is clean.
           if [ -n "${APPLE_SIGNING_IDENTITY:-}" ]; then
             xcrun notarytool submit "dist/rmdv_${TAG}_${ARCH}.dmg" \
@@ -185,7 +184,12 @@ jobs:
         # PDF support is on (default feature). PDFium's libpdfium.so is
         # dlopen'd at runtime from next to the binary; the AppImage step below
         # copies it into usr/bin alongside rmdv. (Windows still opts out.)
-        run: cargo build --release --target x86_64-unknown-linux-gnu
+        run: |
+          # The cargo cache can restore the binary without the PDFium runtime
+          # library because liteparse's build-script output is not cached.
+          # Clean this target so the build script refreshes target/*/deps.
+          cargo clean --target x86_64-unknown-linux-gnu
+          cargo build --release --target x86_64-unknown-linux-gnu
 
       - name: Build AppImage
         env:
@@ -198,10 +202,25 @@ jobs:
           mkdir -p "$APPDIR/usr/bin"
           cp "$BIN" "$APPDIR/usr/bin/rmdv"
           # PDFium .so must sit next to the binary (dlopen searches current_exe
-          # dir). liteparse's build script downloads it into the build tree.
-          SO=$(find target/x86_64-unknown-linux-gnu/release -name 'libpdfium.so' | head -1)
-          if [ -z "$SO" ]; then SO=$(find target -name 'libpdfium.so' | head -1); fi
-          if [ -z "$SO" ]; then echo "libpdfium.so not found"; exit 1; fi
+          # dir). liteparse's build script normally copies it into the build
+          # tree, but its source cache is the authoritative fallback when that
+          # best-effort copy is absent.
+          PDFIUM_CACHE_ROOT="${XDG_CACHE_HOME:-$HOME/.cache}/pdfium-rs"
+          SO=""
+          if [ -d target/x86_64-unknown-linux-gnu/release ]; then
+            SO=$(find target/x86_64-unknown-linux-gnu/release -name 'libpdfium.so' -type f -print -quit)
+          fi
+          if [ -z "$SO" ] && [ -d target ]; then
+            SO=$(find target -name 'libpdfium.so' -type f -print -quit)
+          fi
+          if [ -z "$SO" ] && [ -d "$PDFIUM_CACHE_ROOT" ]; then
+            SO=$(find "$PDFIUM_CACHE_ROOT" -name 'libpdfium.so' -type f -print -quit)
+          fi
+          if [ -z "$SO" ]; then
+            echo "libpdfium.so not found; searched target/x86_64-unknown-linux-gnu/release, target, and $PDFIUM_CACHE_ROOT" >&2
+            exit 1
+          fi
+          echo "Selected PDFium: $SO"
           cp "$SO" "$APPDIR/usr/bin/libpdfium.so"
           echo "Embedded $SO -> $APPDIR/usr/bin/"
           cp assets/icon.png "$APPDIR/rmdv.png"

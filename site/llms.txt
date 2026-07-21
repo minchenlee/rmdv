@@ -59,8 +59,8 @@ rmdv is the only option that is free, open-source, native (non-Electron), cross-
 
 ## Install
 
-- macOS: download the signed + notarized `.dmg` (Apple Silicon or Intel) from https://github.com/minchenlee/rmdv/releases and drag rmdv to Applications.
-- Linux: download the x86_64 AppImage from the same page, `chmod +x` it, and run.
+- macOS: download the signed + notarized `.dmg` (Apple Silicon or Intel) from https://github.com/minchenlee/rmdv/releases and drag rmdv to Applications. Open the app and run `Install CLI` from the command palette to expose the `rmdv` CLI in `/usr/local/bin`.
+- Linux: download the x86_64 AppImage from the same page, `chmod +x` it, and run. Use `Install CLI` from the command palette to create `~/.local/bin/rmdv`; add `~/.local/bin` to `PATH` if needed.
 - From source: install Rust 1.80+ from https://rustup.rs, then `git clone https://github.com/minchenlee/rmdv && cd rmdv && cargo build --release`. Windows builds use `cargo build --release --no-default-features` because PDF extraction is macOS/Linux only.
 
 ## Author and license

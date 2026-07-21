@@ -188,7 +188,7 @@
           "name": "How do I install rmdv?",
           "acceptedAnswer": {
             "@type": "Answer",
-            "text": "On macOS, download the signed and notarized .dmg from github.com/minchenlee/rmdv/releases. On Linux, download the x86_64 AppImage from the same page. To build from source, install Rust 1.80 or newer, then run: git clone https://github.com/minchenlee/rmdv && cd rmdv && cargo build --release. Windows builds use cargo build --release --no-default-features because PDF extraction is macOS/Linux only."
+            "text": "On macOS, download the signed and notarized .dmg from github.com/minchenlee/rmdv/releases and drag rmdv to Applications. After opening the app, use Install CLI from the command palette to expose rmdv in /usr/local/bin. On Linux, download the x86_64 AppImage, launch it once, and use Install CLI from the command palette to create ~/.local/bin/rmdv; add ~/.local/bin to PATH if needed. To build from source, install Rust 1.80 or newer, then run: git clone https://github.com/minchenlee/rmdv && cd rmdv && cargo build --release. Windows builds use cargo build --release --no-default-features because PDF extraction is macOS/Linux only."
           }
         },
         {
@@ -217,13 +217,13 @@
           "@type": "HowToStep",
           "position": 2,
           "name": "Install on macOS",
-          "text": "Open the .dmg and drag rmdv to Applications. On first launch, macOS may ask you to confirm opening a downloaded app; click Open. rmdv checks for updates automatically on each launch."
+          "text": "Open the .dmg and drag rmdv to Applications. On first launch, macOS may ask you to confirm opening a downloaded app; click Open. Use Install CLI from the command palette to expose rmdv in /usr/local/bin. rmdv checks for updates automatically on each launch."
         },
         {
           "@type": "HowToStep",
           "position": 3,
           "name": "Install on Linux",
-          "text": "Make the AppImage executable with: chmod +x rmdv-*.AppImage. Then run it directly: ./rmdv-*.AppImage"
+          "text": "Make the AppImage executable with: chmod +x rmdv-*.AppImage. Then run it directly: ./rmdv-*.AppImage. Use Install CLI from the command palette to create ~/.local/bin/rmdv; add ~/.local/bin to PATH if needed."
         },
         {
           "@type": "HowToStep",
@@ -435,7 +435,7 @@ rmdv list-sections spec.md | jq -r <span class="s">'.[].path'</span></code></pre
       <div><dt>Does rmdv work offline?</dt><dd>Yes. Rendering, diagrams, math, mindmaps, and supported PDF text extraction happen locally with no cloud dependency.</dd></div>
       <div><dt>What diagram and math formats are supported?</dt><dd>Mermaid, Graphviz DOT, and block LaTeX are rendered natively, without JavaScript or KaTeX.</dd></div>
       <div><dt>How does rmdv work with coding agents?</dt><dd>The <code>rmdv</code> CLI can open files, jump to headings, change view modes, and return current state as JSON over local IPC.</dd></div>
-      <div><dt>How do I install it?</dt><dd>Use the signed macOS disk image, the Linux AppImage, or build from source with Rust 1.80 or newer. Windows builds disable the PDF feature.</dd></div>
+      <div><dt>How do I install it?</dt><dd>Use the signed macOS disk image, the Linux AppImage, or build from source with Rust 1.80 or newer. After opening a packaged app, use Install CLI from the command palette to expose the rmdv command. Windows builds disable the PDF feature.</dd></div>
       <div><dt>Is it faster than Electron-based viewers?</dt><dd>rmdv has no Electron, webview, or JavaScript runtime. Historical v0.2.0 measurements found about 150 ms to first view; current builds may differ.</dd></div>
     </dl>
   </section>
@@ -448,12 +448,12 @@ rmdv list-sections spec.md | jq -r <span class="s">'.[].path'</span></code></pre
     <div class="install-options">
       <div class="install-row">
         <h3>macOS</h3>
-        <p>Signed, notarized, and self-updating.</p>
+        <p>Signed, notarized, and self-updating. Use <code>Install CLI</code> from the command palette to enable Terminal access.</p>
         <span><a class="btn small" data-asset="aarch64.dmg" href="https://github.com/minchenlee/rmdv/releases/latest">Apple Silicon</a><a class="btn small" data-asset="x86_64.dmg" href="https://github.com/minchenlee/rmdv/releases/latest">Intel</a></span>
       </div>
       <div class="install-row">
         <h3>Linux</h3>
-        <p>A single self-updating AppImage.</p>
+        <p>A single self-updating AppImage. Use <code>Install CLI</code> to add a user-level shell command.</p>
         <span><a class="btn small" data-asset="x86_64.AppImage" href="https://github.com/minchenlee/rmdv/releases/latest">x86_64 AppImage</a></span>
       </div>
       <div class="install-source">
