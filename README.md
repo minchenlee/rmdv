@@ -36,7 +36,7 @@ machine-readable IPC control interface.
 - Zen editing with unsaved-edit protection across navigation
 - 10 built-in theme presets: One Light/Dark, GitHub Light/Dark, Solarized Light/Dark, Gruvbox, Nord, Dracula, and Tokyo Night, with system follow
 - Keyboard-first: `j`/`k`/`g`/`G`, `⌘↑`/`⌘↓`, heading fold `⌘K 0–6`
-- Auto-update: checks GitHub releases and SHA-256 verifies; macOS artifacts are Developer ID signed and notarized when release secrets are configured
+- Auto-update: checks GitHub releases, SHA-256 verifies; signed + notarized on macOS
 - CJK-friendly: bundled Inter + JetBrains Mono, system font fallback
 - Drag and drop files or folders
 

@@ -28,8 +28,9 @@ credentials.
 - Release workflow `29830450638` built and uploaded Linux, macOS arm64, macOS
   Intel, and Windows artifacts; the publish job generated `SHA256SUMS` and
   `latest.json`, and both were verified against the published assets.
-- macOS artifacts are ad-hoc sealed because `APPLE_CERTIFICATE` was absent;
-  they are not Developer ID signed or notarized.
+- Published macOS app payloads were directly verified with Developer ID
+  authority `MIN-CHEN LEE (CY58UG73K6)`, valid `codesign`, and successful
+  `stapler validate` for both app payloads and DMGs.
 - Site deploy run `29830565893` failed because `CLOUDFLARE_API_TOKEN` was not
   configured; the live site remains on v0.5.0.
 
@@ -74,8 +75,8 @@ The complete portfolio, including P2 and deferred work, is in
 
 1. Add `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID`, rerun the manual site
    deploy, and verify the live homepage plus `llms.txt`.
-2. Add Apple signing/notarization secrets before claiming notarized macOS
-   artifacts in a future release.
+2. Keep the existing Apple signing/notarization secrets available for future
+   releases.
 
 ## Verification state
 
@@ -145,8 +146,6 @@ The complete portfolio, including P2 and deferred work, is in
 
 ### Not verified
 
-- v0.6.0 macOS artifacts are not Developer ID signed or notarized because the
-  release secrets were absent; they are ad-hoc sealed.
 - The site has not been deployed or live-verified for v0.6.0 because the
   Cloudflare credentials are missing.
 

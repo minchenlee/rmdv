@@ -11,7 +11,7 @@ rmdv (Rust Markdown Viewer) is a read-focused desktop app for macOS, Windows, an
 ## Source and releases
 
 - [GitHub repository](https://github.com/minchenlee/rmdv): Source code, issue tracker, pull requests. MIT license.
-- [Releases](https://github.com/minchenlee/rmdv/releases): Pre-built binaries for macOS, Linux, and Windows with SHA-256 verification. macOS artifacts are Developer ID signed and notarized when release secrets are configured. Latest: v0.6.0 (2026-07-21).
+- [Releases](https://github.com/minchenlee/rmdv/releases): Pre-built binaries for macOS (signed + notarized), Linux, and Windows. SHA-256 verified. Latest: v0.6.0 (2026-07-21).
 
 ## Key facts
 
@@ -34,7 +34,7 @@ rmdv has an agent-controllable IPC socket. Historical v0.2.0 benchmarks were mea
 - Vault-wide full-text search (⌘⇧F): Zed-style full-page results across all files in the workspace
 - In-document search (⌘F)
 - Live reload on file save
-- Auto-update: checks GitHub releases and SHA-256 verifies; macOS artifacts are Developer ID signed and notarized when release secrets are configured
+- Auto-update: checks GitHub releases, SHA-256 verifies, signed and notarized on macOS
 - Themes: 10 built-in presets — One Light/Dark, GitHub Light/Dark, Solarized Light/Dark, Gruvbox, Nord, Dracula, Tokyo Night
 - Keyboard-first navigation: j/k/g/G, ⌘↑/⌘↓, heading fold ⌘K 0–6
 - Edit mode (⌘E)
@@ -59,7 +59,7 @@ rmdv is the only option that is free, open-source, native (non-Electron), cross-
 
 ## Install
 
-- macOS: download the `.dmg` (Apple Silicon or Intel) from https://github.com/minchenlee/rmdv/releases and drag rmdv to Applications. Releases are Developer ID signed and notarized when signing secrets are configured. Open the app and run `Install CLI` from the command palette to expose the `rmdv` CLI in `/usr/local/bin`.
+- macOS: download the signed + notarized `.dmg` (Apple Silicon or Intel) from https://github.com/minchenlee/rmdv/releases and drag rmdv to Applications. Open the app and run `Install CLI` from the command palette to expose the `rmdv` CLI in `/usr/local/bin`.
 - Linux: download the x86_64 AppImage from the same page, `chmod +x` it, and run. Use `Install CLI` from the command palette to create `~/.local/bin/rmdv`; add `~/.local/bin` to `PATH` if needed.
 - From source: install Rust 1.80+ from https://rustup.rs, then `git clone https://github.com/minchenlee/rmdv && cd rmdv && cargo build --release`. Windows builds use `cargo build --release --no-default-features` because PDF extraction is macOS/Linux only.
 
