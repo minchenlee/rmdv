@@ -4,14 +4,26 @@ Last verified: 2026-07-21 CST (Asia/Taipei)
 Stale after: 7 days
 Canonical repository: `/Users/liminchen/Documents/GitHub/mdv`
 Expected branch: `main`; always resolve its live HEAD before mutation.
-Last verified main base: `origin/main@7a0514dd9a2bb9079449ebf7780ef317b184ac42`.
+Last verified main base: `origin/main@4311fbf9a342e8d60d1248a5203809710d5f056e`.
 Authority: This is a routing snapshot. Verify Git, GitHub, runtime identity, and manual evidence before mutation.
 
 ## Current outcome
 
-Review PR #13 for the preferred Impeccable landing-site variant with its restored
-ASCII terminal footer, native-matched static shortcut reference, and interactive
-AI disclosure sticker. Publication remains a separate decision.
+Prepare the v0.6.0 release from the merged CLI/file-association, CJK rendering,
+and landing-site changes. Publication remains a separate decision.
+
+## v0.6.0 release preparation
+
+- Preparation branch: `codex/release-v0.6.0` from `main@4311fbf`.
+- Scope: merged PR #11, PR #12, and PR #13 after the published v0.5.0 line.
+- Version metadata, release notes, content pack, `site/index.html`, and
+  `site/llms.txt` are aligned to v0.6.0 in the preparation branch.
+- Owner-reported manual acceptance passed for Finder associations, CLI reset and
+  installation, CJK rendering, and native regression smoke.
+- Local Apple Silicon release binary and packaged `.app` passed; the packaged
+  `Info.plist` contains the four expected file-association groups.
+- No v0.6.0 tag, GitHub release, signed artifact publication, or site deployment
+  has been performed.
 
 ## v0.5.0 release
 
@@ -43,29 +55,37 @@ The complete portfolio, including P2 and deferred work, is in
 
 - Do not push, open or merge a PR, tag, release, publish artifacts, or deploy
   without an explicit owner request.
-- The first redesign is preserved in named stash commit `5c78ae9`; the
-  owner-preferred Impeccable variant is committed as `d22826d` and proposed in
-  PR #13. It is not merged, published, or live.
-- The current candidate is isolated on `codex/site-impeccable-redesign` in
-  `.codex/worktrees/site-impeccable-redesign`; the original
-  `codex/fix-cjk-rendering` checkout retains its unrelated Rust, demo, and
-  MDV-010 work.
-- Scoped transfer stash `fe4a0af` remains as a recoverable backup; do not remove
-  it as part of ordinary PR work.
-- Local `main` and `origin/main` both resolved to `7a0514d`; MDV-010 is deferred
-  unless historical reconciliation is requested or divergence recurs.
+- `main` and `origin/main` resolve to `4311fbf`; local release preparation is
+  isolated on `codex/release-v0.6.0`.
+- The site deploy workflow still requires `CLOUDFLARE_API_TOKEN` and
+  `CLOUDFLARE_ACCOUNT_ID`; deployment remains pending until those credentials
+  are available.
 - The Windows release job remains best-effort (`continue-on-error: true`).
 
 ## Next safe actions
 
-1. Review PR #13 and merge it only after the owner is satisfied with review and
-   checks.
-2. If live publication is requested later, add the Cloudflare credentials,
-   dispatch the manual workflow, and verify the live domain separately.
+1. Run the full local Rust, site, and packaging checks on the v0.6.0 branch.
+2. Build and inspect the final platform artifacts, including the Windows gate.
+3. Request explicit tag/release/deploy authority only after the exact candidate
+   and remaining blockers are accepted.
 
 ## Verification state
 
 ### Verified now
+
+- `main` and `origin/main` both resolve to `4311fbf`; the release preparation
+  branch is clean before its release-content changes.
+- Owner-reported manual acceptance passed for the merged release scope: Finder
+  associations, CLI reset/installation, CJK rendering, and native regression
+  smoke.
+- Local `cargo build --release --bin rmdv` passed, and a target-specific
+  Apple Silicon build plus `cargo packager` produced an `.app` whose
+  `Info.plist` contains Markdown, plain-text, structured-text, and LaTeX
+  associations.
+- After the v0.6.0 version bump, `cargo check`, both feature checks,
+  `cargo test --lib` (321 passed), `cargo test --tests`, `cargo build --release
+  --bin rmdv`, and the Apple Silicon package build passed. The binary and app
+  bundle report version 0.6.0.
 
 - Before MDV-012 mutation, local `main` and `origin/main` both resolved to
   `7a0514dd9a2bb9079449ebf7780ef317b184ac42`.
@@ -111,12 +131,10 @@ The complete portfolio, including P2 and deferred work, is in
 
 ### Not verified
 
-- PR #13 is open and ready for review at commit `d22826d`; the public site
-  remains unchanged because no deployment or merge has occurred.
-- No Rust, native GUI, packaging, signing, or release check was rerun.
+- Final signed/notarized macOS artifacts, Linux AppImage, and Windows installer
+  have not been built from the v0.6.0 candidate.
 - Windows compilation/package behavior has not been proven on a Windows runner.
-- Zoom Controls has not been retargeted to or manually accepted on current
-  `origin/main`.
+- The site has not been deployed or live-verified for v0.6.0.
 
 ## Routes
 
