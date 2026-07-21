@@ -225,6 +225,10 @@
   // ── global keys ────────────────────────────────────────
   const SCROLL = 90;
   document.addEventListener('keydown', (e) => {
+    // Shadow-DOM controls can handle a key before it reaches this document
+    // listener. Do not let a handled event trigger a second page shortcut.
+    if (e.defaultPrevented) return;
+
     const mod = mac ? e.metaKey : e.ctrlKey;
     const typing = document.activeElement?.matches(
       'input, textarea, select, [contenteditable="true"]'
@@ -259,7 +263,7 @@
     // website does not capture them or override browser/system behavior.
     if (!palette.hidden || !cheat.hidden) return;
     const inControl = document.activeElement?.matches(
-      'input, textarea, select, button, summary, a, [contenteditable="true"]'
+      'input, textarea, select, button, summary, a, sticker-forge, [contenteditable="true"]'
     );
 
     // Everything below: plain keys only — never steal native keyboard behavior
