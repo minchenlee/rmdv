@@ -1,17 +1,16 @@
 # rmdv — project status
 
-Last verified: 2026-07-21 CST (Asia/Taipei)
+Last verified: 2026-07-22 CST (Asia/Taipei)
 Stale after: 7 days
 Canonical repository: `/Users/liminchen/Documents/GitHub/mdv`
 Expected branch: `main`; always resolve its live HEAD before mutation.
-Last verified main base: `origin/main@05770409b7da32574e1ff5bed2f9c5e59c7ebaf6`.
+Last verified main base: `origin/main@73dd7c043c75783b198cd80d652e72aef00c368d`.
 Authority: This is a routing snapshot. Verify Git, GitHub, runtime identity, and manual evidence before mutation.
 
 ## Current outcome
 
-v0.6.0 is merged, tagged, and published with platform artifacts and verified
-checksums/manifest. The site deployment remains blocked by missing Cloudflare
-credentials.
+v0.6.0 is merged, tagged, published, and live. Platform artifacts and
+checksums/manifest are verified, and the public site is serving v0.6.0.
 
 ## v0.6.0 release preparation
 
@@ -31,8 +30,9 @@ credentials.
 - Published macOS app payloads were directly verified with Developer ID
   authority `MIN-CHEN LEE (CY58UG73K6)`, valid `codesign`, and successful
   `stapler validate` for both app payloads and DMGs.
-- Site deploy run `29830565893` failed because `CLOUDFLARE_API_TOKEN` was not
-  configured; the live site remains on v0.5.0.
+- Local Wrangler deployment on 2026-07-22 succeeded with Worker version
+  `ccc0d63e-7752-4b6b-8a33-5ba407f08800`; the custom domain was deployed and
+  live homepage plus `llms.txt` both report v0.6.0.
 
 ## v0.5.0 release
 
@@ -66,16 +66,14 @@ The complete portfolio, including P2 and deferred work, is in
   without an explicit owner request.
 - `main` and `origin/main` contain the PR #14 merge line; tag `v0.6.0` points
   to merge commit `0577040`.
-- The site deploy workflow still requires `CLOUDFLARE_API_TOKEN` and
-  `CLOUDFLARE_ACCOUNT_ID`; deployment remains pending until those credentials
-  are available.
+- The GitHub Actions site deploy workflow still requires its own
+  `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID`; the live site was
+  deployed locally instead.
 - The Windows release job remains best-effort (`continue-on-error: true`).
 
 ## Next safe actions
 
-1. Add `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID`, rerun the manual site
-   deploy, and verify the live homepage plus `llms.txt`.
-2. Keep the existing Apple signing/notarization secrets available for future
+1. Keep the existing Apple signing/notarization secrets available for future
    releases.
 
 ## Verification state
@@ -99,8 +97,9 @@ The complete portfolio, including P2 and deferred work, is in
   publish job; the public release contains two macOS DMGs, two macOS updater
   tarballs, one Linux AppImage, two Windows executables, `SHA256SUMS`, and
   `latest.json`.
-- Live `https://rmdv.mclee.dev/` and `/llms.txt` were checked after the failed
-  deploy and still report v0.5.0.
+- Live `https://rmdv.mclee.dev/` and `/llms.txt` returned HTTP 200 after the
+  local deploy and report v0.6.0; the homepage JSON-LD reports
+  `softwareVersion` `0.6.0` and `dateModified` `2026-07-21`.
 
 - Before MDV-012 mutation, local `main` and `origin/main` both resolved to
   `7a0514dd9a2bb9079449ebf7780ef317b184ac42`.
@@ -146,8 +145,8 @@ The complete portfolio, including P2 and deferred work, is in
 
 ### Not verified
 
-- The site has not been deployed or live-verified for v0.6.0 because the
-  Cloudflare credentials are missing.
+- The GitHub Actions site deploy workflow has not been rerun with repository
+  Cloudflare secrets; this does not block the locally deployed live site.
 
 ## Routes
 
