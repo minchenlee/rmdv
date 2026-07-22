@@ -29,7 +29,7 @@ change, clear, or reinterpret the current document view mode.
 | Folder discovery | The one bounded background workspace pass records recursive counts for every discovered folder. Collapsed exact folders show `N files`; interrupted folders show `N+ files`; zero before interruption shows `scan limit reached`; unreadable folders show `count unavailable`. Expanded folders use plain labels. |
 | Workspace indexing | Choosing a project performs one background pass for the tree, file finder, and root supported-file count, capped at 12 levels, 5,000 supported files, and 10,000 examined entries. The UI remains interactive and a truncated status node makes partial results explicit. |
 | Root parent traversal | `←` at a workspace root indexes the filesystem parent in the background, then selects that new root. It changes workspace navigation scope but never loads or replaces the current document. |
-| Panel sizing | `⌘⌥W` cycles the Full Mindmap panel through the existing 1/3, 1/2, and 3/5 window-width steps using Full Mindmap-owned state. |
+| Panel sizing | `⌘⌥W` cycles the Full Mindmap panel through the existing 1/3, 1/2, and 2/3 window-width steps using Full Mindmap-owned state. |
 | Sidebar/footer/search | Full Mindmap Mode visually owns the main window. Sidebar, reader search bar, and footer are hidden without mutating their stored state. |
 | Detail panel | A separate workspace preview panel. Files show complete content through preview-owned virtualization; data/PDF behavior remains unchanged. Folders show only “Select a file to preview its content.” It never reads or writes `mindmap_panel_*`, which remains document-mindmap state. |
 | Dirty document | A file-open attempt uses the existing dirty guard. If blocked, stay in Full Mindmap Mode with the same selection and show the existing unsaved-edits toast. |
@@ -138,7 +138,7 @@ document-mindmap handlers. Global commands such as theme, save, hidden files,
 | `Home` | Select the graph root. |
 | `Esc` | Exit Full Mindmap Mode. An open overlay still gets first refusal and closes before the mode exits. |
 | `⌘⇧M` | Toggle Full Mindmap Mode. |
-| `⌘⌥W` | Cycle the Full Mindmap side-panel width (1/3 → 1/2 → 3/5 of the window). |
+| `⌘⌥W` | Cycle the Full Mindmap side-panel width (1/3 → 1/2 → 2/3 of the window). |
 | `⌘O` / `⌘P` | Open the existing folder picker / file finder as fallback overlays. |
 
 Keyboard selection immediately updates the selection ring. The detail panel

@@ -15,9 +15,9 @@ Add a keyboard step-cycle through three window-relative widths:
 
 - **1/3** of window width
 - **1/2** of window width
-- **3/5** of window width
+- **2/3** of window width
 
-Single key cycles `1/3 → 1/2 → 3/5 → 1/3`. Drag handle stays and still
+Single key cycles `1/3 → 1/2 → 2/3 → 1/3`. Drag handle stays and still
 produces arbitrary px widths (free resize coexists with stepping).
 
 ### Key
@@ -32,7 +32,7 @@ Add to `App`:
 - `window_size: Option<iced::Size>` — latest window size, used to compute
   fraction widths. Init `None`.
 
-Fraction table: `const MIND_PANEL_FRACS: [f32; 3] = [1.0/3.0, 0.5, 0.6];`
+Fraction table: `const MIND_PANEL_FRACS: [f32; 3] = [1.0/3.0, 0.5, 2.0/3.0];`
 
 ### Window width source
 No window size is tracked today; the canvas's `last_bounds_w` is
@@ -186,8 +186,8 @@ top/bottom-edge math; no new scroll logic needed.
   fallback path doesn't panic when `window_size` is `None`.
 
 ### Success criteria
-- F1: In mindmap mode, ⌘⌥W cycles the panel through ~1/3, ~1/2, ~3/5 of the
-  window width (clamped 240–900); drag still works; opens panel if closed.
+- F1: In mindmap mode, ⌘⌥W cycles the panel through ~1/3, ~1/2, ~2/3 of the
+  window width; drag still works; opens panel if closed.
 - F2: ⌘/ toggles a grouped static cheatsheet listing every shortcut incl.
   ⌘⌥W; Esc/backdrop closes it.
 - F3: Arrowing the outline past the visible edge scrolls the outline panel to
