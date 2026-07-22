@@ -724,6 +724,7 @@ pub enum Message {
     OverlayScrolled(iced::widget::scrollable::Viewport),
     VaultScrolled(iced::widget::scrollable::Viewport),
     BodyScrolled(iced::widget::scrollable::Viewport),
+    TableScrolled,
     ScrollerTick,
     CopyCode(String),
     SidebarDragStart,
@@ -4016,6 +4017,7 @@ impl App {
                         self.diagram_theme_id,
                         true,
                         (0, 0),
+                        recently_scrolled,
                     ));
                     if truncated {
                         col = col.push(
@@ -4234,8 +4236,12 @@ impl App {
                             self.diagram_theme_id,
                             false,
                             preview_widget_generation,
+                            recently_scrolled,
                         )
-                        .map(|_| Message::Noop);
+                        .map(|message| match message {
+                            Message::TableScrolled => Message::TableScrolled,
+                            _ => Message::Noop,
+                        });
                         let mut preview = Column::new().push(rendered);
                         if *truncated {
                             preview = preview.push(
@@ -7063,6 +7069,10 @@ impl App {
                 }
                 Task::none()
             }
+            Message::TableScrolled => {
+                self.last_scroll_at = Some(std::time::Instant::now());
+                Task::none()
+            }
             Message::CopyCode(s) => {
                 let toast = self.show_toast("Copied".into());
                 Task::batch([iced::clipboard::write::<Message>(s), toast])
@@ -8232,6 +8242,7 @@ impl App {
                         self.diagram_theme_id,
                         true,
                         (0, 0),
+                        recently_scrolled,
                     )
                 }
             } else {
@@ -8249,6 +8260,7 @@ impl App {
                     self.diagram_theme_id,
                     true,
                     (0, 0),
+                    recently_scrolled,
                 )
             };
             if self.view_mode == ViewMode::Raw || self.view_mode == ViewMode::Mindmap {
@@ -10975,7 +10987,7 @@ fn sidebar_titlebar_reserve_for_fullscreen(fullscreen: bool) -> f32 {
     }
 }
 
-fn sleek_scrollable_style(
+pub(crate) fn sleek_scrollable_style(
     status: scrollable::Status,
     pal: Palette,
     recently_scrolled: bool,

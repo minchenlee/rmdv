@@ -3,11 +3,13 @@ use crate::ast::{Block, BlockId, Inline, ListItem};
 use crate::diagram::{DiagramCache, DiagramState};
 use crate::keyed_body::{KeyedBody, RowKey};
 use crate::theme::{Palette, Typography};
+use iced::advanced::widget::{tree, Operation, Tree, Widget};
+use iced::advanced::{layout, mouse, overlay, renderer, Clipboard, Layout, Shell};
 use iced::widget::{
-    container, image as image_widget, mouse_area, rich_text, row, span, stack, svg as svg_widget,
-    text, tooltip, Column, Space,
+    container, image as image_widget, mouse_area, rich_text, row, scrollable, span, stack,
+    svg as svg_widget, text, tooltip, Column, Space,
 };
-use iced::{Element, Length, Padding};
+use iced::{Background, Element, Event, Length, Padding, Rectangle, Size, Vector};
 use std::path::Path;
 
 pub fn block_anchor_id(id: BlockId) -> iced::widget::Id {
@@ -35,12 +37,14 @@ pub fn render<'a>(
     diagram_theme_id: u32,
     keyed_widget_reuse: bool,
     keyed_widget_generation: (u64, u64),
+    recently_scrolled: bool,
 ) -> Element<'a, Message> {
     let img_ctx = ImgCtx {
         cache: image_cache,
         current_file,
         diagram_cache,
         diagram_theme_id,
+        recently_scrolled,
     };
     // Which blocks to materialize: the precomputed fold-aware window (body
     // view; built in `App::update`, never here), or the full fold-aware list
@@ -117,6 +121,7 @@ fn render_heading_with_chevron<'a>(
         current_file: None,
         diagram_cache: dcache,
         diagram_theme_id: 0,
+        recently_scrolled: false,
     };
     let head = render_block(b, pal, typ, query, current_in_block, &img);
     let glyph = if folded {
@@ -526,6 +531,7 @@ struct ImgCtx<'a> {
     current_file: Option<&'a Path>,
     diagram_cache: &'a DiagramCache,
     diagram_theme_id: u32,
+    recently_scrolled: bool,
 }
 
 fn render_block<'a>(
@@ -542,6 +548,7 @@ fn render_block<'a>(
         counter: 0,
         current_in_block,
         pal: *pal,
+        recently_scrolled: img.recently_scrolled,
     };
     match b {
         Block::Heading { level, inlines, .. } => {
@@ -742,6 +749,7 @@ struct HlCtx<'a> {
     counter: usize,
     current_in_block: Option<usize>,
     pal: Palette,
+    recently_scrolled: bool,
 }
 
 fn inline_spans<'a>(
@@ -750,9 +758,19 @@ fn inline_spans<'a>(
     size: f32,
     ctx: &mut HlCtx<'_>,
 ) -> Vec<RtSpan<'a>> {
+    inline_spans_with_style(inlines, pal, size, Style::default(), ctx)
+}
+
+fn inline_spans_with_style<'a>(
+    inlines: &'a [Inline],
+    pal: &Palette,
+    size: f32,
+    style: Style,
+    ctx: &mut HlCtx<'_>,
+) -> Vec<RtSpan<'a>> {
     let mut out = Vec::new();
     for i in inlines {
-        push_span(i, &mut out, pal, size, Style::default(), ctx);
+        push_span(i, &mut out, pal, size, style.clone(), ctx);
     }
     out
 }
@@ -1317,82 +1335,429 @@ fn render_table<'a>(
         .max(1);
     let pal_t = *pal;
 
-    let make_cell = |content: Element<'a, Message>, is_header: bool| -> Element<'a, Message> {
+    let make_cell = |content: Element<'a, Message>| -> Element<'a, Message> {
         container(content)
-            .padding(Padding::from([8, 12]))
-            .width(Length::FillPortion(1))
-            .style(move |_| container::Style {
-                background: if is_header {
-                    Some(pal_t.surface_alt.into())
-                } else {
-                    None
-                },
-                ..Default::default()
-            })
+            .padding(Padding::from([9, 12]))
+            .width(Length::Fill)
+            .clip(true)
             .into()
     };
 
-    let mut header_row = iced::widget::Row::new().spacing(0);
-    for i in 0..cols {
-        let content: Element<'a, Message> = if let Some(cell) = headers.get(i) {
-            let spans = inline_spans(cell, pal, typ.body_size, ctx);
+    let mut cells = Vec::with_capacity((rows.len() + 1) * cols);
+    for column_index in 0..cols {
+        let content: Element<'a, Message> = if let Some(cell) = headers.get(column_index) {
+            let spans = inline_spans_with_style(
+                cell,
+                pal,
+                typ.body_size,
+                Style {
+                    bold: true,
+                    ..Style::default()
+                },
+                ctx,
+            );
             rich_text_links(spans)
         } else {
             text("").into()
         };
-        header_row = header_row.push(make_cell(content, true));
+        cells.push(make_cell(content));
     }
 
-    let mut grid = Column::new().spacing(0);
-    grid = grid.push(
-        container(header_row)
-            .style(move |_| container::Style {
-                border: iced::Border {
-                    color: pal_t.code_border,
-                    width: 1.0,
-                    radius: 0.0.into(),
-                },
-                ..Default::default()
-            })
-            .width(Length::Fill),
-    );
-
     for row_cells in rows {
-        let mut r = iced::widget::Row::new().spacing(0);
-        for i in 0..cols {
-            let content: Element<'a, Message> = if let Some(cell) = row_cells.get(i) {
+        for column_index in 0..cols {
+            let content: Element<'a, Message> = if let Some(cell) = row_cells.get(column_index) {
                 let spans = inline_spans(cell, pal, typ.body_size, ctx);
                 rich_text_links(spans)
             } else {
                 text("").into()
             };
-            r = r.push(make_cell(content, false));
+            cells.push(make_cell(content));
         }
-        grid = grid.push(
-            container(r)
-                .style(move |_| container::Style {
-                    border: iced::Border {
-                        color: pal_t.code_border,
-                        width: 1.0,
-                        radius: 0.0.into(),
-                    },
-                    ..Default::default()
-                })
-                .width(Length::Fill),
-        );
     }
 
-    container(grid)
+    let table = AdaptiveTable::new(cols, cells, pal_t).width(Length::Shrink);
+    let recently_scrolled = ctx.recently_scrolled;
+
+    scrollable(table)
         .width(Length::Fill)
-        .style(move |_| container::Style {
-            border: iced::Border {
-                color: pal_t.code_border,
-                width: 1.0,
-                radius: 6.0.into(),
-            },
-            ..Default::default()
+        .height(Length::Shrink)
+        .on_scroll(|_| Message::TableScrolled)
+        .style(move |_, status| {
+            crate::app::sleek_scrollable_style(status, pal_t, recently_scrolled)
         })
+        .direction(scrollable::Direction::Horizontal(
+            scrollable::Scrollbar::new()
+                .width(6.0)
+                .scroller_width(6.0)
+                .margin(2.0),
+        ))
         .into()
+}
+
+/// A content-driven table layout with a responsive minimum width.
+///
+/// Iced's stock table makes its first shrink column fluid. That is useful for
+/// ordinary tables, but it prevents a table inside a horizontal scrollable
+/// from exposing its intrinsic width. This layout measures every column,
+/// fills the available document width when it can, and grows beyond it only
+/// when the content actually needs more room.
+struct AdaptiveTable<'a, Message, Theme, Renderer> {
+    columns: usize,
+    cells: Vec<Element<'a, Message, Theme, Renderer>>,
+    width: Length,
+    height: Length,
+    separator_x: f32,
+    separator_y: f32,
+    palette: Palette,
+}
+
+struct AdaptiveTableMetrics {
+    columns: Vec<f32>,
+    rows: Vec<f32>,
+}
+
+impl<'a, Message, Theme, Renderer> AdaptiveTable<'a, Message, Theme, Renderer> {
+    const MIN_COLUMN_WIDTH: f32 = 128.0;
+    const MAX_COLUMN_WIDTH: f32 = 320.0;
+
+    fn new(
+        columns: usize,
+        cells: Vec<Element<'a, Message, Theme, Renderer>>,
+        palette: Palette,
+    ) -> Self {
+        Self {
+            columns: columns.max(1),
+            cells,
+            width: Length::Shrink,
+            height: Length::Shrink,
+            separator_x: 1.0,
+            separator_y: 1.0,
+            palette,
+        }
+    }
+
+    fn width(mut self, width: impl Into<Length>) -> Self {
+        self.width = width.into();
+        self
+    }
+}
+
+impl<Message, Theme, Renderer> Widget<Message, Theme, Renderer>
+    for AdaptiveTable<'_, Message, Theme, Renderer>
+where
+    Renderer: renderer::Renderer,
+{
+    fn size(&self) -> Size<Length> {
+        Size {
+            width: self.width,
+            height: self.height,
+        }
+    }
+
+    fn tag(&self) -> tree::Tag {
+        tree::Tag::of::<AdaptiveTableMetrics>()
+    }
+
+    fn state(&self) -> tree::State {
+        tree::State::new(AdaptiveTableMetrics {
+            columns: Vec::new(),
+            rows: Vec::new(),
+        })
+    }
+
+    fn children(&self) -> Vec<Tree> {
+        self.cells
+            .iter()
+            .map(|cell| Tree::new(cell.as_widget()))
+            .collect()
+    }
+
+    fn diff(&self, tree: &mut Tree) {
+        tree.diff_children(&self.cells);
+    }
+
+    fn layout(
+        &mut self,
+        tree: &mut Tree,
+        renderer: &Renderer,
+        limits: &layout::Limits,
+    ) -> layout::Node {
+        let metrics = tree.state.downcast_mut::<AdaptiveTableMetrics>();
+        let columns = self.columns;
+        let row_count = (self.cells.len() + columns - 1) / columns;
+        let table_limits = limits.width(self.width).height(self.height);
+        let measure_max_width = table_limits.max().width;
+
+        // First pass: measure the widest cell in every column without a
+        // wrapping width. The cap keeps a single URL or token from turning
+        // the entire document into an effectively unusable canvas.
+        let measure_limits =
+            layout::Limits::new(Size::ZERO, Size::new(measure_max_width, f32::INFINITY))
+                .width(Length::Shrink);
+        let mut column_widths = vec![0.0_f32; columns];
+
+        for (index, (cell, state)) in self.cells.iter_mut().zip(&mut tree.children).enumerate() {
+            let column = index % columns;
+            let node = cell
+                .as_widget_mut()
+                .layout(state, renderer, &measure_limits);
+            column_widths[column] =
+                column_widths[column].max(node.size().width.min(Self::MAX_COLUMN_WIDTH));
+        }
+
+        for width in &mut column_widths {
+            *width = width
+                .max(Self::MIN_COLUMN_WIDTH)
+                .min(Self::MAX_COLUMN_WIDTH);
+        }
+
+        let separators_width = self.separator_x * columns.saturating_sub(1) as f32;
+        let natural_width = column_widths.iter().sum::<f32>() + separators_width;
+        let viewport_width = table_limits.min().width;
+
+        // Horizontal scrollables give their child an infinite maximum width
+        // but preserve the viewport as the minimum. This makes short tables
+        // fill the document column while long tables keep their intrinsic
+        // width and become horizontally scrollable.
+        if natural_width < viewport_width {
+            let extra = (viewport_width - natural_width) / columns as f32;
+            for width in &mut column_widths {
+                *width += extra;
+            }
+        }
+
+        // Second pass: lay out every cell against its shared column width.
+        // This is what keeps all rows aligned and lets rich text wrap inside
+        // a cell instead of painting past its boundary.
+        let mut cells = Vec::with_capacity(self.cells.len());
+        cells.resize(self.cells.len(), layout::Node::default());
+        let mut row_heights = vec![0.0_f32; row_count];
+
+        for (index, (cell, state)) in self.cells.iter_mut().zip(&mut tree.children).enumerate() {
+            let row = index / columns;
+            let column = index % columns;
+            let width = column_widths[column];
+            let cell_limits = layout::Limits::new(Size::ZERO, Size::new(width, f32::INFINITY))
+                .width(Length::Fixed(width))
+                .height(Length::Shrink);
+            let node = cell.as_widget_mut().layout(state, renderer, &cell_limits);
+            row_heights[row] = row_heights[row].max(node.size().height);
+            cells[index] = node;
+        }
+
+        metrics.columns = column_widths.clone();
+        metrics.rows = row_heights.clone();
+
+        let table_width = column_widths.iter().sum::<f32>() + separators_width;
+        let table_height =
+            row_heights.iter().sum::<f32>() + self.separator_y * row_count.saturating_sub(1) as f32;
+
+        let mut y = 0.0;
+        for row in 0..row_count {
+            let mut x = 0.0;
+            for column in 0..columns {
+                let index = row * columns + column;
+                if let Some(cell) = cells.get_mut(index) {
+                    cell.move_to_mut((x, y));
+                }
+                x += column_widths[column] + self.separator_x;
+            }
+            y += row_heights[row] + self.separator_y;
+        }
+
+        let size = table_limits.resolve(
+            self.width,
+            self.height,
+            Size::new(table_width, table_height),
+        );
+
+        layout::Node::with_children(size, cells)
+    }
+
+    fn update(
+        &mut self,
+        tree: &mut Tree,
+        event: &Event,
+        layout: Layout<'_>,
+        cursor: mouse::Cursor,
+        renderer: &Renderer,
+        clipboard: &mut dyn Clipboard,
+        shell: &mut Shell<'_, Message>,
+        viewport: &Rectangle,
+    ) {
+        for ((cell, state), layout) in self
+            .cells
+            .iter_mut()
+            .zip(&mut tree.children)
+            .zip(layout.children())
+        {
+            cell.as_widget_mut().update(
+                state, event, layout, cursor, renderer, clipboard, shell, viewport,
+            );
+        }
+    }
+
+    fn draw(
+        &self,
+        tree: &Tree,
+        renderer: &mut Renderer,
+        theme: &Theme,
+        style: &renderer::Style,
+        layout: Layout<'_>,
+        cursor: mouse::Cursor,
+        viewport: &Rectangle,
+    ) {
+        let bounds = layout.bounds();
+        let metrics = tree.state.downcast_ref::<AdaptiveTableMetrics>();
+        let mut y = bounds.y;
+
+        // Draw row surfaces independently from cell content. That keeps the
+        // header and body fills continuous even when a row's tallest cell is
+        // taller than its neighbors.
+        for (row, height) in metrics.rows.iter().copied().enumerate() {
+            renderer.fill_quad(
+                renderer::Quad {
+                    bounds: Rectangle {
+                        x: bounds.x,
+                        y,
+                        width: bounds.width,
+                        height,
+                    },
+                    snap: true,
+                    ..Default::default()
+                },
+                if row == 0 {
+                    Background::Color(self.palette.surface_alt)
+                } else {
+                    Background::Color(self.palette.surface)
+                },
+            );
+            y += height + self.separator_y;
+        }
+
+        for ((cell, state), layout) in self.cells.iter().zip(&tree.children).zip(layout.children())
+        {
+            cell.as_widget()
+                .draw(state, renderer, theme, style, layout, cursor, viewport);
+        }
+
+        let line = self.palette.rule;
+        let mut x = bounds.x;
+        for width in metrics
+            .columns
+            .iter()
+            .copied()
+            .take(metrics.columns.len().saturating_sub(1))
+        {
+            x += width;
+            renderer.fill_quad(
+                renderer::Quad {
+                    bounds: Rectangle {
+                        x,
+                        y: bounds.y,
+                        width: self.separator_x,
+                        height: bounds.height,
+                    },
+                    snap: true,
+                    ..Default::default()
+                },
+                line,
+            );
+            x += self.separator_x;
+        }
+
+        let mut y = bounds.y;
+        for height in metrics
+            .rows
+            .iter()
+            .copied()
+            .take(metrics.rows.len().saturating_sub(1))
+        {
+            y += height;
+            renderer.fill_quad(
+                renderer::Quad {
+                    bounds: Rectangle {
+                        x: bounds.x,
+                        y,
+                        width: bounds.width,
+                        height: self.separator_y,
+                    },
+                    snap: true,
+                    ..Default::default()
+                },
+                line,
+            );
+            y += self.separator_y;
+        }
+    }
+
+    fn mouse_interaction(
+        &self,
+        tree: &Tree,
+        layout: Layout<'_>,
+        cursor: mouse::Cursor,
+        viewport: &Rectangle,
+        renderer: &Renderer,
+    ) -> mouse::Interaction {
+        self.cells
+            .iter()
+            .zip(&tree.children)
+            .zip(layout.children())
+            .map(|((cell, state), layout)| {
+                cell.as_widget()
+                    .mouse_interaction(state, layout, cursor, viewport, renderer)
+            })
+            .max()
+            .unwrap_or_default()
+    }
+
+    fn operate(
+        &mut self,
+        tree: &mut Tree,
+        layout: Layout<'_>,
+        renderer: &Renderer,
+        operation: &mut dyn Operation,
+    ) {
+        for ((cell, state), layout) in self
+            .cells
+            .iter_mut()
+            .zip(&mut tree.children)
+            .zip(layout.children())
+        {
+            cell.as_widget_mut()
+                .operate(state, layout, renderer, operation);
+        }
+    }
+
+    fn overlay<'b>(
+        &'b mut self,
+        tree: &'b mut Tree,
+        layout: Layout<'b>,
+        renderer: &Renderer,
+        viewport: &Rectangle,
+        translation: Vector,
+    ) -> Option<overlay::Element<'b, Message, Theme, Renderer>> {
+        overlay::from_children(
+            &mut self.cells,
+            tree,
+            layout,
+            renderer,
+            viewport,
+            translation,
+        )
+    }
+}
+
+impl<'a, Message, Theme, Renderer> From<AdaptiveTable<'a, Message, Theme, Renderer>>
+    for Element<'a, Message, Theme, Renderer>
+where
+    Message: 'a,
+    Theme: 'a,
+    Renderer: 'a + renderer::Renderer,
+{
+    fn from(table: AdaptiveTable<'a, Message, Theme, Renderer>) -> Self {
+        Element::new(table)
+    }
 }
 
 pub fn style_color(s: crate::ast::HlStyle, pal: &Palette) -> iced::Color {
