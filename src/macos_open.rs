@@ -19,7 +19,7 @@ mod imp {
 
     const OPEN_URLS_ENCODING: &[u8] = b"v@:@@\0";
     const OPEN_FILES_ENCODING: &[u8] = b"v@:@@\0";
-    const OPEN_FILE_ENCODING: &[u8] = b"B@:@\0";
+    const OPEN_FILE_ENCODING: &[u8] = b"B@:@@\0";
 
     struct Channel {
         sender: Sender<PathBuf>,
