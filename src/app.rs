@@ -2990,6 +2990,8 @@ impl App {
         // Iced 0.14 does not forward macOS `PinchGesture` events. Register a
         // tiny process-local bridge while we're still on the app's main thread.
         crate::native_pinch::install();
+        // Finder delivers document opens through AppKit rather than argv.
+        crate::macos_open::install();
         let mut app = Self::default();
         let mut errs = Vec::new();
         let mut combined = crate::theme_load::bundled().clone();
@@ -8000,6 +8002,7 @@ impl App {
         };
         let ipc = iced::Subscription::run(ipc_subscription_stream);
         let native_pinch = crate::native_pinch::subscription().map(Message::MindmapNativePinch);
+        let macos_open = crate::macos_open::subscription().map(Message::OpenFileFinderPath);
         let window_events = iced::window::events().filter_map(|(id, event)| match event {
             iced::window::Event::Opened { .. }
             | iced::window::Event::Focused
@@ -8021,6 +8024,7 @@ impl App {
             window_events,
             ipc,
             native_pinch,
+            macos_open,
         ])
     }
 
