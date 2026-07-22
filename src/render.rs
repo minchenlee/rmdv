@@ -1338,7 +1338,11 @@ fn render_table<'a>(
     let make_cell = |content: Element<'a, Message>| -> Element<'a, Message> {
         container(content)
             .padding(Padding::from([9, 12]))
-            .width(Length::Fill)
+            // The adaptive table supplies the shared fixed width during its
+            // second layout pass. Keeping this intrinsic pass shrink-wrapped
+            // prevents an unbounded horizontal scroll limit from inflating
+            // short columns to MAX_COLUMN_WIDTH.
+            .width(Length::Shrink)
             .clip(true)
             .into()
     };
