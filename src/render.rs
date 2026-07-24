@@ -1336,15 +1336,7 @@ fn render_table<'a>(
     let pal_t = *pal;
 
     let make_cell = |content: Element<'a, Message>| -> Element<'a, Message> {
-        container(content)
-            .padding(Padding::from([9, 12]))
-            // The adaptive table supplies the shared fixed width during its
-            // second layout pass. Keeping this intrinsic pass shrink-wrapped
-            // prevents an unbounded horizontal scroll limit from inflating
-            // short columns to MAX_COLUMN_WIDTH.
-            .width(Length::Shrink)
-            .clip(true)
-            .into()
+        AdaptiveTableCell::new(content).into()
     };
 
     let mut cells = Vec::with_capacity((rows.len() + 1) * cols);
@@ -1396,6 +1388,202 @@ fn render_table<'a>(
                 .margin(2.0),
         ))
         .into()
+}
+
+/// A table cell that switches between intrinsic measurement and the shared
+/// fixed-column layout supplied by [`AdaptiveTable`].
+///
+/// The table's first pass marks its limits as shrink-wrapped. In that pass the
+/// cell uses `Length::Shrink`, so an unbounded horizontal scroll limit cannot
+/// make every non-empty column report the same maximum width. The final pass
+/// uses fixed limits, and the cell switches to `Length::Fill` so the content
+/// wraps against the column width and all rows stay aligned.
+struct AdaptiveTableCell<'a, Message, Theme, Renderer> {
+    content: Element<'a, Message, Theme, Renderer>,
+    padding: Padding,
+    clip: bool,
+}
+
+impl<'a, Message, Theme, Renderer> AdaptiveTableCell<'a, Message, Theme, Renderer> {
+    fn new(content: Element<'a, Message, Theme, Renderer>) -> Self {
+        Self {
+            content,
+            padding: Padding::from([9, 12]),
+            clip: true,
+        }
+    }
+}
+
+fn adaptive_table_cell_width(limits: &layout::Limits) -> Length {
+    if limits.compression().width {
+        Length::Shrink
+    } else {
+        Length::Fill
+    }
+}
+
+impl<Message, Theme, Renderer> Widget<Message, Theme, Renderer>
+    for AdaptiveTableCell<'_, Message, Theme, Renderer>
+where
+    Renderer: renderer::Renderer,
+{
+    fn tag(&self) -> tree::Tag {
+        self.content.as_widget().tag()
+    }
+
+    fn state(&self) -> tree::State {
+        self.content.as_widget().state()
+    }
+
+    fn children(&self) -> Vec<Tree> {
+        self.content.as_widget().children()
+    }
+
+    fn diff(&self, tree: &mut Tree) {
+        self.content.as_widget().diff(tree);
+    }
+
+    fn size(&self) -> Size<Length> {
+        Size {
+            width: Length::Fill,
+            height: Length::Shrink,
+        }
+    }
+
+    fn layout(
+        &mut self,
+        tree: &mut Tree,
+        renderer: &Renderer,
+        limits: &layout::Limits,
+    ) -> layout::Node {
+        // `AdaptiveTable` passes compressed limits during its intrinsic
+        // measurement pass and fixed limits during final layout.
+        let width = adaptive_table_cell_width(limits);
+
+        container::layout(
+            limits,
+            width,
+            Length::Shrink,
+            f32::INFINITY,
+            f32::INFINITY,
+            self.padding,
+            iced::alignment::Horizontal::Left,
+            iced::alignment::Vertical::Top,
+            |limits| self.content.as_widget_mut().layout(tree, renderer, limits),
+        )
+    }
+
+    fn draw(
+        &self,
+        tree: &Tree,
+        renderer: &mut Renderer,
+        theme: &Theme,
+        style: &renderer::Style,
+        layout: Layout<'_>,
+        cursor: mouse::Cursor,
+        viewport: &Rectangle,
+    ) {
+        let bounds = layout.bounds();
+        if let Some(clipped_viewport) = bounds.intersection(viewport) {
+            self.content.as_widget().draw(
+                tree,
+                renderer,
+                theme,
+                style,
+                layout.children().next().unwrap(),
+                cursor,
+                if self.clip {
+                    &clipped_viewport
+                } else {
+                    viewport
+                },
+            );
+        }
+    }
+
+    fn update(
+        &mut self,
+        tree: &mut Tree,
+        event: &Event,
+        layout: Layout<'_>,
+        cursor: mouse::Cursor,
+        renderer: &Renderer,
+        clipboard: &mut dyn Clipboard,
+        shell: &mut Shell<'_, Message>,
+        viewport: &Rectangle,
+    ) {
+        self.content.as_widget_mut().update(
+            tree,
+            event,
+            layout.children().next().unwrap(),
+            cursor,
+            renderer,
+            clipboard,
+            shell,
+            viewport,
+        );
+    }
+
+    fn mouse_interaction(
+        &self,
+        tree: &Tree,
+        layout: Layout<'_>,
+        cursor: mouse::Cursor,
+        viewport: &Rectangle,
+        renderer: &Renderer,
+    ) -> mouse::Interaction {
+        self.content.as_widget().mouse_interaction(
+            tree,
+            layout.children().next().unwrap(),
+            cursor,
+            viewport,
+            renderer,
+        )
+    }
+
+    fn operate(
+        &mut self,
+        tree: &mut Tree,
+        layout: Layout<'_>,
+        renderer: &Renderer,
+        operation: &mut dyn Operation,
+    ) {
+        self.content.as_widget_mut().operate(
+            tree,
+            layout.children().next().unwrap(),
+            renderer,
+            operation,
+        );
+    }
+
+    fn overlay<'b>(
+        &'b mut self,
+        tree: &'b mut Tree,
+        layout: Layout<'b>,
+        renderer: &Renderer,
+        viewport: &Rectangle,
+        translation: Vector,
+    ) -> Option<overlay::Element<'b, Message, Theme, Renderer>> {
+        self.content.as_widget_mut().overlay(
+            tree,
+            layout.children().next().unwrap(),
+            renderer,
+            viewport,
+            translation,
+        )
+    }
+}
+
+impl<'a, Message, Theme, Renderer> From<AdaptiveTableCell<'a, Message, Theme, Renderer>>
+    for Element<'a, Message, Theme, Renderer>
+where
+    Message: 'a,
+    Theme: 'a,
+    Renderer: 'a + renderer::Renderer,
+{
+    fn from(cell: AdaptiveTableCell<'a, Message, Theme, Renderer>) -> Self {
+        Element::new(cell)
+    }
 }
 
 /// A content-driven table layout with a responsive minimum width.
@@ -1784,7 +1972,19 @@ pub fn style_color(s: crate::ast::HlStyle, pal: &Palette) -> iced::Color {
 
 #[cfg(test)]
 mod tests {
-    use super::{for_text_runs, is_cjk_fallback_char};
+    use super::{adaptive_table_cell_width, for_text_runs, is_cjk_fallback_char};
+    use iced::advanced::layout;
+    use iced::{Length, Size};
+
+    #[test]
+    fn table_cell_intrinsic_measurement_does_not_fill_unbounded_limits() {
+        let measure_limits = layout::Limits::new(Size::ZERO, Size::INFINITE).width(Length::Shrink);
+        assert_eq!(adaptive_table_cell_width(&measure_limits), Length::Shrink);
+
+        let fixed_limits = layout::Limits::new(Size::ZERO, Size::new(256.0, f32::INFINITY))
+            .width(Length::Fixed(256.0));
+        assert_eq!(adaptive_table_cell_width(&fixed_limits), Length::Fill);
+    }
 
     #[test]
     fn hangul_jamo_boundaries_use_cjk_fallback() {
