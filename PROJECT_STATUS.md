@@ -4,7 +4,7 @@ Last verified: 2026-07-24 CST (Asia/Taipei)
 Stale after: 7 days
 Canonical repository: `/Users/liminchen/Documents/GitHub/mdv`
 Expected branch: `main`; always resolve its live HEAD before mutation.
-Last verified main base: `origin/main@741f36ebf44d4ec14c0afa6a4ac1c8870090fcb8`.
+Last verified main base: `origin/main@001815df6d5d1b896e886905831ed4d545785e11`.
 Authority: This is a routing snapshot. Verify Git, GitHub, runtime identity, and manual evidence before mutation.
 
 ## Current outcome
@@ -12,9 +12,10 @@ Authority: This is a routing snapshot. Verify Git, GitHub, runtime identity, and
 v0.6.0 is merged, tagged, published, and live. Platform artifacts and
 checksums/manifest are verified, and the public site is serving v0.6.0.
 
-PR #15, which fixes Finder document opening on macOS, and PR #18, which makes
-the landing-page AI sticker static, were squash-merged on 2026-07-24. PR #16
-and PR #17 remain open while their Codex feedback is being addressed.
+PR #15 fixes Finder document opening on macOS; PR #16 makes Markdown tables
+responsive; PR #17 fixes Mindmap panel sizing and shortcuts; and PR #18 plus
+PR #20 replace the landing-page AI sticker with a static WebP asset. All were
+squash-merged on 2026-07-24 after their final Codex reviews.
 
 ## v0.6.0 release preparation
 
@@ -68,8 +69,6 @@ The complete portfolio, including P2 and deferred work, is in
 
 - Do not push, open or merge a PR, tag, release, publish artifacts, or deploy
   without an explicit owner request.
-- PR #16 and PR #17 each need their active Codex review finding addressed
-  before they can be merged.
 - The GitHub Actions site deploy workflow still requires its own
   `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID`; the live site was
   deployed locally instead.
@@ -77,9 +76,7 @@ The complete portfolio, including P2 and deferred work, is in
 
 ## Next safe actions
 
-1. Address the unresolved Codex feedback on PR #16 and PR #17, then re-check
-   their current heads before merging.
-2. Keep the existing Apple signing/notarization secrets available for future
+1. Keep the existing Apple signing/notarization secrets available for future
    releases.
 
 ## Verification state
@@ -89,9 +86,10 @@ The complete portfolio, including P2 and deferred work, is in
 - `origin/main` contains the squash merge of PR #15 at `741f36e`. Its
   corrected `application:openFile:` Objective-C type encoding was verified at
   the merged PR head before merge.
-- PR #16 and PR #17 each have an open, non-outdated Codex review thread; they
-  are being addressed before merge. PR #18 was reviewed with no requested
-  changes and merged.
+- `origin/main` contains the final merges of PR #16, PR #17, and PR #20.
+  The table and Mindmap fixes passed their final Codex reviews; the static
+  WebP sticker passed review after its 290×192 transparent footprint was
+  restored.
 - `main` and `origin/main` contain PR #14; tag `v0.6.0` points to merge commit
   `0577040`, and the release candidate branch was clean before merge.
 - Owner-reported manual acceptance passed for the merged release scope: Finder
