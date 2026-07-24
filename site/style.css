@@ -357,47 +357,19 @@ main {
 .cta { margin-top: 30px; display: flex; flex-wrap: wrap; gap: 10px; }
 .runtime-note { margin: 18px 0 0; color: var(--subtle); font: 11px/1.5 var(--mono); }
 
-.ai-sticker {
+.hero-capture > .ai-sticker {
   position: absolute;
   top: -24px;
   right: -26px;
   z-index: 8;
-  display: grid;
-  width: 188px;
-  height: 116px;
-  place-items: center;
-  isolation: isolate;
-  color: var(--accent);
-  font: 800 27px/1 var(--sans);
-  letter-spacing: -.04em;
+  width: 290px;
+  height: auto;
   pointer-events: none;
   user-select: none;
   transform: rotate(-6deg);
-  text-shadow: 0 1px 0 rgba(255, 255, 255, .92);
-}
-
-.ai-sticker::before {
-  position: absolute;
-  z-index: -1;
-  inset: 4px 0 0 3px;
-  content: '';
-  background: #fff;
-  border: 7px solid #fff;
-  border-radius: 49% 51% 47% 52% / 55% 46% 54% 45%;
-  box-shadow: 8px 11px 17px rgba(25, 25, 29, .22);
-}
-
-.ai-sticker::after {
-  position: absolute;
-  z-index: -2;
-  right: 9px;
-  bottom: -4px;
-  width: 39px;
-  height: 28px;
-  content: '';
-  background: #f7f5f2;
-  clip-path: polygon(0 0, 100% 0, 100% 100%);
-  filter: drop-shadow(3px 3px 2px rgba(25, 25, 29, .17));
+  aspect-ratio: auto;
+  object-fit: contain;
+  filter: drop-shadow(8px 11px 17px rgba(25, 25, 29, .22));
 }
 
 .hero-capture {
@@ -832,7 +804,7 @@ pre.code code { padding: 0; background: transparent; font-size: inherit; }
   .hero-copy h1 { font-size: 39px; line-height: 1.05; }
   .hero-copy > p:not(.runtime-note) { margin-top: 18px; font-size: 16px; }
   .runtime-note { font-size: 10px; }
-  .ai-sticker { top: -18px; right: -16px; width: 220px; height: 145px; }
+  .hero-capture > .ai-sticker { top: -18px; right: -16px; width: 220px; height: auto; }
   .chapter-heading h2,
   .install-intro h2 { font-size: 30px; }
   .capture-pair { grid-template-columns: 1fr; }
