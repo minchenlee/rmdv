@@ -528,6 +528,7 @@ fn mindmap_panel_width_for_step(step: usize, window_size: Option<iced::Size>) ->
     window_size
         .map(|size| size.width * MIND_PANEL_FRACS[step % MIND_PANEL_FRACS.len()])
         .unwrap_or(MIND_PANEL_DEFAULT)
+        .max(MIND_PANEL_MIN)
 }
 
 fn mindmap_panel_width_for_drag(origin: f32, anchor: f32, cursor_x: f32) -> f32 {
@@ -14833,6 +14834,14 @@ mod tests {
         assert_eq!(mindmap_panel_width_for_step(0, window_size), 800.0);
         assert_eq!(mindmap_panel_width_for_step(1, window_size), 1200.0);
         assert_eq!(mindmap_panel_width_for_step(2, window_size), 1600.0);
+    }
+
+    #[test]
+    fn mindmap_panel_width_keeps_minimum_on_narrow_windows() {
+        let window_size = Some(iced::Size::new(400.0, 800.0));
+
+        assert_eq!(mindmap_panel_width_for_step(0, window_size), MIND_PANEL_MIN);
+        assert_eq!(mindmap_panel_width_for_step(1, window_size), MIND_PANEL_MIN);
     }
 
     #[test]
