@@ -1,16 +1,21 @@
 # rmdv — project status
 
-Last verified: 2026-07-22 CST (Asia/Taipei)
+Last verified: 2026-07-24 CST (Asia/Taipei)
 Stale after: 7 days
 Canonical repository: `/Users/liminchen/Documents/GitHub/mdv`
 Expected branch: `main`; always resolve its live HEAD before mutation.
-Last verified main base: `origin/main@73dd7c043c75783b198cd80d652e72aef00c368d`.
+Last verified main base: `origin/main@001815df6d5d1b896e886905831ed4d545785e11`.
 Authority: This is a routing snapshot. Verify Git, GitHub, runtime identity, and manual evidence before mutation.
 
 ## Current outcome
 
 v0.6.0 is merged, tagged, published, and live. Platform artifacts and
 checksums/manifest are verified, and the public site is serving v0.6.0.
+
+PR #15 fixes Finder document opening on macOS; PR #16 makes Markdown tables
+responsive; PR #17 fixes Mindmap panel sizing and shortcuts; and PR #18 plus
+PR #20 replace the landing-page AI sticker with a static WebP asset. All were
+squash-merged on 2026-07-24 after their final Codex reviews.
 
 ## v0.6.0 release preparation
 
@@ -55,7 +60,7 @@ checksums/manifest are verified, and the public site is serving v0.6.0.
 | --- | --- | --- | --- | --- | --- |
 | MDV-001 | ready | unassigned | Prove the Windows IPC lifetime fix on an actual Windows CI runner. | Windows build/package succeeds and the run proves non-empty app/setup executables with hashes plus a downloadable artifact. | [`docs/plans/active/MDV-001-windows-build-verification.md`](docs/plans/active/MDV-001-windows-build-verification.md) |
 | MDV-002 | ready | unassigned | Bound search result and highlight-cache memory without changing visible search behavior. | Explicit budgets, truncation behavior, focused regressions, and measured memory evidence. | [`docs/plans/active/MDV-002-search-highlight-memory-bounds.md`](docs/plans/active/MDV-002-search-highlight-memory-bounds.md) |
-| MDV-009 | ready | unassigned | Retarget and review Zoom Controls against the merged Full Mindmap implementation. | Clean isolated candidate, focused interaction tests, full relevant suites, and native zoom acceptance. | [`docs/plans/active/MDV-009-mindmap-zoom-controls-integration.md`](docs/plans/active/MDV-009-mindmap-zoom-controls-integration.md) |
+| MDV-004 | ready | unassigned | Make merged Full Mindmap discoverable in public and in-app guidance. | README features/shortcuts and in-app shortcut overlay match real keys and behavior; documentation/static checks pass. | [`docs/plans/active/MDV-004-full-mindmap-discoverability.md`](docs/plans/active/MDV-004-full-mindmap-discoverability.md) |
 
 The complete portfolio, including P2 and deferred work, is in
 [`docs/BACKLOG.md`](docs/BACKLOG.md).
@@ -64,8 +69,6 @@ The complete portfolio, including P2 and deferred work, is in
 
 - Do not push, open or merge a PR, tag, release, publish artifacts, or deploy
   without an explicit owner request.
-- `main` and `origin/main` contain the PR #14 merge line; tag `v0.6.0` points
-  to merge commit `0577040`.
 - The GitHub Actions site deploy workflow still requires its own
   `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID`; the live site was
   deployed locally instead.
@@ -80,6 +83,13 @@ The complete portfolio, including P2 and deferred work, is in
 
 ### Verified now
 
+- `origin/main` contains the squash merge of PR #15 at `741f36e`. Its
+  corrected `application:openFile:` Objective-C type encoding was verified at
+  the merged PR head before merge.
+- `origin/main` contains the final merges of PR #16, PR #17, and PR #20.
+  The table and Mindmap fixes passed their final Codex reviews; the static
+  WebP sticker passed review after its 290×192 transparent footprint was
+  restored.
 - `main` and `origin/main` contain PR #14; tag `v0.6.0` points to merge commit
   `0577040`, and the release candidate branch was clean before merge.
 - Owner-reported manual acceptance passed for the merged release scope: Finder
