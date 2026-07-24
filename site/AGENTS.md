@@ -38,6 +38,14 @@ It is separate from the Rust application and has no Cargo build boundary.
 - `node site/check-shortcuts.mjs` — verify the static app-shortcut reference against the native bindings in `src/app.rs` and guard its non-interactive boundary.
 - `wrangler deploy` — the deployment command configured by the repository's manual workflow; run only when publishing is explicitly in scope.
 
+### Local deployment runtime
+
+- Wrangler 4 requires Node 22 or newer. Before any local deploy, load NVM and
+  select Node 22 explicitly: `source ~/.nvm/nvm.sh && nvm use 22`.
+- Verify `node --version` and `npx wrangler whoami` before `npx wrangler deploy`.
+- Use the authenticated local Wrangler path for owner-approved production
+  deployments, then verify the live homepage and `llms.txt` separately.
+
 ## Editing constraints
 
 - Keep canonical URLs, metadata, JSON-LD, Open Graph/Twitter content, visible
