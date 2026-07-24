@@ -363,41 +363,49 @@ main {
   right: -26px;
   z-index: 8;
   display: grid;
-  width: 188px;
-  height: 116px;
+  width: 290px;
+  height: 192px;
   place-items: center;
   isolation: isolate;
   color: var(--accent);
-  font: 800 27px/1 var(--sans);
-  letter-spacing: -.04em;
+  font-family: 'Arial Rounded MT Bold', 'Arial Black', system-ui, sans-serif;
+  font-size: 48px;
+  font-weight: 900;
+  line-height: .9;
+  letter-spacing: -.06em;
   pointer-events: none;
   user-select: none;
   transform: rotate(-6deg);
-  text-shadow: 0 1px 0 rgba(255, 255, 255, .92);
+  text-shadow: 0 2px 0 rgba(255, 255, 255, .92);
 }
 
 .ai-sticker::before {
   position: absolute;
-  z-index: -1;
-  inset: 4px 0 0 3px;
+  z-index: 0;
+  inset: 5px 0 1px 1px;
   content: '';
   background: #fff;
-  border: 7px solid #fff;
-  border-radius: 49% 51% 47% 52% / 55% 46% 54% 45%;
-  box-shadow: 8px 11px 17px rgba(25, 25, 29, .22);
+  border: 18px solid #fff;
+  border-radius: 48% 52% 45% 55% / 58% 44% 56% 42%;
+  box-shadow: 10px 14px 22px rgba(25, 25, 29, .24);
 }
 
 .ai-sticker::after {
   position: absolute;
   z-index: -2;
-  right: 9px;
-  bottom: -4px;
-  width: 39px;
-  height: 28px;
+  right: 7px;
+  bottom: -8px;
+  width: 62px;
+  height: 45px;
   content: '';
   background: #f7f5f2;
   clip-path: polygon(0 0, 100% 0, 100% 100%);
-  filter: drop-shadow(3px 3px 2px rgba(25, 25, 29, .17));
+  filter: drop-shadow(4px 4px 3px rgba(25, 25, 29, .18));
+}
+
+.ai-sticker > span {
+  position: relative;
+  z-index: 1;
 }
 
 .hero-capture {
