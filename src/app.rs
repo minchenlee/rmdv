@@ -486,9 +486,8 @@ const SIDEBAR_MIN: f32 = 160.0;
 const SIDEBAR_MAX: f32 = 600.0;
 const MIND_PANEL_DEFAULT: f32 = 380.0;
 const MIND_PANEL_MIN: f32 = 240.0;
-const MIND_PANEL_MAX: f32 = 900.0;
-/// Window-width fractions cycled by ⌘⌥W: 1/3, 1/2, 3/5.
-const MIND_PANEL_FRACS: [f32; 3] = [1.0 / 3.0, 0.5, 0.6];
+/// Window-width fractions cycled by ⌘⌥W: 1/3, 1/2, 2/3.
+const MIND_PANEL_FRACS: [f32; 3] = [1.0 / 3.0, 0.5, 2.0 / 3.0];
 const MIND_PANEL_MAX_BLOCKS: usize = 80;
 const MIND_PANEL_MAX_TEXT_BYTES: usize = 24 * 1024;
 /// Kept only for the stale-worker regression fixture. Runtime preview parsing
@@ -526,10 +525,14 @@ fn zen_editor_bottom_inset(footer_visible: bool) -> f32 {
 }
 
 fn mindmap_panel_width_for_step(step: usize, window_size: Option<iced::Size>) -> f32 {
-    let target = window_size
+    window_size
         .map(|size| size.width * MIND_PANEL_FRACS[step % MIND_PANEL_FRACS.len()])
-        .unwrap_or(MIND_PANEL_DEFAULT);
-    target.clamp(MIND_PANEL_MIN, MIND_PANEL_MAX)
+        .unwrap_or(MIND_PANEL_DEFAULT)
+        .max(MIND_PANEL_MIN)
+}
+
+fn mindmap_panel_width_for_drag(origin: f32, anchor: f32, cursor_x: f32) -> f32 {
+    (origin + anchor - cursor_x).max(MIND_PANEL_MIN)
 }
 
 fn editor_font() -> iced::Font {
@@ -594,6 +597,21 @@ fn reader_font_size_shortcut(
         _ => return None,
     };
     Some(reader_action)
+}
+
+fn is_shortcuts_key(
+    key: &iced::keyboard::Key,
+    physical: iced::keyboard::key::Physical,
+    modifiers: iced::keyboard::Modifiers,
+) -> bool {
+    if !(modifiers.command() || modifiers.control()) {
+        return false;
+    }
+    matches!(key, iced::keyboard::Key::Character(c) if c == "/")
+        || matches!(
+            physical,
+            iced::keyboard::key::Physical::Code(iced::keyboard::key::Code::Slash)
+        )
 }
 
 /// In document Mindmap mode, higher-level surfaces and the `⌘K` folding chord
@@ -5373,8 +5391,8 @@ impl App {
                         match anchor {
                             None => full.panel_drag = Some((origin, Some(cursor_x))),
                             Some(anchor) => {
-                                full.panel_width = (origin + anchor - cursor_x)
-                                    .clamp(MIND_PANEL_MIN, MIND_PANEL_MAX);
+                                full.panel_width =
+                                    mindmap_panel_width_for_drag(origin, anchor, cursor_x);
                             }
                         }
                     }
@@ -6079,9 +6097,8 @@ impl App {
                             self.mindmap_panel_drag = Some((orig_w, Some(cursor_x)));
                         }
                         Some(ax) => {
-                            let dx = ax - cursor_x;
                             self.mindmap_panel_width =
-                                (orig_w + dx).clamp(MIND_PANEL_MIN, MIND_PANEL_MAX);
+                                mindmap_panel_width_for_drag(orig_w, ax, cursor_x);
                         }
                     }
                 }
@@ -7739,6 +7756,9 @@ impl App {
                         return Message::ToggleFullMindmap;
                     }
                 }
+                if is_shortcuts_key(&key, physical, mods) {
+                    return Message::ToggleShortcuts;
+                }
                 // ⌘⌥B: alt+letter on macOS swaps the logical char, so match the
                 // physical KeyB code instead of the produced character.
                 if cmd && mods.alt() {
@@ -7818,7 +7838,6 @@ impl App {
                         "t" if cmd => return Message::ToggleTheme,
                         "e" if cmd => return Message::ToggleViewMode,
                         "m" if cmd => return Message::ToggleMindmap,
-                        "/" if cmd => return Message::ToggleShortcuts,
                         "c" if cmd && !editing && !overlay_open => return Message::HintSelection,
                         "s" if cmd => return Message::SaveFile,
                         "z" if cmd && editing && mods.shift() => return Message::EditorRedo,
@@ -8387,13 +8406,10 @@ impl App {
         } else {
             Space::new().into()
         };
-        // Floating cheatsheet button, bottom-right of the reader. Sits just above the
-        // word-count pill when the footer is visible; drops to the corner when it's
-        // off. Hidden over the mindmap canvas and while an overlay is open.
-        let kb_button_layer: Element<'_, Message> = if !full_mindmap
-            && self.view_mode != ViewMode::Mindmap
-            && self.overlay == Overlay::None
-        {
+        // Floating cheatsheet button, bottom-right of the active reader or mindmap.
+        // Sits just above the word-count pill when the footer is visible; drops to
+        // the corner when it's off. Hidden only while an overlay is open.
+        let kb_button_layer: Element<'_, Message> = if self.overlay == Overlay::None {
             let bottom_pad = if footer_visible {
                 KEYBOARD_BUTTON_FOOTER_BOTTOM_PAD
             } else {
@@ -11973,6 +11989,28 @@ mod tests {
     }
 
     #[test]
+    fn shortcuts_key_accepts_logical_and_physical_slash() {
+        use iced::keyboard::key::{Code, Physical};
+        use iced::keyboard::{Key, Modifiers};
+
+        assert!(is_shortcuts_key(
+            &Key::Character("/".into()),
+            Physical::Code(Code::Slash),
+            Modifiers::COMMAND,
+        ));
+        assert!(is_shortcuts_key(
+            &Key::Character("?".into()),
+            Physical::Code(Code::Slash),
+            Modifiers::COMMAND,
+        ));
+        assert!(!is_shortcuts_key(
+            &Key::Character("/".into()),
+            Physical::Code(Code::Slash),
+            Modifiers::NONE,
+        ));
+    }
+
+    #[test]
     fn zen_editor_bottom_inset_clears_floating_shortcut_layers() {
         assert_eq!(zen_editor_bottom_inset(false), 40.0);
         assert_eq!(zen_editor_bottom_inset(true), 72.0);
@@ -14798,11 +14836,34 @@ mod tests {
         assert_eq!(full.panel_width, 600.0);
 
         let _ = app.update(Message::FullMindmapCyclePanelWidth);
-        assert_eq!(app.full_mindmap.as_ref().unwrap().panel_width, 720.0);
+        assert_eq!(app.full_mindmap.as_ref().unwrap().panel_width, 800.0);
         let _ = app.update(Message::FullMindmapCyclePanelWidth);
         assert_eq!(app.full_mindmap.as_ref().unwrap().panel_width, 400.0);
         assert_eq!(app.mindmap_panel_width, 333.0);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn mindmap_panel_width_preserves_fraction_on_large_windows() {
+        let window_size = Some(iced::Size::new(2400.0, 1600.0));
+
+        assert_eq!(mindmap_panel_width_for_step(0, window_size), 800.0);
+        assert_eq!(mindmap_panel_width_for_step(1, window_size), 1200.0);
+        assert_eq!(mindmap_panel_width_for_step(2, window_size), 1600.0);
+    }
+
+    #[test]
+    fn mindmap_panel_width_keeps_minimum_on_narrow_windows() {
+        let window_size = Some(iced::Size::new(400.0, 800.0));
+
+        assert_eq!(mindmap_panel_width_for_step(0, window_size), MIND_PANEL_MIN);
+        assert_eq!(mindmap_panel_width_for_step(1, window_size), MIND_PANEL_MIN);
+    }
+
+    #[test]
+    fn mindmap_panel_drag_has_no_upper_cap() {
+        assert_eq!(mindmap_panel_width_for_drag(800.0, 400.0, 0.0), 1200.0);
+        assert_eq!(mindmap_panel_width_for_drag(400.0, 400.0, 600.0), 240.0);
     }
 
     #[test]
