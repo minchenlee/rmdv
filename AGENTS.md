@@ -32,6 +32,10 @@
   accepted plans move to `docs/plans/completed/`.
 - Update current facts and acceptance evidence before ending material work.
 - Route completed and superseded narrative to `docs/status-history/`.
+- Pure documentation or control-plane updates that do not change product behavior
+  do not require a PR. With explicit owner authorization, commit them directly
+  to local `main`; do not push, merge remotely, tag, release, publish, or deploy
+  unless that authority is also explicit.
 
 ## Global invariants
 
