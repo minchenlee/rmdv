@@ -113,8 +113,8 @@ if (!browserLayer.includes('const mod = mac ? e.metaKey : e.ctrlKey;')) {
 if (!browserLayer.includes('if (e.defaultPrevented) return;')) {
   failures.push('website global shortcuts do not respect handled events from shadow controls');
 }
-if (!browserLayer.includes('sticker-forge, [contenteditable="true"]')) {
-  failures.push('Sticker Forge is not treated as an interactive website control');
+if (browserLayer.includes('sticker-forge')) {
+  failures.push('website still includes the interactive Sticker Forge control');
 }
 for (const fragment of ['appShortcutPreviews', 'openAppExperience', '.command-preview']) {
   if (browserLayer.includes(fragment)) failures.push(`website app-shortcut interaction returned: ${fragment}`);

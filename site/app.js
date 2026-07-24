@@ -263,7 +263,7 @@
     // website does not capture them or override browser/system behavior.
     if (!palette.hidden || !cheat.hidden) return;
     const inControl = document.activeElement?.matches(
-      'input, textarea, select, button, summary, a, sticker-forge, [contenteditable="true"]'
+      'input, textarea, select, button, summary, a, [contenteditable="true"]'
     );
 
     // Everything below: plain keys only — never steal native keyboard behavior
@@ -339,52 +339,4 @@
     });
   }
 
-  // ── AI sticker — Sticker Forge's real WebGL peel renderer ──
-  const aiSticker = $('#ai-sticker');
-  if (aiSticker) {
-    const stickerSource = () => ({
-      type: 'text',
-      text: '100% AI',
-      color: getComputedStyle(document.documentElement).getPropertyValue('--accent').trim()
-        || 'rgb(217, 119, 87)',
-      fontFamily: 'Arial Rounded MT Bold, Arial Black, sans-serif',
-      fontWeight: 900,
-    });
-
-    // The renderer keeps its canvas keyboard-focusable for peel controls. Hide
-    // only its browser focus ring so the interactive sticker stays accessible
-    // without adding a bright rectangle over the hero artwork.
-    const hideStickerFocusRing = () => {
-      const canvas = aiSticker.shadowRoot?.querySelector('canvas');
-      if (!canvas) return;
-      canvas.style.setProperty('outline', 'none', 'important');
-      canvas.style.setProperty('box-shadow', 'none', 'important');
-    };
-
-    import('./assets/sticker-forge.es.js')
-      .then(async () => {
-        await customElements.whenDefined('sticker-forge');
-        aiSticker.setOptions({
-          outline: { width: 18, color: '#ffffff' },
-          shadow: { color: '#19191d', opacity: .22, blur: 22, distance: 16, angle: 42 },
-          peel: { radius: .12, stiffness: .72, grabWidth: 64, maxAngle: 3.55, release: 'reset' },
-          sound: { enabled: true, volume: .68 },
-          back: { color: '#f7f5f2', gloss: .7, roughness: .3 },
-          tilt: -6,
-          quality: 'high',
-        });
-        await aiSticker.setSource(stickerSource());
-        hideStickerFocusRing();
-        requestAnimationFrame(hideStickerFocusRing);
-
-        const themeObserver = new MutationObserver(() => {
-          void aiSticker.setSource(stickerSource()).then(hideStickerFocusRing);
-        });
-        themeObserver.observe(document.documentElement, {
-          attributes: true,
-          attributeFilter: ['data-theme'],
-        });
-      })
-      .catch(() => aiSticker.classList.add('is-fallback'));
-  }
 })();
