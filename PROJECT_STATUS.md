@@ -1,16 +1,21 @@
 # rmdv — project status
 
-Last verified: 2026-07-22 CST (Asia/Taipei)
+Last verified: 2026-07-24 CST (Asia/Taipei)
 Stale after: 7 days
 Canonical repository: `/Users/liminchen/Documents/GitHub/mdv`
 Expected branch: `main`; always resolve its live HEAD before mutation.
-Last verified main base: `origin/main@73dd7c043c75783b198cd80d652e72aef00c368d`.
+Last verified main base: `origin/main@741f36ebf44d4ec14c0afa6a4ac1c8870090fcb8`.
 Authority: This is a routing snapshot. Verify Git, GitHub, runtime identity, and manual evidence before mutation.
 
 ## Current outcome
 
 v0.6.0 is merged, tagged, published, and live. Platform artifacts and
 checksums/manifest are verified, and the public site is serving v0.6.0.
+
+PR #15, which fixes Finder document opening on macOS, was squash-merged on
+2026-07-24 after its Codex review feedback was corrected. PR #16 and PR #17
+remain open with unresolved Codex feedback. PR #18 is open for the static
+replacement of the landing-page AI sticker.
 
 ## v0.6.0 release preparation
 
@@ -55,7 +60,7 @@ checksums/manifest are verified, and the public site is serving v0.6.0.
 | --- | --- | --- | --- | --- | --- |
 | MDV-001 | ready | unassigned | Prove the Windows IPC lifetime fix on an actual Windows CI runner. | Windows build/package succeeds and the run proves non-empty app/setup executables with hashes plus a downloadable artifact. | [`docs/plans/active/MDV-001-windows-build-verification.md`](docs/plans/active/MDV-001-windows-build-verification.md) |
 | MDV-002 | ready | unassigned | Bound search result and highlight-cache memory without changing visible search behavior. | Explicit budgets, truncation behavior, focused regressions, and measured memory evidence. | [`docs/plans/active/MDV-002-search-highlight-memory-bounds.md`](docs/plans/active/MDV-002-search-highlight-memory-bounds.md) |
-| MDV-009 | ready | unassigned | Retarget and review Zoom Controls against the merged Full Mindmap implementation. | Clean isolated candidate, focused interaction tests, full relevant suites, and native zoom acceptance. | [`docs/plans/active/MDV-009-mindmap-zoom-controls-integration.md`](docs/plans/active/MDV-009-mindmap-zoom-controls-integration.md) |
+| MDV-004 | ready | unassigned | Make merged Full Mindmap discoverable in public and in-app guidance. | README features/shortcuts and in-app shortcut overlay match real keys and behavior; documentation/static checks pass. | [`docs/plans/active/MDV-004-full-mindmap-discoverability.md`](docs/plans/active/MDV-004-full-mindmap-discoverability.md) |
 
 The complete portfolio, including P2 and deferred work, is in
 [`docs/BACKLOG.md`](docs/BACKLOG.md).
@@ -64,8 +69,9 @@ The complete portfolio, including P2 and deferred work, is in
 
 - Do not push, open or merge a PR, tag, release, publish artifacts, or deploy
   without an explicit owner request.
-- `main` and `origin/main` contain the PR #14 merge line; tag `v0.6.0` points
-  to merge commit `0577040`.
+- PR #16 and PR #17 each need their active Codex review finding addressed
+  before they can be merged.
+- PR #18 needs its Codex review before it can be merged.
 - The GitHub Actions site deploy workflow still requires its own
   `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID`; the live site was
   deployed locally instead.
@@ -73,13 +79,21 @@ The complete portfolio, including P2 and deferred work, is in
 
 ## Next safe actions
 
-1. Keep the existing Apple signing/notarization secrets available for future
+1. Address the unresolved Codex feedback on PR #16 and PR #17, then re-check
+   their current heads before merging.
+2. Review and merge PR #18 only after its static-site change is accepted.
+3. Keep the existing Apple signing/notarization secrets available for future
    releases.
 
 ## Verification state
 
 ### Verified now
 
+- `origin/main` contains the squash merge of PR #15 at `741f36e`. Its
+  corrected `application:openFile:` Objective-C type encoding was verified at
+  the merged PR head before merge.
+- PR #16 and PR #17 each have an open, non-outdated Codex review thread; they
+  were intentionally left unmerged. PR #18 is open and awaiting review.
 - `main` and `origin/main` contain PR #14; tag `v0.6.0` points to merge commit
   `0577040`, and the release candidate branch was clean before merge.
 - Owner-reported manual acceptance passed for the merged release scope: Finder
