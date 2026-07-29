@@ -13,7 +13,7 @@ use iced::widget::{
 };
 use iced::{Background, Border, Color, Element, Length, Padding, Task, Theme};
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{
     atomic::{AtomicU64, Ordering},
     Arc, OnceLock,
@@ -614,6 +614,66 @@ fn is_shortcuts_key(
         )
 }
 
+fn is_refresh_key(
+    key: &iced::keyboard::Key,
+    physical: iced::keyboard::key::Physical,
+    modifiers: iced::keyboard::Modifiers,
+) -> bool {
+    if !(modifiers.command() || modifiers.control()) || modifiers.alt() {
+        return false;
+    }
+    matches!(key, iced::keyboard::Key::Character(c) if c == "r" || c == "R")
+        || matches!(
+            physical,
+            iced::keyboard::key::Physical::Code(iced::keyboard::key::Code::KeyR)
+        )
+}
+
+fn is_command_alt_key(
+    key: &iced::keyboard::Key,
+    physical: iced::keyboard::key::Physical,
+    modifiers: iced::keyboard::Modifiers,
+    character: &str,
+    physical_code: iced::keyboard::key::Code,
+) -> bool {
+    if !(modifiers.command() || modifiers.control()) || !modifiers.alt() {
+        return false;
+    }
+    matches!(key, iced::keyboard::Key::Character(c) if c.eq_ignore_ascii_case(character))
+        || matches!(
+            physical,
+            iced::keyboard::key::Physical::Code(code) if code == physical_code
+        )
+}
+
+fn is_reveal_file_key(
+    key: &iced::keyboard::Key,
+    physical: iced::keyboard::key::Physical,
+    modifiers: iced::keyboard::Modifiers,
+) -> bool {
+    is_command_alt_key(
+        key,
+        physical,
+        modifiers,
+        "r",
+        iced::keyboard::key::Code::KeyR,
+    )
+}
+
+fn is_copy_file_path_key(
+    key: &iced::keyboard::Key,
+    physical: iced::keyboard::key::Physical,
+    modifiers: iced::keyboard::Modifiers,
+) -> bool {
+    is_command_alt_key(
+        key,
+        physical,
+        modifiers,
+        "c",
+        iced::keyboard::key::Code::KeyC,
+    )
+}
+
 /// In document Mindmap mode, higher-level surfaces and the `⌘K` folding chord
 /// own the keyboard. Do not resize unseen panel text behind them.
 fn reader_font_shortcuts_enabled(
@@ -684,6 +744,9 @@ pub enum Message {
     OpenCommandPalette,
     OpenThemePicker,
     OpenVaultSearch,
+    Refresh,
+    RevealFileInFinder,
+    CopyFilePath,
     VaultQueryChanged(String),
     /// Run the search for the current query (Enter when the query has changed).
     VaultRunSearch,
@@ -710,7 +773,16 @@ pub enum Message {
     OverlayConfirm,
     OverlayDescend,
     FileLoaded(Result<(PathBuf, String), String>),
+    RefreshFileLoaded {
+        request: PendingRefreshFile,
+        result: Result<(PathBuf, String), String>,
+    },
     FileChanged(PathBuf),
+    CheckClipboardCopy(String),
+    ClipboardCopyChecked {
+        expected: String,
+        actual: Option<String>,
+    },
     OpenLink(String),
     ToggleTheme,
     SetTheme(ThemePreset),
@@ -944,6 +1016,24 @@ struct PendingIpcFileOpen {
     nav: Option<PendingNav>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingRefreshFile {
+    id: u64,
+    path: PathBuf,
+}
+
+#[derive(Debug, Clone)]
+struct RefreshTracker {
+    id: u64,
+    has_workspace: bool,
+    has_file: bool,
+    file_refresh_skipped: bool,
+    file_done: bool,
+    workspace_done: bool,
+    file_error: Option<String>,
+    workspace_error: Option<String>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ZenRestoreState {
     pub sidebar_open: bool,
@@ -1044,6 +1134,11 @@ pub struct App {
     pub(crate) height_cache: crate::virt::HeightCache,
     pub toast: Option<Toast>,
     pub toast_seq: u64,
+    refresh_seq: u64,
+    pending_refresh: Option<RefreshTracker>,
+    pending_refresh_file: Option<PendingRefreshFile>,
+    pending_refresh_workspace: Option<PendingFullMindmapWorkspaceLoad>,
+    pending_clipboard_copy: Option<String>,
     /// Persistent neutral progress feedback for the active Full Mindmap
     /// verification wave. Kept separate from attention/error toasts so a
     /// blocked action never loses its own priority or expiry timing.
@@ -1245,6 +1340,11 @@ impl Default for App {
             height_cache: crate::virt::HeightCache::default(),
             toast: None,
             toast_seq: 0,
+            refresh_seq: 0,
+            pending_refresh: None,
+            pending_refresh_file: None,
+            pending_refresh_workspace: None,
+            pending_clipboard_copy: None,
             full_mindmap_progress: None,
             custom_themes: Vec::new(),
             theme_id: crate::theme::ThemeId::Preset(preset),
@@ -1396,7 +1496,14 @@ impl App {
         }
     }
 
+    fn cancel_refresh_tracking(&mut self) {
+        self.pending_refresh = None;
+        self.pending_refresh_file = None;
+        self.pending_refresh_workspace = None;
+    }
+
     fn load_file_unless_dirty(&mut self, path: PathBuf) -> Task<Message> {
+        self.cancel_refresh_tracking();
         if let Some(blocked) = self.block_file_open_if_dirty() {
             return blocked;
         }
@@ -1961,6 +2068,7 @@ impl App {
     /// through `FullMindmapWorkspaceLoaded` and consumes the same pending open
     /// there.
     fn begin_ipc_file_open(&mut self, path: PathBuf, nav: Option<PendingNav>) -> Task<Message> {
+        self.cancel_refresh_tracking();
         if self.full_mindmap.is_none() {
             self.pending_nav = nav;
             return Task::perform(load_file(path), Message::FileLoaded);
@@ -1982,6 +2090,7 @@ impl App {
         let Some(PendingIpcFileOpen { path, nav }) = self.pending_ipc_file_open.take() else {
             return cleanup;
         };
+        self.cancel_refresh_tracking();
         self.pending_nav = nav;
         Task::batch([cleanup, Task::perform(load_file(path), Message::FileLoaded)])
     }
@@ -2152,6 +2261,156 @@ impl App {
         }
     }
 
+    fn refresh_workspace_status(&mut self, path: PathBuf) -> Result<(), String> {
+        let expanded = self.expanded.clone();
+        match tree::build_workspace(&path, self.show_hidden) {
+            Ok(snapshot) => {
+                self.replace_workspace_snapshot(path, snapshot);
+                let root = self
+                    .workspace_tree
+                    .as_ref()
+                    .expect("workspace snapshot was just installed")
+                    .path
+                    .clone();
+                let retained: HashSet<PathBuf> = expanded
+                    .into_iter()
+                    .filter(|folder| {
+                        *folder == root
+                            || self
+                                .workspace_tree
+                                .as_ref()
+                                .is_some_and(|tree| tree::find_folder(tree, folder).is_some())
+                    })
+                    .collect();
+                self.expanded = retained;
+                self.expanded.insert(root);
+                let row_count = self
+                    .workspace_tree
+                    .as_ref()
+                    .map(|tree| {
+                        tree::flatten_with_files(
+                            tree,
+                            &self.workspace_sidebar_files,
+                            &self.expanded,
+                        )
+                        .len()
+                    })
+                    .unwrap_or(0);
+                self.tree_cursor = self.tree_cursor.min(row_count.saturating_sub(1));
+                self.reveal_current_file();
+                self.error = None;
+                Ok(())
+            }
+            Err(error) => {
+                let message = format!("Couldn't refresh {}: {error}", path.display());
+                self.error = Some(message.clone());
+                Err(message)
+            }
+        }
+    }
+
+    fn refresh_completion_label(tracker: &RefreshTracker) -> String {
+        let mut errors = Vec::new();
+        if let Some(error) = &tracker.workspace_error {
+            errors.push(format!("Folder refresh failed: {error}"));
+        }
+        if let Some(error) = &tracker.file_error {
+            errors.push(format!("File refresh failed: {error}"));
+        }
+        if !errors.is_empty() {
+            return errors.join("; ");
+        }
+
+        match (
+            tracker.has_workspace,
+            tracker.has_file,
+            tracker.file_refresh_skipped,
+        ) {
+            (true, true, true) => {
+                "Folder refreshed; file refresh skipped (unsaved edits)".to_string()
+            }
+            (true, true, false) => "File and folder refreshed".to_string(),
+            (true, false, _) => "Folder refreshed".to_string(),
+            (false, true, true) => "File refresh skipped (unsaved edits)".to_string(),
+            (false, true, false) => "File refreshed".to_string(),
+            (false, false, _) => "Nothing to refresh".to_string(),
+        }
+    }
+
+    fn finish_refresh(&mut self) -> Task<Message> {
+        let Some(tracker) = self.pending_refresh.as_ref() else {
+            return Task::none();
+        };
+        if !tracker.file_done || !tracker.workspace_done {
+            return Task::none();
+        }
+        let tracker = self
+            .pending_refresh
+            .take()
+            .expect("refresh tracker was just checked");
+        self.pending_refresh_file = None;
+        self.pending_refresh_workspace = None;
+        self.show_toast(Self::refresh_completion_label(&tracker))
+    }
+
+    fn refresh_status(&mut self) -> Task<Message> {
+        self.cancel_refresh_tracking();
+        self.refresh_seq = self.refresh_seq.wrapping_add(1);
+        let refresh_id = self.refresh_seq;
+        let has_workspace = self.workspace.is_some();
+        let has_file = self.file.is_some();
+        let file_refresh_skipped = has_file && self.dirty;
+        let mut tasks = Vec::new();
+        let mut workspace_done = !has_workspace;
+        let mut workspace_error = None;
+
+        if let Some(path) = self.workspace.clone() {
+            if self.full_mindmap.is_some() {
+                tasks.push(
+                    self.begin_full_mindmap_workspace_load(path, false, None, true, false, false),
+                );
+                self.pending_refresh_workspace = self
+                    .full_mindmap
+                    .as_ref()
+                    .and_then(|full| full.pending_workspace_load.clone());
+                workspace_done = self.pending_refresh_workspace.is_none();
+            } else if let Err(error) = self.refresh_workspace_status(path) {
+                workspace_error = Some(error);
+                workspace_done = true;
+            } else {
+                workspace_done = true;
+            }
+        }
+
+        let mut file_done = !has_file || file_refresh_skipped;
+        if has_file && !self.dirty {
+            if let Some(path) = self.file.clone() {
+                let request = PendingRefreshFile {
+                    id: refresh_id,
+                    path: path.clone(),
+                };
+                self.pending_refresh_file = Some(request.clone());
+                file_done = false;
+                tasks.push(Task::perform(load_file(path), move |result| {
+                    Message::RefreshFileLoaded { request, result }
+                }));
+            }
+        }
+
+        self.pending_refresh = Some(RefreshTracker {
+            id: refresh_id,
+            has_workspace,
+            has_file,
+            file_refresh_skipped,
+            file_done,
+            workspace_done,
+            file_error: None,
+            workspace_error,
+        });
+        tasks.push(self.finish_refresh());
+        Task::batch(tasks)
+    }
+
     fn set_workspace(&mut self, path: PathBuf, open_sidebar: bool) {
         match tree::build_workspace(&path, self.show_hidden) {
             Ok(snapshot) => self.apply_workspace_snapshot(path, snapshot, open_sidebar),
@@ -2178,6 +2437,7 @@ impl App {
         return_to_files_after: bool,
         exit_after_refresh: bool,
     ) -> Task<Message> {
+        self.cancel_refresh_tracking();
         if self.full_mindmap.is_none() {
             self.set_workspace(path, true);
             return Task::none();
@@ -2381,6 +2641,7 @@ impl App {
     /// late result cannot close the navigator after a newer request supersedes
     /// it, and its error has a navigator-local home instead of `App::error`.
     fn begin_full_mindmap_open(&mut self, path: PathBuf) -> Task<Message> {
+        self.cancel_refresh_tracking();
         if let Some(blocked) = self.block_file_open_if_dirty() {
             return blocked;
         }
@@ -4423,6 +4684,9 @@ impl App {
         };
         let mut items = vec![
             ("Open Folder…  ⌘O", Message::OpenFolderPicker),
+            ("Refresh File / Folder  ⌘R", Message::Refresh),
+            ("Reveal File in Finder  ⌘⌥R", Message::RevealFileInFinder),
+            ("Copy Focused File Path  ⌘⌥C", Message::CopyFilePath),
             ("Find File in Workspace…  ⌘P", Message::OpenFileFinder),
             ("Toggle Sidebar  ⌘B", Message::ToggleSidebar),
             ("Toggle Hidden Files  ⌘⇧.", Message::ToggleHidden),
@@ -4523,6 +4787,51 @@ impl App {
         }
     }
 
+    fn reveal_file_in_finder(path: &Path) -> Result<(), String> {
+        #[cfg(target_os = "macos")]
+        {
+            std::process::Command::new("open")
+                .arg("-R")
+                .arg(path)
+                .spawn()
+                .map(|_| ())
+                .map_err(|error| format!("couldn't launch Finder: {error}"))
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = path;
+            Err("Finder reveal is only supported on macOS".to_string())
+        }
+    }
+
+    fn focused_file_path(&self) -> Option<PathBuf> {
+        if let Some(WorkspaceNodeId::File(path)) = self
+            .full_mindmap
+            .as_ref()
+            .and_then(|full| full.selected.as_ref())
+        {
+            return Some(path.clone());
+        }
+
+        let files_sidebar_active = self.sidebar_open
+            && self.workspace.is_some()
+            && self.sidebar_tab == SidebarTab::Files
+            && self.full_mindmap.is_none();
+        if files_sidebar_active {
+            if let Some(root) = &self.workspace_tree {
+                let rows =
+                    tree::flatten_with_files(root, &self.workspace_sidebar_files, &self.expanded);
+                if let Some(row) = rows.get(self.tree_cursor) {
+                    if !row.node.is_dir() {
+                        return Some(row.node.path().to_path_buf());
+                    }
+                }
+            }
+        }
+
+        self.file.clone()
+    }
+
     fn reply(
         tx: &std::sync::Arc<
             std::sync::Mutex<Option<futures::channel::oneshot::Sender<crate::ipc::Response>>>,
@@ -4551,6 +4860,56 @@ impl App {
         }
         match msg {
             Message::Open(p) => self.load_file_unless_dirty(p),
+            Message::Refresh => self.refresh_status(),
+            Message::RevealFileInFinder => {
+                let Some(path) = self.file.clone() else {
+                    return self.show_toast("No file open".into());
+                };
+                let label = match Self::reveal_file_in_finder(&path) {
+                    Ok(()) => "Revealed in Finder".to_string(),
+                    Err(error) => error,
+                };
+                self.show_toast(label)
+            }
+            Message::CopyFilePath => {
+                let Some(path) = self.focused_file_path() else {
+                    return self.show_toast("No file open".into());
+                };
+                let expected = path.display().to_string();
+                self.pending_clipboard_copy = Some(expected.clone());
+                let toast = self.show_toast("Copying file path…".into());
+                let verify = Task::perform(
+                    async {
+                        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                    },
+                    move |_| Message::CheckClipboardCopy(expected),
+                );
+                Task::batch([
+                    iced::clipboard::write::<Message>(path.display().to_string()),
+                    verify,
+                    toast,
+                ])
+            }
+            Message::CheckClipboardCopy(expected) => {
+                if self.pending_clipboard_copy.as_deref() != Some(expected.as_str()) {
+                    return Task::none();
+                }
+                iced::clipboard::read().map(move |actual| Message::ClipboardCopyChecked {
+                    expected: expected.clone(),
+                    actual,
+                })
+            }
+            Message::ClipboardCopyChecked { expected, actual } => {
+                if self.pending_clipboard_copy.as_deref() != Some(expected.as_str()) {
+                    return Task::none();
+                }
+                self.pending_clipboard_copy = None;
+                if actual.as_deref() == Some(expected.as_str()) {
+                    self.show_toast("File path copied".into())
+                } else {
+                    self.show_toast("Couldn't copy file path".into())
+                }
+            }
             Message::OpenFileFinderPath(p) => {
                 self.overlay = Overlay::None;
                 if self.full_mindmap.is_some() {
@@ -4560,6 +4919,7 @@ impl App {
                 }
             }
             Message::OpenWorkspace(p) => {
+                self.cancel_refresh_tracking();
                 // A workspace selected through Full Mindmap Mode should not
                 // silently alter the hidden sidebar's open/closed preference.
                 if self.full_mindmap.is_some() {
@@ -5747,6 +6107,12 @@ impl App {
                     // this bounded index while it was running.
                     return Task::none();
                 }
+                let refresh_id = self
+                    .pending_refresh_workspace
+                    .as_ref()
+                    .filter(|pending| *pending == &request)
+                    .and_then(|_| self.pending_refresh.as_ref().map(|refresh| refresh.id));
+                let mut refresh_error = None;
                 let open_after = request.open_after.clone();
                 let mut followup = Task::none();
                 match result {
@@ -5810,6 +6176,7 @@ impl App {
                     }
                     Ok((path, _)) => {
                         let message = format!("Indexed unexpected folder: {}", path.display());
+                        refresh_error = Some(message.clone());
                         if request.preserve_navigation {
                             self.show_hidden = self.workspace_snapshot_show_hidden;
                         }
@@ -5828,6 +6195,7 @@ impl App {
                     }
                     Err(error) => {
                         let message = format!("Couldn't index {}: {error}", request.path.display());
+                        refresh_error = Some(message.clone());
                         // The existing workspace snapshot is still filtered
                         // under the previous value. Revert the UI preference so
                         // every accepted failure leaves those two facts aligned.
@@ -5852,8 +6220,20 @@ impl App {
                         }
                     }
                 }
+                let refresh_toast = if let Some(refresh_id) = refresh_id {
+                    self.pending_refresh_workspace = None;
+                    if let Some(refresh) = self.pending_refresh.as_mut() {
+                        if refresh.id == refresh_id {
+                            refresh.workspace_done = true;
+                            refresh.workspace_error = refresh_error;
+                        }
+                    }
+                    self.finish_refresh()
+                } else {
+                    Task::none()
+                };
                 self.invalidate_full_mindmap_layout();
-                followup
+                Task::batch([followup, refresh_toast])
             }
             Message::MindmapToggleNode(id) => {
                 if self.mindmap_collapsed.contains(&id) {
@@ -5998,7 +6378,14 @@ impl App {
                     preview_geometry,
                 ])
             }
-            Message::RefreshWindowMode(id) => refresh_window_mode_after_native_transition(id),
+            Message::RefreshWindowMode(id) => {
+                // AppKit local monitors must be registered after Iced has
+                // created the first NSWindow. Registering during `App::new`
+                // leaves the macOS event loop alive without ever creating a
+                // visible window on current macOS releases.
+                crate::native_pinch::install();
+                refresh_window_mode_after_native_transition(id)
+            }
             Message::RefreshWindowModeSettled(id) => refresh_window_mode(id),
             Message::WindowModeChanged(mode) => {
                 self.window_fullscreen = matches!(mode, iced::window::Mode::Fullscreen);
@@ -6298,6 +6685,7 @@ impl App {
             Message::PickerOpenFile(path) => {
                 self.overlay = Overlay::None;
                 self.picker = None;
+                self.cancel_refresh_tracking();
                 if let Some(blocked) = self.block_file_open_if_dirty() {
                     return blocked;
                 }
@@ -6423,7 +6811,61 @@ impl App {
                 }
                 Task::none()
             }
+            Message::RefreshFileLoaded { request, result } => {
+                let current = self.pending_refresh_file.as_ref() == Some(&request)
+                    && self
+                        .pending_refresh
+                        .as_ref()
+                        .is_some_and(|refresh| refresh.id == request.id)
+                    && self.file.as_deref() == Some(request.path.as_path());
+                if !current {
+                    // A newer navigation or refresh owns the current file.
+                    // This completion must not overwrite it.
+                    return Task::none();
+                }
+                self.pending_refresh_file = None;
+                if self.dirty {
+                    if let Some(refresh) = self.pending_refresh.as_mut() {
+                        refresh.file_done = true;
+                        refresh.file_refresh_skipped = true;
+                    }
+                    return self.finish_refresh();
+                }
+                match result {
+                    Ok((path, source)) if path == request.path => {
+                        let load = self.update(Message::FileLoaded(Ok((path, source))));
+                        if let Some(refresh) = self.pending_refresh.as_mut() {
+                            refresh.file_done = true;
+                        }
+                        let toast = self.finish_refresh();
+                        Task::batch([load, toast])
+                    }
+                    Ok((path, _)) => {
+                        let error = format!("Loaded unexpected file: {}", path.display());
+                        self.error = Some(error.clone());
+                        if let Some(refresh) = self.pending_refresh.as_mut() {
+                            refresh.file_done = true;
+                            refresh.file_error = Some(error);
+                        }
+                        self.finish_refresh()
+                    }
+                    Err(error) => {
+                        self.error = Some(error.clone());
+                        if let Some(refresh) = self.pending_refresh.as_mut() {
+                            refresh.file_done = true;
+                            refresh.file_error = Some(error);
+                        }
+                        self.finish_refresh()
+                    }
+                }
+            }
             Message::FileLoaded(Ok((path, src))) => {
+                let refresh_full_mindmap_preview = self.full_mindmap.as_ref().is_some_and(|full| {
+                    matches!(
+                        full.selected.as_ref(),
+                        Some(WorkspaceNodeId::File(selected)) if selected == &path
+                    )
+                });
                 if self.dirty {
                     // An IPC/link/vault open can queue navigation before its
                     // asynchronous read returns. Do not let that stale target
@@ -6451,7 +6893,7 @@ impl App {
                 }
                 self.source = src;
                 self.saved_source = self.source.clone();
-                self.file = Some(path);
+                self.file = Some(path.clone());
                 self.dirty = false;
                 self.outline_cursor = 0;
                 self.is_data_doc = data_lang_for(self.file.as_deref()).is_some();
@@ -6505,9 +6947,14 @@ impl App {
                 };
                 fetches.push(prime);
                 fetches.push(nav_task);
+                if refresh_full_mindmap_preview {
+                    let source = self.source_snapshot_for_preview();
+                    fetches.push(self.begin_full_mindmap_preview_source(path, source));
+                }
                 Task::batch(fetches)
             }
             Message::FileChanged(p) => {
+                self.cancel_refresh_tracking();
                 if self.dirty {
                     return self.show_toast("External change ignored (unsaved edits)".into());
                 }
@@ -7759,6 +8206,15 @@ impl App {
                 if is_shortcuts_key(&key, physical, mods) {
                     return Message::ToggleShortcuts;
                 }
+                if is_refresh_key(&key, physical, mods) {
+                    return Message::Refresh;
+                }
+                if is_reveal_file_key(&key, physical, mods) {
+                    return Message::RevealFileInFinder;
+                }
+                if is_copy_file_path_key(&key, physical, mods) {
+                    return Message::CopyFilePath;
+                }
                 // ⌘⌥B: alt+letter on macOS swaps the logical char, so match the
                 // physical KeyB code instead of the produced character.
                 if cmd && mods.alt() {
@@ -7776,11 +8232,6 @@ impl App {
                         }
                         if mindmap {
                             return Message::MindmapCyclePanelWidth;
-                        }
-                    }
-                    if let Physical::Code(Code::KeyC) = physical {
-                        if tree_active {
-                            return Message::CopyTreePath;
                         }
                     }
                 }
@@ -10456,6 +10907,9 @@ fn shortcuts_overlay<'a>(pal: Palette) -> Element<'a, Message> {
             "File",
             &[
                 ("⌘O", "Open Folder"),
+                ("⌘R", "Refresh File / Folder"),
+                ("⌘⌥R", "Reveal File in Finder"),
+                ("⌘⌥C", "Copy Focused File Path"),
                 ("⌘P", "Find File in Workspace"),
                 ("⌘S", "Save"),
             ],
@@ -11861,6 +12315,235 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    #[test]
+    fn manual_refresh_rebuilds_workspace_and_preserves_expansion() {
+        let dir = full_mindmap_test_dir("manual-refresh-workspace");
+        let docs = dir.join("docs");
+        let added = docs.join("added.md");
+        std::fs::create_dir_all(&docs).unwrap();
+        std::fs::write(docs.join("existing.md"), "# Existing\n").unwrap();
+
+        let mut app = App::default();
+        app.set_workspace(dir.clone(), false);
+        app.expanded.insert(docs.clone());
+        std::fs::write(&added, "# Added\n").unwrap();
+
+        let _ = app.update(Message::Refresh);
+
+        assert!(app.workspace_files.contains(&added));
+        assert!(app.expanded.contains(&dir));
+        assert!(app.expanded.contains(&docs));
+        assert!(app.error.is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn manual_refresh_does_not_discard_unsaved_file_edits() {
+        let file = PathBuf::from("/tmp/rmdv-manual-refresh.md");
+        let mut app = App::default();
+        app.file = Some(file);
+        app.source = "unsaved".into();
+        app.saved_source = "saved".into();
+        app.dirty = true;
+
+        let _ = app.update(Message::Refresh);
+
+        assert_eq!(app.source, "unsaved");
+        assert!(app
+            .toast
+            .as_ref()
+            .is_some_and(|toast| { toast.text.contains("unsaved edits") }));
+    }
+
+    #[test]
+    fn manual_refresh_shows_file_refreshed_toast() {
+        let dir = full_mindmap_test_dir("manual-refresh-file-toast");
+        let file = dir.join("manual-refresh.md");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(&file, "# Original\n").unwrap();
+        let mut app = App::default();
+        app.file = Some(file.clone());
+
+        let _ = app.update(Message::Refresh);
+        let request = app
+            .pending_refresh_file
+            .clone()
+            .expect("file refresh should be pending");
+        assert!(app.toast.is_none());
+
+        let _ = app.update(Message::RefreshFileLoaded {
+            request,
+            result: Ok((file, "# Refreshed\n".into())),
+        });
+
+        assert_eq!(
+            app.toast.as_ref().map(|toast| toast.text.as_str()),
+            Some("File refreshed")
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn manual_refresh_reports_file_failure_after_load() {
+        let file = PathBuf::from("/tmp/rmdv-manual-refresh-failure.md");
+        let mut app = App::default();
+        app.file = Some(file);
+
+        let _ = app.update(Message::Refresh);
+        let request = app
+            .pending_refresh_file
+            .clone()
+            .expect("file refresh should be pending");
+        let _ = app.update(Message::RefreshFileLoaded {
+            request,
+            result: Err("read failed".into()),
+        });
+
+        assert_eq!(
+            app.toast.as_ref().map(|toast| toast.text.as_str()),
+            Some("File refresh failed: read failed")
+        );
+    }
+
+    #[test]
+    fn stale_manual_refresh_completion_is_ignored_after_navigation() {
+        let old = PathBuf::from("/tmp/rmdv-refresh-old.md");
+        let new = PathBuf::from("/tmp/rmdv-refresh-new.md");
+        let mut app = App::default();
+        app.file = Some(old.clone());
+        app.source = "old".into();
+        app.saved_source = "old".into();
+
+        let _ = app.update(Message::Refresh);
+        let request = app
+            .pending_refresh_file
+            .clone()
+            .expect("file refresh should be pending");
+        let _ = app.update(Message::Open(new));
+        let _ = app.update(Message::RefreshFileLoaded {
+            request,
+            result: Ok((old, "stale refresh".into())),
+        });
+
+        assert_eq!(app.source, "old");
+        assert!(app.pending_refresh.is_none());
+    }
+
+    #[test]
+    fn command_alt_file_shortcuts_accept_logical_and_physical_keys() {
+        use iced::keyboard::key::{Code, Physical};
+        use iced::keyboard::{Key, Modifiers};
+
+        let modifiers = Modifiers::COMMAND | Modifiers::ALT;
+        assert!(is_reveal_file_key(
+            &Key::Character("r".into()),
+            Physical::Code(Code::KeyR),
+            modifiers,
+        ));
+        assert!(is_copy_file_path_key(
+            &Key::Character("x".into()),
+            Physical::Code(Code::KeyC),
+            modifiers,
+        ));
+        assert!(!is_refresh_key(
+            &Key::Character("r".into()),
+            Physical::Code(Code::KeyR),
+            modifiers,
+        ));
+    }
+
+    #[test]
+    fn copy_file_path_shows_feedback_for_current_file() {
+        let mut app = App::default();
+        let current = PathBuf::from("/tmp/rmdv-copy-path.md");
+        app.file = Some(current.clone());
+
+        assert_eq!(app.focused_file_path(), Some(current));
+
+        let _ = app.update(Message::CopyFilePath);
+
+        assert_eq!(
+            app.toast.as_ref().map(|toast| toast.text.as_str()),
+            Some("Copying file path…")
+        );
+    }
+
+    #[test]
+    fn clipboard_copy_verification_shows_success_or_failure_feedback() {
+        let expected = "/tmp/rmdv-copy-path.md".to_string();
+        let mut success = App::default();
+        success.pending_clipboard_copy = Some(expected.clone());
+        let _ = success.update(Message::ClipboardCopyChecked {
+            expected: expected.clone(),
+            actual: Some(expected.clone()),
+        });
+        assert_eq!(
+            success.toast.as_ref().map(|toast| toast.text.as_str()),
+            Some("File path copied")
+        );
+
+        let mut failure = App::default();
+        failure.pending_clipboard_copy = Some(expected.clone());
+        let _ = failure.update(Message::ClipboardCopyChecked {
+            expected,
+            actual: None,
+        });
+        assert_eq!(
+            failure.toast.as_ref().map(|toast| toast.text.as_str()),
+            Some("Couldn't copy file path")
+        );
+    }
+
+    #[test]
+    fn copy_file_path_uses_full_mindmap_file_focus() {
+        let current = PathBuf::from("/tmp/rmdv-current.md");
+        let focused = PathBuf::from("/tmp/rmdv-focused-in-mindmap.md");
+        let mut app = App::default();
+        app.file = Some(current);
+        app.full_mindmap = Some(App::new_full_mindmap_state());
+        app.full_mindmap.as_mut().unwrap().selected = Some(WorkspaceNodeId::File(focused.clone()));
+
+        assert_eq!(app.focused_file_path(), Some(focused));
+    }
+
+    #[test]
+    fn copy_file_path_uses_focused_file_sidebar_row() {
+        let dir = full_mindmap_test_dir("copy-focused-sidebar");
+        let focused = dir.join("focused.md");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(&focused, "# Focused\n").unwrap();
+
+        let mut app = App::default();
+        app.set_workspace(dir.clone(), false);
+        app.sidebar_open = true;
+        app.sidebar_tab = SidebarTab::Files;
+        app.file = Some(dir.join("current.md"));
+        let rows = tree::flatten_with_files(
+            app.workspace_tree.as_ref().unwrap(),
+            &app.workspace_sidebar_files,
+            &app.expanded,
+        );
+        app.tree_cursor = rows
+            .iter()
+            .position(|row| row.node.path() == focused)
+            .expect("focused sidebar file should be visible");
+
+        assert_eq!(app.focused_file_path(), Some(focused));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn reveal_file_without_open_document_shows_feedback() {
+        let mut app = App::default();
+
+        let _ = app.update(Message::RevealFileInFinder);
+
+        assert_eq!(
+            app.toast.as_ref().map(|toast| toast.text.as_str()),
+            Some("No file open")
+        );
+    }
+
     fn editor_key_press(
         key: iced::keyboard::Key,
         physical_key: iced::keyboard::key::Physical,
@@ -12006,6 +12689,28 @@ mod tests {
         assert!(!is_shortcuts_key(
             &Key::Character("/".into()),
             Physical::Code(Code::Slash),
+            Modifiers::NONE,
+        ));
+    }
+
+    #[test]
+    fn refresh_key_accepts_logical_and_physical_key_r() {
+        use iced::keyboard::key::{Code, Physical};
+        use iced::keyboard::{Key, Modifiers};
+
+        assert!(is_refresh_key(
+            &Key::Character("r".into()),
+            Physical::Code(Code::KeyR),
+            Modifiers::COMMAND,
+        ));
+        assert!(is_refresh_key(
+            &Key::Character("R".into()),
+            Physical::Code(Code::KeyR),
+            Modifiers::CTRL,
+        ));
+        assert!(!is_refresh_key(
+            &Key::Character("r".into()),
+            Physical::Code(Code::KeyR),
             Modifiers::NONE,
         ));
     }
