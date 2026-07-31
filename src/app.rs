@@ -777,6 +777,10 @@ pub enum Message {
         request: PendingRefreshFile,
         result: Result<(PathBuf, String), String>,
     },
+    RefreshWorkspaceLoaded {
+        request: PendingRefreshWorkspace,
+        result: Result<(PathBuf, tree::WorkspaceSnapshot), String>,
+    },
     FileChanged(PathBuf),
     CheckClipboardCopy(String),
     ClipboardCopyChecked {
@@ -1022,6 +1026,13 @@ pub struct PendingRefreshFile {
     path: PathBuf,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingRefreshWorkspace {
+    id: u64,
+    path: PathBuf,
+    show_hidden: bool,
+}
+
 #[derive(Debug, Clone)]
 struct RefreshTracker {
     id: u64,
@@ -1137,7 +1148,8 @@ pub struct App {
     refresh_seq: u64,
     pending_refresh: Option<RefreshTracker>,
     pending_refresh_file: Option<PendingRefreshFile>,
-    pending_refresh_workspace: Option<PendingFullMindmapWorkspaceLoad>,
+    pending_refresh_workspace: Option<PendingRefreshWorkspace>,
+    pending_refresh_full_mindmap_workspace: Option<PendingFullMindmapWorkspaceLoad>,
     pending_clipboard_copy: Option<String>,
     /// Persistent neutral progress feedback for the active Full Mindmap
     /// verification wave. Kept separate from attention/error toasts so a
@@ -1344,6 +1356,7 @@ impl Default for App {
             pending_refresh: None,
             pending_refresh_file: None,
             pending_refresh_workspace: None,
+            pending_refresh_full_mindmap_workspace: None,
             pending_clipboard_copy: None,
             full_mindmap_progress: None,
             custom_themes: Vec::new(),
@@ -1500,6 +1513,7 @@ impl App {
         self.pending_refresh = None;
         self.pending_refresh_file = None;
         self.pending_refresh_workspace = None;
+        self.pending_refresh_full_mindmap_workspace = None;
     }
 
     fn load_file_unless_dirty(&mut self, path: PathBuf) -> Task<Message> {
@@ -2261,52 +2275,99 @@ impl App {
         }
     }
 
-    fn refresh_workspace_status(&mut self, path: PathBuf) -> Result<(), String> {
+    fn apply_refreshed_workspace_snapshot(
+        &mut self,
+        path: PathBuf,
+        snapshot: tree::WorkspaceSnapshot,
+    ) {
         let expanded = self.expanded.clone();
-        match tree::build_workspace(&path, self.show_hidden) {
-            Ok(snapshot) => {
-                self.replace_workspace_snapshot(path, snapshot);
-                let root = self
-                    .workspace_tree
-                    .as_ref()
-                    .expect("workspace snapshot was just installed")
-                    .path
-                    .clone();
-                let retained: HashSet<PathBuf> = expanded
-                    .into_iter()
-                    .filter(|folder| {
-                        *folder == root
-                            || self
-                                .workspace_tree
-                                .as_ref()
-                                .is_some_and(|tree| tree::find_folder(tree, folder).is_some())
-                    })
-                    .collect();
-                self.expanded = retained;
-                self.expanded.insert(root);
-                let row_count = self
-                    .workspace_tree
-                    .as_ref()
-                    .map(|tree| {
-                        tree::flatten_with_files(
-                            tree,
-                            &self.workspace_sidebar_files,
-                            &self.expanded,
-                        )
-                        .len()
-                    })
-                    .unwrap_or(0);
-                self.tree_cursor = self.tree_cursor.min(row_count.saturating_sub(1));
-                self.reveal_current_file();
-                self.error = None;
-                Ok(())
+        self.replace_workspace_snapshot(path, snapshot);
+        let root = self
+            .workspace_tree
+            .as_ref()
+            .expect("workspace snapshot was just installed")
+            .path
+            .clone();
+        let retained: HashSet<PathBuf> = expanded
+            .into_iter()
+            .filter(|folder| {
+                *folder == root
+                    || self
+                        .workspace_tree
+                        .as_ref()
+                        .is_some_and(|tree| tree::find_folder(tree, folder).is_some())
+            })
+            .collect();
+        self.expanded = retained;
+        self.expanded.insert(root);
+        let row_count = self
+            .workspace_tree
+            .as_ref()
+            .map(|tree| {
+                tree::flatten_with_files(tree, &self.workspace_sidebar_files, &self.expanded).len()
+            })
+            .unwrap_or(0);
+        self.tree_cursor = self.tree_cursor.min(row_count.saturating_sub(1));
+        self.reveal_current_file();
+        self.error = None;
+    }
+
+    fn begin_refresh_workspace_load(&mut self, path: PathBuf, id: u64) -> Task<Message> {
+        let request = PendingRefreshWorkspace {
+            id,
+            path: path.clone(),
+            show_hidden: self.show_hidden,
+        };
+        self.pending_refresh_workspace = Some(request.clone());
+        Task::perform(
+            load_workspace_snapshot(path, request.show_hidden),
+            move |result| Message::RefreshWorkspaceLoaded { request, result },
+        )
+    }
+
+    fn handle_refresh_workspace_loaded(
+        &mut self,
+        request: PendingRefreshWorkspace,
+        result: Result<(PathBuf, tree::WorkspaceSnapshot), String>,
+    ) -> Task<Message> {
+        let current = self.pending_refresh_workspace.as_ref() == Some(&request)
+            && self
+                .pending_refresh
+                .as_ref()
+                .is_some_and(|refresh| refresh.id == request.id)
+            && self.full_mindmap.is_none()
+            && self.workspace.as_deref() == Some(request.path.as_path())
+            && self.show_hidden == request.show_hidden;
+        if !current {
+            // A newer refresh, navigation, or hidden-file filter owns the
+            // current workspace. This completion must not overwrite it.
+            return Task::none();
+        }
+
+        self.pending_refresh_workspace = None;
+        let workspace_error = match result {
+            Ok((path, snapshot)) if path == request.path => {
+                self.apply_refreshed_workspace_snapshot(path, snapshot);
+                None
+            }
+            Ok((path, _)) => {
+                let error = format!("Loaded unexpected folder: {}", path.display());
+                self.error = Some(error.clone());
+                Some(error)
             }
             Err(error) => {
-                let message = format!("Couldn't refresh {}: {error}", path.display());
+                let message = format!("Couldn't refresh {}: {error}", request.path.display());
                 self.error = Some(message.clone());
-                Err(message)
+                Some(message)
+            }
+        };
+        if let Some(refresh) = self.pending_refresh.as_mut() {
+            if refresh.id == request.id {
+                refresh.workspace_done = true;
+                refresh.workspace_error = workspace_error;
             }
         }
+        self.finish_refresh()
     }
 
     fn refresh_completion_label(tracker: &RefreshTracker) -> String {
@@ -2350,6 +2411,7 @@ impl App {
             .expect("refresh tracker was just checked");
         self.pending_refresh_file = None;
         self.pending_refresh_workspace = None;
+        self.pending_refresh_full_mindmap_workspace = None;
         self.show_toast(Self::refresh_completion_label(&tracker))
     }
 
@@ -2362,23 +2424,20 @@ impl App {
         let file_refresh_skipped = has_file && self.dirty;
         let mut tasks = Vec::new();
         let mut workspace_done = !has_workspace;
-        let mut workspace_error = None;
 
         if let Some(path) = self.workspace.clone() {
             if self.full_mindmap.is_some() {
                 tasks.push(
                     self.begin_full_mindmap_workspace_load(path, false, None, true, false, false),
                 );
-                self.pending_refresh_workspace = self
+                self.pending_refresh_full_mindmap_workspace = self
                     .full_mindmap
                     .as_ref()
                     .and_then(|full| full.pending_workspace_load.clone());
-                workspace_done = self.pending_refresh_workspace.is_none();
-            } else if let Err(error) = self.refresh_workspace_status(path) {
-                workspace_error = Some(error);
-                workspace_done = true;
+                workspace_done = self.pending_refresh_full_mindmap_workspace.is_none();
             } else {
-                workspace_done = true;
+                tasks.push(self.begin_refresh_workspace_load(path, refresh_id));
+                workspace_done = false;
             }
         }
 
@@ -2405,7 +2464,7 @@ impl App {
             file_done,
             workspace_done,
             file_error: None,
-            workspace_error,
+            workspace_error: None,
         });
         tasks.push(self.finish_refresh());
         Task::batch(tasks)
@@ -2498,10 +2557,9 @@ impl App {
         }
         self.invalidate_full_mindmap_layout();
         let show_hidden = self.show_hidden;
-        Task::perform(
-            load_full_mindmap_workspace(path, show_hidden),
-            move |result| Message::FullMindmapWorkspaceLoaded { request, result },
-        )
+        Task::perform(load_workspace_snapshot(path, show_hidden), move |result| {
+            Message::FullMindmapWorkspaceLoaded { request, result }
+        })
     }
 
     fn begin_full_mindmap_expanded_folder_loads(&mut self) -> Task<Message> {
@@ -4862,7 +4920,7 @@ impl App {
             Message::Open(p) => self.load_file_unless_dirty(p),
             Message::Refresh => self.refresh_status(),
             Message::RevealFileInFinder => {
-                let Some(path) = self.file.clone() else {
+                let Some(path) = self.focused_file_path() else {
                     return self.show_toast("No file open".into());
                 };
                 let label = match Self::reveal_file_in_finder(&path) {
@@ -4875,17 +4933,20 @@ impl App {
                 let Some(path) = self.focused_file_path() else {
                     return self.show_toast("No file open".into());
                 };
-                let expected = path.display().to_string();
+                let Some(expected) = path.to_str().map(str::to_owned) else {
+                    return self.show_toast("File path cannot be copied as text".into());
+                };
                 self.pending_clipboard_copy = Some(expected.clone());
                 let toast = self.show_toast("Copying file path…".into());
+                let verify_expected = expected.clone();
                 let verify = Task::perform(
                     async {
                         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
                     },
-                    move |_| Message::CheckClipboardCopy(expected),
+                    move |_| Message::CheckClipboardCopy(verify_expected),
                 );
                 Task::batch([
-                    iced::clipboard::write::<Message>(path.display().to_string()),
+                    iced::clipboard::write::<Message>(expected.clone()),
                     verify,
                     toast,
                 ])
@@ -6096,6 +6157,9 @@ impl App {
             Message::FullMindmapVerificationLoaded { request, result } => {
                 self.handle_full_mindmap_verification_loaded(request, result)
             }
+            Message::RefreshWorkspaceLoaded { request, result } => {
+                self.handle_refresh_workspace_loaded(request, result)
+            }
             Message::FullMindmapWorkspaceLoaded { request, result } => {
                 let current = self.full_mindmap.as_ref().is_some_and(|full| {
                     full.pending_workspace_load
@@ -6108,7 +6172,7 @@ impl App {
                     return Task::none();
                 }
                 let refresh_id = self
-                    .pending_refresh_workspace
+                    .pending_refresh_full_mindmap_workspace
                     .as_ref()
                     .filter(|pending| *pending == &request)
                     .and_then(|_| self.pending_refresh.as_ref().map(|refresh| refresh.id));
@@ -6221,7 +6285,7 @@ impl App {
                     }
                 }
                 let refresh_toast = if let Some(refresh_id) = refresh_id {
-                    self.pending_refresh_workspace = None;
+                    self.pending_refresh_full_mindmap_workspace = None;
                     if let Some(refresh) = self.pending_refresh.as_mut() {
                         if refresh.id == refresh_id {
                             refresh.workspace_done = true;
@@ -7224,8 +7288,11 @@ impl App {
                 Task::none()
             }
             Message::ToggleHidden => {
-                self.show_hidden = !self.show_hidden;
                 let full_active = self.full_mindmap.is_some();
+                if !full_active {
+                    self.cancel_refresh_tracking();
+                }
+                self.show_hidden = !self.show_hidden;
                 let workspace = self.workspace.clone();
                 let pending_workspace = self
                     .full_mindmap
@@ -11897,7 +11964,7 @@ async fn load_full_mindmap_preview(p: PathBuf) -> Result<(PathBuf, String), Stri
 /// Build the tree and file-finder index together on a blocking worker. The
 /// tree-side entry/file budgets guarantee a very large project cannot grow
 /// this task without bound.
-async fn load_full_mindmap_workspace(
+async fn load_workspace_snapshot(
     path: PathBuf,
     show_hidden: bool,
 ) -> Result<(PathBuf, tree::WorkspaceSnapshot), String> {
@@ -12316,7 +12383,7 @@ mod tests {
     }
 
     #[test]
-    fn manual_refresh_rebuilds_workspace_and_preserves_expansion() {
+    fn manual_refresh_rebuilds_workspace_in_background_and_preserves_expansion() {
         let dir = full_mindmap_test_dir("manual-refresh-workspace");
         let docs = dir.join("docs");
         let added = docs.join("added.md");
@@ -12329,11 +12396,63 @@ mod tests {
         std::fs::write(&added, "# Added\n").unwrap();
 
         let _ = app.update(Message::Refresh);
+        let request = app
+            .pending_refresh_workspace
+            .clone()
+            .expect("workspace refresh should be pending");
+        assert!(!app.workspace_files.contains(&added));
+
+        let snapshot = tree::build_workspace(&request.path, request.show_hidden).unwrap();
+        let _ = app.update(Message::RefreshWorkspaceLoaded {
+            request,
+            result: Ok((dir.clone(), snapshot)),
+        });
 
         assert!(app.workspace_files.contains(&added));
         assert!(app.expanded.contains(&dir));
         assert!(app.expanded.contains(&docs));
         assert!(app.error.is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn stale_manual_workspace_refresh_completion_is_ignored() {
+        let dir = full_mindmap_test_dir("stale-manual-refresh-workspace");
+        let docs = dir.join("docs");
+        let added = docs.join("added.md");
+        std::fs::create_dir_all(&docs).unwrap();
+        std::fs::write(docs.join("existing.md"), "# Existing\n").unwrap();
+
+        let mut app = App::default();
+        app.set_workspace(dir.clone(), false);
+
+        let _ = app.update(Message::Refresh);
+        let stale_request = app
+            .pending_refresh_workspace
+            .clone()
+            .expect("first workspace refresh should be pending");
+        std::fs::write(&added, "# Added\n").unwrap();
+
+        let _ = app.update(Message::Refresh);
+        let current_request = app
+            .pending_refresh_workspace
+            .clone()
+            .expect("second workspace refresh should be pending");
+        let snapshot =
+            tree::build_workspace(&current_request.path, current_request.show_hidden).unwrap();
+
+        let _ = app.update(Message::RefreshWorkspaceLoaded {
+            request: stale_request,
+            result: Ok((dir.clone(), snapshot.clone())),
+        });
+        assert!(!app.workspace_files.contains(&added));
+
+        let _ = app.update(Message::RefreshWorkspaceLoaded {
+            request: current_request,
+            result: Ok((dir.clone(), snapshot)),
+        });
+        assert!(app.workspace_files.contains(&added));
+
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -12466,6 +12585,25 @@ mod tests {
             app.toast.as_ref().map(|toast| toast.text.as_str()),
             Some("Copying file path…")
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn copy_file_path_rejects_non_unicode_path() {
+        use std::ffi::OsString;
+        use std::os::unix::ffi::OsStringExt;
+
+        let path = PathBuf::from(OsString::from_vec(b"/tmp/rmdv-\xff.md".to_vec()));
+        let mut app = App::default();
+        app.file = Some(path);
+
+        let _ = app.update(Message::CopyFilePath);
+
+        assert_eq!(
+            app.toast.as_ref().map(|toast| toast.text.as_str()),
+            Some("File path cannot be copied as text")
+        );
+        assert!(app.pending_clipboard_copy.is_none());
     }
 
     #[test]
