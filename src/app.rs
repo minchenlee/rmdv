@@ -1219,7 +1219,8 @@ pub struct App {
     /// gesture into the other graph.
     pub full_mindmap_native_pinch_log: f64,
     /// Cached mindmap layout, lazily rebuilt from (ast, file, mindmap_collapsed).
-    /// Every mutation of those inputs must call `invalidate_mindmap_layout`.
+    /// Every mutation of those inputs must invalidate it or atomically replace
+    /// it with a layout built from the new state.
     /// RefCell so `view(&self)` can populate it on first read.
     mindmap_layout: std::cell::RefCell<
         Option<(
@@ -3808,6 +3809,24 @@ impl App {
             .set(self.mindmap_layout_generation.get().wrapping_add(1));
     }
 
+    fn replace_mindmap_layout(
+        &self,
+        nodes: Vec<crate::mindmap::MNode>,
+        size: iced::Size,
+        paths: std::collections::HashMap<crate::ast::BlockId, Vec<crate::data_mindmap::PathSeg>>,
+    ) -> std::sync::Arc<Vec<crate::mindmap::MNode>> {
+        let nodes = std::sync::Arc::new(nodes);
+        *self.mindmap_layout.borrow_mut() = Some((
+            std::sync::Arc::clone(&nodes),
+            size,
+            std::sync::Arc::new(paths),
+        ));
+        *self.mindmap_data_panel.borrow_mut() = None;
+        self.mindmap_layout_generation
+            .set(self.mindmap_layout_generation.get().wrapping_add(1));
+        nodes
+    }
+
     /// Select root's first child if nothing is selected, opening the preview
     /// panel. Called on mindmap toggle-on and on file load while in mindmap
     /// mode, so a freshly opened document focuses its first heading.
@@ -5544,19 +5563,22 @@ impl App {
                     return Task::none();
                 }
                 if self.view_mode == ViewMode::Mindmap {
-                    if self.is_data_doc {
+                    let nodes = if self.is_data_doc {
                         let lang = data_lang_for(self.file.as_deref()).unwrap_or("json");
-                        self.mindmap_collapsed = crate::data_mindmap::collapsed_for_depth(
-                            &self.source,
-                            lang,
-                            self.file.as_deref(),
-                            n,
-                        );
+                        let (nodes, size, paths, collapsed) =
+                            crate::data_mindmap::build_layout_for_depth(
+                                &self.source,
+                                lang,
+                                self.file.as_deref(),
+                                n,
+                            );
+                        self.mindmap_collapsed = collapsed;
+                        self.replace_mindmap_layout(nodes, size, paths)
                     } else {
                         self.mindmap_collapsed = crate::mindmap::collapsed_for_depth(&self.ast, n);
-                    }
-                    self.invalidate_mindmap_layout();
-                    let (nodes, _, _) = self.mindmap_layout();
+                        self.invalidate_mindmap_layout();
+                        self.mindmap_layout().0
+                    };
                     let selected_is_visible = self
                         .mindmap_selected
                         .is_some_and(|selected| nodes.iter().any(|node| node.id == Some(selected)));
@@ -13409,6 +13431,10 @@ mod tests {
             );
 
             let _ = app.update(Message::FoldToLevel(1));
+            assert!(
+                app.mindmap_layout.borrow().is_some(),
+                "{extension} depth update should cache its single-pass layout"
+            );
             let (nodes, _, _) = app.mindmap_layout();
             assert_eq!(
                 nodes.iter().map(|node| node.level).max(),

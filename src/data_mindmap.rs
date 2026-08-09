@@ -89,13 +89,27 @@ fn scalar_label(text: &str, is_string: bool) -> String {
     }
 }
 
-struct Builder {
+struct Builder<'a> {
     nodes: Vec<MNode>,
     paths: HashMap<BlockId, Vec<PathSeg>>,
+    explicit_collapsed: Option<&'a HashSet<BlockId>>,
+    collapse_depth: Option<u8>,
+    depth_collapsed: HashSet<BlockId>,
     next_id: u64,
 }
 
-impl Builder {
+fn has_rendered_children(value: &DataValue, level: u8) -> bool {
+    if level as usize >= MAX_DEPTH {
+        return true;
+    }
+    match value {
+        DataValue::Object(fields) => !fields.is_empty(),
+        DataValue::Array(elements) => !elements.is_empty(),
+        DataValue::Scalar(..) => false,
+    }
+}
+
+impl Builder<'_> {
     fn mint(&mut self) -> BlockId {
         let id = BlockId(self.next_id);
         self.next_id += 1;
@@ -120,6 +134,52 @@ impl Builder {
             y: 0.0,
         });
         idx
+    }
+
+    fn should_collapse(&self, id: BlockId, level: u8) -> bool {
+        self.explicit_collapsed
+            .is_some_and(|collapsed| collapsed.contains(&id))
+            || self
+                .collapse_depth
+                .is_some_and(|depth| depth > 0 && level >= depth)
+    }
+
+    /// Advance structural IDs through a hidden subtree without allocating
+    /// `MNode`s or preview paths. Depth folding still records every branching
+    /// descendant so expanding one frontier node preserves the requested depth.
+    fn skip_children(&mut self, value: &DataValue, level: u8) {
+        if level as usize >= MAX_DEPTH {
+            let _ = self.mint();
+            return;
+        }
+        match value {
+            DataValue::Object(fields) => {
+                for (_, value) in fields {
+                    self.skip_member(value, level);
+                }
+            }
+            DataValue::Array(elements) => {
+                for value in elements {
+                    self.skip_member(value, level);
+                }
+            }
+            DataValue::Scalar(..) => {}
+        }
+    }
+
+    fn skip_member(&mut self, value: &DataValue, level: u8) {
+        let id = self.mint();
+        if matches!(value, DataValue::Object(_) | DataValue::Array(_)) {
+            let node_level = level.saturating_add(1);
+            if self
+                .collapse_depth
+                .is_some_and(|depth| depth > 0 && node_level >= depth)
+                && has_rendered_children(value, node_level)
+            {
+                self.depth_collapsed.insert(id);
+            }
+            self.skip_children(value, node_level);
+        }
     }
 
     /// Walk `value`, attaching produced child nodes to `parent_idx`.
@@ -165,57 +225,36 @@ impl Builder {
                 self.nodes[parent_idx].children.push(idx);
             }
             DataValue::Object(_) | DataValue::Array(_) => {
-                let idx = self.push(head, level + 1, path.clone());
+                let node_level = level.saturating_add(1);
+                let idx = self.push(head, node_level, path.clone());
                 self.nodes[parent_idx].children.push(idx);
-                self.walk_children(idx, val, level + 1, &path);
+                let id = self.nodes[idx].id.expect("data mindmap nodes have IDs");
+                if self.should_collapse(id, node_level) && has_rendered_children(val, node_level) {
+                    self.nodes[idx].has_hidden_children = true;
+                    if self.collapse_depth.is_some() {
+                        self.depth_collapsed.insert(id);
+                    }
+                    self.skip_children(val, node_level);
+                } else {
+                    self.walk_children(idx, val, node_level, &path);
+                }
             }
         }
     }
 }
 
-fn visible_tree(nodes: &[MNode], collapsed: &HashSet<BlockId>) -> Vec<MNode> {
-    fn append(
-        source_index: usize,
-        source: &[MNode],
-        collapsed: &HashSet<BlockId>,
-        visible: &mut Vec<MNode>,
-    ) -> usize {
-        let visible_index = visible.len();
-        let source_node = &source[source_index];
-        let mut node = source_node.clone();
-        node.children.clear();
-        node.has_hidden_children = false;
-        visible.push(node);
-
-        let hides_children = !source_node.children.is_empty()
-            && source_node.id.is_some_and(|id| collapsed.contains(&id));
-        if hides_children {
-            visible[visible_index].has_hidden_children = true;
-            return visible_index;
-        }
-
-        for &source_child in &source_node.children {
-            let visible_child = append(source_child, source, collapsed, visible);
-            visible[visible_index].children.push(visible_child);
-        }
-        visible_index
-    }
-
-    let mut visible = Vec::with_capacity(nodes.len());
-    if !nodes.is_empty() {
-        append(0, nodes, collapsed, &mut visible);
-    }
-    visible
-}
-
-pub fn build_tree(
+fn build_tree_with_policy(
     root: &DataValue,
     doc_title: &str,
-    collapsed: &HashSet<BlockId>,
-) -> (Vec<MNode>, HashMap<BlockId, Vec<PathSeg>>) {
+    explicit_collapsed: Option<&HashSet<BlockId>>,
+    collapse_depth: Option<u8>,
+) -> (Vec<MNode>, HashMap<BlockId, Vec<PathSeg>>, HashSet<BlockId>) {
     let mut b = Builder {
         nodes: Vec::new(),
         paths: HashMap::new(),
+        explicit_collapsed,
+        collapse_depth,
+        depth_collapsed: HashSet::new(),
         next_id: 0,
     };
     let root_id = b.mint();
@@ -233,7 +272,16 @@ pub fn build_tree(
         y: 0.0,
     });
     b.walk_children(0, root, 0, &[]);
-    (visible_tree(&b.nodes, collapsed), b.paths)
+    (b.nodes, b.paths, b.depth_collapsed)
+}
+
+pub fn build_tree(
+    root: &DataValue,
+    doc_title: &str,
+    collapsed: &HashSet<BlockId>,
+) -> (Vec<MNode>, HashMap<BlockId, Vec<PathSeg>>) {
+    let (nodes, paths, _) = build_tree_with_policy(root, doc_title, Some(collapsed), None);
+    (nodes, paths)
 }
 
 fn title_for(file: Option<&Path>) -> String {
@@ -315,13 +363,18 @@ pub fn build_layout(
     collapsed: &HashSet<BlockId>,
 ) -> (Vec<MNode>, Size, HashMap<BlockId, Vec<PathSeg>>) {
     let title = title_for(file);
-    let (mut nodes, paths) = match lang {
+    let (nodes, paths) = match lang {
         "json" | "yaml" | "toml" => match parse_to_value(source, lang) {
             Some(v) => build_tree(&v, &title, collapsed),
             None => fallback(&title, &format!("⚠ invalid {lang}")),
         },
         other => fallback(&title, &format!("⚠ {other} mindmap not supported")),
     };
+    let (nodes, size) = finish_layout(nodes);
+    (nodes, size, paths)
+}
+
+fn finish_layout(mut nodes: Vec<MNode>) -> (Vec<MNode>, Size) {
     let mut y_cursor: f32 = crate::mindmap::PAD;
     crate::mindmap::layout(&mut nodes, 0, &mut y_cursor);
     let max_level = nodes.iter().map(|n| n.level).max().unwrap_or(0) as f32;
@@ -329,26 +382,51 @@ pub fn build_layout(
         + crate::mindmap::NODE_W
         + max_level * (crate::mindmap::NODE_W + crate::mindmap::X_GAP);
     let height = y_cursor + crate::mindmap::PAD;
-    (nodes, Size::new(width, height), paths)
+    (nodes, Size::new(width, height))
+}
+
+/// Build and lay out a depth-folded graph in one parse/walk. Hidden descendants
+/// advance structural IDs but do not allocate `MNode`s or preview paths.
+pub fn build_layout_for_depth(
+    source: &str,
+    lang: &str,
+    file: Option<&Path>,
+    depth: u8,
+) -> (
+    Vec<MNode>,
+    Size,
+    HashMap<BlockId, Vec<PathSeg>>,
+    HashSet<BlockId>,
+) {
+    let title = title_for(file);
+    let (nodes, paths, collapsed) = match lang {
+        "json" | "yaml" | "toml" => match parse_to_value(source, lang) {
+            Some(value) => build_tree_with_policy(&value, &title, None, Some(depth)),
+            None => {
+                let (nodes, paths) = fallback(&title, &format!("⚠ invalid {lang}"));
+                (nodes, paths, HashSet::new())
+            }
+        },
+        other => {
+            let (nodes, paths) = fallback(&title, &format!("⚠ {other} mindmap not supported"));
+            (nodes, paths, HashSet::new())
+        }
+    };
+    let (nodes, size) = finish_layout(nodes);
+    (nodes, size, paths, collapsed)
 }
 
 /// Collapse every branching node at or below `depth`, preserving the root at
-/// level 0. Building the full graph first keeps IDs stable across relayouts.
+/// level 0. Prefer `build_layout_for_depth` when the folded layout is also
+/// needed so parsing and graph construction happen only once.
 pub fn collapsed_for_depth(
     source: &str,
     lang: &str,
     file: Option<&Path>,
     depth: u8,
 ) -> HashSet<BlockId> {
-    if depth == 0 {
-        return HashSet::new();
-    }
-    let (nodes, _, _) = build_layout(source, lang, file, &HashSet::new());
-    nodes
-        .into_iter()
-        .filter(|node| node.level >= depth && !node.children.is_empty())
-        .filter_map(|node| node.id)
-        .collect()
+    let (_, _, _, collapsed) = build_layout_for_depth(source, lang, file, depth);
+    collapsed
 }
 
 /// Look up a YAML mapping value by the *stringified* form of its key.
@@ -574,8 +652,13 @@ mod tests {
             .find(|node| node.full_label == "right")
             .and_then(|node| node.id)
             .unwrap();
+        let hidden_left_id = full
+            .iter()
+            .find(|node| node.full_label == "deep: 1")
+            .and_then(|node| node.id)
+            .unwrap();
 
-        let (collapsed, _) = build_tree(&value, "f.json", &HashSet::from([left_id]));
+        let (collapsed, paths) = build_tree(&value, "f.json", &HashSet::from([left_id]));
 
         assert_eq!(
             collapsed
@@ -584,6 +667,8 @@ mod tests {
                 .and_then(|node| node.id),
             Some(right_id)
         );
+        assert_eq!(paths.len(), collapsed.len());
+        assert!(!paths.contains_key(&hidden_left_id));
     }
 
     #[test]
@@ -627,9 +712,10 @@ mod tests {
             ("a:\n  b:\n    c: 1\n", "yaml"),
             ("[a.b]\nc = 1\n", "toml"),
         ] {
-            let collapsed = collapsed_for_depth(source, lang, None, 1);
-            let (nodes, _, _) = build_layout(source, lang, None, &collapsed);
+            let (nodes, _, paths, collapsed) = build_layout_for_depth(source, lang, None, 1);
             assert_eq!(nodes.iter().map(|node| node.level).max(), Some(1), "{lang}");
+            assert_eq!(paths.len(), nodes.len(), "{lang} visible preview paths");
+            assert_eq!(collapsed.len(), 2, "{lang} collapsed branching nodes");
             assert!(collapsed_for_depth(source, lang, None, 0).is_empty());
         }
     }
