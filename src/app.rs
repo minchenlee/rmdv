@@ -1024,6 +1024,7 @@ struct PendingIpcFileOpen {
 pub struct PendingRefreshFile {
     id: u64,
     path: PathBuf,
+    generation: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1038,11 +1039,17 @@ struct RefreshTracker {
     id: u64,
     has_workspace: bool,
     has_file: bool,
-    file_refresh_skipped: bool,
+    file_skip_reason: Option<FileRefreshSkipReason>,
     file_done: bool,
     workspace_done: bool,
     file_error: Option<String>,
     workspace_error: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FileRefreshSkipReason {
+    UnsavedEdits,
+    DocumentChanged,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1146,6 +1153,9 @@ pub struct App {
     pub toast: Option<Toast>,
     pub toast_seq: u64,
     refresh_seq: u64,
+    /// Invalidates a file-refresh read when the visible document or an
+    /// overlapping save advances while that read is in flight.
+    file_refresh_generation: u64,
     pending_refresh: Option<RefreshTracker>,
     pending_refresh_file: Option<PendingRefreshFile>,
     pending_refresh_workspace: Option<PendingRefreshWorkspace>,
@@ -1353,6 +1363,7 @@ impl Default for App {
             toast: None,
             toast_seq: 0,
             refresh_seq: 0,
+            file_refresh_generation: 0,
             pending_refresh: None,
             pending_refresh_file: None,
             pending_refresh_workspace: None,
@@ -1428,14 +1439,14 @@ impl App {
     }
 
     fn sync_editor_to_source(&mut self) -> bool {
-        let Some(ed) = self.editor.as_ref() else {
+        let Some(text) = self.editor.as_ref().map(|editor| editor.text()) else {
             return false;
         };
-        let text = ed.text();
         if text == self.source {
             self.dirty = self.source != self.saved_source;
             return false;
         }
+        self.bump_file_refresh_generation();
         self.source = text;
         self.reparse_source();
         self.dirty = self.source != self.saved_source;
@@ -1514,6 +1525,10 @@ impl App {
         self.pending_refresh_file = None;
         self.pending_refresh_workspace = None;
         self.pending_refresh_full_mindmap_workspace = None;
+    }
+
+    fn bump_file_refresh_generation(&mut self) {
+        self.file_refresh_generation = self.file_refresh_generation.wrapping_add(1);
     }
 
     fn load_file_unless_dirty(&mut self, path: PathBuf) -> Task<Message> {
@@ -2384,19 +2399,23 @@ impl App {
             return errors.join("; ");
         }
 
-        match (
-            tracker.has_workspace,
-            tracker.has_file,
-            tracker.file_refresh_skipped,
-        ) {
-            (true, true, true) => {
-                "Folder refreshed; file refresh skipped (unsaved edits)".to_string()
-            }
-            (true, true, false) => "File and folder refreshed".to_string(),
-            (true, false, _) => "Folder refreshed".to_string(),
-            (false, true, true) => "File refresh skipped (unsaved edits)".to_string(),
-            (false, true, false) => "File refreshed".to_string(),
-            (false, false, _) => "Nothing to refresh".to_string(),
+        if let Some(reason) = tracker.file_skip_reason {
+            let reason = match reason {
+                FileRefreshSkipReason::UnsavedEdits => "unsaved edits",
+                FileRefreshSkipReason::DocumentChanged => "document changed",
+            };
+            return if tracker.has_workspace {
+                format!("Folder refreshed; file refresh skipped ({reason})")
+            } else {
+                format!("File refresh skipped ({reason})")
+            };
+        }
+
+        match (tracker.has_workspace, tracker.has_file) {
+            (true, true) => "File and folder refreshed".to_string(),
+            (true, false) => "Folder refreshed".to_string(),
+            (false, true) => "File refreshed".to_string(),
+            (false, false) => "Nothing to refresh".to_string(),
         }
     }
 
@@ -2420,6 +2439,11 @@ impl App {
             // first leg's failure was still waiting for the transaction to
             // finish. Restore the aggregate failure as the final state.
             self.error = Some(label.clone());
+        } else {
+            // A successful retry owns the refresh error surface. This matters
+            // in Full Mindmap, whose workspace snapshot path does not pass
+            // through the ordinary helpers that already clear `self.error`.
+            self.error = None;
         }
         self.show_toast(label)
     }
@@ -2430,7 +2454,8 @@ impl App {
         let refresh_id = self.refresh_seq;
         let has_workspace = self.workspace.is_some();
         let has_file = self.file.is_some();
-        let file_refresh_skipped = has_file && self.dirty;
+        let file_skip_reason =
+            (has_file && self.dirty).then_some(FileRefreshSkipReason::UnsavedEdits);
         let mut tasks = Vec::new();
         let mut workspace_done = !has_workspace;
 
@@ -2450,12 +2475,13 @@ impl App {
             }
         }
 
-        let mut file_done = !has_file || file_refresh_skipped;
+        let mut file_done = !has_file || file_skip_reason.is_some();
         if has_file && !self.dirty {
             if let Some(path) = self.file.clone() {
                 let request = PendingRefreshFile {
                     id: refresh_id,
                     path: path.clone(),
+                    generation: self.file_refresh_generation,
                 };
                 self.pending_refresh_file = Some(request.clone());
                 file_done = false;
@@ -2469,7 +2495,7 @@ impl App {
             id: refresh_id,
             has_workspace,
             has_file,
-            file_refresh_skipped,
+            file_skip_reason,
             file_done,
             workspace_done,
             file_error: None,
@@ -6578,8 +6604,11 @@ impl App {
                 self.show_toast(label.into())
             }
             Message::EditorAction(action) => {
+                let edits = action.is_edit();
+                if edits {
+                    self.bump_file_refresh_generation();
+                }
                 if let Some(ed) = self.editor.as_mut() {
-                    let edits = action.is_edit();
                     if edits {
                         let prev = ed.text();
                         if self.edit_history.push_if_changed(prev) {
@@ -6597,24 +6626,34 @@ impl App {
                 Task::none()
             }
             Message::EditorUndo => {
+                let mut changed = false;
                 if let Some(ed) = self.editor.as_mut() {
                     if let Some(prev) = self.edit_history.pop() {
                         let current = ed.text();
                         self.edit_redo.push(current);
                         *ed = iced::widget::text_editor::Content::with_text(&prev);
                         self.dirty = prev != self.saved_source;
+                        changed = true;
                     }
+                }
+                if changed {
+                    self.bump_file_refresh_generation();
                 }
                 Task::none()
             }
             Message::EditorRedo => {
+                let mut changed = false;
                 if let Some(ed) = self.editor.as_mut() {
                     if let Some(next) = self.edit_redo.pop() {
                         let current = ed.text();
                         self.edit_history.push(current);
                         *ed = iced::widget::text_editor::Content::with_text(&next);
                         self.dirty = next != self.saved_source;
+                        changed = true;
                     }
+                }
+                if changed {
+                    self.bump_file_refresh_generation();
                 }
                 Task::none()
             }
@@ -6622,6 +6661,10 @@ impl App {
                 let Some(path) = self.file.clone() else {
                     return Task::none();
                 };
+                // A write can race a refresh read even when the visible text
+                // is unchanged. Advance ownership before dispatching it so a
+                // pre-save read cannot be accepted after this save settles.
+                self.bump_file_refresh_generation();
                 let text = match self.editor.as_ref() {
                     Some(ed) => ed.text(),
                     None => self.source.clone(),
@@ -6650,6 +6693,7 @@ impl App {
                 result: Ok(()),
                 saved_source,
             } => {
+                self.bump_file_refresh_generation();
                 // An older write may finish after a newer save was queued. Only
                 // advance the persisted baseline when this is still the source
                 // shown by the app; otherwise the newer write owns the state.
@@ -6668,6 +6712,7 @@ impl App {
                 result: Err(e),
                 saved_source,
             } => {
+                self.bump_file_refresh_generation();
                 // Keep the guard armed if the failed write is still the active
                 // document state. A later save may already have superseded it.
                 if self.source == saved_source {
@@ -6897,10 +6942,17 @@ impl App {
                     return Task::none();
                 }
                 self.pending_refresh_file = None;
-                if self.dirty {
+                let skip_reason = if self.dirty {
+                    Some(FileRefreshSkipReason::UnsavedEdits)
+                } else if request.generation != self.file_refresh_generation {
+                    Some(FileRefreshSkipReason::DocumentChanged)
+                } else {
+                    None
+                };
+                if let Some(reason) = skip_reason {
                     if let Some(refresh) = self.pending_refresh.as_mut() {
                         refresh.file_done = true;
-                        refresh.file_refresh_skipped = true;
+                        refresh.file_skip_reason = Some(reason);
                     }
                     return self.finish_refresh();
                 }
@@ -6946,6 +6998,7 @@ impl App {
                     self.pending_nav = None;
                     return self.show_toast(self.unsaved_edits_open_message());
                 }
+                self.bump_file_refresh_generation();
                 crate::recent::add(&path);
                 if self.view_mode == ViewMode::Raw || self.editor.is_some() {
                     self.leave_zen_edit_mode(false);
@@ -7028,6 +7081,7 @@ impl App {
             }
             Message::FileChanged(p) => {
                 self.cancel_refresh_tracking();
+                self.bump_file_refresh_generation();
                 if self.dirty {
                     return self.show_toast("External change ignored (unsaved edits)".into());
                 }
@@ -12699,6 +12753,103 @@ mod tests {
         assert_eq!(
             app.toast.as_ref().map(|toast| toast.text.as_str()),
             Some(expected.as_str())
+        );
+        assert!(app.pending_refresh.is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn manual_refresh_rejects_file_read_started_before_edit_and_save() {
+        let dir = full_mindmap_test_dir("refresh-stale-after-save");
+        let file = dir.join("current.md");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(&file, "# Original\n").unwrap();
+
+        let mut app = App::default();
+        app.file = Some(file.clone());
+        app.source = "# Original\n".into();
+        app.saved_source = app.source.clone();
+
+        let _ = app.update(Message::Refresh);
+        let request = app
+            .pending_refresh_file
+            .clone()
+            .expect("file refresh should be pending");
+
+        app.editor = Some(iced::widget::text_editor::Content::with_text(
+            "# Saved edit\n",
+        ));
+        let _ = app.update(Message::SaveFile);
+        let _ = app.update(Message::FileSaved {
+            result: Ok(()),
+            saved_source: "# Saved edit\n".into(),
+        });
+        assert!(!app.dirty);
+
+        let _ = app.update(Message::RefreshFileLoaded {
+            request,
+            result: Ok((file, "# Stale pre-save read\n".into())),
+        });
+
+        assert_eq!(app.source, "# Saved edit\n");
+        assert_eq!(app.saved_source, "# Saved edit\n");
+        assert!(!app.dirty);
+        assert_eq!(
+            app.toast.as_ref().map(|toast| toast.text.as_str()),
+            Some("File refresh skipped (document changed)")
+        );
+        assert!(app.pending_refresh.is_none());
+        assert!(app.pending_refresh_file.is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn successful_full_mindmap_refresh_clears_previous_refresh_error() {
+        let dir = full_mindmap_test_dir("full-mindmap-refresh-retry");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("existing.md"), "# Existing\n").unwrap();
+
+        let mut app = App::default();
+        app.set_workspace(dir.clone(), false);
+        app.full_mindmap = Some(full_workspace_state(&dir));
+
+        let _ = app.update(Message::Refresh);
+        let failed_request = app
+            .full_mindmap
+            .as_ref()
+            .and_then(|full| full.pending_workspace_load.clone())
+            .expect("first Full Mindmap refresh should be pending");
+        let _ = app.update(Message::FullMindmapWorkspaceLoaded {
+            request: failed_request,
+            result: Err("scan failed".into()),
+        });
+        assert!(app.error.is_some());
+        assert!(app
+            .full_mindmap
+            .as_ref()
+            .and_then(|full| full.load_error.as_ref())
+            .is_some());
+
+        let _ = app.update(Message::Refresh);
+        let retry = app
+            .full_mindmap
+            .as_ref()
+            .and_then(|full| full.pending_workspace_load.clone())
+            .expect("retry should replace the failed refresh");
+        let snapshot = tree::build_workspace(&retry.path, app.show_hidden).unwrap();
+        let _ = app.update(Message::FullMindmapWorkspaceLoaded {
+            request: retry,
+            result: Ok((dir.clone(), snapshot)),
+        });
+
+        assert!(app.error.is_none());
+        assert!(app
+            .full_mindmap
+            .as_ref()
+            .is_some_and(|full| full.load_error.is_none()));
+        assert_eq!(
+            app.toast.as_ref().map(|toast| toast.text.as_str()),
+            Some("Folder refreshed")
         );
         assert!(app.pending_refresh.is_none());
         let _ = std::fs::remove_dir_all(&dir);
