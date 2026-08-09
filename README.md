@@ -113,7 +113,9 @@ files, and their structure as one graph. It is separate from document Mindmap
 |---|---|---|---|---|
 | `⌘P` | File finder | | `⌘M` | Document Mindmap |
 | `⌘⇧M` | Full Mindmap workspace | | `⌘⌥W` | Cycle Mindmap panel width |
-| `⌘⇧P` | Command palette | | `⌘E` | Toggle edit mode |
+| `⌘R` | Refresh current file / folder | | `⌘⌥R` | Reveal file in Finder |
+| `⌘⌥C` | Copy focused file path | | `⌘E` | Toggle edit mode |
+| `⌘⇧P` | Command palette | | `⌘S` | Save |
 | `⌘O` | Open folder | | `⌘T` | Toggle theme |
 | `⌘B` | Toggle sidebar | | `⌘K 0–6` | Fold headings to level |
 | `⌘F` | Search in document | | `⌘/` | Shortcut cheatsheet |
