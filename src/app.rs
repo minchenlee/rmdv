@@ -686,6 +686,14 @@ fn reader_font_shortcuts_enabled(
     !full_mindmap && !fold_chord && (!document_mindmap || (!overlay_open && !search_open))
 }
 
+fn fold_level_shortcut(key: &iced::keyboard::Key) -> Option<Message> {
+    let iced::keyboard::Key::Character(value) = key else {
+        return None;
+    };
+    let depth = value.chars().next()?.to_digit(10)?;
+    (depth <= 6).then_some(Message::FoldToLevel(depth as u8))
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Overlay {
     None,
@@ -1211,7 +1219,8 @@ pub struct App {
     /// gesture into the other graph.
     pub full_mindmap_native_pinch_log: f64,
     /// Cached mindmap layout, lazily rebuilt from (ast, file, mindmap_collapsed).
-    /// Every mutation of those inputs must call `invalidate_mindmap_layout`.
+    /// Every mutation of those inputs must invalidate it or atomically replace
+    /// it with a layout built from the new state.
     /// RefCell so `view(&self)` can populate it on first read.
     mindmap_layout: std::cell::RefCell<
         Option<(
@@ -1222,6 +1231,9 @@ pub struct App {
             >,
         )>,
     >,
+    /// Changes whenever the Document Mindmap graph is invalidated. The canvas
+    /// uses this to re-center the focused node after collapse/expand relayouts.
+    mindmap_layout_generation: std::cell::Cell<u64>,
     /// Pretty-printed subtree for the data-doc mindmap leaf panel, keyed by the
     /// shown node id. Recomputed when `mindmap_panel_shown` changes; cleared by
     /// `invalidate_mindmap_layout`.
@@ -1401,6 +1413,7 @@ impl Default for App {
             mindmap_native_pinch_log: 0.0,
             full_mindmap_native_pinch_log: 0.0,
             mindmap_layout: std::cell::RefCell::new(None),
+            mindmap_layout_generation: std::cell::Cell::new(0),
             mindmap_data_panel: std::cell::RefCell::new(None),
             diagram_cache: crate::diagram::DiagramCache::new(64),
             diagram_theme_id: 0,
@@ -3792,6 +3805,26 @@ impl App {
     fn invalidate_mindmap_layout(&self) {
         *self.mindmap_layout.borrow_mut() = None;
         *self.mindmap_data_panel.borrow_mut() = None;
+        self.mindmap_layout_generation
+            .set(self.mindmap_layout_generation.get().wrapping_add(1));
+    }
+
+    fn replace_mindmap_layout(
+        &self,
+        nodes: Vec<crate::mindmap::MNode>,
+        size: iced::Size,
+        paths: std::collections::HashMap<crate::ast::BlockId, Vec<crate::data_mindmap::PathSeg>>,
+    ) -> std::sync::Arc<Vec<crate::mindmap::MNode>> {
+        let nodes = std::sync::Arc::new(nodes);
+        *self.mindmap_layout.borrow_mut() = Some((
+            std::sync::Arc::clone(&nodes),
+            size,
+            std::sync::Arc::new(paths),
+        ));
+        *self.mindmap_data_panel.borrow_mut() = None;
+        self.mindmap_layout_generation
+            .set(self.mindmap_layout_generation.get().wrapping_add(1));
+        nodes
     }
 
     /// Select root's first child if nothing is selected, opening the preview
@@ -4923,6 +4956,20 @@ impl App {
             ("Show Keyboard Shortcuts  ⌘/", Message::ToggleShortcuts),
             ("Take Screenshot", Message::TakeScreenshot),
         ];
+        if self.view_mode == ViewMode::Mindmap && self.full_mindmap.is_none() {
+            items.extend([
+                (
+                    "Mindmap: Show All Node Levels  ⌘K 0",
+                    Message::FoldToLevel(0),
+                ),
+                ("Mindmap: Show 1 Node Level  ⌘K 1", Message::FoldToLevel(1)),
+                ("Mindmap: Show 2 Node Levels  ⌘K 2", Message::FoldToLevel(2)),
+                ("Mindmap: Show 3 Node Levels  ⌘K 3", Message::FoldToLevel(3)),
+                ("Mindmap: Show 4 Node Levels  ⌘K 4", Message::FoldToLevel(4)),
+                ("Mindmap: Show 5 Node Levels  ⌘K 5", Message::FoldToLevel(5)),
+                ("Mindmap: Show 6 Node Levels  ⌘K 6", Message::FoldToLevel(6)),
+            ]);
+        }
         #[cfg(any(target_os = "macos", target_os = "linux"))]
         if crate::cli_install::should_offer() {
             items.push(("Install CLI", Message::InstallCli));
@@ -5508,8 +5555,47 @@ impl App {
             }
             Message::FoldToLevel(n) => {
                 self.fold_chord_pending = false;
+                // Node-depth folding belongs to the open document, including
+                // structured-data Mindmaps. Full Mindmap has independent
+                // workspace expansion state and must never mutate the hidden
+                // document.
+                if self.full_mindmap.is_some() {
+                    return Task::none();
+                }
+                if self.view_mode == ViewMode::Mindmap {
+                    let nodes = if self.is_data_doc {
+                        let lang = data_lang_for(self.file.as_deref()).unwrap_or("json");
+                        let (nodes, size, paths, collapsed) =
+                            crate::data_mindmap::build_layout_for_depth(
+                                &self.source,
+                                lang,
+                                self.file.as_deref(),
+                                n,
+                            );
+                        self.mindmap_collapsed = collapsed;
+                        self.replace_mindmap_layout(nodes, size, paths)
+                    } else {
+                        self.mindmap_collapsed = crate::mindmap::collapsed_for_depth(&self.ast, n);
+                        self.invalidate_mindmap_layout();
+                        self.mindmap_layout().0
+                    };
+                    let selected_is_visible = self
+                        .mindmap_selected
+                        .is_some_and(|selected| nodes.iter().any(|node| node.id == Some(selected)));
+                    if !selected_is_visible {
+                        let next = nodes
+                            .first()
+                            .and_then(|root| root.children.first())
+                            .and_then(|index| nodes.get(*index))
+                            .and_then(|node| node.id);
+                        self.mindmap_selected = next;
+                        self.mindmap_panel_shown =
+                            self.mindmap_panel_open.then_some(next).flatten();
+                    }
+                    return Task::none();
+                }
                 if self.is_data_doc {
-                    return self.show_toast("Fold for data formats not yet supported".into());
+                    return self.show_toast("Fold levels are available in Mindmap mode".into());
                 }
                 self.folded.clear();
                 if n > 0 {
@@ -6447,6 +6533,10 @@ impl App {
                 Task::batch([followup, refresh_toast])
             }
             Message::MindmapToggleNode(id) => {
+                self.mindmap_selected = Some(id);
+                if self.mindmap_panel_open {
+                    self.mindmap_panel_shown = Some(id);
+                }
                 if self.mindmap_collapsed.contains(&id) {
                     self.mindmap_collapsed.remove(&id);
                 } else {
@@ -8407,12 +8497,8 @@ impl App {
                     }
                 }
                 if fold_chord {
-                    if let Key::Character(c) = &key {
-                        if let Some(d) = c.chars().next().and_then(|ch| ch.to_digit(10)) {
-                            if d <= 6 {
-                                return Message::FoldToLevel(d as u8);
-                            }
-                        }
+                    if let Some(message) = fold_level_shortcut(&key) {
+                        return message;
                     }
                     return Message::FoldChordCancel;
                 }
@@ -8773,7 +8859,7 @@ impl App {
                     panel_open: self.mindmap_panel_open,
                     panel_width: self.mindmap_panel_width,
                     autocenter: self.mindmap_autocenter,
-                    layout_generation: None,
+                    layout_generation: Some(self.mindmap_layout_generation.get()),
                     keyboard_zoom_enabled: self.overlay == Overlay::None
                         && !self.search_open
                         && !self.fold_chord_pending,
@@ -11121,6 +11207,7 @@ fn shortcuts_overlay<'a>(pal: Palette) -> Element<'a, Message> {
             "Mindmap",
             &[
                 ("⌘M", "Toggle Mindmap"),
+                ("⌘K 0–6", "Show Through Node Level"),
                 ("⌘⌥B", "Toggle Panel"),
                 ("⌘⌥W", "Cycle Panel Width"),
                 ("= −", "Zoom Graph In / Out"),
@@ -13200,6 +13287,238 @@ mod tests {
             )),
             Some(Binding::Select(Motion::DocumentEnd))
         ));
+    }
+
+    fn heading(id: u64, level: u8, label: &str) -> (BlockId, Block) {
+        (
+            BlockId(id),
+            Block::Heading {
+                level,
+                id: label.to_lowercase(),
+                inlines: vec![crate::ast::Inline::Text(label.to_string())],
+            },
+        )
+    }
+
+    #[test]
+    fn document_mindmap_fold_levels_limit_visible_heading_depth_and_zero_resets() {
+        let mut app = App::default();
+        app.view_mode = ViewMode::Mindmap;
+        app.ast = vec![
+            heading(1, 1, "Root child"),
+            heading(2, 2, "Grandchild"),
+            heading(3, 3, "Great-grandchild"),
+            heading(4, 1, "Root sibling"),
+        ];
+
+        let (nodes, _, _) = app.mindmap_layout();
+        assert_eq!(nodes.iter().map(|node| node.level).max(), Some(3));
+
+        app.mindmap_selected = Some(BlockId(3));
+        app.mindmap_panel_shown = Some(BlockId(3));
+        app.mindmap_panel_open = true;
+        let initial_generation = app.mindmap_layout_generation.get();
+        let _ = app.update(Message::FoldToLevel(1));
+        let (nodes, _, _) = app.mindmap_layout();
+        assert_eq!(nodes.iter().map(|node| node.level).max(), Some(1));
+        assert_eq!(
+            nodes.iter().filter_map(|node| node.id).collect::<Vec<_>>(),
+            vec![BlockId(1), BlockId(4)]
+        );
+        assert!(app.folded.is_empty());
+        assert_eq!(
+            app.mindmap_collapsed,
+            HashSet::from([BlockId(1), BlockId(2)])
+        );
+        assert_eq!(app.mindmap_selected, Some(BlockId(1)));
+        assert_eq!(app.mindmap_panel_shown, Some(BlockId(1)));
+        assert!(app.mindmap_panel_open);
+        assert_eq!(
+            app.mindmap_layout_generation.get(),
+            initial_generation.wrapping_add(1)
+        );
+
+        let _ = app.update(Message::FoldToLevel(2));
+        let (nodes, _, _) = app.mindmap_layout();
+        assert_eq!(nodes.iter().map(|node| node.level).max(), Some(2));
+        assert!(nodes.iter().any(|node| node.id == Some(BlockId(2))));
+        assert!(nodes.iter().all(|node| node.id != Some(BlockId(3))));
+
+        let _ = app.update(Message::FoldToLevel(0));
+        let (nodes, _, _) = app.mindmap_layout();
+        assert!(app.mindmap_collapsed.is_empty());
+        assert_eq!(nodes.iter().map(|node| node.level).max(), Some(3));
+        assert!(nodes.iter().any(|node| node.id == Some(BlockId(3))));
+
+        app.mindmap_collapsed.insert(BlockId(1));
+        app.invalidate_mindmap_layout();
+        app.full_mindmap = Some(App::new_full_mindmap_state());
+        let _ = app.update(Message::FoldToLevel(0));
+        assert_eq!(app.mindmap_collapsed, HashSet::from([BlockId(1)]));
+    }
+
+    #[test]
+    fn document_mindmap_fold_levels_use_structural_depth_when_headings_skip_ranks() {
+        let mut app = App::default();
+        app.view_mode = ViewMode::Mindmap;
+        app.ast = vec![
+            heading(1, 3, "Direct child"),
+            heading(2, 5, "Grandchild"),
+            heading(3, 6, "Great-grandchild"),
+            heading(4, 2, "Direct sibling"),
+        ];
+
+        let _ = app.update(Message::FoldToLevel(1));
+        let (nodes, _, _) = app.mindmap_layout();
+        assert_eq!(
+            nodes.iter().filter_map(|node| node.id).collect::<Vec<_>>(),
+            vec![BlockId(1), BlockId(4)]
+        );
+
+        let _ = app.update(Message::FoldToLevel(2));
+        let (nodes, _, _) = app.mindmap_layout();
+        assert_eq!(
+            nodes.iter().filter_map(|node| node.id).collect::<Vec<_>>(),
+            vec![BlockId(1), BlockId(2), BlockId(4)]
+        );
+
+        let _ = app.update(Message::FoldToLevel(0));
+        let (nodes, _, _) = app.mindmap_layout();
+        assert_eq!(
+            nodes.iter().filter_map(|node| node.id).collect::<Vec<_>>(),
+            vec![BlockId(1), BlockId(2), BlockId(3), BlockId(4)]
+        );
+    }
+
+    #[test]
+    fn document_mindmap_node_toggle_selects_focus_anchor_and_advances_layout_generation() {
+        let mut app = App::default();
+        app.view_mode = ViewMode::Mindmap;
+        app.ast = vec![heading(1, 1, "Top"), heading(2, 2, "Child")];
+        app.mindmap_panel_open = true;
+        let generation = app.mindmap_layout_generation.get();
+
+        let _ = app.update(Message::MindmapToggleNode(BlockId(1)));
+
+        assert_eq!(app.mindmap_selected, Some(BlockId(1)));
+        assert_eq!(app.mindmap_panel_shown, Some(BlockId(1)));
+        assert!(app.mindmap_collapsed.contains(&BlockId(1)));
+        assert_eq!(
+            app.mindmap_layout_generation.get(),
+            generation.wrapping_add(1)
+        );
+    }
+
+    #[test]
+    fn data_mindmap_depth_folding_supports_json_yaml_and_toml() {
+        for (source, extension) in [
+            (r#"{"a":{"b":{"c":1}}}"#, "json"),
+            ("a:\n  b:\n    c: 1\n", "yaml"),
+            ("[a.b]\nc = 1\n", "toml"),
+        ] {
+            let mut app = App::default();
+            app.file = Some(PathBuf::from(format!("nested.{extension}")));
+            app.source = source.into();
+            app.is_data_doc = true;
+            app.view_mode = ViewMode::Mindmap;
+            app.invalidate_mindmap_layout();
+
+            let (nodes, _, _) = app.mindmap_layout();
+            assert_eq!(
+                nodes.iter().map(|node| node.level).max(),
+                Some(3),
+                "{extension} full graph"
+            );
+
+            let _ = app.update(Message::FoldToLevel(1));
+            assert!(
+                app.mindmap_layout.borrow().is_some(),
+                "{extension} depth update should cache its single-pass layout"
+            );
+            let (nodes, _, _) = app.mindmap_layout();
+            assert_eq!(
+                nodes.iter().map(|node| node.level).max(),
+                Some(1),
+                "{extension} depth 1"
+            );
+
+            let _ = app.update(Message::FoldToLevel(0));
+            let (nodes, _, _) = app.mindmap_layout();
+            assert!(app.mindmap_collapsed.is_empty());
+            assert_eq!(
+                nodes.iter().map(|node| node.level).max(),
+                Some(3),
+                "{extension} reset"
+            );
+
+            app.mindmap_selected = Some(BlockId(0));
+            let _ = app.update(Message::MindmapToggleSelected);
+            let (nodes, _, paths) = app.mindmap_layout();
+            assert_eq!(nodes.len(), 1, "{extension} collapsed root");
+            assert!(nodes[0].has_hidden_children, "{extension} collapsed root");
+            assert_eq!(paths.len(), 1, "{extension} root-only preview paths");
+
+            let _ = app.update(Message::MindmapToggleSelected);
+            let (nodes, _, _) = app.mindmap_layout();
+            assert_eq!(
+                nodes.iter().map(|node| node.level).max(),
+                Some(3),
+                "{extension} expanded root"
+            );
+        }
+    }
+
+    #[test]
+    fn fold_level_shortcut_accepts_document_depths_zero_through_six() {
+        use iced::keyboard::Key;
+
+        for depth in 0..=6 {
+            assert!(matches!(
+                fold_level_shortcut(&Key::Character(depth.to_string().into())),
+                Some(Message::FoldToLevel(actual)) if actual == depth
+            ));
+        }
+        assert!(fold_level_shortcut(&Key::Character("7".into())).is_none());
+    }
+
+    #[test]
+    fn command_palette_exposes_node_depths_only_in_document_mindmap() {
+        let depth_commands = |app: &App| {
+            app.command_items()
+                .into_iter()
+                .filter(|(label, _)| label.starts_with("Mindmap: Show"))
+                .collect::<Vec<_>>()
+        };
+
+        let mut app = App::default();
+        assert!(depth_commands(&app).is_empty());
+
+        app.view_mode = ViewMode::Mindmap;
+        let commands = depth_commands(&app);
+        assert_eq!(
+            commands.iter().map(|(label, _)| *label).collect::<Vec<_>>(),
+            vec![
+                "Mindmap: Show All Node Levels  ⌘K 0",
+                "Mindmap: Show 1 Node Level  ⌘K 1",
+                "Mindmap: Show 2 Node Levels  ⌘K 2",
+                "Mindmap: Show 3 Node Levels  ⌘K 3",
+                "Mindmap: Show 4 Node Levels  ⌘K 4",
+                "Mindmap: Show 5 Node Levels  ⌘K 5",
+                "Mindmap: Show 6 Node Levels  ⌘K 6",
+            ]
+        );
+        for (depth, (_, message)) in commands.iter().enumerate() {
+            assert!(matches!(
+                message,
+                Message::FoldToLevel(actual) if *actual == depth as u8
+            ));
+        }
+
+        app.is_data_doc = true;
+        assert_eq!(depth_commands(&app).len(), 7);
+
+        app.full_mindmap = Some(App::new_full_mindmap_state());
+        assert!(depth_commands(&app).is_empty());
     }
 
     #[test]

@@ -216,6 +216,47 @@ pub fn build_tree(
     nodes
 }
 
+/// Return branching heading IDs whose descendants should be hidden to show at
+/// most `depth` structural node levels below the synthetic document root.
+/// Heading ranks still control horizontal layout; skipped ranks do not change
+/// the parent/child depth used by this operation.
+pub fn collapsed_for_depth(ast: &[(BlockId, Block)], depth: u8) -> HashSet<BlockId> {
+    if depth == 0 {
+        return HashSet::new();
+    }
+
+    fn collect(
+        nodes: &[MNode],
+        index: usize,
+        structural_depth: u8,
+        target_depth: u8,
+        collapsed: &mut HashSet<BlockId>,
+    ) {
+        let node = &nodes[index];
+        if structural_depth >= target_depth && !node.children.is_empty() {
+            if let Some(id) = node.id {
+                collapsed.insert(id);
+            }
+        }
+        for &child in &node.children {
+            collect(
+                nodes,
+                child,
+                structural_depth.saturating_add(1),
+                target_depth,
+                collapsed,
+            );
+        }
+    }
+
+    let nodes = build_tree(ast, "", &HashSet::new());
+    let mut collapsed = HashSet::new();
+    if !nodes.is_empty() {
+        collect(&nodes, 0, 0, depth, &mut collapsed);
+    }
+    collapsed
+}
+
 pub(crate) fn layout<Id>(nodes: &mut [MNode<Id>], idx: usize, y_cursor: &mut f32) -> f32 {
     let kids = nodes[idx].children.clone();
     let x = PAD + nodes[idx].level as f32 * (NODE_W + X_GAP);
@@ -344,8 +385,8 @@ pub struct MindmapProgram<'a, Id, Message> {
     pub panel_width: f32,
     pub autocenter: bool,
     /// Optional source-generation signal for navigators whose visible graph
-    /// can be rebuilt without changing selection. Document mindmaps leave it
-    /// unset; Full Mindmap supplies its graph generation.
+    /// can be rebuilt without changing selection. Both document and Full
+    /// Mindmap supply their own independent graph generations.
     pub layout_generation: Option<u64>,
     /// Bare graph zoom keys belong to the canvas only while no higher-level
     /// input surface (for example search or an overlay) owns the keyboard.
