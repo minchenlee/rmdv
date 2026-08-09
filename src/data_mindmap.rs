@@ -271,7 +271,12 @@ fn build_tree_with_policy(
         x: 0.0,
         y: 0.0,
     });
-    b.walk_children(0, root, 0, &[]);
+    if b.should_collapse(root_id, 0) && has_rendered_children(root, 0) {
+        b.nodes[0].has_hidden_children = true;
+        b.skip_children(root, 0);
+    } else {
+        b.walk_children(0, root, 0, &[]);
+    }
     (b.nodes, b.paths, b.depth_collapsed)
 }
 
@@ -636,6 +641,29 @@ mod tests {
         let deps = nodes.iter().find(|n| n.full_label == "deps").unwrap();
         assert!(deps.children.is_empty());
         assert!(deps.has_hidden_children);
+    }
+
+    #[test]
+    fn collapsed_root_hides_children_without_retaining_hidden_paths() {
+        let value = obj(r#"{"left":{"deep":1},"right":2}"#);
+        let (full, _) = build_tree(&value, "f.json", &HashSet::new());
+        let full_ids = full.iter().filter_map(|node| node.id).collect::<Vec<_>>();
+
+        let (collapsed, paths) = build_tree(&value, "f.json", &HashSet::from([BlockId(0)]));
+
+        assert_eq!(collapsed.len(), 1);
+        assert!(collapsed[0].children.is_empty());
+        assert!(collapsed[0].has_hidden_children);
+        assert_eq!(paths.keys().copied().collect::<Vec<_>>(), vec![BlockId(0)]);
+
+        let (expanded, _) = build_tree(&value, "f.json", &HashSet::new());
+        assert_eq!(
+            expanded
+                .iter()
+                .filter_map(|node| node.id)
+                .collect::<Vec<_>>(),
+            full_ids
+        );
     }
 
     #[test]

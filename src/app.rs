@@ -13450,6 +13450,21 @@ mod tests {
                 Some(3),
                 "{extension} reset"
             );
+
+            app.mindmap_selected = Some(BlockId(0));
+            let _ = app.update(Message::MindmapToggleSelected);
+            let (nodes, _, paths) = app.mindmap_layout();
+            assert_eq!(nodes.len(), 1, "{extension} collapsed root");
+            assert!(nodes[0].has_hidden_children, "{extension} collapsed root");
+            assert_eq!(paths.len(), 1, "{extension} root-only preview paths");
+
+            let _ = app.update(Message::MindmapToggleSelected);
+            let (nodes, _, _) = app.mindmap_layout();
+            assert_eq!(
+                nodes.iter().map(|node| node.level).max(),
+                Some(3),
+                "{extension} expanded root"
+            );
         }
     }
 
