@@ -414,7 +414,8 @@ pub fn subtree_pretty(source: &str, lang: &str, path: &[PathSeg]) -> Option<Stri
             }
             match cur {
                 toml::Value::String(value) => Some(value.clone()),
-                toml::Value::Array(_) | toml::Value::Table(_) => toml::to_string_pretty(cur).ok(),
+                toml::Value::Array(_) => Some(cur.to_string()),
+                toml::Value::Table(_) => toml::to_string_pretty(cur).ok(),
                 scalar => Some(scalar.to_string()),
             }
         }
@@ -667,6 +668,15 @@ mod tests {
             .as_deref(),
             Some("1")
         );
+    }
+
+    #[test]
+    fn subtree_pretty_toml_array() {
+        let source = "tags = [\"rust\", \"gui\"]\n";
+        let preview = subtree_pretty(source, "toml", &[PathSeg::Key("tags".into())])
+            .expect("TOML array nodes should produce preview content");
+        assert!(preview.contains("rust"));
+        assert!(preview.contains("gui"));
     }
 
     #[test]
