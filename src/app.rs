@@ -1999,6 +1999,7 @@ impl App {
     /// outside the existing workspace; ordinary Full Mindmap entry preserves
     /// its already-indexed workspace exactly as before.
     fn enter_full_mindmap_at(&mut self, forced_start: Option<PathBuf>) -> Task<Message> {
+        self.cancel_refresh_tracking();
         self.overlay = Overlay::None;
         if self.full_mindmap.is_some() {
             self.cancel_full_mindmap_verification();
@@ -2065,6 +2066,7 @@ impl App {
     }
 
     fn finish_full_mindmap_exit(&mut self, return_to_files: bool) -> Task<Message> {
+        self.cancel_refresh_tracking();
         self.cancel_full_mindmap_verification();
         self.reset_full_mindmap_preview_window();
         self.full_mindmap = None;
@@ -2412,7 +2414,14 @@ impl App {
         self.pending_refresh_file = None;
         self.pending_refresh_workspace = None;
         self.pending_refresh_full_mindmap_workspace = None;
-        self.show_toast(Self::refresh_completion_label(&tracker))
+        let label = Self::refresh_completion_label(&tracker);
+        if tracker.workspace_error.is_some() || tracker.file_error.is_some() {
+            // A successful second leg may have cleared `self.error` while the
+            // first leg's failure was still waiting for the transaction to
+            // finish. Restore the aggregate failure as the final state.
+            self.error = Some(label.clone());
+        }
+        self.show_toast(label)
     }
 
     fn refresh_status(&mut self) -> Task<Message> {
@@ -12457,6 +12466,83 @@ mod tests {
     }
 
     #[test]
+    fn manual_workspace_refresh_is_cancelled_across_full_mindmap_entry_and_exit() {
+        let dir = full_mindmap_test_dir("manual-refresh-full-mindmap-transition");
+        let added = dir.join("added.md");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("existing.md"), "# Existing\n").unwrap();
+
+        let mut app = App::default();
+        app.set_workspace(dir.clone(), false);
+        std::fs::write(&added, "# Added\n").unwrap();
+
+        let _ = app.update(Message::Refresh);
+        let request = app
+            .pending_refresh_workspace
+            .clone()
+            .expect("ordinary workspace refresh should be pending");
+        let snapshot = tree::build_workspace(&request.path, request.show_hidden).unwrap();
+
+        let _ = app.update(Message::ToggleFullMindmap);
+        assert!(app.full_mindmap.is_some());
+        assert!(app.pending_refresh.is_none());
+        assert!(app.pending_refresh_workspace.is_none());
+        assert!(app.pending_refresh_file.is_none());
+        assert!(app.pending_refresh_full_mindmap_workspace.is_none());
+
+        let _ = app.update(Message::ExitFullMindmap);
+        assert!(app.full_mindmap.is_none());
+        let _ = app.update(Message::RefreshWorkspaceLoaded {
+            request,
+            result: Ok((dir.clone(), snapshot)),
+        });
+
+        assert!(!app.workspace_files.contains(&added));
+        assert!(app.pending_refresh.is_none());
+        assert!(app.pending_refresh_workspace.is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn full_mindmap_refresh_is_cancelled_by_normal_exit() {
+        let dir = full_mindmap_test_dir("full-mindmap-refresh-exit");
+        let added = dir.join("added.md");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("existing.md"), "# Existing\n").unwrap();
+
+        let mut app = App::default();
+        app.set_workspace(dir.clone(), false);
+        app.full_mindmap = Some(full_workspace_state(&dir));
+        std::fs::write(&added, "# Added\n").unwrap();
+
+        let _ = app.update(Message::Refresh);
+        let request = app
+            .full_mindmap
+            .as_ref()
+            .and_then(|full| full.pending_workspace_load.clone())
+            .expect("Full Mindmap workspace refresh should be pending");
+        assert_eq!(
+            app.pending_refresh_full_mindmap_workspace.as_ref(),
+            Some(&request)
+        );
+        let snapshot = tree::build_workspace(&request.path, app.show_hidden).unwrap();
+
+        let _ = app.update(Message::ExitFullMindmap);
+        assert!(app.full_mindmap.is_none());
+        assert!(app.pending_refresh.is_none());
+        assert!(app.pending_refresh_full_mindmap_workspace.is_none());
+        assert!(app.pending_refresh_file.is_none());
+
+        let _ = app.update(Message::FullMindmapWorkspaceLoaded {
+            request,
+            result: Ok((dir.clone(), snapshot)),
+        });
+        assert!(!app.workspace_files.contains(&added));
+        assert!(app.toast.is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn manual_refresh_does_not_discard_unsaved_file_edits() {
         let file = PathBuf::from("/tmp/rmdv-manual-refresh.md");
         let mut app = App::default();
@@ -12522,6 +12608,100 @@ mod tests {
             app.toast.as_ref().map(|toast| toast.text.as_str()),
             Some("File refresh failed: read failed")
         );
+    }
+
+    #[test]
+    fn manual_refresh_preserves_file_failure_after_workspace_success() {
+        let dir = full_mindmap_test_dir("refresh-file-failure-workspace-success");
+        let file = dir.join("current.md");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(&file, "# Current\n").unwrap();
+
+        let mut app = App::default();
+        app.set_workspace(dir.clone(), false);
+        app.file = Some(file.clone());
+        app.source = "# Current\n".into();
+        app.saved_source = app.source.clone();
+
+        let _ = app.update(Message::Refresh);
+        let file_request = app
+            .pending_refresh_file
+            .clone()
+            .expect("file refresh should be pending");
+        let workspace_request = app
+            .pending_refresh_workspace
+            .clone()
+            .expect("workspace refresh should be pending");
+
+        let _ = app.update(Message::RefreshFileLoaded {
+            request: file_request,
+            result: Err("read failed".into()),
+        });
+        assert!(app.toast.is_none());
+
+        let snapshot =
+            tree::build_workspace(&workspace_request.path, workspace_request.show_hidden).unwrap();
+        let _ = app.update(Message::RefreshWorkspaceLoaded {
+            request: workspace_request,
+            result: Ok((dir.clone(), snapshot)),
+        });
+
+        let expected = "File refresh failed: read failed";
+        assert_eq!(app.error.as_deref(), Some(expected));
+        assert_eq!(
+            app.toast.as_ref().map(|toast| toast.text.as_str()),
+            Some(expected)
+        );
+        assert!(app.pending_refresh.is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn manual_refresh_preserves_workspace_failure_after_file_success() {
+        let dir = full_mindmap_test_dir("refresh-workspace-failure-file-success");
+        let file = dir.join("current.md");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(&file, "# Current\n").unwrap();
+
+        let mut app = App::default();
+        app.set_workspace(dir.clone(), false);
+        app.file = Some(file.clone());
+        app.source = "# Current\n".into();
+        app.saved_source = app.source.clone();
+
+        let _ = app.update(Message::Refresh);
+        let file_request = app
+            .pending_refresh_file
+            .clone()
+            .expect("file refresh should be pending");
+        let workspace_request = app
+            .pending_refresh_workspace
+            .clone()
+            .expect("workspace refresh should be pending");
+
+        let _ = app.update(Message::RefreshWorkspaceLoaded {
+            request: workspace_request,
+            result: Err("scan failed".into()),
+        });
+        assert!(app.toast.is_none());
+
+        let _ = app.update(Message::RefreshFileLoaded {
+            request: file_request,
+            result: Ok((file, "# Refreshed\n".into())),
+        });
+
+        let expected = format!(
+            "Folder refresh failed: Couldn't refresh {}: scan failed",
+            dir.display()
+        );
+        assert_eq!(app.source, "# Refreshed\n");
+        assert_eq!(app.error.as_deref(), Some(expected.as_str()));
+        assert_eq!(
+            app.toast.as_ref().map(|toast| toast.text.as_str()),
+            Some(expected.as_str())
+        );
+        assert!(app.pending_refresh.is_none());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
