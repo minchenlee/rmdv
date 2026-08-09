@@ -773,6 +773,10 @@ pub enum Message {
     OverlayConfirm,
     OverlayDescend,
     FileLoaded(Result<(PathBuf, String), String>),
+    FileLoadCompleted {
+        generation: u64,
+        result: Result<(PathBuf, String), String>,
+    },
     RefreshFileLoaded {
         request: PendingRefreshFile,
         result: Result<(PathBuf, String), String>,
@@ -1536,7 +1540,103 @@ impl App {
         if let Some(blocked) = self.block_file_open_if_dirty() {
             return blocked;
         }
-        Task::perform(load_file(path), Message::FileLoaded)
+        self.begin_generic_file_load(path)
+    }
+
+    fn begin_generic_file_load(&mut self, path: PathBuf) -> Task<Message> {
+        self.cancel_refresh_tracking();
+        self.bump_file_refresh_generation();
+        let generation = self.file_refresh_generation;
+        Task::perform(load_file(path), move |result| Message::FileLoadCompleted {
+            generation,
+            result,
+        })
+    }
+
+    /// Apply file contents after the caller has established async ownership
+    /// and rechecked the dirty guard. Refresh uses this directly so the common
+    /// state transition does not cancel its still-pending workspace leg.
+    fn apply_loaded_file(&mut self, path: PathBuf, src: String) -> Task<Message> {
+        let refresh_full_mindmap_preview = self.full_mindmap.as_ref().is_some_and(|full| {
+            matches!(
+                full.selected.as_ref(),
+                Some(WorkspaceNodeId::File(selected)) if selected == &path
+            )
+        });
+        self.bump_file_refresh_generation();
+        crate::recent::add(&path);
+        if self.view_mode == ViewMode::Raw || self.editor.is_some() {
+            self.leave_zen_edit_mode(false);
+        }
+        if self.workspace.is_none() {
+            if let Some(parent) = path.parent().map(PathBuf::from) {
+                self.set_workspace(parent, false);
+            }
+        }
+        // Opening a DIFFERENT file: the body scrollable's offset gets clamped
+        // by iced on the next layout, but if the new content fits the viewport
+        // no scroll notification ever fires — the stale viewport would poison
+        // body-offset math. Watcher reloads of the same file keep it.
+        if self.file.as_deref() != Some(path.as_path()) {
+            self.body_viewport = None;
+        }
+        self.source = src;
+        self.saved_source = self.source.clone();
+        self.file = Some(path.clone());
+        self.dirty = false;
+        self.outline_cursor = 0;
+        self.is_data_doc = data_lang_for(self.file.as_deref()).is_some();
+        self.mindmap_collapsed.clear();
+        self.mindmap_selected = None;
+        self.mindmap_panel_shown = None;
+        self.load_ast_from_source();
+        self.error = None;
+        self.rebuild_matches();
+        self.mindmap_focus_first_child();
+        self.reveal_current_file();
+        let mut fetches: Vec<Task<Message>> = Vec::new();
+        for (_id, block) in &self.ast {
+            if let Block::Image { url, .. } = block {
+                if is_remote_url(url) && !self.image_cache.contains_key(url) {
+                    self.image_cache.insert(url.clone(), ImageState::Loading);
+                    let url = url.clone();
+                    fetches.push(Task::perform(fetch_image(url), |(url, result)| {
+                        Message::ImageFetched(url, result)
+                    }));
+                }
+            }
+        }
+        self.refresh_diagram_theme_id();
+        let prime = self.prime_diagram_cache();
+        let nav_task: Task<Message> = if let Some(nav) = self.pending_nav.take() {
+            let line = nav
+                .fragment
+                .as_deref()
+                .and_then(|fragment| {
+                    line_for_fragment(&self.source, fragment, is_tex_path(self.file.as_deref()))
+                })
+                .or(nav.line);
+            Task::done(Message::Ipc(
+                crate::ipc::Request {
+                    id: 0,
+                    cmd: crate::ipc::Cmd::Goto {
+                        line,
+                        section: nav.section,
+                        focus: crate::ipc::FocusBehavior::Default,
+                    },
+                },
+                std::sync::Arc::new(std::sync::Mutex::new(None)),
+            ))
+        } else {
+            Task::none()
+        };
+        fetches.push(prime);
+        fetches.push(nav_task);
+        if refresh_full_mindmap_preview {
+            let source = self.source_snapshot_for_preview();
+            fetches.push(self.begin_full_mindmap_preview_source(path, source));
+        }
+        Task::batch(fetches)
     }
 
     fn new_full_mindmap_state() -> FullMindmapState {
@@ -2102,7 +2202,7 @@ impl App {
         self.cancel_refresh_tracking();
         if self.full_mindmap.is_none() {
             self.pending_nav = nav;
-            return Task::perform(load_file(path), Message::FileLoaded);
+            return self.begin_generic_file_load(path);
         }
 
         // Do not let an older generic load consume the navigation intended for
@@ -2123,7 +2223,8 @@ impl App {
         };
         self.cancel_refresh_tracking();
         self.pending_nav = nav;
-        Task::batch([cleanup, Task::perform(load_file(path), Message::FileLoaded)])
+        let load = self.begin_generic_file_load(path);
+        Task::batch([cleanup, load])
     }
 
     /// Start (or refresh) the workspace phase without touching sidebar state.
@@ -2454,6 +2555,11 @@ impl App {
         let refresh_id = self.refresh_seq;
         let has_workspace = self.workspace.is_some();
         let has_file = self.file.is_some();
+        if has_file {
+            // Refresh is the latest file-read intent. A generic load that
+            // started before this command must not later replace its result.
+            self.bump_file_refresh_generation();
+        }
         let file_skip_reason =
             (has_file && self.dirty).then_some(FileRefreshSkipReason::UnsavedEdits);
         let mut tasks = Vec::new();
@@ -2461,9 +2567,15 @@ impl App {
 
         if let Some(path) = self.workspace.clone() {
             if self.full_mindmap.is_some() {
-                tasks.push(
-                    self.begin_full_mindmap_workspace_load(path, false, None, true, false, false),
-                );
+                let exit_after_refresh = self.pending_ipc_file_open.is_some();
+                tasks.push(self.begin_full_mindmap_workspace_load(
+                    path,
+                    false,
+                    None,
+                    true,
+                    false,
+                    exit_after_refresh,
+                ));
                 self.pending_refresh_full_mindmap_workspace = self
                     .full_mindmap
                     .as_ref()
@@ -3379,7 +3491,7 @@ impl App {
                 if p.is_dir() {
                     Task::done(Message::OpenWorkspace(p))
                 } else {
-                    Task::perform(load_file(p), Message::FileLoaded)
+                    app.begin_generic_file_load(p)
                 }
             }
             None => Task::none(),
@@ -6827,7 +6939,7 @@ impl App {
                     }
                     return self.begin_full_mindmap_open(path);
                 }
-                let load = Task::perform(load_file(path), Message::FileLoaded);
+                let load = self.begin_generic_file_load(path);
                 if let Some(parent) = parent {
                     Task::batch([Task::done(Message::OpenWorkspace(parent)), load])
                 } else {
@@ -6929,6 +7041,14 @@ impl App {
                 }
                 Task::none()
             }
+            Message::FileLoadCompleted { generation, result } => {
+                if generation != self.file_refresh_generation {
+                    // Refresh, save, edit, or a newer generic load superseded
+                    // this read before it reached the update loop.
+                    return Task::none();
+                }
+                self.update(Message::FileLoaded(result))
+            }
             Message::RefreshFileLoaded { request, result } => {
                 let current = self.pending_refresh_file.as_ref() == Some(&request)
                     && self
@@ -6958,7 +7078,7 @@ impl App {
                 }
                 match result {
                     Ok((path, source)) if path == request.path => {
-                        let load = self.update(Message::FileLoaded(Ok((path, source))));
+                        let load = self.apply_loaded_file(path, source);
                         if let Some(refresh) = self.pending_refresh.as_mut() {
                             refresh.file_done = true;
                         }
@@ -6985,12 +7105,6 @@ impl App {
                 }
             }
             Message::FileLoaded(Ok((path, src))) => {
-                let refresh_full_mindmap_preview = self.full_mindmap.as_ref().is_some_and(|full| {
-                    matches!(
-                        full.selected.as_ref(),
-                        Some(WorkspaceNodeId::File(selected)) if selected == &path
-                    )
-                });
                 if self.dirty {
                     // An IPC/link/vault open can queue navigation before its
                     // asynchronous read returns. Do not let that stale target
@@ -6998,86 +7112,12 @@ impl App {
                     self.pending_nav = None;
                     return self.show_toast(self.unsaved_edits_open_message());
                 }
-                self.bump_file_refresh_generation();
-                crate::recent::add(&path);
-                if self.view_mode == ViewMode::Raw || self.editor.is_some() {
-                    self.leave_zen_edit_mode(false);
-                }
-                if self.workspace.is_none() {
-                    if let Some(parent) = path.parent().map(PathBuf::from) {
-                        self.set_workspace(parent, false);
-                    }
-                }
-                // Opening a DIFFERENT file: the body scrollable's offset gets
-                // clamped by iced on the next layout, but if the new content
-                // fits the viewport no scroll notification ever fires — the
-                // stale viewport would poison body-offset math (current-line
-                // estimate, virt window). Watcher reloads of the same file
-                // keep it, preserving scroll position.
-                if self.file.as_deref() != Some(path.as_path()) {
-                    self.body_viewport = None;
-                }
-                self.source = src;
-                self.saved_source = self.source.clone();
-                self.file = Some(path.clone());
-                self.dirty = false;
-                self.outline_cursor = 0;
-                self.is_data_doc = data_lang_for(self.file.as_deref()).is_some();
-                self.mindmap_collapsed.clear();
-                self.mindmap_selected = None;
-                self.mindmap_panel_shown = None;
-                self.load_ast_from_source();
-                self.error = None;
-                self.rebuild_matches();
-                // Opening a file while in mindmap mode: focus root's first child
-                // (file load cleared the selection above).
-                self.mindmap_focus_first_child();
-                self.reveal_current_file();
-                let mut fetches: Vec<Task<Message>> = Vec::new();
-                for (_id, b) in &self.ast {
-                    if let Block::Image { url, .. } = b {
-                        if is_remote_url(url) && !self.image_cache.contains_key(url) {
-                            self.image_cache.insert(url.clone(), ImageState::Loading);
-                            let u = url.clone();
-                            fetches.push(Task::perform(fetch_image(u), |(url, res)| {
-                                Message::ImageFetched(url, res)
-                            }));
-                        }
-                    }
-                }
-                self.refresh_diagram_theme_id();
-                let prime = self.prime_diagram_cache();
-                let nav_task: Task<Message> = if let Some(nav) = self.pending_nav.take() {
-                    // A link `#fragment` resolves to a line via slug matching;
-                    // IPC `line`/`section` pass through unchanged.
-                    let line = nav
-                        .fragment
-                        .as_deref()
-                        .and_then(|f| {
-                            line_for_fragment(&self.source, f, is_tex_path(self.file.as_deref()))
-                        })
-                        .or(nav.line);
-                    Task::done(Message::Ipc(
-                        crate::ipc::Request {
-                            id: 0,
-                            cmd: crate::ipc::Cmd::Goto {
-                                line,
-                                section: nav.section,
-                                focus: crate::ipc::FocusBehavior::Default,
-                            },
-                        },
-                        std::sync::Arc::new(std::sync::Mutex::new(None)),
-                    ))
-                } else {
-                    Task::none()
-                };
-                fetches.push(prime);
-                fetches.push(nav_task);
-                if refresh_full_mindmap_preview {
-                    let source = self.source_snapshot_for_preview();
-                    fetches.push(self.begin_full_mindmap_preview_source(path, source));
-                }
-                Task::batch(fetches)
+                // Non-refresh loads supersede a refresh transaction. The
+                // refresh-owned path calls `apply_loaded_file` directly after
+                // validating its own request and therefore keeps its workspace
+                // leg alive.
+                self.cancel_refresh_tracking();
+                self.apply_loaded_file(path, src)
             }
             Message::FileChanged(p) => {
                 self.cancel_refresh_tracking();
@@ -7085,7 +7125,7 @@ impl App {
                 if self.dirty {
                     return self.show_toast("External change ignored (unsaved edits)".into());
                 }
-                Task::perform(load_file(p), Message::FileLoaded)
+                self.begin_generic_file_load(p)
             }
             Message::OpenLink(url) => {
                 // Split off a `#fragment` suffix (heading anchor).
@@ -7130,6 +7170,7 @@ impl App {
                 Task::none()
             }
             Message::FileLoaded(Err(e)) => {
+                self.cancel_refresh_tracking();
                 self.pending_nav = None;
                 self.error = Some(e);
                 Task::none()
@@ -12856,6 +12897,75 @@ mod tests {
     }
 
     #[test]
+    fn newer_refresh_rejects_an_older_generic_file_load_completion() {
+        let old = PathBuf::from("/tmp/rmdv-refresh-current.md");
+        let new = PathBuf::from("/tmp/rmdv-generic-load-target.md");
+        let mut app = App::default();
+        app.file = Some(old.clone());
+        app.source = "current".into();
+        app.saved_source = app.source.clone();
+
+        let _ = app.load_file_unless_dirty(new.clone());
+        let generic_generation = app.file_refresh_generation;
+        let _ = app.update(Message::Refresh);
+        let refresh_request = app
+            .pending_refresh_file
+            .clone()
+            .expect("newer refresh should own the current file");
+        assert_ne!(generic_generation, refresh_request.generation);
+
+        let _ = app.update(Message::FileLoadCompleted {
+            generation: generic_generation,
+            result: Ok((new, "stale generic load".into())),
+        });
+        assert_eq!(app.file.as_deref(), Some(old.as_path()));
+        assert_eq!(app.source, "current");
+        assert!(app.pending_refresh.is_some());
+
+        let _ = app.update(Message::RefreshFileLoaded {
+            request: refresh_request,
+            result: Ok((old.clone(), "refreshed current".into())),
+        });
+        assert_eq!(app.file.as_deref(), Some(old.as_path()));
+        assert_eq!(app.source, "refreshed current");
+        assert!(app.pending_refresh.is_none());
+    }
+
+    #[test]
+    fn newer_generic_file_load_cancels_refresh_without_stranding_tracker() {
+        let old = PathBuf::from("/tmp/rmdv-refresh-before-navigation.md");
+        let new = PathBuf::from("/tmp/rmdv-navigation-after-refresh.md");
+        let mut app = App::default();
+        app.file = Some(old.clone());
+        app.source = "current".into();
+        app.saved_source = app.source.clone();
+
+        let _ = app.update(Message::Refresh);
+        let stale_refresh = app
+            .pending_refresh_file
+            .clone()
+            .expect("refresh should start first");
+        let _ = app.load_file_unless_dirty(new.clone());
+        let generic_generation = app.file_refresh_generation;
+        assert!(app.pending_refresh.is_none());
+
+        let _ = app.update(Message::RefreshFileLoaded {
+            request: stale_refresh,
+            result: Ok((old, "stale refresh".into())),
+        });
+        assert_eq!(app.source, "current");
+        assert!(app.pending_refresh.is_none());
+
+        let _ = app.update(Message::FileLoadCompleted {
+            generation: generic_generation,
+            result: Ok((new.clone(), "new navigation".into())),
+        });
+        assert_eq!(app.file.as_deref(), Some(new.as_path()));
+        assert_eq!(app.source, "new navigation");
+        assert!(app.pending_refresh.is_none());
+    }
+
+    #[test]
     fn stale_manual_refresh_completion_is_ignored_after_navigation() {
         let old = PathBuf::from("/tmp/rmdv-refresh-old.md");
         let new = PathBuf::from("/tmp/rmdv-refresh-new.md");
@@ -17654,6 +17764,83 @@ mod tests {
 
         assert!(app.full_mindmap.is_none());
         assert_eq!(app.file.as_deref(), Some(new.as_path()));
+        assert!(app.pending_nav.is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn ipc_open_survives_manual_refresh_during_full_mindmap_reconciliation() {
+        let dir = full_mindmap_test_dir("ipc-open-manual-refresh");
+        let old = dir.join("old.md");
+        let new = dir.join("new.md");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(&old, "# Old\n").unwrap();
+        std::fs::write(&new, "# New\n").unwrap();
+
+        let mut app = App::default();
+        app.set_workspace(dir.clone(), false);
+        app.file = Some(old.clone());
+        app.source = "# Old\n".into();
+        app.saved_source = app.source.clone();
+        app.full_mindmap = Some(full_workspace_state(&dir));
+        app.show_hidden = true;
+
+        let _ = app.update(Message::Ipc(
+            crate::ipc::Request {
+                id: 1,
+                cmd: crate::ipc::Cmd::Open {
+                    file: new.to_string_lossy().into_owned(),
+                    line: Some(3),
+                    section: Some("New".into()),
+                    focus: crate::ipc::FocusBehavior::Suppress,
+                },
+            },
+            std::sync::Arc::new(std::sync::Mutex::new(None)),
+        ));
+        let stale_reconciliation = app
+            .full_mindmap
+            .as_ref()
+            .and_then(|full| full.pending_workspace_load.clone())
+            .expect("IPC open should wait for hidden-snapshot reconciliation");
+        assert!(stale_reconciliation.exit_after_refresh);
+        assert!(app.pending_ipc_file_open.is_some());
+
+        let _ = app.update(Message::Refresh);
+        let active_reconciliation = app
+            .full_mindmap
+            .as_ref()
+            .and_then(|full| full.pending_workspace_load.clone())
+            .expect("manual refresh should preserve the reconciliation request");
+        assert_eq!(active_reconciliation, stale_reconciliation);
+        assert!(active_reconciliation.exit_after_refresh);
+        let stale_file_refresh = app
+            .pending_refresh_file
+            .clone()
+            .expect("the old visible file refresh may still be in flight");
+
+        let snapshot = tree::build_workspace(&dir, true).unwrap();
+        let _ = app.update(Message::FullMindmapWorkspaceLoaded {
+            request: active_reconciliation,
+            result: Ok((dir.clone(), snapshot)),
+        });
+        assert!(app.full_mindmap.is_none());
+        assert!(app.pending_ipc_file_open.is_none());
+        assert_eq!(app.pending_nav.as_ref().and_then(|nav| nav.line), Some(3));
+        assert!(app.pending_refresh.is_none());
+
+        let _ = app.update(Message::RefreshFileLoaded {
+            request: stale_file_refresh,
+            result: Ok((old, "# Stale refresh\n".into())),
+        });
+        assert_eq!(app.source, "# Old\n");
+
+        let ipc_generation = app.file_refresh_generation;
+        let _ = app.update(Message::FileLoadCompleted {
+            generation: ipc_generation,
+            result: Ok((new.clone(), "# New\n".into())),
+        });
+        assert_eq!(app.file.as_deref(), Some(new.as_path()));
+        assert_eq!(app.source, "# New\n");
         assert!(app.pending_nav.is_none());
         let _ = std::fs::remove_dir_all(&dir);
     }
