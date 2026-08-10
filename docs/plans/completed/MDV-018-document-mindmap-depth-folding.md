@@ -1,10 +1,10 @@
 # MDV-018 — Document Mindmap depth folding
 
-State: submitted
+State: done
 Owner / accountable lead: Codex
-Active writer: Codex
+Active writer: none
 Created: 2026-07-29
-Updated: 2026-07-31
+Updated: 2026-08-10
 
 ## Outcome
 
@@ -20,6 +20,22 @@ JSON, YAML, and TOML Mindmaps.
 - Do not change per-node Space folding, graph zoom, layout, or filesystem
   materialization.
 - Do not push, merge, release, or deploy without explicit owner authority.
+
+## Constraints and authority
+
+- Document Mindmap owns this depth-folding behavior; Full Mindmap remains
+  outside the feature boundary.
+- Per-node folding, zoom, and filesystem materialization retain their existing
+  contracts.
+- The owner accepted completed code review and exact-head CI as the merge gate;
+  release publication remains a separate explicit decision.
+
+## Owned and excluded surfaces
+
+- Owned: Document Mindmap keyboard and command-palette routing, Markdown/data
+  graph collapse state, layout invalidation, tests, and shortcut guidance.
+- Excluded: Full Mindmap navigation, Quick Slots, Theme Settings/Studio,
+  release publication, and site deployment.
 
 ## Acceptance evidence
 
@@ -54,6 +70,12 @@ JSON, YAML, and TOML Mindmaps.
 | --- | --- | --- |
 | 2026-07-29 | Keep the behavior Document Mindmap-only. | Owner explicitly excluded Full Mindmap. |
 | 2026-07-29 | Use neutral node-level wording and support data Mindmaps. | Owner explicitly included JSON, YAML, and TOML after review. |
+| 2026-08-10 | Accept reviewed and CI-green PR #23 as complete. | Owner confirmed that completed review was sufficient; PR #23 was merged to `main`. |
+
+## Blockers and escalation
+
+- None for the completed feature. Tagging, publishing, and deploying the next
+  release still require explicit owner authorization.
 
 ## Final evidence
 
@@ -66,5 +88,7 @@ JSON, YAML, and TOML Mindmaps.
 - `cargo build --release --bin rmdv --target-dir /Users/liminchen/Documents/GitHub/mdv/target -j 2` — passed; reviewed binary SHA-256 `def032b597f5715983b5649b1b757b0b581323afd33d644d484bf665be09441d`.
 - `rustfmt --edition 2021 --check src/app.rs src/mindmap.rs src/data_mindmap.rs` — passed.
 - `git diff --check` — passed.
-- Native/manual acceptance remains pending; owner-authorized commit and local
-  integration are separate delivery steps.
+- PR #23 was independently reviewed, merged to `main` as `34ef584`, and Linux
+  CI run `31323797521` passed on that exact commit.
+- The owner accepted the completed review as the feature gate; no separate
+  native smoke was required before integration.

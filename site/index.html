@@ -75,9 +75,9 @@
       "applicationCategory": "DeveloperApplication",
       "applicationSubCategory": "Markdown Viewer",
       "operatingSystem": ["macOS", "Linux", "Windows"],
-      "softwareVersion": "0.6.0",
+      "softwareVersion": "0.7.0",
       "datePublished": "2026-05-10",
-      "dateModified": "2026-07-21",
+      "dateModified": "2026-08-10",
       "releaseNotes": "https://github.com/minchenlee/rmdv/releases",
       "license": "https://opensource.org/licenses/MIT",
       "isAccessibleForFree": true,
@@ -86,7 +86,7 @@
         "price": "0",
         "priceCurrency": "USD"
       },
-      "description": "rmdv is a free, open-source native markdown viewer written in Rust with Full Mindmap workspace navigation. It renders Markdown, Mermaid diagrams, Graphviz DOT graphs, LaTeX math, and JSON/YAML mind maps without a browser, Electron, or JavaScript runtime. On macOS and Linux, text PDFs are extracted locally to Markdown via PDFium.",
+      "description": "rmdv is a free, open-source native markdown viewer written in Rust with Full Mindmap workspace navigation. It renders Markdown, Mermaid diagrams, Graphviz DOT graphs, LaTeX math, and JSON/YAML/TOML mind maps without a browser, Electron, or JavaScript runtime. On macOS and Linux, text PDFs are extracted locally to Markdown via PDFium.",
       "featureList": [
         "Folder workspace browser with file tree",
         "Fuzzy file finder (Cmd+P)",
@@ -94,19 +94,20 @@
         "Mermaid diagram rendering (native, no browser)",
         "Graphviz DOT diagram rendering (native, no browser)",
         "Block LaTeX math rendering via pure-Rust layout engine (no JavaScript)",
-        "Mindmap view for any document including JSON and YAML (Cmd+M)",
+        "Mindmap view for Markdown, JSON, YAML, and TOML documents (Cmd+M)",
         "Full Mindmap workspace navigation for folders and files (Cmd+Shift+M)",
         "Native mindmap zoom with keyboard, wheel, touch, and trackpad input",
         "PDF viewing as rendered Markdown via local PDFium text extraction, no cloud or LLM (macOS and Linux)",
         "Vault-wide search with Zed-style full-page results (Cmd+Shift+F)",
         "In-document search (Cmd+F)",
         "Live reload on file change",
-        "Auto-update with SHA-256 verification, signed and notarized on macOS",
+        "Manual file and folder refresh with Finder reveal and path-copy actions",
+        "Auto-update with SHA-256 verification; macOS signing and notarization status is reported per release",
         "Ten built-in theme presets (One Light/Dark, GitHub Light/Dark, Solarized Light/Dark, Gruvbox, Nord, Dracula, Tokyo Night)",
         "Keyboard-first navigation (vim j/k/g/G)",
         "Edit mode (Cmd+E)",
         "Zen editing with unsaved-edit protection across navigation",
-        "Heading fold (Cmd+K 0-6)",
+        "Reader heading and Document Mindmap depth folding (Cmd+K 0-6)",
         "IPC socket API, controllable by AI coding agents via the rmdv CLI returning one-line JSON"
       ],
       "inLanguage": "en",
@@ -148,7 +149,7 @@
           "name": "What is the difference between document Mindmap and Full Mindmap?",
           "acceptedAnswer": {
             "@type": "Answer",
-            "text": "Document Mindmap (Cmd+M) turns the current Markdown, JSON, or YAML document into a tree. Full Mindmap (Cmd+Shift+M) is an app-level workspace navigator: it shows the folders and files in a workspace and lets you preview or open a selected file. The two surfaces are separate, so entering one does not overwrite the other."
+            "text": "Document Mindmap (Cmd+M) turns the current Markdown, JSON, YAML, or TOML document into a tree. Full Mindmap (Cmd+Shift+M) is an app-level workspace navigator: it shows the folders and files in a workspace and lets you preview or open a selected file. The two surfaces are separate, so entering one does not overwrite the other."
           }
         },
         {
@@ -188,7 +189,7 @@
           "name": "How do I install rmdv?",
           "acceptedAnswer": {
             "@type": "Answer",
-            "text": "On macOS, download the signed and notarized .dmg from github.com/minchenlee/rmdv/releases and drag rmdv to Applications. After opening the app, use Install CLI from the command palette to expose rmdv in /usr/local/bin. On Linux, download the x86_64 AppImage, launch it once, and use Install CLI from the command palette to create ~/.local/bin/rmdv; add ~/.local/bin to PATH if needed. To build from source, install Rust 1.80 or newer, then run: git clone https://github.com/minchenlee/rmdv && cd rmdv && cargo build --release. Windows builds use cargo build --release --no-default-features because PDF extraction is macOS/Linux only."
+            "text": "On macOS, download the .dmg from github.com/minchenlee/rmdv/releases, check that release's signing/notarization status, and drag rmdv to Applications. After opening the app, use Install CLI from the command palette to expose rmdv in /usr/local/bin. On Linux, download the x86_64 AppImage, launch it once, and use Install CLI from the command palette to create ~/.local/bin/rmdv; add ~/.local/bin to PATH if needed. To build from source, install Rust 1.80 or newer, then run: git clone https://github.com/minchenlee/rmdv && cd rmdv && cargo build --release. Windows builds use cargo build --release --no-default-features because PDF extraction is macOS/Linux only."
           }
         },
         {
@@ -281,7 +282,7 @@
       <dl class="rail-facts">
         <div><dt>runtime</dt><dd>native Rust</dd></div>
         <div><dt>license</dt><dd>MIT</dd></div>
-        <div><dt>release</dt><dd>v0.6.0</dd></div>
+        <div><dt>release</dt><dd>v0.7.0</dd></div>
       </dl>
       <button class="palette-hint" id="palette-hint" type="button">
         <span>Run a page command</span><kbd data-key="p">p</kbd>
@@ -340,7 +341,7 @@
   <section class="chapter" id="rendering">
     <header class="chapter-heading">
       <h2>The document stays the visual focus.</h2>
-      <p>Markdown, code, diagrams, math, JSON, YAML, and text PDFs are rendered locally with the same restrained interface around them.</p>
+      <p>Markdown, code, diagrams, math, JSON, YAML, TOML, and text PDFs are rendered locally with the same restrained interface around them.</p>
     </header>
     <div class="capture-sequence">
       <figure class="product-capture capture-primary">
@@ -360,7 +361,7 @@
           <button class="shot-trigger" type="button" aria-label="View full-size mindmap screenshot">
             <img src="assets/shot-mindmap.webp" alt="A JSON configuration file shown as a collapsible data mindmap" loading="lazy" decoding="async" width="1600" height="1005">
           </button>
-          <figcaption><strong>Structure on demand.</strong> Any Markdown, JSON, or YAML document can become a navigable tree.</figcaption>
+          <figcaption><strong>Structure on demand.</strong> Any Markdown, JSON, YAML, or TOML document can become a navigable tree.</figcaption>
         </figure>
       </div>
     </div>
@@ -426,13 +427,13 @@ rmdv list-sections spec.md | jq -r <span class="s">'.[].path'</span></code></pre
     </header>
     <dl class="answer-list">
       <div><dt>Is rmdv free and open source?</dt><dd>Yes. rmdv is MIT-licensed and free to use, modify, and distribute. The <a href="https://github.com/minchenlee/rmdv">source is public on GitHub</a>.</dd></div>
-      <div><dt>What is the difference between document Mindmap and Full Mindmap?</dt><dd>Document Mindmap turns the current Markdown, JSON, or YAML file into a tree. Full Mindmap is a separate workspace navigator for folders and files, with a read-only preview.</dd></div>
+      <div><dt>What is the difference between document Mindmap and Full Mindmap?</dt><dd>Document Mindmap turns the current Markdown, JSON, YAML, or TOML file into a tree. Full Mindmap is a separate workspace navigator for folders and files, with a read-only preview.</dd></div>
       <div><dt>How is rmdv different from Obsidian?</dt><dd>rmdv is a read-focused viewer, not a note-linking knowledge base. It opens folders without vault setup and has no plugin ecosystem.</dd></div>
       <div><dt>How is rmdv different from Typora?</dt><dd>Typora is a paid editor-first app. rmdv is free, open source, read-focused, and runs on macOS, Linux, and Windows.</dd></div>
       <div><dt>Does rmdv work offline?</dt><dd>Yes. Rendering, diagrams, math, mindmaps, and supported PDF text extraction happen locally with no cloud dependency.</dd></div>
       <div><dt>What diagram and math formats are supported?</dt><dd>Mermaid, Graphviz DOT, and block LaTeX are rendered natively, without JavaScript or KaTeX.</dd></div>
       <div><dt>How does rmdv work with coding agents?</dt><dd>The <code>rmdv</code> CLI can open files, jump to headings, change view modes, and return current state as JSON over local IPC.</dd></div>
-      <div><dt>How do I install it?</dt><dd>Use the signed macOS disk image, the Linux AppImage, or build from source with Rust 1.80 or newer. After opening a packaged app, use Install CLI from the command palette to expose the rmdv command. Windows builds disable the PDF feature.</dd></div>
+      <div><dt>How do I install it?</dt><dd>Use the macOS disk image, the Linux AppImage, or build from source with Rust 1.80 or newer. Each GitHub Release records its actual macOS signing/notarization state. After opening a packaged app, use Install CLI from the command palette to expose the rmdv command. Windows builds disable the PDF feature.</dd></div>
       <div><dt>Is it faster than Electron-based viewers?</dt><dd>rmdv has no Electron, webview, or JavaScript runtime. Historical v0.2.0 measurements found about 150 ms to first view; current builds may differ.</dd></div>
     </dl>
   </section>
@@ -445,7 +446,7 @@ rmdv list-sections spec.md | jq -r <span class="s">'.[].path'</span></code></pre
     <div class="install-options">
       <div class="install-row">
         <h3>macOS</h3>
-        <p>Signed, notarized, and self-updating. Use <code>Install CLI</code> from the command palette to enable Terminal access.</p>
+        <p>SHA-256 verified and self-updating. Each release reports its macOS signing/notarization state. Use <code>Install CLI</code> from the command palette to enable Terminal access.</p>
         <span><a class="btn small" data-asset="aarch64.dmg" href="https://github.com/minchenlee/rmdv/releases/latest">Apple Silicon</a><a class="btn small" data-asset="x86_64.dmg" href="https://github.com/minchenlee/rmdv/releases/latest">Intel</a></span>
       </div>
       <div class="install-row">

@@ -1,6 +1,6 @@
 # rmdv project backlog
 
-Last triaged: 2026-07-19
+Last triaged: 2026-08-10
 
 ## State model
 
@@ -13,6 +13,7 @@ contract passed; code or prose merely existing is not sufficient.
 
 | ID | Priority | State | Outcome | Acceptance | Plan | Blocked by |
 | --- | --- | --- | --- | --- | --- | --- |
+| MDV-020 | P0 | submitted | Publish and live-verify v0.7.0 from the current proven `origin/main`. | Version/site/release metadata agree; local and native gates pass; exact-head PR review/CI is green; signed artifacts/checksums/manifest and the deployed site are verified. | [`MDV-020`](plans/active/MDV-020-release-v0.7.0.md) | Owner authority is granted; native GUI smoke currently requires an unlocked Mac. |
 | MDV-001 | P1 | ready | Verify the Windows IPC lifetime fix on an actual Windows runner. | Build/package succeeds; non-empty app and setup `.exe` files, SHA-256 values, and a downloadable artifact are proven for the exact candidate. | [`MDV-001`](plans/active/MDV-001-windows-build-verification.md) | Requires a pushed CI candidate. |
 | MDV-002 | P1 | ready | Bound search-result and highlight-cache memory while preserving visible behavior. | Explicit budgets and truthful truncation; focused regressions; measured memory evidence; relevant suites pass. | [`MDV-002`](plans/active/MDV-002-search-highlight-memory-bounds.md) | — |
 | MDV-009 | P2 | ready | Retarget and review Mindmap Zoom Controls on merged Full Mindmap. | Clean candidate; focused/unit/integration checks; anchor-preserving native wheel, pinch, and keyboard acceptance. | [`MDV-009`](plans/active/MDV-009-mindmap-zoom-controls-integration.md) | No direct rebase of the old branch without classifying its commits. |
@@ -25,7 +26,9 @@ contract passed; code or prose merely existing is not sufficient.
 
 | ID | Priority | Reason | Revisit trigger |
 | --- | --- | --- | --- |
-| MDV-010 | P1 | Local `main` and `origin/main` both resolve to `7a0514d`; the divergence predicate is currently absent. The historical patch-equivalence audit remains incomplete. | Owner requests an audit of historical `main@67564e5`, or local and remote `main` diverge again. |
+| MDV-017 | P1 | Quick Slots is intentionally excluded from v0.7.0. Its dirty, uncommitted candidate still needs a clean port onto current `main` plus exact-build native rail and shortcut acceptance. | v0.7.0 is complete and the owner resumes Quick Slots integration. |
+| MDV-019 | P1 | Theme Settings and Theme Studio is intentionally excluded from v0.7.0. Its dirty, uncommitted candidate still needs a clean port plus native file-picker, Apply/restart, and keyboard/focus acceptance. | v0.7.0 is complete and the owner resumes theme integration. |
+| MDV-010 | P1 | The protected local `main@a9a0291` is six commits ahead of and two commits behind `origin/main@34ef584`; its unrelated local commits remain untouched. | Owner requests deliberate local-main reconciliation after the release. |
 | MDV-007 | P2 | Initial workspace discovery examines at most 10,000 immediate entries, so an extremely wide directory may omit a later ordinary sibling. Current observed user roots are far below that shape. | A real affected directory, a product requirement for stronger guarantees, or a bounded algorithm proposal with measurements. |
 | MDV-008 | P3 | Repository-wide formatting and Clippy have pre-existing debt; broad cleanup would obscure behavior changes. | A dedicated hygiene window with an agreed baseline and no feature diff. |
 
@@ -33,6 +36,7 @@ contract passed; code or prose merely existing is not sufficient.
 
 | ID | Outcome | Evidence route |
 | --- | --- | --- |
+| MDV-018 | Added reviewed Document Mindmap depth folding for Markdown, JSON, YAML, and TOML; PR #23 merged and exact-head Linux CI passed. | [`docs/plans/completed/MDV-018-document-mindmap-depth-folding.md`](plans/completed/MDV-018-document-mindmap-depth-folding.md). |
 | MDV-016 | Reconciled the static website shortcut reference with current Rust bindings, clarified the two-step fold chord, and added a drift-failing contract check. | [`docs/plans/completed/MDV-016-site-shortcut-contract.md`](plans/completed/MDV-016-site-shortcut-contract.md). |
 | MDV-015 | Moved the animated ASCII wordmark from the hero into a dark terminal-style `[EOF]` footer that closes the page without competing with the product introduction. | [`docs/plans/completed/MDV-015-ascii-terminal-footer.md`](plans/completed/MDV-015-ascii-terminal-footer.md). |
 | MDV-013 | Restored the animated ASCII `rmdv` wordmark as a responsive README pane inside the preferred Impeccable landing-page variant. | [`docs/plans/completed/MDV-013-ascii-wordmark-restoration.md`](plans/completed/MDV-013-ascii-wordmark-restoration.md). |
