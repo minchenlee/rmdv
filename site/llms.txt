@@ -2,7 +2,7 @@
 
 > Native Rust desktop Markdown viewer with Mermaid diagrams, LaTeX math, mind-map mode, and agent-controllable IPC. Free, MIT-licensed. No Electron, no browser, no runtime.
 
-rmdv (Rust Markdown Viewer) is a read-focused desktop app for macOS, Windows, and Linux. It renders Markdown files, Mermaid and Graphviz DOT diagrams, block LaTeX math, and JSON/YAML mind maps using a pure-Rust GUI stack (Iced 0.14). On macOS and Linux, text PDFs can be extracted locally to Markdown via PDFium. Its scriptable IPC socket lets programs and AI agents (Claude Code, Codex, Cursor, shell scripts) drive the running window — open files, scroll to sections, switch view modes, take screenshots — through the `rmdv` CLI returning one-line JSON.
+rmdv (Rust Markdown Viewer) is a read-focused desktop app for macOS, Windows, and Linux. It renders Markdown files, Mermaid and Graphviz DOT diagrams, block LaTeX math, and JSON/YAML/TOML mind maps using a pure-Rust GUI stack (Iced 0.14). On macOS and Linux, text PDFs can be extracted locally to Markdown via PDFium. Its scriptable IPC socket lets programs and AI agents (Claude Code, Codex, Cursor, shell scripts) drive the running window — open files, scroll to sections, switch view modes, take screenshots — through the `rmdv` CLI returning one-line JSON.
 
 ## Product
 
@@ -11,7 +11,7 @@ rmdv (Rust Markdown Viewer) is a read-focused desktop app for macOS, Windows, an
 ## Source and releases
 
 - [GitHub repository](https://github.com/minchenlee/rmdv): Source code, issue tracker, pull requests. MIT license.
-- [Releases](https://github.com/minchenlee/rmdv/releases): Pre-built binaries for macOS (signed + notarized), Linux, and Windows. SHA-256 verified. Latest: v0.6.0 (2026-07-21).
+- [Releases](https://github.com/minchenlee/rmdv/releases): Pre-built binaries for macOS, Linux, and Windows with published SHA-256 checksums. Latest: v0.7.0 (2026-08-10).
 
 ## Key facts
 
@@ -28,15 +28,16 @@ rmdv has an agent-controllable IPC socket. Historical v0.2.0 benchmarks were mea
 - Mermaid diagrams rendered natively (no JS, no browser)
 - Graphviz DOT diagrams rendered natively
 - Block LaTeX math ($$…$$) via pure-Rust layout engine (iced_math); no MathJax, no KaTeX
-- Mind-map view (⌘M): any Markdown, JSON, or YAML document as a collapsible tree
+- Mind-map view (⌘M): any Markdown, JSON, YAML, or TOML document as a collapsible tree with depth controls
 - Full Mindmap workspace (⌘⇧M): navigate folders and files as a bounded, keyboard-first graph
 - Native mindmap zoom: = / − / 0, mouse wheel, touch pinch, and macOS trackpad pinch
 - Vault-wide full-text search (⌘⇧F): Zed-style full-page results across all files in the workspace
 - In-document search (⌘F)
 - Live reload on file save
-- Auto-update: checks GitHub releases, SHA-256 verifies, signed and notarized on macOS
+- Manual refresh (⌘R), Finder reveal (⌘⌥R), and focused-path copy (⌘⌥C)
+- Auto-update: checks GitHub releases and verifies SHA-256
 - Themes: 10 built-in presets — One Light/Dark, GitHub Light/Dark, Solarized Light/Dark, Gruvbox, Nord, Dracula, Tokyo Night
-- Keyboard-first navigation: j/k/g/G, ⌘↑/⌘↓, heading fold ⌘K 0–6
+- Keyboard-first navigation: j/k/g/G, ⌘↑/⌘↓, reader and Document Mindmap depth fold ⌘K 0–6
 - Edit mode (⌘E)
 - Zen editing with unsaved-edit protection across navigation
 - IPC CLI: `rmdv open <path>`, `rmdv goto --line N`, `rmdv goto --section <name>`, `rmdv mode mindmap`, `rmdv current`, `rmdv list-sections <path>`; all return one-line JSON
@@ -59,7 +60,7 @@ rmdv is the only option that is free, open-source, native (non-Electron), cross-
 
 ## Install
 
-- macOS: download the signed + notarized `.dmg` (Apple Silicon or Intel) from https://github.com/minchenlee/rmdv/releases and drag rmdv to Applications. Open the app and run `Install CLI` from the command palette to expose the `rmdv` CLI in `/usr/local/bin`.
+- macOS: download the `.dmg` (Apple Silicon or Intel) from https://github.com/minchenlee/rmdv/releases and drag rmdv to Applications. Open the app and run `Install CLI` from the command palette to expose the `rmdv` CLI in `/usr/local/bin`.
 - Linux: download the x86_64 AppImage from the same page, `chmod +x` it, and run. Use `Install CLI` from the command palette to create `~/.local/bin/rmdv`; add `~/.local/bin` to `PATH` if needed.
 - From source: install Rust 1.80+ from https://rustup.rs, then `git clone https://github.com/minchenlee/rmdv && cd rmdv && cargo build --release`. Windows builds use `cargo build --release --no-default-features` because PDF extraction is macOS/Linux only.
 

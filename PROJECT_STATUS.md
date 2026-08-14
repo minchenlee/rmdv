@@ -1,63 +1,45 @@
 # rmdv — project status
 
-Last verified: 2026-07-24 CST (Asia/Taipei)
+Last verified: 2026-08-10 13:07 CST (Asia/Taipei)
 Stale after: 7 days
 Canonical repository: `/Users/liminchen/Documents/GitHub/mdv`
-Expected branch: `main`; always resolve its live HEAD before mutation.
-Last verified main base: `origin/main@001815df6d5d1b896e886905831ed4d545785e11`.
+Expected branch / HEAD / PR: `codex/release-v0.7.0`, based on
+`origin/main@34ef5841b58880a825e4238080691cfbfc6f57f3`; no PR exists yet.
+Last verified main base: `origin/main@34ef5841b58880a825e4238080691cfbfc6f57f3`.
 Authority: This is a routing snapshot. Verify Git, GitHub, runtime identity, and manual evidence before mutation.
 
 ## Current outcome
 
-v0.6.0 is merged, tagged, published, and live. Platform artifacts and
-checksums/manifest are verified, and the public site is serving v0.6.0.
+Prepare a reviewable v0.7.0 candidate from the current proven remote `main`.
+The release includes only already-merged work; no dirty feature candidate is
+being imported into the release branch.
 
-PR #15 fixes Finder document opening on macOS; PR #16 makes Markdown tables
-responsive; PR #17 fixes Mindmap panel sizing and shortcuts; and PR #18 plus
-PR #20 replace the landing-page AI sticker with a static WebP asset. All were
-squash-merged on 2026-07-24 after their final Codex reviews.
+## v0.7.0 release preparation
 
-## v0.6.0 release preparation
+- Preparation branch: `codex/release-v0.7.0` from `origin/main@34ef584`.
+- Included user-facing scope: reliable macOS Finder opening, responsive
+  Markdown tables, Mindmap panel sizing/shortcut corrections, `⌘R` file/folder
+  refresh, Finder reveal and path-copy actions, and Document Mindmap depth
+  folding for Markdown, JSON, YAML, and TOML.
+- Included site/tooling scope: static AI disclosure sticker and documented Node
+  runtime for site deployment.
+- Quick Slots is reserved as `MDV-017`; Theme Settings/Studio is `MDV-019`.
+  Both are explicitly excluded from v0.7.0 and remain isolated candidates.
+- Version/release/site metadata is prepared locally. Tagging, publishing,
+  signed artifact verification, and site deployment have not occurred.
 
-- Preparation branch: `codex/release-v0.6.0` from `main@4311fbf`.
-- Scope: merged PR #11, PR #12, and PR #13 after the published v0.5.0 line.
-- Version metadata, release notes, content pack, `site/index.html`, and
-  `site/llms.txt` are aligned to v0.6.0 in the preparation branch.
-- Owner-reported manual acceptance passed for Finder associations, CLI reset and
-  installation, CJK rendering, and native regression smoke.
-- Local Apple Silicon release binary and packaged `.app` passed; the packaged
-  `Info.plist` contains the four expected file-association groups.
-- PR #14 merged to `main` at `0577040`; tag `v0.6.0` and GitHub Release are
-  published.
-- Release workflow `29830450638` built and uploaded Linux, macOS arm64, macOS
-  Intel, and Windows artifacts; the publish job generated `SHA256SUMS` and
-  `latest.json`, and both were verified against the published assets.
-- Published macOS app payloads were directly verified with Developer ID
-  authority `MIN-CHEN LEE (CY58UG73K6)`, valid `codesign`, and successful
-  `stapler validate` for both app payloads and DMGs.
-- Local Wrangler deployment on 2026-07-22 succeeded with Worker version
-  `ccc0d63e-7752-4b6b-8a33-5ba407f08800`; the custom domain was deployed and
-  live homepage plus `llms.txt` both report v0.6.0.
+## Published baseline
 
-## v0.5.0 release
-
-- Release materials cover the Full Mindmap workspace, native mindmap zoom,
-  Zen edit mode, public site metadata, `site/llms.txt`, and the native capture
-  at `site/assets/shot-full-mindmap.webp`.
-- An isolated RC from `origin/main@33b7d8f` passed 314 library tests, all
-  integration targets, default/PDF/no-default checks, the release build, and
-  native Full Mindmap smoke with a 50% preview panel.
-- Release commit `b67161c` is published as tag `v0.5.0`; GitHub release
-  workflow `29645918474` built all platform artifacts, checksums, and
-  `latest.json` successfully.
-- Site deployment retry `29646699009` confirmed Wrangler 4.112.0 reads the
-  static-assets config, then stopped because `CLOUDFLARE_API_TOKEN` and
-  `CLOUDFLARE_ACCOUNT_ID` are absent from GitHub Actions.
+- v0.6.0 remains the latest published GitHub Release and live-site version.
+- Its signed/notarized macOS artifacts, Linux AppImage, best-effort Windows
+  artifacts, checksums, updater manifest, and authenticated site deployment
+  were verified in the v0.6.0 release record under `docs/releases/`.
 
 ## Live workstreams
 
 | ID | State | Owner | Outcome | Acceptance | Plan |
 | --- | --- | --- | --- | --- | --- |
+| MDV-020 | submitted | Codex | Publish and live-verify v0.7.0 from current `origin/main`. | Local/native gates, exact-head review/CI, published artifacts, checksums/manifest, and the deployed site are verified. | [`docs/plans/active/MDV-020-release-v0.7.0.md`](docs/plans/active/MDV-020-release-v0.7.0.md) |
 | MDV-001 | ready | unassigned | Prove the Windows IPC lifetime fix on an actual Windows CI runner. | Windows build/package succeeds and the run proves non-empty app/setup executables with hashes plus a downloadable artifact. | [`docs/plans/active/MDV-001-windows-build-verification.md`](docs/plans/active/MDV-001-windows-build-verification.md) |
 | MDV-002 | ready | unassigned | Bound search result and highlight-cache memory without changing visible search behavior. | Explicit budgets, truncation behavior, focused regressions, and measured memory evidence. | [`docs/plans/active/MDV-002-search-highlight-memory-bounds.md`](docs/plans/active/MDV-002-search-highlight-memory-bounds.md) |
 | MDV-004 | ready | unassigned | Make merged Full Mindmap discoverable in public and in-app guidance. | README features/shortcuts and in-app shortcut overlay match real keys and behavior; documentation/static checks pass. | [`docs/plans/active/MDV-004-full-mindmap-discoverability.md`](docs/plans/active/MDV-004-full-mindmap-discoverability.md) |
@@ -67,8 +49,14 @@ The complete portfolio, including P2 and deferred work, is in
 
 ## Human decisions / blockers
 
-- Do not push, open or merge a PR, tag, release, publish artifacts, or deploy
-  without an explicit owner request.
+- Quick Slots (`MDV-017`) and Theme Settings/Studio (`MDV-019`) must not enter
+  v0.7.0.
+- The owner authorized the complete v0.7.0 commit/PR/review/merge/tag/release/
+  artifact-verification/site-deployment flow on 2026-08-10. Do not cross a
+  stage gate before its exact GUI, review, CI, artifact, or live-runtime
+  evidence passes.
+- Do not deploy the staged v0.7.0 public-site copy until the non-draft GitHub
+  Release exists and its actual signing/checksum/manifest state is verified.
 - The GitHub Actions site deploy workflow still requires its own
   `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID`; the live site was
   deployed locally instead.
@@ -76,12 +64,45 @@ The complete portfolio, including P2 and deferred work, is in
 
 ## Next safe actions
 
-1. Keep the existing Apple signing/notarization secrets available for future
-   releases.
+1. Run native GUI interaction smoke on the exact packaged v0.7.0 candidate and
+   obtain owner acceptance.
+2. Commit/push/open the release PR, then merge only after GUI smoke plus
+   exact-head review and CI pass; proceed through the already-authorized tag,
+   artifact-verification, and site-deployment gates in order.
+3. Preserve at least several GiB of free disk before native packaging; the
+   release build completed with 3.7 GiB available after scoped Cargo cleanup.
 
 ## Verification state
 
 ### Verified now
+
+- `git ls-remote origin refs/heads/main` returned
+  `34ef5841b58880a825e4238080691cfbfc6f57f3`; the release worktree was created
+  directly from that commit and did not import another worktree's changes.
+- GitHub has no open PR. Linux CI run `31323797521` completed successfully on
+  exact `main@34ef584`.
+- PR #15, #16, #17, #18, #20, #21, #22, and #23 are merged; v0.6.0 remains a
+  non-draft, non-prerelease GitHub Release published 2026-07-21.
+- Canonical feature IDs are now distinct: Quick Slots `MDV-017`, merged
+  Document Mindmap depth folding `MDV-018`, and Theme Settings/Studio
+  `MDV-019`. The Theme candidate's status, backlog, plan filename, and heading
+  were updated together.
+- The protected local `main@a9a0291` remains untouched at six commits ahead of
+  and two behind `origin/main@34ef584`.
+- Default and no-default Cargo checks passed; 361 library tests and all
+  integration targets passed. Site JavaScript syntax and shortcut-contract
+  checks also passed.
+- A clean optimized release build produced a 34 MiB arm64 Mach-O reporting
+  `rmdv 0.7.0`, SHA-256
+  `cc1109cb8a8850e23857d90a48fad6de53c9c05f361c9f26954021b3f105c474`.
+- A target-specific 41 MiB `.app` at
+  `/private/tmp/rmdv-v070-package.S2rVPg/rmdv.app` reports version `0.7.0`,
+  carries four document-association groups and an arm64 PDFium dylib, and passes
+  ad-hoc deep codesign verification. This does not prove Developer ID signing,
+  notarization, or GUI behavior.
+- `git diff --check` and the strict four-layer project-system audit passed.
+
+### Recorded only
 
 - `origin/main` contains the squash merge of PR #15 at `741f36e`. Its
   corrected `application:openFile:` Objective-C type encoding was verified at
@@ -144,7 +165,7 @@ The complete portfolio, including P2 and deferred work, is in
   can reserve `⌘⇧P`; it opened from body and focused-button contexts, then
   accepted `p` as query text once its input owned focus.
 
-### Recorded only
+#### Earlier release evidence
 
 - Release commit `b67161c` remains published as tag `v0.5.0`; workflow
   `29645918474` recorded successful platform artifacts, checksums, and
@@ -155,8 +176,10 @@ The complete portfolio, including P2 and deferred work, is in
 
 ### Not verified
 
-- The GitHub Actions site deploy workflow has not been rerun with repository
-  Cloudflare secrets; this does not block the locally deployed live site.
+- The v0.7.0 packaged app has not completed native GUI interaction smoke.
+- No v0.7.0 tag, GitHub Release, signed/notarized artifact, checksums/manifest,
+  or release-workflow run exists yet.
+- The v0.7.0 site metadata has not been deployed or verified on the public site.
 
 ## Routes
 
