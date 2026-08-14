@@ -1,17 +1,17 @@
 # MDV-020 — Release rmdv v0.7.0
 
-State: submitted
+State: done
 Owner / accountable lead: Codex
 Active writer: none
 Created: 2026-08-10
-Updated: 2026-08-10
+Updated: 2026-08-14
 
 ## Outcome
 
-Prepare, publish, and live-verify v0.7.0 from the proven
-`origin/main@34ef584`, with synchronized package/site/release metadata,
-reviewed release evidence, verified platform artifacts, and an authenticated
-site deployment.
+Prepare, publish, and live-verify v0.7.0 from the proven pre-release baseline
+`origin/main@34ef584`, producing release source/tag `9dd7217` with synchronized
+package/site/release metadata, reviewed release evidence, verified platform
+artifacts, and an authenticated site deployment.
 
 ## Non-goals
 
@@ -71,10 +71,10 @@ site deployment.
 - [x] Run local validation and freeze the exact candidate diff.
 - [x] Build and structurally verify an Apple Silicon `.app` candidate.
 - [x] Obtain owner authority for the complete gated publication flow.
-- [ ] Complete exact packaged-app native GUI smoke.
-- [ ] Pass exact-head review and CI, then merge the release PR.
-- [ ] Publish and verify the v0.7.0 tag, release, and platform artifacts.
-- [ ] Only after the non-draft GitHub Release and artifact state are verified,
+- [x] Complete exact packaged-app native GUI smoke.
+- [x] Pass exact-head review and CI, then merge the release PR.
+- [x] Publish and verify the v0.7.0 tag, release, and platform artifacts.
+- [x] Only after the non-draft GitHub Release and artifact state are verified,
       deploy and live-verify the v0.7.0 site.
 
 ## Decision log
@@ -85,12 +85,15 @@ site deployment.
 | 2026-08-10 | Exclude MDV-017 and MDV-019. | Owner explicitly deferred both candidates from this release. |
 | 2026-08-10 | Keep MDV-017 for Quick Slots and assign MDV-019 to Theme Settings/Studio. | MDV-018 is already the merged Document Mindmap feature; MDV-019 was the next unused stable ID. |
 | 2026-08-10 | Run the complete gated release flow. | Owner explicitly asked to finish commit/PR/review/merge/tag/release/artifact/site-deploy verification. |
+| 2026-08-14 | Accept PR #24 and publish v0.7.0. | Exact packaged-app smoke, exact-head review, both PR checks, and merged-main CI passed before the tag was pushed. |
+| 2026-08-14 | Accept the published artifact set. | All nine assets downloaded; payload checksums and updater manifest matched; macOS app signatures, notarization, stapling, and Gatekeeper checks passed. |
+| 2026-08-14 | Complete the release only after production verification. | Authenticated Wrangler deployment succeeded and live homepage plus `llms.txt` matched the prepared files byte for byte. |
 
 ## Blockers and escalation
 
-- The owner authority gate is satisfied. Native GUI smoke currently requires an
-  unlocked Mac; merge/tag remain blocked until that smoke and exact-head
-  review/CI pass.
+- None for the completed release. Future fail-closed artifact hardening is
+  tracked separately as `MDV-021`; it does not retroactively change the
+  verified v0.7.0 app payloads.
 
 ## Final evidence
 
@@ -126,5 +129,35 @@ site deployment.
   `556795aedc179a3618b7f5000918eb54fadb3a9a918889a8eb1f95008c3f1e8f`.
   The final Developer ID-signed release payload will have a different hash and
   must be verified from the published artifact.
-- Remaining gates: GUI native smoke, exact-head review/CI, merge/tag/release
-  artifact verification, and site deployment.
+- Exact packaged-app native smoke passed: refresh and copy-path toasts appeared,
+  Finder reveal selected the exact document, Document Mindmap opened, `⌘K`
+  then `1` collapsed to the root level, and `⌘K` then `0` restored branches.
+- PR #24 exact head `0a6cd53` received a no-major-issues review; its only
+  unresolved thread was outdated against an earlier commit. Both exact-head
+  Linux CI runs passed. PR #24 squash-merged as `9dd7217`; merged-main Linux CI
+  run `31807215705` also passed.
+- Annotated tag `v0.7.0` points to `9dd7217`. Release workflow
+  `31807308166` passed macOS arm64, macOS x86_64, Linux x86_64, Windows x86_64,
+  and publication jobs; the non-draft release was published 2026-08-14.
+- All nine release assets downloaded. `shasum -a 256 -c SHA256SUMS` passed for
+  all seven payloads; `SHA256SUMS` and `latest.json` matched their GitHub asset
+  digests, and the updater manifest's version, URLs, and three payload hashes
+  matched the downloaded files.
+- Both macOS app payloads contain the correct architecture and PDFium dylib,
+  pass `codesign --verify --deep --strict`, carry Developer ID identity
+  `CY58UG73K6`, hardened runtime, and stapled notarization tickets, and are
+  accepted by Gatekeeper as `Notarized Developer ID`. Both DMGs pass
+  `hdiutil verify`, mount successfully, and have valid stapled notarization
+  tickets. Their unsigned outer-container hardening is routed to `MDV-021`.
+- The Windows job built with `--no-default-features` and packaged NSIS on exact
+  release source. Downloaded `rmdv.exe` and
+  `rmdv_0.7.0_x64-setup.exe` are non-empty and match SHA-256
+  `e676563821429ba6bf8924f477b1ca6cd2fd20bcbfab9fb9010ea5d42d7dfcaa`
+  and `fcc836d81fb38b47ec469aa14933a7ba02ea83842ac6a9f37e586dbbebe042a1`.
+- Local Wrangler 4.123.0 under Node 22.21.1 authenticated successfully, its
+  dry-run read 36 assets, and production deployment created Worker version
+  `74e58243-55e3-4955-96a0-a4587b756e72`. Live homepage, `llms.txt`, and
+  sitemap returned HTTP 200; their SHA-256 values matched the local release
+  files, including the corrected 2026-08-14 publication metadata.
+- Acceptance verdict: done. v0.7.0 is merged, tagged, published, artifact-
+  verified, and live; Quick Slots and Theme Settings/Studio remain excluded.
