@@ -23,6 +23,7 @@ pub mod prefs;
 pub mod recent;
 pub mod render;
 pub mod search;
+pub mod terminal;
 pub mod tex;
 pub mod theme;
 pub mod theme_import;

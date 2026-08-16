@@ -344,6 +344,7 @@ fn resolve_section_missing_returns_none() {
 }
 
 use rmdv::app::{is_external_link, line_for_fragment, slugify};
+use rmdv::terminal::{TerminalEnvironment, TerminalSignals};
 
 #[test]
 fn slugify_matches_github_style() {
@@ -389,4 +390,35 @@ fn socket_path_is_user_scoped() {
     );
     #[cfg(windows)]
     assert!(s.to_lowercase().contains("rmdv"), "got {s}");
+}
+
+#[test]
+fn terminal_environment_detection_handles_shell_tmux_and_pipes() {
+    let normal = TerminalEnvironment::from_signals(TerminalSignals {
+        term: Some("xterm-256color"),
+        stdin_is_tty: true,
+        stdout_is_tty: true,
+        stderr_is_tty: true,
+        ..Default::default()
+    });
+    assert!(!normal.is_tmux());
+    assert!(normal.is_interactive());
+
+    let nested_tmux = TerminalEnvironment::from_signals(TerminalSignals {
+        tmux: Some("/tmp/tmux-501/default,1234,2"),
+        term: Some("screen-256color"),
+        stdin_is_tty: true,
+        stdout_is_tty: true,
+        stderr_is_tty: true,
+        ..Default::default()
+    });
+    assert!(nested_tmux.is_tmux());
+
+    let malformed = TerminalEnvironment::from_signals(TerminalSignals {
+        tmux: Some("malformed"),
+        term: Some("xterm-256color"),
+        ..Default::default()
+    });
+    assert!(!malformed.is_tmux());
+    assert!(!malformed.is_interactive());
 }

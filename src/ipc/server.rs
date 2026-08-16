@@ -12,24 +12,88 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 /// Message handed to the Iced update loop.
 pub type Pending = (Request, oneshot::Sender<Response>);
 
+/// The primary stable endpoint and, when available, the legacy TMPDIR
+/// endpoint. Keeping both alive lets an older client reach a newer instance
+/// while new clients can cross shell/tmux environment boundaries.
+pub struct ListenerSet {
+    listeners: Vec<Listener>,
+}
+
 /// Bind the listener, recovering from a stale socket.
-pub fn acquire() -> Result<Listener> {
-    let path = socket::default_path();
+pub fn acquire() -> Result<ListenerSet> {
+    let paths = socket::candidate_paths();
     // First try to connect — if something answers, the caller is not the instance.
-    if can_connect_blocking(&path) {
+    if paths.iter().any(|path| can_connect_blocking(path)) {
         return Err(anyhow!("instance already running"));
     }
-    // Stale or absent — best-effort unlink (unix only; Windows pipes don't persist).
-    #[cfg(unix)]
-    {
-        let _ = std::fs::remove_file(&path);
+
+    let mut listeners = Vec::new();
+    let mut last_error = None;
+    for path in &paths {
+        // Stale or absent — best-effort unlink (unix only; Windows pipes don't
+        // persist). The stable endpoint is attempted first, which prevents two
+        // concurrent starters from falling through to different aliases.
+        #[cfg(unix)]
+        {
+            let _ = std::fs::remove_file(path);
+        }
+
+        #[cfg(unix)]
+        if Some(path) == paths.first() {
+            if let Err(error) = prepare_stable_socket_parent(path) {
+                last_error = Some(anyhow!(
+                    "prepare IPC socket directory {}: {error}",
+                    path.display()
+                ));
+                continue;
+            }
+        }
+
+        let name = match path_to_name(path) {
+            Ok(name) => name,
+            Err(error) => {
+                last_error = Some(anyhow!("invalid socket path {}: {error}", path.display()));
+                continue;
+            }
+        };
+        let opts = ListenerOptions::new().name(name);
+        match opts.create_tokio() {
+            Ok(listener) => listeners.push(listener),
+            Err(error) => {
+                // A competing starter may have won the stable endpoint after
+                // the initial probe. Do not bind only the compatibility alias
+                // in that case and accidentally create a second instance.
+                if paths
+                    .iter()
+                    .any(|candidate| can_connect_blocking(candidate))
+                {
+                    return Err(anyhow!("instance already running"));
+                }
+                last_error = Some(anyhow!("bind {}: {error}", path.display()));
+            }
+        }
     }
-    let name = path_to_name(&path)?;
-    let opts = ListenerOptions::new().name(name);
-    let listener = opts
-        .create_tokio()
-        .map_err(|e| anyhow!("bind {}: {e}", path.display()))?;
-    Ok(listener)
+
+    if listeners.is_empty() {
+        Err(last_error.unwrap_or_else(|| anyhow!("no usable IPC socket path")))
+    } else {
+        Ok(ListenerSet { listeners })
+    }
+}
+
+#[cfg(unix)]
+fn prepare_stable_socket_parent(path: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let Some(parent) = path.parent() else {
+        return Ok(());
+    };
+    if parent == Path::new("/tmp") {
+        return Ok(());
+    }
+
+    std::fs::create_dir_all(parent)?;
+    std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700))
 }
 
 #[cfg(unix)]
@@ -48,16 +112,32 @@ fn can_connect_blocking(path: &Path) -> bool {
 }
 
 /// Run the listener loop, forwarding requests through `tx` and writing replies
-/// back to the connecting client. Serialises clients (one at a time).
-pub async fn run(listener: Listener, mut tx: mpsc::Sender<Pending>) {
-    loop {
-        let conn = match listener.accept().await {
-            Ok(c) => c,
-            Err(_) => continue,
-        };
-        if let Err(_e) = handle_one(conn, &mut tx).await {
-            // best-effort: drop on protocol error, keep listening
-        }
+/// back to the connecting client. Serialises clients (one at a time) across
+/// both endpoint aliases.
+pub async fn run(listeners: ListenerSet, tx: mpsc::Sender<Pending>) {
+    let gate = std::sync::Arc::new(tokio::sync::Mutex::new(()));
+    let mut tasks = Vec::with_capacity(listeners.listeners.len());
+    for listener in listeners.listeners {
+        let gate = std::sync::Arc::clone(&gate);
+        let mut tx = tx.clone();
+        tasks.push(tokio::spawn(async move {
+            loop {
+                let conn = match listener.accept().await {
+                    Ok(c) => c,
+                    Err(_) => continue,
+                };
+                let _guard = gate.lock().await;
+                if let Err(_e) = handle_one(conn, &mut tx).await {
+                    // best-effort: drop on protocol error, keep listening
+                }
+            }
+        }));
+    }
+
+    // Each task is intentionally long-lived. Awaiting them keeps the listener
+    // set owned by the subscription for the lifetime of the app.
+    for task in tasks {
+        let _ = task.await;
     }
 }
 
