@@ -64,7 +64,7 @@ agent → `rmdv goto --line 42`
 | `src/ipc/mod.rs` | `Request`, `Response` types (serde). Re-exports. |
 | `src/ipc/server.rs` | `interprocess` listener inside `iced::Subscription`. One client at a time. |
 | `src/ipc/client.rs` | Connect, write one line, read one line, exit. |
-| `src/ipc/socket.rs` | Platform path: `$TMPDIR/rmdv-$UID.sock` (macOS/Linux), `\\.\pipe\rmdv-$user` (Windows). Stale-socket recovery via try-connect. |
+| `src/ipc/socket.rs` | Platform path: user-private cache/runtime `rmdv-$UID.sock` plus a `$TMPDIR/rmdv-$UID.sock` compatibility endpoint (macOS/Linux), `\\.\pipe\rmdv-$user` (Windows). Stale-socket recovery via try-connect. |
 | `src/ipc/sections.rs` | Stateless `list-sections` impl. Reused by IPC server (running instance) and standalone CLI (no instance). |
 | `src/parser.rs` | Emit byte offset for each block (from `pulldown-cmark` `OffsetIter`). |
 | `src/app.rs` | New: `Message::Ipc`, `block_lines: Vec<u32>` field, section-path resolver, IPC subscription wiring. |
@@ -298,7 +298,7 @@ Already present: `serde`, `serde_json`, `tokio`, `anyhow`.
 - Launch `rmdv tests/fixtures/diagrams_stress.md`.
 - From another shell: `rmdv goto --line 100` → window scrolls.
 - `rmdv current` → JSON matches.
-- Kill rmdv, `ls $TMPDIR/rmdv-*.sock` → cleanup on next launch.
+- Kill rmdv, inspect the user-private socket directory and `$TMPDIR/rmdv-*.sock` → cleanup on next launch.
 - `rmdv list-sections README.md` without launching rmdv → JSON.
 
 ## Risk register
