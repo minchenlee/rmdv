@@ -36,7 +36,10 @@ rmdv has an agent-controllable IPC socket. Historical v0.2.0 benchmarks were mea
 - Live reload on file save
 - Auto-update: checks GitHub releases, SHA-256 verifies, signed and notarized on macOS
 - Themes: 10 built-in presets — One Light/Dark, GitHub Light/Dark, Solarized Light/Dark, Gruvbox, Nord, Dracula, Tokyo Night
-- Keyboard-first navigation: j/k/g/G, ⌘↑/⌘↓, heading fold ⌘K 0–6
+- Keyboard-first navigation: j/k/g/G and Home/End for reader top/bottom; ⌘N
+  adds the current file to the next empty Quick Slot; outside Zen, ⌘↑/⌘↓ cycle
+  Quick Slots while Zen keeps Command arrows for native document motion;
+  heading fold ⌘K 0–6
 - Edit mode (⌘E)
 - Zen editing with unsaved-edit protection across navigation
 - IPC CLI: `rmdv open <path>`, `rmdv goto --line N`, `rmdv goto --section <name>`, `rmdv mode mindmap`, `rmdv current`, `rmdv list-sections <path>`; all return one-line JSON

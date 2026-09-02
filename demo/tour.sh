@@ -72,10 +72,9 @@ key cmd p ;           hold 0.8
 typ "oauth" ;         hold 1.2
 dismiss ;             hold 0.4
 stage "reference/api/v2/auth/oauth.md" ; viewmode ; front ; hold "$PACE"
-say "Cmd+Down / Cmd+Up → walk headings"
-key cmd arrow-down ;  hold 0.7
-key cmd arrow-down ;  hold 0.7
-key cmd arrow-up ;    hold "$PACE"
+say "Home / End → reader top and bottom"
+key home ;             hold 0.7
+key end ;              hold "$PACE"
 
 # ── 2. markdown kitchen sink ──────────────────────────────────────────
 say "Markdown kitchen sink (staged via sidebar file)"

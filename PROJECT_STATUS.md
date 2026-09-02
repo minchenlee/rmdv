@@ -1,10 +1,11 @@
 # rmdv — project status
 
-Last verified: 2026-07-24 CST (Asia/Taipei)
+Last verified: 2026-07-27 CST (Asia/Taipei)
 Stale after: 7 days
 Canonical repository: `/Users/liminchen/Documents/GitHub/mdv`
 Expected branch: `main`; always resolve its live HEAD before mutation.
-Last verified main base: `origin/main@001815df6d5d1b896e886905831ed4d545785e11`.
+Last verified main base: local `main@67706d3f80f2acf26fb3357c58cbbf82d14864af`;
+`origin/main@c95e71b3de501f82ca85ae009548834e89ccb918` is its ancestor.
 Authority: This is a routing snapshot. Verify Git, GitHub, runtime identity, and manual evidence before mutation.
 
 ## Current outcome
@@ -16,6 +17,13 @@ PR #15 fixes Finder document opening on macOS; PR #16 makes Markdown tables
 responsive; PR #17 fixes Mindmap panel sizing and shortcuts; and PR #18 plus
 PR #20 replace the landing-page AI sticker with a static WebP asset. All were
 squash-merged on 2026-07-24 after their final Codex reviews.
+
+MDV-017 Quick Slots is submitted as an uncommitted candidate on
+`codex/quick-slots` from local `main@67706d3`. The candidate now uses
+ArrowUp/ArrowDown cycling, Command+N tab-like creation, and persistent
+occupied-slot 24 px filename rows without inline Clear buttons. Earlier native GUI smoke covered superseded
+bracket/hover behavior, so current native acceptance remains pending a rerun;
+physical modifier-only release is also still pending.
 
 ## v0.6.0 release preparation
 
@@ -58,6 +66,7 @@ squash-merged on 2026-07-24 after their final Codex reviews.
 
 | ID | State | Owner | Outcome | Acceptance | Plan |
 | --- | --- | --- | --- | --- | --- |
+| MDV-017 | submitted | Min-Chen Lee / Codex | Add nine workspace-scoped Quick Slots with keyboard and transient-rail navigation. | The previously reviewed core candidate plus the direct owner-requested rail/mode and shortcut-hint polish passes 375 library tests, all integration suites, default/no-default checks, and a fresh release build. Prior exact-binary smoke is historical; native rerun and physical modifier-only release remain pending. | [`docs/plans/active/MDV-017-workspace-quick-slots.md`](docs/plans/active/MDV-017-workspace-quick-slots.md) |
 | MDV-001 | ready | unassigned | Prove the Windows IPC lifetime fix on an actual Windows CI runner. | Windows build/package succeeds and the run proves non-empty app/setup executables with hashes plus a downloadable artifact. | [`docs/plans/active/MDV-001-windows-build-verification.md`](docs/plans/active/MDV-001-windows-build-verification.md) |
 | MDV-002 | ready | unassigned | Bound search result and highlight-cache memory without changing visible search behavior. | Explicit budgets, truncation behavior, focused regressions, and measured memory evidence. | [`docs/plans/active/MDV-002-search-highlight-memory-bounds.md`](docs/plans/active/MDV-002-search-highlight-memory-bounds.md) |
 | MDV-009 | ready | unassigned | Retarget and review Mindmap Zoom Controls on merged Full Mindmap. | Clean candidate; focused/unit/integration checks; anchor-preserving native wheel, pinch, and keyboard acceptance. | [`docs/plans/active/MDV-009-mindmap-zoom-controls-integration.md`](docs/plans/active/MDV-009-mindmap-zoom-controls-integration.md) |
@@ -80,12 +89,33 @@ The complete portfolio, including P2 and deferred work, is in
 
 ## Next safe actions
 
-1. Keep the existing Apple signing/notarization secrets available for future
+1. On the open MDV-017 exact candidate, rerun native acceptance for 24 px
+   occupied-slot filename details, ArrowUp/ArrowDown cycling, and Command+N
+   quick-add, then physically hold/release Command and record the result.
+2. Ask the owner whether the accepted candidate should be committed and pushed;
+   do not publish it implicitly.
+3. Keep the existing Apple signing/notarization secrets available for future
    releases.
 
 ## Verification state
 
 ### Verified now
+
+- MDV-017's current checkpoint/navigation corrections pass maker validation on
+  the uncommitted `codex/quick-slots` candidate: 375 library tests, all
+  integration tests, default and no-default checks, the release binary build,
+  focused rustfmt, and diff checks. Fresh code review and automated/static
+  verification both accepted the exact candidate; native GUI acceptance
+  remains pending.
+  Workspace-bank persistence, relative/canonical path safety, missing files,
+  async watcher identity, Rendered/document-Mindmap/Full-Mindmap restores,
+  dirty Zen guards, close/Undo behavior, sidebar-safe rail placement, and
+  modifier focus-loss cleanup have regression coverage.
+- MDV-017's earlier native smoke used an uninstalled temporary `.app` whose
+  executable matched the prior release binary SHA-256 `fdbf527c36d47d26…`.
+  Because it covered bracket cycling and hover-only clear, it is historical
+  evidence and does not verify the current ArrowUp/ArrowDown, Command+N, or
+  persistent-detail contract.
 
 - `origin/main` contains the squash merge of PR #15 at `741f36e`. Its
   corrected `application:openFile:` Objective-C type encoding was verified at
@@ -158,6 +188,12 @@ The complete portfolio, including P2 and deferred work, is in
   this static-site-only outcome.
 
 ### Not verified
+
+- MDV-017 requires a native rerun for stable 24 px occupied details, arrow
+  cycling, Command+N tab-like creation, and direct human input for physical
+  modifier-only Command press/release. Computer Use cannot issue a
+  modifier-only event or reliably hold it across a mouse click, so those checks
+  remain unclaimed.
 
 - The GitHub Actions site deploy workflow has not been rerun with repository
   Cloudflare secrets; this does not block the locally deployed live site.

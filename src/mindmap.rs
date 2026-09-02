@@ -2122,6 +2122,8 @@ mod tests {
 
         assert!(animate_zoom_by(&mut state, anchor, KEYBOARD_ZOOM_FACTOR));
         assert!(state.zoom_anim.is_some());
+        state.zoom_anim.as_mut().expect("animation").start_at =
+            Instant::now() - Duration::from_millis(70);
         assert!(animate_zoom_to(&mut state, anchor, 1.0));
         assert_eq!(state.zoom_anim.expect("reset animation").target_zoom, 1.0);
         state.zoom_anim.as_mut().expect("reset animation").start_at =

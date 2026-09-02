@@ -121,7 +121,9 @@ the text editor is focused.
 The `text_editor.key_binding` filter should continue preventing non-editor
 command chords from also being inserted as text. Standard editor bindings
 remain available. Command-arrow navigation is handled as editor-local motion in
-Zen mode; rendered viewer mode keeps its existing `⌘↑` / `⌘↓` scroll behavior.
+Zen mode; outside Zen, `⌘↑` / `⌘↓` cycle Quick Slots while Zen keeps those
+chords for native document/line motion. Reader top/bottom remains Home/End and
+`g`/`G`.
 
 The shortcuts overlay should mention Zen-specific escape hatches: `Esc / ⌘E`
 to exit edit mode, `⌘S` to save, and the command-arrow cursor movement bindings.

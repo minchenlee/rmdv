@@ -1,6 +1,6 @@
 # rmdv project backlog
 
-Last triaged: 2026-07-24
+Last triaged: 2026-07-27
 
 ## State model
 
@@ -13,6 +13,7 @@ contract passed; code or prose merely existing is not sufficient.
 
 | ID | Priority | State | Outcome | Acceptance | Plan | Blocked by |
 | --- | --- | --- | --- | --- | --- | --- |
+| MDV-017 | P1 | submitted | Add nine workspace-scoped Quick Slots that restore a file's latest reading context from keyboard or the transient left rail. | Persisted relative paths and mode-appropriate positions; Command+N tab-like creation; ArrowUp/ArrowDown cycling; persistent 24 px occupied filename details; compact shortcut hints; Full Mindmap, dirty-edit, missing-file, close/undo, and cross-platform modifier regressions; native rail acceptance. | [`MDV-017`](plans/active/MDV-017-workspace-quick-slots.md) | The reviewed core plus direct owner-requested rail/mode, shortcut-hint, and tab-like creation polish passes the documented automated gates. Earlier native smoke is superseded; native GUI rerun remains pending. |
 | MDV-001 | P1 | ready | Verify the Windows IPC lifetime fix on an actual Windows runner. | Build/package succeeds; non-empty app and setup `.exe` files, SHA-256 values, and a downloadable artifact are proven for the exact candidate. | [`MDV-001`](plans/active/MDV-001-windows-build-verification.md) | Requires a pushed CI candidate. |
 | MDV-002 | P1 | ready | Bound search-result and highlight-cache memory while preserving visible behavior. | Explicit budgets and truthful truncation; focused regressions; measured memory evidence; relevant suites pass. | [`MDV-002`](plans/active/MDV-002-search-highlight-memory-bounds.md) | — |
 | MDV-009 | P2 | ready | Retarget and review Mindmap Zoom Controls on merged Full Mindmap. | Clean candidate; focused/unit/integration checks; anchor-preserving native wheel, pinch, and keyboard acceptance. | [`MDV-009`](plans/active/MDV-009-mindmap-zoom-controls-integration.md) | No direct rebase of the old branch without classifying its commits. |

@@ -471,6 +471,8 @@ impl ImageCache {
 }
 
 const SIDEBAR_WIDTH: f32 = 280.0;
+const QUICK_SLOTS_RAIL_GAP: f32 = 10.0;
+const QUICK_SLOTS_RAIL_REVEAL_DELAY_MS: u64 = 500;
 const READING_MAX: f32 = 780.0;
 const KEYBOARD_BUTTON_HEIGHT: f32 = 26.0; // 14px text at 1.3 line-height + 4px vertical padding on each side.
 const KEYBOARD_BUTTON_BOTTOM_PAD: f32 = 12.0;
@@ -614,6 +616,63 @@ fn is_shortcuts_key(
         )
 }
 
+fn is_primary_modifier_key(key: &iced::keyboard::Key) -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        return matches!(
+            key,
+            iced::keyboard::Key::Named(iced::keyboard::key::Named::Super)
+        );
+    }
+    #[cfg(not(target_os = "macos"))]
+    matches!(
+        key,
+        iced::keyboard::Key::Named(iced::keyboard::key::Named::Control)
+    )
+}
+
+fn quick_slots_primary_modifier(modifiers: iced::keyboard::Modifiers) -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        modifiers.command()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        modifiers.control()
+    }
+}
+
+fn quick_slot_digit_index(physical: iced::keyboard::key::Physical) -> Option<usize> {
+    use iced::keyboard::key::{Code, Physical};
+    let Physical::Code(code) = physical else {
+        return None;
+    };
+    Some(match code {
+        Code::Digit1 => 0,
+        Code::Digit2 => 1,
+        Code::Digit3 => 2,
+        Code::Digit4 => 3,
+        Code::Digit5 => 4,
+        Code::Digit6 => 5,
+        Code::Digit7 => 6,
+        Code::Digit8 => 7,
+        Code::Digit9 => 8,
+        _ => return None,
+    })
+}
+
+fn quick_slot_cycle_delta(physical: iced::keyboard::key::Physical) -> Option<i8> {
+    use iced::keyboard::key::{Code, Physical};
+    let Physical::Code(code) = physical else {
+        return None;
+    };
+    match code {
+        Code::ArrowUp => Some(-1),
+        Code::ArrowDown => Some(1),
+        _ => None,
+    }
+}
+
 /// In document Mindmap mode, higher-level surfaces and the `⌘K` folding chord
 /// own the keyboard. Do not resize unseen panel text behind them.
 fn reader_font_shortcuts_enabled(
@@ -624,6 +683,97 @@ fn reader_font_shortcuts_enabled(
     fold_chord: bool,
 ) -> bool {
     !full_mindmap && !fold_chord && (!document_mindmap || (!overlay_open && !search_open))
+}
+
+fn quick_slots_shortcuts_enabled(
+    overlay_open: bool,
+    vault_open: bool,
+    search_open: bool,
+    editing: bool,
+    dirty: bool,
+) -> bool {
+    !overlay_open && !vault_open && !search_open && (!editing || !dirty)
+}
+
+fn quick_slots_rail_visible(
+    rail_revealed: bool,
+    overlay_open: bool,
+    vault_open: bool,
+    search_open: bool,
+    editing: bool,
+    dirty: bool,
+) -> bool {
+    rail_revealed && !overlay_open && !vault_open && !search_open && (!editing || !dirty)
+}
+
+/// Resolve the physical Quick Slot chord after the surrounding surfaces have
+/// been classified. Zen keeps Command+W/Command+Shift+W close semantics and
+/// clean-buffer tab creation/activation, while directional slot chords yield
+/// to editor-native arrows/line motion.
+fn quick_slot_physical_message(
+    physical: iced::keyboard::key::Physical,
+    modifiers: iced::keyboard::Modifiers,
+    quick_slots_allowed: bool,
+    editing: bool,
+    surface_allowed: bool,
+) -> Option<Message> {
+    use iced::keyboard::key::{Code, Physical};
+
+    if !surface_allowed || !quick_slots_primary_modifier(modifiers) {
+        return None;
+    }
+    if let Some(index) = quick_slot_digit_index(physical) {
+        if !quick_slots_allowed {
+            return None;
+        }
+        return Some(if !modifiers.shift() && !modifiers.alt() {
+            Message::QuickSlotActivate(index)
+        } else {
+            return None;
+        });
+    }
+    if matches!(physical, Physical::Code(Code::KeyN))
+        && quick_slots_allowed
+        && !modifiers.shift()
+        && !modifiers.alt()
+    {
+        return Some(Message::QuickSlotNew);
+    }
+    if editing {
+        return match physical {
+            Physical::Code(Code::KeyW) if !modifiers.alt() => Some(if modifiers.shift() {
+                Message::QuickSlotCloseWindow
+            } else {
+                Message::QuickSlotClose
+            }),
+            _ => None,
+        };
+    }
+    if !quick_slots_allowed {
+        return None;
+    }
+    if !modifiers.shift() && !modifiers.alt() {
+        if let Some(delta) = quick_slot_cycle_delta(physical) {
+            return Some(Message::QuickSlotCycle(delta));
+        }
+    }
+    if let Physical::Code(Code::KeyW) = physical {
+        if modifiers.shift() {
+            return Some(Message::QuickSlotCloseWindow);
+        }
+        if !modifiers.alt() {
+            return Some(Message::QuickSlotClose);
+        }
+    }
+    None
+}
+
+fn quick_slots_rail_left_offset(sidebar_open: bool, sidebar_width: f32, full_mindmap: bool) -> f32 {
+    if sidebar_open && !full_mindmap {
+        sidebar_width + QUICK_SLOTS_RAIL_GAP
+    } else {
+        QUICK_SLOTS_RAIL_GAP
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -698,6 +848,32 @@ pub enum Message {
     /// Apply a measured absolute scroll offset to the vault results page.
     VaultScrollTo(f32),
     ToggleShortcuts,
+    /// Activate the slot addressed by its zero-based rail index.
+    QuickSlotActivate(usize),
+    /// Assign/overwrite the slot with the current reading context.
+    QuickSlotAssign(usize),
+    QuickSlotClear(usize),
+    QuickSlotClearAll,
+    QuickSlotUndo,
+    QuickSlotNew,
+    QuickSlotClose,
+    QuickSlotCloseWindow,
+    QuickSlotCycle(i8),
+    /// Primary modifier press/release controls the transient rail.
+    QuickSlotsModifier(bool),
+    /// Delayed reveal for the transient rail; the generation ignores a
+    /// modifier release or a newer press that superseded this timer.
+    QuickSlotsModifierReveal(u64),
+    /// Debounced persistence generation for ordinary scrolling checkpoints.
+    QuickSlotsPersist(u64),
+    /// Internal handoff after entering/exiting Full Mindmap for a slot.
+    QuickSlotRestorePending,
+    /// Identity-bearing file read for a non-Full-Mindmap slot activation.
+    QuickSlotFileLoaded {
+        index: usize,
+        slot: crate::quick_slots::QuickSlot,
+        result: Result<(PathBuf, String), String>,
+    },
     CloseOverlay,
     PickerNavigate(PathBuf),
     PickerParent,
@@ -711,6 +887,13 @@ pub enum Message {
     OverlayDescend,
     FileLoaded(Result<(PathBuf, String), String>),
     FileChanged(PathBuf),
+    /// Identity-bearing completion for a file watcher reload. A watcher read
+    /// must not share the generic navigation completion path: an explicit
+    /// slot/manual open may own the reader by the time it finishes.
+    FileChangedLoaded {
+        request: PendingWatcherReload,
+        result: Result<(PathBuf, String), String>,
+    },
     OpenLink(String),
     ToggleTheme,
     SetTheme(ThemePreset),
@@ -870,6 +1053,7 @@ pub enum Message {
         result: Result<(PathBuf, tree::ExpandedFolderSnapshot), String>,
     },
     WindowResized(iced::window::Id, iced::Size),
+    WindowUnfocused(iced::window::Id),
     RefreshWindowMode(iced::window::Id),
     RefreshWindowModeSettled(iced::window::Id),
     WindowModeChanged(iced::window::Mode),
@@ -942,6 +1126,20 @@ pub struct PendingNav {
 struct PendingIpcFileOpen {
     path: PathBuf,
     nav: Option<PendingNav>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct PendingQuickSlotRestore {
+    generation: u64,
+    index: usize,
+    slot: crate::quick_slots::QuickSlot,
+    root_key: String,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct PendingWatcherReload {
+    generation: u64,
+    path: PathBuf,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1160,9 +1358,37 @@ pub struct App {
     pub(crate) nav_anchor: Option<usize>,
     /// User preferences (persisted to `~/.config/rmdv/prefs.json`).
     pub prefs: crate::prefs::Prefs,
+    /// The currently selected workspace bank. It is normalized to nine slots
+    /// at every workspace boundary and persisted back into `prefs.json`.
+    pub quick_slots: crate::quick_slots::WorkspaceSlots,
+    quick_slots_root: Option<PathBuf>,
+    quick_slots_undo: Option<crate::quick_slots::ClearUndo>,
+    pub quick_slots_modifier_held: bool,
+    quick_slots_rail_revealed: bool,
+    quick_slots_modifier_generation: u64,
+    quick_slots_persist_generation: u64,
+    quick_slots_persist_pending: bool,
+    quick_slot_activation_generation: u64,
+    pending_quick_slot_restore: Option<PendingQuickSlotRestore>,
+    quick_slot_preview_restore_guard: Option<PendingQuickSlotRestore>,
+    quick_slot_body_restore: Option<f32>,
+    quick_slot_preview_restore: Option<f32>,
+    quick_slots_persistence_path: Option<PathBuf>,
+    watcher_generation: u64,
+    pending_watcher_reload: Option<PendingWatcherReload>,
     /// A downloaded + verified update awaiting user-initiated install. Drives
     /// the update banner. `None` until the background check finds a newer build.
     pub pending_update: Option<crate::update::ReadyUpdate>,
+}
+
+#[cfg(test)]
+fn test_quick_slots_persistence_path() -> PathBuf {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    std::env::temp_dir().join(format!(
+        "rmdv-app-quick-slots-test-{}-{}.json",
+        std::process::id(),
+        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ))
 }
 
 #[derive(Debug, Clone)]
@@ -1183,8 +1409,12 @@ impl Default for App {
         let mode = ThemeMode::System;
         let preset = theme::resolve_mode(mode);
         // Migrate legacy `mdv` config into `rmdv` before the first read.
+        #[cfg(not(test))]
         crate::config_migrate::run();
+        #[cfg(not(test))]
         let prefs = crate::prefs::load();
+        #[cfg(test)]
+        let prefs = crate::prefs::Prefs::default();
         Self {
             file: None,
             source: String::new(),
@@ -1286,6 +1516,31 @@ impl Default for App {
             virt_window: crate::virt::VirtWindow::default(),
             nav_anchor: None,
             prefs,
+            quick_slots: crate::quick_slots::WorkspaceSlots::default(),
+            quick_slots_root: None,
+            quick_slots_undo: None,
+            quick_slots_modifier_held: false,
+            quick_slots_rail_revealed: false,
+            quick_slots_modifier_generation: 0,
+            quick_slots_persist_generation: 0,
+            quick_slots_persist_pending: false,
+            quick_slot_activation_generation: 0,
+            pending_quick_slot_restore: None,
+            quick_slot_preview_restore_guard: None,
+            quick_slot_body_restore: None,
+            quick_slot_preview_restore: None,
+            quick_slots_persistence_path: {
+                #[cfg(test)]
+                {
+                    Some(test_quick_slots_persistence_path())
+                }
+                #[cfg(not(test))]
+                {
+                    None
+                }
+            },
+            watcher_generation: 0,
+            pending_watcher_reload: None,
             pending_update: None,
         }
     }
@@ -1307,12 +1562,733 @@ impl App {
         self.typography.body_size
     }
 
+    fn quick_slots_workspace_root(&self) -> Option<&std::path::Path> {
+        self.workspace
+            .as_deref()
+            .or(self.quick_slots_root.as_deref())
+    }
+
+    fn load_quick_slots_for_workspace(&mut self, root: &std::path::Path) {
+        let same = self.quick_slots_root.as_ref().is_some_and(|current| {
+            crate::quick_slots::workspace_key(current) == crate::quick_slots::workspace_key(root)
+        });
+        if !same {
+            self.invalidate_pending_quick_slot_restore();
+            self.persist_quick_slots_now();
+            self.quick_slots = self.prefs.quick_slots.bank(root);
+            self.quick_slots_root = Some(root.to_path_buf());
+            self.quick_slots_undo = None;
+            self.quick_slots_persist_pending = false;
+        }
+    }
+
+    fn persist_quick_slots_now(&mut self) {
+        let Some(root) = self.quick_slots_root.clone() else {
+            return;
+        };
+        self.quick_slots_persist_pending = false;
+        self.prefs
+            .quick_slots
+            .put_bank(&root, self.quick_slots.clone());
+        if let Some(path) = self.quick_slots_persistence_path.as_deref() {
+            crate::prefs::save_to(path, &self.prefs);
+        } else {
+            crate::prefs::save(&self.prefs);
+        }
+        }
+
+    fn invalidate_pending_watcher_reload(&mut self) {
+        self.watcher_generation = self.watcher_generation.wrapping_add(1);
+        self.pending_watcher_reload = None;
+    }
+
+    fn begin_watcher_reload(&mut self, path: PathBuf) -> Option<PendingWatcherReload> {
+        if self.file.as_ref() != Some(&path)
+            || self.pending_quick_slot_restore.is_some()
+            || self.quick_slot_preview_restore_guard.is_some()
+        {
+            return None;
+        }
+        self.watcher_generation = self.watcher_generation.wrapping_add(1);
+        let request = PendingWatcherReload {
+            generation: self.watcher_generation,
+            path,
+        };
+        self.pending_watcher_reload = Some(request.clone());
+        Some(request)
+    }
+
+    fn watcher_reload_is_current(&self, request: &PendingWatcherReload) -> bool {
+        self.watcher_generation == request.generation
+            && self.pending_watcher_reload.as_ref() == Some(request)
+            && self.file.as_ref() == Some(&request.path)
+            && self.pending_quick_slot_restore.is_none()
+            && self.quick_slot_preview_restore_guard.is_none()
+    }
+
+    fn invalidate_pending_quick_slot_restore(&mut self) {
+        self.quick_slot_activation_generation =
+            self.quick_slot_activation_generation.wrapping_add(1);
+        self.invalidate_pending_watcher_reload();
+        self.finish_pending_quick_slot_restore();
+        self.quick_slot_body_restore = None;
+        self.quick_slot_preview_restore = None;
+        }
+
+    fn finish_pending_quick_slot_restore(&mut self) {
+        self.pending_quick_slot_restore = None;
+        self.quick_slot_preview_restore_guard = None;
+    }
+
+    fn begin_pending_quick_slot_restore(
+        &mut self,
+        index: usize,
+        slot: crate::quick_slots::QuickSlot,
+    ) -> Option<PendingQuickSlotRestore> {
+        let root_key = crate::quick_slots::workspace_key(self.quick_slots_workspace_root()?);
+        self.quick_slot_activation_generation =
+            self.quick_slot_activation_generation.wrapping_add(1);
+        self.invalidate_pending_watcher_reload();
+        self.quick_slot_preview_restore_guard = None;
+        self.quick_slot_body_restore = None;
+        self.quick_slot_preview_restore = None;
+        let pending = PendingQuickSlotRestore {
+            generation: self.quick_slot_activation_generation,
+            index,
+            slot,
+            root_key,
+        };
+        self.pending_quick_slot_restore = Some(pending.clone());
+        Some(pending)
+    }
+
+    fn quick_slot_restore_is_current(&self, pending: &PendingQuickSlotRestore) -> bool {
+        self.quick_slot_activation_generation == pending.generation
+            && self.quick_slots.active == Some(pending.index)
+            && self
+                .quick_slots_workspace_root()
+                .is_some_and(|root| crate::quick_slots::workspace_key(root) == pending.root_key)
+            && self.quick_slots.occupied(pending.index) == Some(&pending.slot)
+    }
+
+    fn take_current_quick_slot_preview_restore(&mut self) -> Option<f32> {
+        let Some(guard) = self.quick_slot_preview_restore_guard.clone() else {
+            self.quick_slot_preview_restore = None;
+            return None;
+        };
+        if !self.quick_slot_restore_is_current(&guard) {
+            self.invalidate_pending_quick_slot_restore();
+            return None;
+        }
+        self.quick_slot_preview_restore_guard = None;
+        self.quick_slot_preview_restore.take()
+    }
+
+    /// Debounce context checkpoints so rapid scrolling owns at most one
+    /// sleeping task and one follow-up write. The in-memory slot always holds
+    /// the latest accepted position even while persistence is pending.
+    fn schedule_quick_slots_persist(&mut self) -> Task<Message> {
+        self.quick_slots_persist_generation = self.quick_slots_persist_generation.wrapping_add(1);
+        if self.quick_slots_persist_pending {
+            return Task::none();
+        }
+        self.quick_slots_persist_pending = true;
+        let generation = self.quick_slots_persist_generation;
+        Task::perform(
+            async move {
+                tokio::time::sleep(std::time::Duration::from_millis(220)).await;
+                generation
+            },
+            Message::QuickSlotsPersist,
+        )
+    }
+
+    fn slot_position(viewport: Option<&iced::widget::scrollable::Viewport>) -> f32 {
+        let Some(viewport) = viewport else {
+            return 0.0;
+        };
+        let max = (viewport.content_bounds().height - viewport.bounds().height).max(0.0);
+        if max <= 0.0 {
+            return 0.0;
+        }
+        crate::quick_slots::normalize_position(viewport.absolute_offset().y / max)
+    }
+
+    fn full_mindmap_selected_file(&self) -> Option<PathBuf> {
+        self.full_mindmap.as_ref().and_then(|full| {
+            full.selected.as_ref().and_then(|selected| match selected {
+                WorkspaceNodeId::File(path) => Some(path.clone()),
+                _ => None,
+            })
+        })
+    }
+
+    /// Capture only a reading surface. Raw/Zen intentionally maps to the last
+    /// persisted reader surface (Rendered), never to unsaved editor text.
+    fn current_quick_slot_context(&self) -> Option<(PathBuf, crate::quick_slots::SlotContext)> {
+        let root = self.quick_slots_workspace_root()?;
+        if self.full_mindmap.is_some() {
+            let path = self.full_mindmap_selected_file()?;
+            crate::quick_slots::relative_path(root, &path)?;
+            return Some((
+                path,
+                crate::quick_slots::SlotContext {
+                    mode: crate::quick_slots::SlotMode::FullMindmap,
+                    preview_position: Self::slot_position(
+                        self.full_mindmap
+                            .as_ref()
+                            .and_then(|full| full.preview_viewport.as_ref()),
+                    ),
+                    ..Default::default()
+                },
+        ));
+        }
+        let path = self.file.clone()?;
+        crate::quick_slots::relative_path(root, &path)?;
+        let mode = if self.view_mode == ViewMode::Mindmap {
+            crate::quick_slots::SlotMode::DocumentMindmap
+        } else {
+            crate::quick_slots::SlotMode::Rendered
+        };
+        Some((
+            path,
+            crate::quick_slots::SlotContext {
+                mode,
+                body_position: Self::slot_position(self.body_viewport.as_ref()),
+                mindmap_selection: self.mindmap_selected.map(|id| id.0),
+                mindmap_panel_open: self.mindmap_panel_open,
+                ..Default::default()
+            },
+        ))
+    }
+
+    fn quick_slot_activation_is_current(
+        &self,
+        index: usize,
+        slot: &crate::quick_slots::QuickSlot,
+        path: &std::path::Path,
+    ) -> bool {
+        if self.quick_slots.active != Some(index) || self.editor.is_some() {
+            return false;
+                }
+        let path = canonicalize_existing_path(path.to_path_buf());
+        let same_path = |current: Option<PathBuf>| {
+            current.is_some_and(|current| canonicalize_existing_path(current) == path)
+        };
+        match slot.context.mode {
+            crate::quick_slots::SlotMode::FullMindmap => {
+                self.full_mindmap.is_some() && same_path(self.full_mindmap_selected_file())
+        }
+            crate::quick_slots::SlotMode::DocumentMindmap => {
+                self.full_mindmap.is_none()
+                    && self.view_mode == ViewMode::Mindmap
+                    && same_path(self.file.clone())
+                }
+            crate::quick_slots::SlotMode::Rendered => {
+                self.full_mindmap.is_none()
+                    && self.view_mode == ViewMode::Rendered
+                    && same_path(self.file.clone())
+            }
+        }
+    }
+
+    fn checkpoint_active_quick_slot(&mut self) -> Task<Message> {
+        let Some(index) = self.quick_slots.active else {
+            return Task::none();
+        };
+        // Entering Full Mindmap from a document preserves the active slot's
+        // Rendered/DocumentMindmap context. Only a slot that was originally
+        // created for Full Mindmap may be checkpointed from the navigator;
+        // otherwise selecting a parent folder would silently rewrite a file
+        // slot so its next activation stayed in Full Mindmap.
+        if self.full_mindmap.is_some()
+            && self
+                .quick_slots
+                .occupied(index)
+                .is_some_and(|slot| slot.context.mode != crate::quick_slots::SlotMode::FullMindmap)
+        {
+            return Task::none();
+        }
+        let Some((path, context)) = self.current_quick_slot_context() else {
+            return Task::none();
+        };
+        let Some(root) = self.quick_slots_workspace_root() else {
+            return Task::none();
+            };
+        let Some(relative) = crate::quick_slots::relative_path(root, &path) else {
+            return Task::none();
+        };
+        let owns = self
+            .quick_slots
+            .occupied(index)
+            .is_some_and(|slot| slot.relative_path == relative);
+        if !owns {
+            return Task::none();
+            }
+        if let Some(slot) = self.quick_slots.occupied_mut(index) {
+            slot.context = context.normalized();
+            }
+        self.schedule_quick_slots_persist()
+            }
+
+    /// Manual navigation that leaves the active slot's file has no current
+    /// target to keep active. Invalidate older debounced writes and persist the
+    /// cleared marker immediately so a late completion cannot resurrect it.
+    fn clear_active_quick_slot(&mut self) {
+        if self.quick_slots.active.is_none() {
+            return;
+            }
+        self.quick_slots.active = None;
+        self.quick_slots_persist_generation = self.quick_slots_persist_generation.wrapping_add(1);
+        self.persist_quick_slots_now();
+            }
+
+    fn quick_slot_path(&self, index: usize) -> Option<(crate::quick_slots::QuickSlot, PathBuf)> {
+        let slot = self.quick_slots.occupied(index)?.clone();
+        let root = self.quick_slots_workspace_root()?;
+        let path = crate::quick_slots::resolve_path(root, &slot.relative_path)?;
+        Some((slot, path))
+        }
+
+    fn quick_slot_restore_position(&self, position: f32) -> Task<Message> {
+        let Some(viewport) = self.body_viewport.as_ref() else {
+            return Task::none();
+        };
+        let max = (viewport.content_bounds().height - viewport.bounds().height).max(0.0);
+        if max <= 0.0 {
+            return Task::none();
+        }
+        iced::widget::operation::scroll_to(
+            Self::scroll_id(),
+            iced::widget::scrollable::AbsoluteOffset {
+                x: 0.0,
+                y: (crate::quick_slots::normalize_position(position) * max).max(0.0),
+            },
+        )
+    }
+
+    fn quick_slot_restore_preview_position(&self, position: f32) -> Task<Message> {
+        let Some(viewport) = self
+            .full_mindmap
+            .as_ref()
+            .and_then(|full| full.preview_viewport.as_ref())
+        else {
+            return Task::none();
+        };
+        let max = (viewport.content_bounds().height - viewport.bounds().height).max(0.0);
+        iced::widget::operation::scroll_to(
+            Self::full_mindmap_preview_scroll_id(),
+            iced::widget::scrollable::AbsoluteOffset {
+                x: 0.0,
+                y: crate::quick_slots::normalize_position(position) * max,
+            },
+        )
+        }
+
+    fn apply_quick_slot_restore_after_file(
+        &mut self,
+        path: &std::path::Path,
+        slot: crate::quick_slots::QuickSlot,
+    ) -> Task<Message> {
+        self.view_mode = match slot.context.mode {
+            crate::quick_slots::SlotMode::DocumentMindmap => ViewMode::Mindmap,
+            crate::quick_slots::SlotMode::Rendered | crate::quick_slots::SlotMode::FullMindmap => {
+                ViewMode::Rendered
+            }
+        };
+        self.editor = None;
+        self.zen_restore = None;
+        self.mindmap_selected = slot
+            .context
+            .mindmap_selection
+            .map(crate::ast::BlockId)
+            .filter(|id| self.ast.iter().any(|(block_id, _)| block_id == id));
+        self.mindmap_panel_shown = self.mindmap_selected;
+        self.mindmap_panel_open = slot.context.mindmap_panel_open;
+        self.finish_pending_quick_slot_restore();
+        self.quick_slot_body_restore = Some(slot.context.body_position);
+        if path == self.file.as_deref().unwrap_or(path) {
+            let max = self
+                .body_viewport
+                    .as_ref()
+                .map(|viewport| {
+                    (viewport.content_bounds().height - viewport.bounds().height).max(0.0)
+            })
+                .unwrap_or(0.0);
+            if max > 0.0 {
+                self.quick_slot_body_restore = None;
+                return self.quick_slot_restore_position(slot.context.body_position);
+        }
+        }
+        Task::none()
+    }
+
+    fn begin_quick_slot_activation(&mut self, index: usize) -> Task<Message> {
+        let Some(slot) = self.quick_slots.occupied(index).cloned() else {
+            return self.show_toast(format!("Quick Slot {} is empty", index + 1));
+        };
+        let Some(root) = self.quick_slots_workspace_root() else {
+            return self.show_toast(format!("Quick Slot {} is missing", index + 1));
+        };
+        let Some(path) = crate::quick_slots::resolve_path(root, &slot.relative_path) else {
+            if self.dirty {
+                return self.show_toast(self.unsaved_edits_open_message());
+            }
+            self.invalidate_pending_quick_slot_restore();
+            self.quick_slots.active = Some(index);
+            self.persist_quick_slots_now();
+            return self.show_toast(format!(
+                "Quick Slot {} is missing: {}",
+                index + 1,
+                slot.relative_path
+            ));
+        };
+        // A clean Zen editor still needs the active slot chord/button to leave
+        // the editing surface and restore its persisted reading mode. The
+        // active marker can also survive manual navigation, so suppress a
+        // duplicate only when the current file and reading surface match the
+        // saved target (using canonical paths for aliases).
+        if path.is_file() && self.quick_slot_activation_is_current(index, &slot, &path) {
+            return Task::none();
+        }
+        if self.dirty {
+            return self.show_toast(self.unsaved_edits_open_message());
+        }
+        if !path.is_file() {
+            self.invalidate_pending_quick_slot_restore();
+            self.quick_slots.active = Some(index);
+            self.persist_quick_slots_now();
+            return self.show_toast(format!(
+                "Quick Slot {} is missing: {}",
+                index + 1,
+                slot.relative_path
+            ));
+        }
+        // Do not checkpoint the current UI back into the target when the
+        // active slot is being reactivated. In particular, clean Zen maps to
+        // `Rendered`, which would overwrite a same-slot Mindmap context
+        // before its saved target is restored. Switching to another slot
+        // still checkpoints the outgoing slot.
+        let checkpoint = if self.quick_slots.active == Some(index) {
+            Task::none()
+        } else {
+            self.checkpoint_active_quick_slot()
+        };
+        self.quick_slots.active = Some(index);
+        // Persist the active marker immediately; ordinary scroll checkpoints
+        // remain debounced, but a restart should reopen the selected bank
+        // state even if no viewport event arrives before exit.
+        self.persist_quick_slots_now();
+        match slot.context.mode {
+            crate::quick_slots::SlotMode::FullMindmap => {
+                if self.view_mode == ViewMode::Raw || self.editor.is_some() {
+                    self.leave_zen_edit_mode(false);
+                }
+                self.begin_pending_quick_slot_restore(index, slot);
+                if self.full_mindmap.is_none() {
+                    let enter = self.enter_full_mindmap_at(None);
+                    Task::batch([
+                        checkpoint,
+                        enter,
+                        Task::done(Message::QuickSlotRestorePending),
+                    ])
+                } else {
+                    Task::batch([checkpoint, Task::done(Message::QuickSlotRestorePending)])
+                }
+            }
+            crate::quick_slots::SlotMode::Rendered
+            | crate::quick_slots::SlotMode::DocumentMindmap => {
+                let Some(pending) = self.begin_pending_quick_slot_restore(index, slot) else {
+            return Task::none();
+                };
+                let load = {
+                    let slot = pending.slot.clone();
+                    Task::perform(load_file(path), move |result| {
+                        Message::QuickSlotFileLoaded {
+                            index: pending.index,
+                            slot,
+                            result,
+                        }
+                    })
+                };
+                if self.full_mindmap.is_some() {
+                    let exit = self.exit_full_mindmap(false);
+                    if self.full_mindmap.is_none() {
+                        Task::batch([checkpoint, exit, load])
+                    } else {
+                        Task::batch([checkpoint, exit])
+                    }
+                } else {
+                    Task::batch([checkpoint, load])
+                }
+        }
+        }
+    }
+
+    fn assign_quick_slot(&mut self, index: usize) -> Task<Message> {
+        if index >= crate::quick_slots::SLOT_COUNT {
+            return Task::none();
+        }
+        if self.full_mindmap.is_none() && self.workspace.is_none() {
+            return self.show_toast("Open a workspace before assigning Quick Slots".into());
+        }
+        if self.dirty {
+            return self.show_toast(self.unsaved_edits_open_message());
+        }
+        let Some((path, context)) = self.current_quick_slot_context() else {
+            return self.show_toast("Open a file before assigning a Quick Slot".into());
+                };
+        let Some(root) = self.quick_slots_workspace_root() else {
+            return self.show_toast("Open a workspace before assigning Quick Slots".into());
+                };
+        let Some(relative_path) = crate::quick_slots::relative_path(root, &path) else {
+            return self
+                .show_toast("Quick Slots only store files inside the active workspace".into());
+        };
+        let slot = crate::quick_slots::QuickSlot {
+            relative_path,
+            context: context.normalized(),
+        };
+        self.invalidate_pending_quick_slot_restore();
+        self.quick_slots.set(index, slot);
+        self.quick_slots.active = Some(index);
+        self.quick_slots_undo = None;
+        self.persist_quick_slots_now();
+        self.show_toast(format!("Quick Slot {} assigned", index + 1))
+                }
+
+    fn new_quick_slot(&mut self) -> Task<Message> {
+        if self.full_mindmap.is_none() && self.workspace.is_none() {
+            return self.show_toast("Open a workspace before assigning Quick Slots".into());
+        }
+        if self.dirty {
+            return self.show_toast(self.unsaved_edits_open_message());
+        }
+        let Some((path, _context)) = self.current_quick_slot_context() else {
+            return self.show_toast("Open a file before assigning a Quick Slot".into());
+            };
+        let Some(root) = self.quick_slots_workspace_root() else {
+            return self.show_toast("Open a workspace before assigning Quick Slots".into());
+            };
+        let Some(relative_path) = crate::quick_slots::relative_path(root, &path) else {
+            return self
+                .show_toast("Quick Slots only store files inside the active workspace".into());
+            };
+        let matching = (0..crate::quick_slots::SLOT_COUNT).find(|&index| {
+            self.quick_slots
+                .occupied(index)
+                .and_then(|slot| crate::quick_slots::normalize_relative_path(&slot.relative_path))
+                .is_some_and(|slot_path| slot_path == relative_path)
+        });
+        if let Some(index) = matching {
+            return self.begin_quick_slot_activation(index);
+                }
+        let Some(index) = (0..crate::quick_slots::SLOT_COUNT)
+            .find(|&index| self.quick_slots.occupied(index).is_none())
+        else {
+            return self.show_toast("Quick Slots are full".into());
+        };
+        self.assign_quick_slot(index)
+            }
+
+    fn clear_quick_slot(&mut self, index: usize) -> Task<Message> {
+        if self.dirty {
+            return self.show_toast(self.unsaved_edits_open_message());
+        }
+        let Some(slot) = self.quick_slots.clear(index) else {
+            return self.show_toast(format!("Quick Slot {} is empty", index + 1));
+        };
+        self.invalidate_pending_quick_slot_restore();
+        self.quick_slots_undo = Some(crate::quick_slots::ClearUndo {
+            index,
+            slot,
+            additional: Vec::new(),
+        });
+        self.persist_quick_slots_now();
+        self.show_toast_with_action(
+            format!("Quick Slot {} cleared", index + 1),
+            Some(ToastAction {
+                label: "Undo".into(),
+                message: Message::QuickSlotUndo,
+            }),
+        )
+    }
+
+    fn clear_all_quick_slots(&mut self) -> Task<Message> {
+        if self.dirty {
+            return self.show_toast(self.unsaved_edits_open_message());
+        }
+        let removed = self.quick_slots.clear_all();
+        if removed.is_empty() {
+            return self.show_toast("Quick Slots are already empty".into());
+        }
+        self.invalidate_pending_quick_slot_restore();
+        // Clear All is one bounded undo action. Keep the first slot in named
+        // fields and retain the remaining eight entries in the same payload.
+        let mut removed = removed.into_iter();
+        let (index, slot) = removed.next().expect("non-empty clear-all");
+        self.quick_slots_undo = Some(crate::quick_slots::ClearUndo {
+            index,
+            slot,
+            additional: removed.collect(),
+            });
+        self.persist_quick_slots_now();
+        self.show_toast_with_action(
+            "All Quick Slots cleared".into(),
+            Some(ToastAction {
+                label: "Undo".into(),
+                message: Message::QuickSlotUndo,
+            }),
+        )
+        }
+
+    fn undo_quick_slot_clear(&mut self) -> Task<Message> {
+        let Some(undo) = self.quick_slots_undo.take() else {
+            return self.show_toast("Nothing to undo".into());
+        };
+        self.invalidate_pending_quick_slot_restore();
+        self.quick_slots.set(undo.index, undo.slot);
+        for (index, slot) in undo.additional {
+            self.quick_slots.set(index, slot);
+                }
+        self.quick_slots.active = Some(undo.index);
+        self.persist_quick_slots_now();
+        self.show_toast(format!("Quick Slot {} restored", undo.index + 1))
+            }
+
+    fn close_active_quick_slot(&mut self) -> Task<Message> {
+        let Some(active) = self.quick_slots.active else {
+            return self.show_toast("No active Quick Slot".into());
+        };
+        if self.dirty {
+            return self.show_toast(self.unsaved_edits_open_message());
+                }
+        let checkpoint = self.checkpoint_active_quick_slot();
+        self.invalidate_pending_quick_slot_restore();
+        let _removed = self.quick_slots.clear(active);
+        self.quick_slots_undo = None;
+        self.persist_quick_slots_now();
+        let next = ((active + 1)..crate::quick_slots::SLOT_COUNT)
+            .chain((0..active).rev())
+            .find(|&index| {
+                self.quick_slot_path(index)
+                    .is_some_and(|(_, path)| path.is_file())
+                });
+        let activate = next.map_or_else(Task::none, |index| {
+            Task::done(Message::QuickSlotActivate(index))
+        });
+        Task::batch([
+            checkpoint,
+            activate,
+            self.show_toast("Quick Slot closed".into()),
+        ])
+            }
+
+    fn close_quick_slot_window(&mut self) -> Task<Message> {
+        if self.dirty {
+            return self.show_toast(self.unsaved_edits_open_message());
+        }
+        let checkpoint = self.checkpoint_active_quick_slot();
+        // The checkpoint mutates the in-memory slot synchronously. Persist it
+        // before returning the close task so the debounce cannot lose the
+        // latest reading position when the process exits immediately.
+        self.persist_quick_slots_now();
+        self.invalidate_pending_quick_slot_restore();
+        Task::batch([
+            checkpoint,
+            iced::window::latest().and_then(iced::window::close),
+        ])
+    }
+
+    fn apply_pending_quick_slot_restore(&mut self) -> Task<Message> {
+        let Some(pending) = self.pending_quick_slot_restore.clone() else {
+            return Task::none();
+        };
+        if !self.quick_slot_restore_is_current(&pending) {
+            self.invalidate_pending_quick_slot_restore();
+            return Task::none();
+        }
+        let index = pending.index;
+        let slot = pending.slot.clone();
+        let Some(root) = self.quick_slots_workspace_root() else {
+            self.invalidate_pending_quick_slot_restore();
+            return Task::none();
+        };
+        let Some(path) = crate::quick_slots::resolve_path(root, &slot.relative_path) else {
+            self.invalidate_pending_quick_slot_restore();
+            return Task::none();
+        };
+        if !path.is_file() {
+            self.invalidate_pending_quick_slot_restore();
+            return self.show_toast(format!("Quick Slot {} is missing", index + 1));
+        }
+        // A Full Mindmap root may still be materializing. Keep the identity-
+        // bearing restore pending until that accepted snapshot is installed;
+        // applying it against the provisional state would be overwritten by
+        // `reset_full_mindmap_workspace` during snapshot replacement.
+        if self
+            .full_mindmap
+            .as_ref()
+            .is_some_and(|full| full.pending_workspace_load.is_some())
+        {
+            return Task::none();
+        }
+        if slot.context.mode == crate::quick_slots::SlotMode::FullMindmap {
+            let Some(full) = self.full_mindmap.as_mut() else {
+                return Task::none();
+            };
+            full.deferred_file_selection = Some(path.clone());
+            full.selected = Some(WorkspaceNodeId::File(path.clone()));
+            full.focus_request = Some(WorkspaceNodeId::File(path.clone()));
+            self.quick_slot_preview_restore = Some(slot.context.preview_position);
+            self.quick_slot_preview_restore_guard = Some(pending.clone());
+            self.pending_quick_slot_restore = None;
+            let already_ready = full.pending_preview.is_none()
+                && matches!(
+                    &full.preview,
+                    FullMindmapPreview::Document { path: current, .. }
+                        | FullMindmapPreview::Data { path: current, .. }
+                        if current == &path
+                );
+            let preview = self.schedule_full_mindmap_preview(Some(path));
+            let restore = if already_ready
+                && self
+                    .full_mindmap
+                    .as_ref()
+                    .is_some_and(|full| full.preview_viewport.is_some())
+            {
+                self.take_current_quick_slot_preview_restore()
+                    .map_or_else(Task::none, |position| {
+                        self.quick_slot_restore_preview_position(position)
+                    })
+            } else {
+                Task::none()
+            };
+            return Task::batch([
+                preview,
+                restore,
+                self.show_toast(format!("Quick Slot {}", index + 1)),
+            ]);
+            }
+        if self.file.as_ref() == Some(&path) {
+            return self.apply_quick_slot_restore_after_file(&path, slot);
+        }
+        let load = Task::perform(load_file(path), move |result| {
+            Message::QuickSlotFileLoaded {
+                index,
+                slot,
+                result,
+    }
+        });
+        load
+    }
+
     /// Return the current source in an Arc so read-only Full Mindmap parsing
     /// does not clone a `String` on the update thread. The worker performs the
     /// one owned conversion required by the parser off-thread.
     fn source_snapshot_for_preview(&self) -> Arc<str> {
         Arc::from(self.source.as_str())
-    }
+        }
 
     fn sync_editor_to_source(&mut self) -> bool {
         let Some(ed) = self.editor.as_ref() else {
@@ -1332,10 +2308,10 @@ impl App {
     fn enter_zen_edit_mode(&mut self) -> Task<Message> {
         if self.file.is_none() {
             return Task::none();
-        }
+    }
         if is_pdf_path(self.file.as_deref()) {
             return self.show_toast("PDFs are view-only".into());
-        }
+            }
         if self.zen_restore.is_none() {
             self.zen_restore = Some(ZenRestoreState {
                 sidebar_open: self.sidebar_open,
@@ -1369,24 +2345,24 @@ impl App {
     fn exit_zen_edit_mode(&mut self) -> Task<Message> {
         self.leave_zen_edit_mode(true);
         self.restore_body_scroll()
-    }
+        }
 
     fn restore_zen_chrome(&mut self) {
         if let Some(restore) = self.zen_restore.take() {
             self.sidebar_open = restore.sidebar_open;
             self.search_open = restore.search_open;
-        }
+    }
     }
 
     fn unsaved_edits_open_message(&self) -> String {
         format!(
             "unsaved edits in {}; save or discard before opening another",
             self.file
-                .as_ref()
+            .as_ref()
                 .map(|p| p.display().to_string())
                 .unwrap_or_default()
         )
-    }
+            }
 
     fn block_file_open_if_dirty(&mut self) -> Option<Task<Message>> {
         if self.dirty {
@@ -1399,9 +2375,15 @@ impl App {
     fn load_file_unless_dirty(&mut self, path: PathBuf) -> Task<Message> {
         if let Some(blocked) = self.block_file_open_if_dirty() {
             return blocked;
+            }
+        let path = canonicalize_existing_path(path);
+        let checkpoint = self.checkpoint_active_quick_slot();
+        self.invalidate_pending_quick_slot_restore();
+        Task::batch([
+            checkpoint,
+            Task::perform(load_file(path), Message::FileLoaded),
+        ])
         }
-        Task::perform(load_file(path), Message::FileLoaded)
-    }
 
     fn new_full_mindmap_state() -> FullMindmapState {
         static NEXT_PREVIEW_NAMESPACE: AtomicU64 = AtomicU64::new(1);
@@ -1479,7 +2461,7 @@ impl App {
         ));
         *full.layout_cache.borrow_mut() = Some(std::sync::Arc::clone(&graph));
         Some(graph)
-    }
+        }
 
     fn invalidate_full_mindmap_layout(&mut self) {
         if let Some(full) = self.full_mindmap.as_mut() {
@@ -1499,11 +2481,11 @@ impl App {
         let had_hidden = self.full_mindmap.as_ref().is_some_and(|full| {
             full.verification_wave.is_some() || !full.verification_hidden.is_empty()
         });
-        if let Some(full) = self.full_mindmap.as_mut() {
+                if let Some(full) = self.full_mindmap.as_mut() {
             full.verification_wave = None;
             full.verification_followup_pending = false;
             full.verification_hidden.clear();
-        }
+            }
         self.full_mindmap_progress = None;
         if had_hidden {
             self.invalidate_full_mindmap_layout();
@@ -1514,7 +2496,7 @@ impl App {
         if let Some(full) = self.full_mindmap.as_mut() {
             full.expansion_generation = full.expansion_generation.wrapping_add(1);
         }
-    }
+        }
 
     fn full_mindmap_folder_count(
         &self,
@@ -1533,9 +2515,9 @@ impl App {
                 } => *recursive_supported_file_count,
                 workspace_mindmap::MaterializedFolder::Error(_) => {
                     tree::RecursiveFileCount::Unavailable
-                }
-            });
         }
+            });
+            }
         // A lazily expanded parent owns shallow child skeletons that are no
         // longer reachable through the retained workspace tree. Resolve the
         // child's count from that in-memory branch before giving up.
@@ -1543,8 +2525,8 @@ impl App {
             if let workspace_mindmap::MaterializedFolder::Loaded { folders, .. } = materialized {
                 if let Some(node) = folders.iter().find(|node| node.path == path) {
                     return node.recursive_supported_file_count;
-                }
-            }
+        }
+        }
         }
         self.workspace_tree
             .as_ref()
@@ -1637,7 +2619,7 @@ impl App {
             .map(|wave| wave.candidates.iter().collect::<HashSet<_>>())
             .unwrap_or_default();
         let new_candidates = candidates
-            .into_iter()
+                .into_iter()
             .filter(|path| {
                 // A verification result already owns only count/status for
                 // this path; it must not be scheduled repeatedly on every
@@ -1753,16 +2735,16 @@ impl App {
             else {
                 break;
             };
-            self.full_mindmap_request_seq = self.full_mindmap_request_seq.wrapping_add(1);
+        self.full_mindmap_request_seq = self.full_mindmap_request_seq.wrapping_add(1);
             let request = PendingFullMindmapVerification {
-                id: self.full_mindmap_request_seq,
+            id: self.full_mindmap_request_seq,
                 wave_id,
-                workspace_root,
+            workspace_root,
                 parent,
                 parent_expansion_generation,
-                folder: folder.clone(),
+            folder: folder.clone(),
                 show_hidden,
-            };
+        };
             if let Some(full) = self.full_mindmap.as_mut() {
                 if let Some(wave) = full.verification_wave.as_mut() {
                     wave.request_ids.insert(folder.clone(), request.id);
@@ -1842,14 +2824,14 @@ impl App {
                 if !followup_pending {
                     full.verification_hidden.clear();
                     self.full_mindmap_progress = None;
-                }
+            }
             } else {
                 self.full_mindmap_progress = Some(FullMindmapProgress {
                     wave_id: wave.id,
                     checked: wave.checked,
                     total: wave.candidates.len(),
                 });
-            }
+        }
             (done, followup_pending)
         } else {
             return Task::none();
@@ -1857,7 +2839,7 @@ impl App {
         self.invalidate_full_mindmap_layout();
         if accepted_exact_empty {
             self.normalize_full_mindmap_workspace();
-        }
+    }
         if done {
             if followup_pending {
                 self.schedule_full_mindmap_verification_followup()
@@ -1871,7 +2853,7 @@ impl App {
 
     fn enter_full_mindmap(&mut self) -> Task<Message> {
         self.enter_full_mindmap_at(None)
-    }
+        }
 
     /// Enter Full Mindmap, optionally forcing a fresh workspace root. The
     /// document-Mindmap boundary uses the override when the current file is
@@ -1909,7 +2891,7 @@ impl App {
     /// root change.
     fn enter_full_mindmap_for_current_file(&mut self) -> Task<Message> {
         let Some(file) = self.file.clone() else {
-            return Task::none();
+                return Task::none();
         };
         let in_workspace = self
             .workspace
@@ -1919,8 +2901,14 @@ impl App {
         let forced_start = (!in_workspace)
             .then(|| file.parent().map(PathBuf::from).or_else(Picker::home))
             .flatten();
-        self.enter_full_mindmap_at(forced_start)
-    }
+        // The document-Mindmap root-left gesture replaces the reader surface
+        // with Full Mindmap before the workspace helper can observe it. Capture
+        // the outgoing document context at this boundary; the helper's later
+        // Full Mindmap checkpoint is a no-op because the new navigator has no
+        // selected preview yet.
+        let checkpoint = self.checkpoint_active_quick_slot();
+        Task::batch([checkpoint, self.enter_full_mindmap_at(forced_start)])
+            }
 
     /// Exit Full Mindmap without exposing a workspace snapshot built under a
     /// different hidden-file filter. Normal exits restore the prior surface;
@@ -1930,15 +2918,15 @@ impl App {
             self.full_mindmap.is_some() && self.workspace_snapshot_show_hidden != self.show_hidden;
         if stale_workspace {
             if let Some(path) = self.workspace.clone() {
-                return self.begin_full_mindmap_workspace_load(
+            return self.begin_full_mindmap_workspace_load(
                     path,
-                    false,
+                false,
                     None,
                     true,
                     return_to_files,
                     true,
-                );
-            }
+            );
+        }
         }
         self.finish_full_mindmap_exit(return_to_files)
     }
@@ -1946,14 +2934,15 @@ impl App {
     fn finish_full_mindmap_exit(&mut self, return_to_files: bool) -> Task<Message> {
         self.cancel_full_mindmap_verification();
         self.reset_full_mindmap_preview_window();
+        self.quick_slot_preview_restore = None;
         self.full_mindmap = None;
         if return_to_files {
             self.sidebar_open = true;
             self.sidebar_tab = SidebarTab::Files;
             self.reveal_current_file();
-        }
+            }
         self.restore_body_scroll()
-    }
+        }
 
     /// Start an IPC file activation only after Full Mindmap has stopped owning
     /// the reader surface. A normal exit clears the navigator synchronously;
@@ -1961,10 +2950,22 @@ impl App {
     /// through `FullMindmapWorkspaceLoaded` and consumes the same pending open
     /// there.
     fn begin_ipc_file_open(&mut self, path: PathBuf, nav: Option<PendingNav>) -> Task<Message> {
+        // An IPC/file-finder navigation supersedes any in-flight slot load;
+        // its completion must not later reopen the older slot target.
+        let path = canonicalize_existing_path(path);
+        // Capture the outgoing reading context before IPC navigation changes
+        // the visible file (or asks Full Mindmap to relinquish its preview).
+        // `checkpoint_active_quick_slot` mutates the in-memory slot
+        // synchronously; the returned task only debounces persistence.
+        let checkpoint = self.checkpoint_active_quick_slot();
+        self.invalidate_pending_quick_slot_restore();
         if self.full_mindmap.is_none() {
             self.pending_nav = nav;
-            return Task::perform(load_file(path), Message::FileLoaded);
-        }
+            return Task::batch([
+                checkpoint,
+                Task::perform(load_file(path), Message::FileLoaded),
+            ]);
+    }
 
         // Do not let an older generic load consume the navigation intended for
         // this deferred request while the navigator is still visible.
@@ -1972,11 +2973,11 @@ impl App {
         self.pending_ipc_file_open = Some(PendingIpcFileOpen { path, nav });
         let exit = self.exit_full_mindmap(false);
         if self.full_mindmap.is_none() {
-            self.start_pending_ipc_file_open(exit)
+            Task::batch([checkpoint, self.start_pending_ipc_file_open(exit)])
         } else {
-            exit
+            Task::batch([checkpoint, exit])
         }
-    }
+        }
 
     fn start_pending_ipc_file_open(&mut self, cleanup: Task<Message>) -> Task<Message> {
         let Some(PendingIpcFileOpen { path, nav }) = self.pending_ipc_file_open.take() else {
@@ -2003,14 +3004,14 @@ impl App {
             .unwrap_or_default();
         self.reset_full_mindmap_preview_window();
         {
-            let Some(full) = self.full_mindmap.as_mut() else {
+        let Some(full) = self.full_mindmap.as_mut() else {
                 return;
-            };
+        };
             full.expanded.clear();
             full.expanded.insert(root.clone());
             for ancestor in ancestors {
                 full.expanded.insert(ancestor);
-            }
+    }
             let root_id = WorkspaceNodeId::Root(root);
             full.selected = Some(root_id.clone());
             // The document-Mindmap root-Left bridge already knows which file
@@ -2031,8 +3032,8 @@ impl App {
             // in-flight file read from the prior workspace must not later exit
             // the navigator into that old document.
             full.pending_open = None;
-            full.pending_preview_settle = None;
-            full.pending_preview = None;
+                full.pending_preview_settle = None;
+                full.pending_preview = None;
             full.pending_workspace_load = None;
             full.pending_folder_loads.clear();
             full.verification_wave = None;
@@ -2041,11 +3042,11 @@ impl App {
             full.expansion_generation = full.expansion_generation.wrapping_add(1);
             full.materialized_folders.clear();
             full.deferred_file_selection = current_file;
-            full.preview = FullMindmapPreview::None;
+                full.preview = FullMindmapPreview::None;
             full.load_error = None;
             full.layout_generation = full.layout_generation.wrapping_add(1);
             *full.layout_cache.borrow_mut() = None;
-        }
+            }
         self.full_mindmap_progress = None;
         self.invalidate_full_mindmap_layout();
     }
@@ -2063,7 +3064,7 @@ impl App {
             // but it must not manufacture a root selection/focus afterward.
             if let Some(full) = self.full_mindmap.as_mut() {
                 full.focus_request = None;
-            }
+        }
             return;
         }
         let Some(graph) = self.full_mindmap_graph() else {
@@ -2102,7 +3103,7 @@ impl App {
                     Some(WorkspaceNodeId::File(focus)),
                     Some(deferred),
                 ) if focus == deferred
-            )
+        )
         });
         if selection_changed {
             self.reset_full_mindmap_preview_window();
@@ -2121,12 +3122,24 @@ impl App {
     }
 
     fn replace_workspace_snapshot(&mut self, path: PathBuf, snapshot: tree::WorkspaceSnapshot) {
+        let path = canonicalize_existing_path(path);
+        let root_changed = self.quick_slots_workspace_root().is_some_and(|current| {
+            crate::quick_slots::workspace_key(current) != crate::quick_slots::workspace_key(&path)
+        });
+        if root_changed {
+            self.invalidate_pending_quick_slot_restore();
+        }
+        let _ = self.checkpoint_active_quick_slot();
+        self.persist_quick_slots_now();
         self.workspace_files = snapshot.files;
         self.workspace_sidebar_files = snapshot.sidebar_files;
         self.workspace_tree = Some(snapshot.root);
         self.workspace_snapshot_show_hidden = self.show_hidden;
         self.workspace_truncated = snapshot.truncated;
         self.workspace = Some(path);
+        if let Some(root) = self.workspace.clone() {
+            self.load_quick_slots_for_workspace(&root);
+        }
     }
 
     fn apply_workspace_snapshot(
@@ -2153,6 +3166,7 @@ impl App {
     }
 
     fn set_workspace(&mut self, path: PathBuf, open_sidebar: bool) {
+        let path = canonicalize_existing_path(path);
         match tree::build_workspace(&path, self.show_hidden) {
             Ok(snapshot) => self.apply_workspace_snapshot(path, snapshot, open_sidebar),
             Err(error) => {
@@ -2178,6 +3192,25 @@ impl App {
         return_to_files_after: bool,
         exit_after_refresh: bool,
     ) -> Task<Message> {
+        let path = canonicalize_existing_path(path);
+        // Full Mindmap workspace changes replace the selected preview/root;
+        // preserve the outgoing slot context before any request state moves.
+        // The non-Full-Mindmap path is covered by `set_workspace`'s snapshot
+        // replacement, which checkpoints before swapping the active root.
+        let checkpoint = if self.full_mindmap.is_some() {
+            self.checkpoint_active_quick_slot()
+        } else {
+            Task::none()
+        };
+        if (self.pending_quick_slot_restore.is_some()
+            || self.quick_slot_preview_restore_guard.is_some())
+            && self.quick_slots_workspace_root().is_some_and(|current| {
+                crate::quick_slots::workspace_key(current)
+                    != crate::quick_slots::workspace_key(&path)
+            })
+        {
+            self.invalidate_pending_quick_slot_restore();
+        }
         if self.full_mindmap.is_none() {
             self.set_workspace(path, true);
             return Task::none();
@@ -2193,14 +3226,14 @@ impl App {
             })
         });
         if already_pending {
-            return Task::none();
+            return checkpoint;
         }
         // Root/filter changes supersede every delayed-reveal worker. The
         // request identity check also guards futures that cannot be aborted.
         self.cancel_full_mindmap_verification();
         self.bump_full_mindmap_expansion_generation();
         if !preserve_navigation {
-            self.reset_full_mindmap_preview_window();
+        self.reset_full_mindmap_preview_window();
         }
         self.full_mindmap_request_seq = self.full_mindmap_request_seq.wrapping_add(1);
         let request = PendingFullMindmapWorkspaceLoad {
@@ -2230,7 +3263,7 @@ impl App {
             full.pending_open = None;
         }
         if !preserve_navigation {
-            full.pending_preview_settle = None;
+        full.pending_preview_settle = None;
             full.pending_preview = None;
             full.load_error = None;
             full.preview = FullMindmapPreview::None;
@@ -2238,10 +3271,13 @@ impl App {
         }
         self.invalidate_full_mindmap_layout();
         let show_hidden = self.show_hidden;
+        Task::batch([
+            checkpoint,
         Task::perform(
-            load_full_mindmap_workspace(path, show_hidden),
-            move |result| Message::FullMindmapWorkspaceLoaded { request, result },
-        )
+                load_full_mindmap_workspace(path, show_hidden),
+                move |result| Message::FullMindmapWorkspaceLoaded { request, result },
+            ),
+        ])
     }
 
     fn begin_full_mindmap_expanded_folder_loads(&mut self) -> Task<Message> {
@@ -2255,9 +3291,10 @@ impl App {
                 .into_iter()
                 .map(|folder| self.begin_full_mindmap_folder_load(folder)),
         )
-    }
+            }
 
     fn begin_full_mindmap_folder_load(&mut self, folder: PathBuf) -> Task<Message> {
+        let folder = canonicalize_existing_path(folder);
         let Some(workspace_root) = self.workspace.clone() else {
             return Task::none();
         };
@@ -2343,8 +3380,8 @@ impl App {
                 load_full_mindmap_folder(folder, request.show_hidden),
                 move |result| Message::FullMindmapFolderLoaded { request, result },
             )
+            }
         }
-    }
 
     fn evict_full_mindmap_folder(&mut self, folder: &std::path::Path) {
         if let Some(full) = self.full_mindmap.as_mut() {
@@ -2360,8 +3397,8 @@ impl App {
                 .is_some_and(|path| path.starts_with(folder))
             {
                 full.deferred_file_selection = None;
-            }
         }
+    }
         self.invalidate_full_mindmap_layout();
     }
 
@@ -2370,12 +3407,13 @@ impl App {
     /// the final stale-result guard in the message handlers.
     fn cancel_full_mindmap_preview(&mut self) {
         self.reset_full_mindmap_preview_window();
+        self.quick_slot_preview_restore = None;
         if let Some(full) = self.full_mindmap.as_mut() {
             full.pending_preview_settle = None;
             full.pending_preview = None;
             full.preview = FullMindmapPreview::None;
-        }
-    }
+                }
+            }
 
     /// Full Mindmap-only file load. The wrapper retains request identity so a
     /// late result cannot close the navigator after a newer request supersedes
@@ -2384,14 +3422,13 @@ impl App {
         if let Some(blocked) = self.block_file_open_if_dirty() {
             return blocked;
         }
+        let path = canonicalize_existing_path(path);
+        self.invalidate_pending_quick_slot_restore();
         if self.full_mindmap.is_none() {
             return self.load_file_unless_dirty(path);
-        }
+    }
         // Deliberate Full Mindmap activation supersedes a deferred IPC open.
         self.pending_ipc_file_open = None;
-        // Enter is deliberate activation: cancel any read-only preview settle
-        // or in-flight preview before the guarded file-open path takes over.
-        self.cancel_full_mindmap_preview();
         let pending_refresh = self
             .full_mindmap
             .as_ref()
@@ -2405,7 +3442,9 @@ impl App {
             if request.exit_after_refresh {
                 // Esc/toggle/Return to Files already owns the terminal intent.
                 // A queued activation must not turn that exit into a file open.
-                return Task::none();
+                let checkpoint = self.checkpoint_active_quick_slot();
+                self.cancel_full_mindmap_preview();
+                return checkpoint;
             }
             return self.begin_full_mindmap_workspace_load(
                 request.path,
@@ -2416,6 +3455,13 @@ impl App {
                 false,
             );
         }
+        // Enter is deliberate activation: cancel any read-only preview settle
+        // or in-flight preview only after its outgoing slot context is saved.
+        let checkpoint = self.checkpoint_active_quick_slot();
+        self.cancel_full_mindmap_preview();
+        // Full Mindmap file activation is app-owned navigation away from the
+        // current preview. Preserve its outgoing Quick Slot context before
+        // replacing the pending preview/open request.
         self.full_mindmap_request_seq = self.full_mindmap_request_seq.wrapping_add(1);
         let request = PendingFullMindmapOpen {
             id: self.full_mindmap_request_seq,
@@ -2424,15 +3470,24 @@ impl App {
         let full = self.full_mindmap.as_mut().expect("checked above");
         full.pending_open = Some(request.clone());
         full.load_error = None;
-        Task::perform(load_file(path), move |result| {
-            Message::FullMindmapFileLoaded { request, result }
-        })
+        Task::batch([
+            checkpoint,
+            Task::perform(load_file(path), move |result| {
+                Message::FullMindmapFileLoaded { request, result }
+            }),
+        ])
     }
 
     /// Select a workspace node and independently settle a bounded, read-only
     /// preview when it is a file. Preview loads deliberately bypass the dirty
     /// guard because they never alter the current document.
     fn select_full_mindmap_node(&mut self, id: WorkspaceNodeId) -> Task<Message> {
+        let checkpoint = self.checkpoint_active_quick_slot();
+        self.invalidate_pending_quick_slot_restore();
+        // A manual canvas selection supersedes any pending slot-specific
+        // preview snap. Slot activation sets the snap directly and does not
+        // route through this selection handler.
+        self.quick_slot_preview_restore = None;
         let node = self
             .full_mindmap_graph()
             .and_then(|graph| graph.node(&id).cloned());
@@ -2455,6 +3510,27 @@ impl App {
                 }
                 _ => None,
             });
+        let active_matches = self.quick_slots.active.is_some_and(|index| {
+            let Some(path) = preview_path.as_ref() else {
+                return false;
+        };
+            let Some(root) = self.quick_slots_workspace_root() else {
+                return false;
+        };
+            let Some(relative) = crate::quick_slots::relative_path(root, path) else {
+                return false;
+            };
+            self.quick_slots
+                .occupied(index)
+                .is_some_and(|slot| slot.relative_path == relative)
+        });
+        if self.quick_slots.active.is_some() && !active_matches {
+            // Manual canvas navigation is no longer viewing the active slot's
+            // file. Clear only the active marker; the bookmarked slot itself
+            // remains intact for later activation.
+            self.quick_slots.active = None;
+            self.persist_quick_slots_now();
+        }
         if let Some(full) = self.full_mindmap.as_mut() {
             full.deferred_file_selection = match &id {
                 WorkspaceNodeId::File(path) if node.is_none() => Some(path.clone()),
@@ -2472,15 +3548,16 @@ impl App {
                 .is_some_and(|request| !request.preserve_navigation)
             {
                 full.pending_workspace_load = None;
-            }
+    }
             full.load_error = None;
-        }
+    }
         // `schedule_full_mindmap_preview` owns the preview reset boundary. Do
         // not reset here: same-path reselection must preserve a ready preview
         // and, more importantly, must not cancel its in-flight latest request
         // before the same-path ownership check runs.
         let preview = self.schedule_full_mindmap_preview(preview_path);
         Task::batch([
+            checkpoint,
             preview,
             iced::widget::operation::scroll_to(
                 Self::full_mindmap_preview_scroll_id(),
@@ -2519,14 +3596,14 @@ impl App {
             );
         if already_owned {
             return Task::none();
-        }
+    }
         if already_ready {
             // Re-selection must not reread/reparse a retained preview, but a
             // soft cache trim may have evicted one of its remote assets. The
             // preview identity remains stable while this lightweight pass
             // reclaims only missing image/diagram work.
             return self.prime_full_mindmap_preview_assets();
-        }
+    }
 
         // Selection changed: reset only preview-owned virtualization and
         // measurement state before the new settle/read request takes over.
@@ -2583,7 +3660,7 @@ impl App {
                 full.pending_preview_settle = None;
                 full.pending_preview = None;
                 full.preview = FullMindmapPreview::None;
-            }
+        }
             return Task::none();
         };
         let already_ready = self.full_mindmap.as_ref().is_some_and(|full| {
@@ -2600,7 +3677,7 @@ impl App {
         });
         if already_ready {
             return Task::none();
-        }
+    }
         if self.full_mindmap.is_none() {
             return Task::none();
         }
@@ -2646,6 +3723,25 @@ impl App {
     ) -> Task<Message> {
         if self.full_mindmap.is_none() {
             return Task::none();
+        }
+        let keep_quick_slot_restore =
+            self.quick_slot_preview_restore_guard
+                .as_ref()
+                .is_some_and(|guard| {
+                    self.quick_slot_restore_is_current(guard)
+                        && self
+                            .quick_slots_workspace_root()
+                            .and_then(|root| {
+                                crate::quick_slots::resolve_path(root, &guard.slot.relative_path)
+                            })
+                            .is_some_and(|target| target == path)
+                });
+        if !keep_quick_slot_restore {
+            // Source reparses for a different/stale identity must invalidate
+            // the position and its guard together. A current slot restore for
+            // this same file survives until the accepted parse can consume it.
+            self.quick_slot_preview_restore = None;
+            self.quick_slot_preview_restore_guard = None;
         }
         // A source-backed reparse is a new accepted preview even when the
         // path is unchanged. Clear old measurement ownership/window shape so
@@ -2704,15 +3800,15 @@ impl App {
             if matches!(self.image_cache.get(&url), Some(ImageState::Loading)) {
                 self.image_cache.remove(&url);
             }
-        }
+    }
         for key in stale_diagrams {
             if matches!(
                 self.diagram_cache.peek(&key),
                 Some(crate::diagram::DiagramState::Pending)
-            ) {
+    ) {
                 self.diagram_cache.remove(&key);
-            }
         }
+    }
         if let Some(full) = self.full_mindmap.as_mut() {
             let _ = full.preview_settle_tx.send(None);
             full.preview_generation = full.preview_generation.wrapping_add(1);
@@ -2779,7 +3875,7 @@ impl App {
                     );
                 }
                 full.preview_shape_ready = true;
-            } else {
+        } else {
                 full.preview_window
                     .rebuild_at_current_shape_for_preview(offset, viewport_h);
             }
@@ -2830,7 +3926,7 @@ impl App {
             .collect();
         if targets.is_empty() {
             return Task::none();
-        }
+    }
         full.preview_measurement_pending = true;
         full.preview_measurement_range = Some(full.preview_window.range);
         full.preview_measurement_generation = Some(full.preview_generation);
@@ -2838,7 +3934,7 @@ impl App {
             path.clone(),
             full.preview_namespace,
             full.preview_identity
-                .as_ref()
+            .as_ref()
                 .map(|request| request.id)
                 .unwrap_or(0),
             full.preview_generation,
@@ -2888,28 +3984,28 @@ impl App {
     }
     fn outline_scroll_id() -> iced::widget::Id {
         iced::widget::Id::new("outline")
-    }
+        }
     fn overlay_scroll_id() -> iced::widget::Id {
         iced::widget::Id::new("overlay")
-    }
+            }
     /// Stable identity for the Full Mindmap read-only preview. This is kept
     /// distinct from the document body scrollable so selecting a file never
     /// reuses or mutates document scroll state.
     fn full_mindmap_preview_scroll_id() -> iced::widget::Id {
         iced::widget::Id::new("full-mindmap-preview")
-    }
+                }
     fn search_input_id() -> iced::widget::Id {
         iced::widget::Id::new("search-input")
-    }
+            }
     fn overlay_input_id() -> iced::widget::Id {
         iced::widget::Id::new("overlay-input")
-    }
+        }
     fn vault_input_id() -> iced::widget::Id {
         iced::widget::Id::new("vault-input")
-    }
+            }
     fn vault_scroll_id() -> iced::widget::Id {
         iced::widget::Id::new("vault")
-    }
+        }
     /// Stable id for the n-th visible match block, used to scroll to the cursor
     /// by measured bounds (blocks vary in height, so estimation can't track it).
     fn vault_match_anchor_id(vis_idx: usize) -> iced::widget::Id {
@@ -2970,7 +4066,7 @@ impl App {
             total,
             ROW_H,
         )
-    }
+        }
 
     fn scroll_overlay_to_cursor(&self) -> Task<Message> {
         let len = match self.overlay {
@@ -3024,7 +4120,7 @@ impl App {
             Some(p) => {
                 if p.is_dir() {
                     Task::done(Message::OpenWorkspace(p))
-                } else {
+        } else {
                     Task::perform(load_file(p), Message::FileLoaded)
                 }
             }
@@ -3043,7 +4139,7 @@ impl App {
                 Task::none()
             };
         (app, Task::batch([task, update_check, cli_prompt]))
-    }
+        }
 
     /// Returns the next theme in cycle order: all built-in presets followed
     /// by every loaded custom theme, then wraps. Tuple = (id, display label,
@@ -3102,7 +4198,7 @@ impl App {
                 .map(|t| t.dark)
                 .unwrap_or_else(|| self.theme_preset.is_dark()),
         }
-    }
+        }
 
     pub fn title(&self) -> String {
         match &self.file {
@@ -3111,8 +4207,8 @@ impl App {
                 p.file_name().and_then(|n| n.to_str()).unwrap_or("?")
             ),
             None => "rmdv".into(),
-        }
-    }
+            }
+            }
 
     pub fn theme(&self) -> Theme {
         if self.is_dark() {
@@ -3120,7 +4216,7 @@ impl App {
         } else {
             Theme::Light
         }
-    }
+        }
 
     /// Re-snap the body scrollable to its last known offset. Iced 0.14 keys
     /// scrollable widget state by tree position, so wrapping/unwrapping the
@@ -3146,7 +4242,7 @@ impl App {
             .as_ref()
             .map(|v| (v.absolute_offset().y - BODY_TOP_PAD).max(0.0))
             .unwrap_or(0.0)
-    }
+            }
 
     /// Body viewport height, falling back to the window height before the
     /// first scroll event has reported real bounds.
@@ -3156,7 +4252,7 @@ impl App {
             .map(|v| v.bounds().height)
             .or(self.window_size.map(|s| s.height))
             .unwrap_or(1000.0)
-    }
+        }
 
     /// Rebuild the virt window around the current scroll position.
     fn rebuild_virt_here(&mut self) {
@@ -3164,7 +4260,7 @@ impl App {
         let vh = self.body_viewport_h();
         self.virt_window
             .rebuild(&self.ast, &self.folded, &self.height_cache, offset, vh);
-    }
+            }
 
     /// Rebuild the virt window centered on an AST block (goto/search jumps),
     /// so the target is materialized before a precise scroll operation runs.
@@ -3172,7 +4268,7 @@ impl App {
         let vh = self.body_viewport_h();
         self.virt_window
             .rebuild_around(&self.ast, &self.folded, &self.height_cache, ast_idx, vh);
-    }
+            }
 
     /// Widget operation harvesting real laid-out heights for the windowed
     /// blocks. Dispatch after window rebuilds (NOT from the measurement
@@ -3216,7 +4312,7 @@ impl App {
         // height estimates, which diverge from the actual layout (code blocks,
         // images, diagrams, math) and left the match offscreen.
         scroll_block_to_center(id)
-    }
+                    }
 
     /// Remove fold state on every heading whose collapsed range hides the block
     /// at `block_idx`, so a search/nav target under (possibly nested) folds is
@@ -3225,28 +4321,28 @@ impl App {
     fn unfold_to_reveal(&mut self, block_idx: usize) {
         if self.folded.is_empty() || block_idx >= self.ast.len() {
             return;
-        }
+                    }
         // Stack of (heading_level, heading_id, is_folded) enclosing block_idx.
         let mut ancestors: Vec<(u8, crate::ast::BlockId, bool)> = Vec::new();
         for (i, (id, b)) in self.ast.iter().enumerate() {
             if i == block_idx {
                 break;
-            }
+                }
             if let Block::Heading { level, .. } = b {
                 let lvl = *level as u8;
                 while ancestors.last().is_some_and(|(l, _, _)| *l >= lvl) {
                     ancestors.pop();
-                }
-                ancestors.push((lvl, *id, self.folded.contains(id)));
             }
-        }
+                ancestors.push((lvl, *id, self.folded.contains(id)));
+                    }
+                    }
         // Any folded heading on the ancestor path hides block_idx; reveal them.
         for (_, id, folded) in ancestors {
             if folded {
                 self.folded.remove(&id);
+                }
             }
         }
-    }
 
     fn scroll_to_line_top(&mut self, line: u32) -> Task<Message> {
         let Some(idx) = crate::ipc::lines::block_for_line(line, &self.block_lines) else {
@@ -3264,12 +4360,12 @@ impl App {
             self.leave_zen_edit_mode(true);
         } else {
             self.view_mode = ViewMode::Rendered;
-        }
+            }
         self.unfold_to_reveal(idx);
         self.rebuild_virt_around_block(idx);
         self.nav_anchor = Some(idx);
         scroll_block_to_top(id)
-    }
+        }
 
     fn synthesize_data_ast(&mut self) -> Option<Vec<(crate::ast::BlockId, Block)>> {
         let lang = data_lang_for(self.file.as_deref())?;
@@ -3281,7 +4377,7 @@ impl App {
             spans,
         };
         Some(vec![(crate::ast::BlockId(0), block)])
-    }
+                    }
 
     /// Cached `mindmap::build_layout` result, rebuilt on first read after an
     /// invalidation. Pure function of (ast, file, mindmap_collapsed); see the
@@ -3310,23 +4406,23 @@ impl App {
                     &self.ast,
                     self.file.as_deref(),
                     &self.mindmap_collapsed,
-                );
+                    );
                 (nodes, size, std::collections::HashMap::new())
             };
             *cache = Some((std::sync::Arc::new(nodes), size, std::sync::Arc::new(paths)));
-        }
+                    }
         let (nodes, size, paths) = cache.as_ref().unwrap();
         (
             std::sync::Arc::clone(nodes),
             *size,
             std::sync::Arc::clone(paths),
         )
-    }
+                    }
 
     fn invalidate_mindmap_layout(&self) {
         *self.mindmap_layout.borrow_mut() = None;
         *self.mindmap_data_panel.borrow_mut() = None;
-    }
+                    }
 
     /// Select root's first child if nothing is selected, opening the preview
     /// panel. Called on mindmap toggle-on and on file load while in mindmap
@@ -3334,7 +4430,7 @@ impl App {
     fn mindmap_focus_first_child(&mut self) {
         if self.view_mode != ViewMode::Mindmap || self.mindmap_selected.is_some() {
             return;
-        }
+                    }
         let (nodes, _, _) = self.mindmap_layout();
         if let Some(id) = nodes
             .first()
@@ -3344,13 +4440,13 @@ impl App {
             self.mindmap_selected = Some(id);
             self.mindmap_panel_shown = Some(id);
             self.mindmap_panel_open = true;
-        }
-    }
+                }
+                    }
 
     fn reparse_source(&mut self) {
         self.load_ast_from_source();
         self.rebuild_matches();
-    }
+                    }
 
     /// Parse `self.source` into `self.ast` (+ `block_lines`), dispatching by file
     /// type: structured-data files (json/yaml/toml) synthesize a single code
@@ -3383,7 +4479,7 @@ impl App {
                 code,
                 spans,
             } = b
-            {
+                    {
                 if spans.is_empty() {
                     *spans = self.hl_cache.highlight(l, code);
                 }
@@ -3480,25 +4576,25 @@ impl App {
         }
         for (hash, kind, source) in found {
             if !seen.insert(hash) {
-                continue;
-            }
+                        continue;
+                    }
             if self.diagram_cache.peek(&(hash, theme_id)).is_some() {
                 continue;
-            }
+                    }
             pending_inserts.push((hash, kind, source));
-        }
+                    }
         for (hash, kind, source) in pending_inserts {
-            self.diagram_cache
+                    self.diagram_cache
                 .put((hash, theme_id), crate::diagram::DiagramState::Pending);
             let ff = font_family.clone();
-            tasks.push(Task::perform(
+                    tasks.push(Task::perform(
                 crate::diagram::render_blocking_async(kind, source, palette, ff),
                 move |result| Message::DiagramRendered {
-                    hash,
-                    theme_id,
-                    result,
-                },
-            ));
+                            hash,
+                            theme_id,
+                            result,
+                        },
+                    ));
         }
         if tasks.is_empty() {
             Task::none()
@@ -3541,13 +4637,13 @@ impl App {
         for url in stale_images {
             if let Some(full) = self.full_mindmap.as_mut() {
                 full.preview_loading_images.remove(&url);
-            }
+        }
             if matches!(self.image_cache.get(&url), Some(ImageState::Loading)) {
                 self.image_cache.remove(&url);
             }
         }
         for key in stale_diagrams {
-            if let Some(full) = self.full_mindmap.as_mut() {
+        if let Some(full) = self.full_mindmap.as_mut() {
                 full.preview_pending_diagrams.remove(&key);
             }
             if matches!(
@@ -3621,14 +4717,14 @@ impl App {
                     if skipped < cursor {
                         skipped += 1;
                         continue;
-                    }
+        }
                     if descriptors.len() >= FULL_MINDMAP_PREVIEW_ASSET_BATCH {
                         break 'indexed;
-                    }
+    }
                     skipped += 1;
                     descriptors.push(asset.clone());
-                }
-            }
+    }
+    }
         } else {
             for (_, block) in &visible_blocks {
                 let mut images = Vec::new();
@@ -3646,11 +4742,11 @@ impl App {
                     if skipped < cursor {
                         skipped += 1;
                         continue;
-                    }
+        }
                     if descriptors.len() >= FULL_MINDMAP_PREVIEW_ASSET_BATCH {
                         skipped += 1;
                         continue;
-                    }
+    }
                     skipped += 1;
                     descriptors.push(asset);
                 }
@@ -3667,8 +4763,8 @@ impl App {
                 full.preview_failed_images.clear();
                 full.preview_asset_diagrams.clear();
                 full.preview_asset_cursor_tag = Some(tag);
-            }
         }
+    }
 
         let mut tasks = Vec::new();
         let mut seen_images = HashSet::new();
@@ -3694,13 +4790,13 @@ impl App {
                     if !is_remote_url(&url) || !seen_images.insert(url.clone()) {
                         consumed += 1;
                         continue;
-                    }
+            }
                     if let Some(full) = self.full_mindmap.as_mut() {
                         full.preview_asset_images.insert(url.clone());
-                    }
+        }
                     let preview_failed = self
                         .full_mindmap
-                        .as_ref()
+            .as_ref()
                         .is_some_and(|full| full.preview_failed_images.contains(&url));
                     if preview_failed {
                         consumed += 1;
@@ -4445,13 +5541,14 @@ impl App {
             ("Pick Theme…", Message::OpenThemePicker),
             ("Reload Custom Themes", Message::ReloadThemes),
             ("Open Themes Folder", Message::OpenThemesDir),
-            ("Scroll to Top  ⌘↑", Message::ScrollToTop),
-            ("Scroll to Bottom  ⌘↓", Message::ScrollToBottom),
+            ("Scroll to Top  Home / g", Message::ScrollToTop),
+            ("Scroll to Bottom  End / G", Message::ScrollToBottom),
             (
                 "Toggle Auto-Focus on Agent Nav",
                 Message::ToggleAutoFocusOnNav,
             ),
             ("Show Keyboard Shortcuts  ⌘/", Message::ToggleShortcuts),
+            ("Clear All Quick Slots", Message::QuickSlotClearAll),
             ("Take Screenshot", Message::TakeScreenshot),
         ];
         #[cfg(any(target_os = "macos", target_os = "linux"))]
@@ -4734,6 +5831,132 @@ impl App {
                     self.open_overlay(Overlay::Shortcuts);
                 }
                 Task::none()
+            }
+            Message::QuickSlotsModifier(held) => {
+                if held {
+                    if self.quick_slots_modifier_held {
+                        return Task::none();
+                    }
+
+                    self.quick_slots_modifier_held = true;
+                    self.quick_slots_rail_revealed = false;
+                    self.quick_slots_modifier_generation =
+                        self.quick_slots_modifier_generation.wrapping_add(1);
+                    let generation = self.quick_slots_modifier_generation;
+                    Task::perform(
+                        async move {
+                            tokio::time::sleep(std::time::Duration::from_millis(
+                                QUICK_SLOTS_RAIL_REVEAL_DELAY_MS,
+                            ))
+                            .await;
+                            generation
+                        },
+                        Message::QuickSlotsModifierReveal,
+                    )
+                } else {
+                    self.quick_slots_modifier_held = false;
+                    self.quick_slots_rail_revealed = false;
+                    self.quick_slots_modifier_generation =
+                        self.quick_slots_modifier_generation.wrapping_add(1);
+                    Task::none()
+                }
+            }
+            Message::QuickSlotsModifierReveal(generation) => {
+                if self.quick_slots_modifier_held
+                    && generation == self.quick_slots_modifier_generation
+                {
+                    self.quick_slots_rail_revealed = true;
+                }
+                Task::none()
+            }
+            Message::QuickSlotActivate(index) => self.begin_quick_slot_activation(index),
+            Message::QuickSlotAssign(index) => self.assign_quick_slot(index),
+            Message::QuickSlotClear(index) => self.clear_quick_slot(index),
+            Message::QuickSlotClearAll => self.clear_all_quick_slots(),
+            Message::QuickSlotUndo => self.undo_quick_slot_clear(),
+            Message::QuickSlotNew => self.new_quick_slot(),
+            Message::QuickSlotClose => self.close_active_quick_slot(),
+            Message::QuickSlotCloseWindow => self.close_quick_slot_window(),
+            Message::QuickSlotCycle(delta) => {
+                let active = self.quick_slots.active;
+                let start = active.unwrap_or(if delta < 0 {
+                    crate::quick_slots::SLOT_COUNT - 1
+                } else {
+                    0
+                }) as isize;
+                let root = self.quick_slots_workspace_root().map(PathBuf::from);
+                let steps: Vec<usize> = if active.is_some() {
+                    (1..=crate::quick_slots::SLOT_COUNT).collect()
+                } else {
+                    (0..crate::quick_slots::SLOT_COUNT).collect()
+                };
+                let next = steps
+                    .into_iter()
+                    .map(|step| {
+                        (start + isize::from(delta) * step as isize)
+                            .rem_euclid(crate::quick_slots::SLOT_COUNT as isize)
+                            as usize
+                    })
+                    .find(|&index| {
+                        self.quick_slots.occupied(index).is_some_and(|slot| {
+                            root.as_ref()
+                                .and_then(|root| {
+                                    crate::quick_slots::resolve_path(root, &slot.relative_path)
+                                })
+                                .is_some_and(|path| path.is_file())
+                        })
+                    });
+                match next {
+                    Some(index) => self.begin_quick_slot_activation(index),
+                    None => self.show_toast("No other valid Quick Slot".into()),
+                }
+            }
+            Message::QuickSlotsPersist(generation) => {
+                if generation < self.quick_slots_persist_generation {
+                    self.quick_slots_persist_pending = false;
+                    return self.schedule_quick_slots_persist();
+                }
+                self.persist_quick_slots_now();
+                Task::none()
+            }
+            Message::QuickSlotRestorePending => self.apply_pending_quick_slot_restore(),
+            Message::QuickSlotFileLoaded {
+                index,
+                slot,
+                result,
+            } => {
+                let current = self
+                    .pending_quick_slot_restore
+                    .as_ref()
+                    .is_some_and(|pending| {
+                        pending.index == index
+                            && pending.slot == slot
+                            && self.quick_slot_restore_is_current(pending)
+                    });
+                if !current {
+                    return Task::none();
+                }
+                match result {
+                    Ok((path, source)) => {
+                        let expected = self.quick_slots_workspace_root().and_then(|root| {
+                            crate::quick_slots::resolve_path(root, &slot.relative_path)
+                        });
+                        if expected.as_ref() != Some(&path) {
+                            self.invalidate_pending_quick_slot_restore();
+                            return Task::none();
+                        }
+                        if self.dirty {
+                            self.invalidate_pending_quick_slot_restore();
+                            return self.show_toast(self.unsaved_edits_open_message());
+                        }
+                        self.update(Message::FileLoaded(Ok((path, source))))
+                    }
+                    Err(error) => {
+                        self.invalidate_pending_quick_slot_restore();
+                        self.error = Some(error);
+                        Task::none()
+                    }
+                }
             }
             Message::CloseOverlay => {
                 let was_zoom = self.overlay == Overlay::ImageZoom;
@@ -5060,9 +6283,12 @@ impl App {
                 if self.file.is_none() {
                     return Task::none();
                 }
+                let checkpoint = self.checkpoint_active_quick_slot();
                 match self.view_mode {
-                    ViewMode::Raw => self.exit_zen_edit_mode(),
-                    ViewMode::Rendered | ViewMode::Mindmap => self.enter_zen_edit_mode(),
+                    ViewMode::Raw => Task::batch([checkpoint, self.exit_zen_edit_mode()]),
+                    ViewMode::Rendered | ViewMode::Mindmap => {
+                        Task::batch([checkpoint, self.enter_zen_edit_mode()])
+                    }
                 }
             }
             Message::ToggleMindmap => {
@@ -5088,17 +6314,29 @@ impl App {
                 // On first open (no selection yet), focus root's first child so
                 // arrow nav and the preview panel start at the top heading.
                 self.mindmap_focus_first_child();
-                restore
+                let checkpoint = self.checkpoint_active_quick_slot();
+                Task::batch([checkpoint, restore])
             }
             Message::ToggleFullMindmap => {
+                // Manual Full Mindmap navigation supersedes a slot activation
+                // that has not completed yet; stale file/preview results must
+                // not mutate the newly chosen surface.
+                let checkpoint = self.checkpoint_active_quick_slot();
+                self.invalidate_pending_quick_slot_restore();
                 if self.full_mindmap.is_some() {
-                    self.exit_full_mindmap(false)
+                    Task::batch([checkpoint, self.exit_full_mindmap(false)])
                 } else {
-                    self.enter_full_mindmap()
+                    Task::batch([checkpoint, self.enter_full_mindmap()])
                 }
             }
-            Message::ExitFullMindmap => self.exit_full_mindmap(false),
+            Message::ExitFullMindmap => {
+                let checkpoint = self.checkpoint_active_quick_slot();
+                self.invalidate_pending_quick_slot_restore();
+                Task::batch([checkpoint, self.exit_full_mindmap(false)])
+            }
             Message::FullMindmapToggleNode(id) => {
+                let checkpoint = self.checkpoint_active_quick_slot();
+                self.invalidate_pending_quick_slot_restore();
                 let workspace_path = self.full_mindmap_graph().and_then(|graph| {
                     graph.node(&id).and_then(|node| {
                         matches!(
@@ -5115,7 +6353,7 @@ impl App {
                 if let Some(full) = self.full_mindmap.as_mut() {
                     full.deferred_file_selection = None;
                     full.selected = Some(id.clone());
-                    full.focus_request = Some(id);
+                    full.focus_request = Some(id.clone());
                     full.pending_preview_settle = None;
                     full.pending_preview = None;
                     full.preview = FullMindmapPreview::None;
@@ -5136,6 +6374,9 @@ impl App {
                         }
                     }
                 }
+                if !matches!(&id, WorkspaceNodeId::File(_)) {
+                    self.clear_active_quick_slot();
+                }
                 if workspace_path.is_some() {
                     self.cancel_full_mindmap_verification();
                     if load.is_some() {
@@ -5149,17 +6390,20 @@ impl App {
                     // remaining expanded frontier now, otherwise unresolved
                     // shells under unrelated expanded parents flash visible
                     // after this branch collapses.
-                    self.begin_full_mindmap_verification_wave()
+                    Task::batch([checkpoint, self.begin_full_mindmap_verification_wave()])
                 } else {
-                    load.map_or_else(Task::none, |path| {
+                    let navigation = load.map_or_else(Task::none, |path| {
                         let verification = self.begin_full_mindmap_verification_wave();
                         let branch = self.begin_full_mindmap_folder_load(path);
                         Task::batch([verification, branch])
-                    })
+                    });
+                    Task::batch([checkpoint, navigation])
                 }
             }
             Message::FullMindmapSelectNode(id) => self.select_full_mindmap_node(id),
             Message::FullMindmapDeselect => {
+                let checkpoint = self.checkpoint_active_quick_slot();
+                self.invalidate_pending_quick_slot_restore();
                 self.reset_full_mindmap_preview_window();
                 if let Some(full) = self.full_mindmap.as_mut() {
                     full.selected = None;
@@ -5177,8 +6421,9 @@ impl App {
                         full.pending_workspace_load = None;
                     }
                 }
+                self.clear_active_quick_slot();
                 self.invalidate_full_mindmap_layout();
-                Task::none()
+                checkpoint
             }
             Message::FullMindmapNavigate(dir) => {
                 enum Navigation {
@@ -5242,6 +6487,7 @@ impl App {
                 ) {
                     return Task::none();
                 }
+                self.invalidate_pending_quick_slot_restore();
                 let child = if node.has_hidden_children {
                     if let Some(path) = node.path.clone() {
                         self.cancel_full_mindmap_verification();
@@ -5348,6 +6594,7 @@ impl App {
                 let Some(parent) = root.parent().map(PathBuf::from) else {
                     return Task::none();
                 };
+                self.invalidate_pending_quick_slot_restore();
                 let exit_after_refresh = self.pending_ipc_file_open.is_some();
                 self.begin_full_mindmap_workspace_load(
                     parent,
@@ -5358,7 +6605,14 @@ impl App {
                     exit_after_refresh,
                 )
             }
-            Message::FullMindmapReturnToFiles => self.exit_full_mindmap(true),
+            Message::FullMindmapReturnToFiles => {
+                // Files is app-owned navigation away from the active preview;
+                // persist its outgoing Full Mindmap context before the exit or
+                // hidden-filter refresh takes ownership of the state.
+                let checkpoint = self.checkpoint_active_quick_slot();
+                self.invalidate_pending_quick_slot_restore();
+                Task::batch([checkpoint, self.exit_full_mindmap(true)])
+            }
             Message::FullMindmapTogglePanel => {
                 if let Some(full) = self.full_mindmap.as_mut() {
                     full.panel_open = !full.panel_open;
@@ -5423,6 +6677,7 @@ impl App {
                         }
                     }
                     self.pending_nav = None;
+                    self.invalidate_pending_quick_slot_restore();
                     return self.show_toast(self.unsaved_edits_open_message());
                 }
                 match result {
@@ -5538,6 +6793,9 @@ impl App {
                                 };
                             }
                         }
+                        if self.quick_slot_preview_restore_guard.is_some() {
+                            self.invalidate_pending_quick_slot_restore();
+                        }
                     }
                     Err(error) => {
                         if error == FULL_MINDMAP_PREVIEW_CANCELLED {
@@ -5555,6 +6813,9 @@ impl App {
                                     error,
                                 };
                             }
+                        }
+                        if self.quick_slot_preview_restore_guard.is_some() {
+                            self.invalidate_pending_quick_slot_restore();
                         }
                     }
                 }
@@ -5583,7 +6844,19 @@ impl App {
                         // the next layout pass.
                         self.rebuild_full_mindmap_preview_here();
                         let assets = self.prime_full_mindmap_preview_assets();
-                        Task::batch([assets, self.measure_full_mindmap_preview_heights()])
+                        let restore_position = if self
+                            .full_mindmap
+                            .as_ref()
+                            .is_some_and(|full| full.preview_viewport.is_some())
+                        {
+                            self.take_current_quick_slot_preview_restore()
+                        } else {
+                            None
+                        };
+                        let restore = restore_position.map_or_else(Task::none, |position| {
+                            self.quick_slot_restore_preview_position(position)
+                        });
+                        Task::batch([assets, self.measure_full_mindmap_preview_heights(), restore])
                     }
                     Err(error) => {
                         if error == FULL_MINDMAP_PREVIEW_CANCELLED {
@@ -5597,6 +6870,9 @@ impl App {
                                     error,
                                 };
                             }
+                        }
+                        if self.quick_slot_preview_restore_guard.is_some() {
+                            self.invalidate_pending_quick_slot_restore();
                         }
                         Task::none()
                     }
@@ -5774,7 +7050,11 @@ impl App {
                                 self.sidebar_tab = SidebarTab::Files;
                                 self.reveal_current_file();
                             }
-                            followup = self.start_pending_ipc_file_open(self.restore_body_scroll());
+                            followup = if self.pending_quick_slot_restore.is_some() {
+                                Task::done(Message::QuickSlotRestorePending)
+                            } else {
+                                self.start_pending_ipc_file_open(self.restore_body_scroll())
+                            };
                         } else if !request.preserve_navigation && request.select_root {
                             self.reset_full_mindmap_preview_window();
                             if let Some(full) = self.full_mindmap.as_mut() {
@@ -5806,6 +7086,16 @@ impl App {
                             } else {
                                 Task::batch([followup, verification])
                             };
+                        }
+                        if !request.exit_after_refresh && self.pending_quick_slot_restore.is_some()
+                        {
+                            // The accepted snapshot may have replaced the
+                            // provisional navigator state. Retry the pending
+                            // slot only after that replacement is complete.
+                            followup = Task::batch([
+                                followup,
+                                Task::done(Message::QuickSlotRestorePending),
+                            ]);
                         }
                     }
                     Ok((path, _)) => {
@@ -5997,6 +7287,13 @@ impl App {
                     refresh_window_mode_after_native_transition(id),
                     preview_geometry,
                 ])
+            }
+            Message::WindowUnfocused(id) => {
+                self.quick_slots_modifier_held = false;
+                self.quick_slots_rail_revealed = false;
+                self.quick_slots_modifier_generation =
+                    self.quick_slots_modifier_generation.wrapping_add(1);
+                refresh_window_mode_after_native_transition(id)
             }
             Message::RefreshWindowMode(id) => refresh_window_mode_after_native_transition(id),
             Message::RefreshWindowModeSettled(id) => refresh_window_mode(id),
@@ -6301,6 +7598,7 @@ impl App {
                 if let Some(blocked) = self.block_file_open_if_dirty() {
                     return blocked;
                 }
+                self.invalidate_pending_watcher_reload();
                 let parent = path.parent().map(|p| p.to_path_buf());
                 if self.full_mindmap.is_some() {
                     // Deliberate picker activation supersedes an IPC open that
@@ -6308,7 +7606,9 @@ impl App {
                     self.pending_ipc_file_open = None;
                     // Preserve the picker contract without synchronously
                     // indexing the file's parent on the UI thread. The file
-                    // read starts only after that bounded index is ready.
+                    // read starts only after that bounded index is ready. The
+                    // workspace helper owns the single outgoing Full
+                    // Mindmap checkpoint at this transition boundary.
                     if let Some(parent) = parent {
                         return self.begin_full_mindmap_workspace_load(
                             parent,
@@ -6319,13 +7619,19 @@ impl App {
                             false,
                         );
                     }
+                    // With no parent directory to index, this wrapper owns
+                    // the single checkpoint before its guarded file read.
                     return self.begin_full_mindmap_open(path);
                 }
+                // The picker owns this file load rather than routing through
+                // `load_file_unless_dirty`; checkpoint the outgoing slot
+                // before the direct `FileLoaded` task can replace it.
+                let checkpoint = self.checkpoint_active_quick_slot();
                 let load = Task::perform(load_file(path), Message::FileLoaded);
                 if let Some(parent) = parent {
-                    Task::batch([Task::done(Message::OpenWorkspace(parent)), load])
+                    Task::batch([checkpoint, Task::done(Message::OpenWorkspace(parent)), load])
                 } else {
-                    load
+                    Task::batch([checkpoint, load])
                 }
             }
             Message::OverlayQueryChanged(q) => {
@@ -6424,14 +7730,38 @@ impl App {
                 Task::none()
             }
             Message::FileLoaded(Ok((path, src))) => {
+                let pending_candidate = self.pending_quick_slot_restore.clone();
+                let pending_slot_restore = pending_candidate.clone().filter(|pending| {
+                    self.quick_slot_restore_is_current(pending)
+                        && self
+                            .quick_slots_workspace_root()
+                            .and_then(|root| {
+                                crate::quick_slots::resolve_path(root, &pending.slot.relative_path)
+                            })
+                            .is_some_and(|target| target == path)
+                });
+                if pending_candidate.is_some() && pending_slot_restore.is_none() {
+                    self.invalidate_pending_quick_slot_restore();
+                }
+                let switching_file = self.file.as_deref() != Some(path.as_path());
                 if self.dirty {
                     // An IPC/link/vault open can queue navigation before its
                     // asynchronous read returns. Do not let that stale target
                     // affect the next successful open after this one is blocked.
                     self.pending_nav = None;
+                    self.invalidate_pending_quick_slot_restore();
                     return self.show_toast(self.unsaved_edits_open_message());
                 }
                 crate::recent::add(&path);
+                if switching_file && pending_slot_restore.is_none() {
+                    // Manual/file-finder navigation leaves the old slot
+                    // checkpointed but unslotted; only an explicit Quick Slot
+                    // activation may make the new file active. Invalidate any
+                    // older debounce generation and write the cleared active
+                    // marker now, so a slow read cannot resurrect the old
+                    // selection from preferences.
+                    self.clear_active_quick_slot();
+                }
                 if self.view_mode == ViewMode::Raw || self.editor.is_some() {
                     self.leave_zen_edit_mode(false);
                 }
@@ -6451,7 +7781,7 @@ impl App {
                 }
                 self.source = src;
                 self.saved_source = self.source.clone();
-                self.file = Some(path);
+                self.file = Some(path.clone());
                 self.dirty = false;
                 self.outline_cursor = 0;
                 self.is_data_doc = data_lang_for(self.file.as_deref()).is_some();
@@ -6503,15 +7833,42 @@ impl App {
                 } else {
                     Task::none()
                 };
+                let slot_restore = pending_slot_restore.map_or_else(Task::none, |pending| {
+                    self.apply_quick_slot_restore_after_file(&path, pending.slot)
+                });
                 fetches.push(prime);
                 fetches.push(nav_task);
+                fetches.push(slot_restore);
                 Task::batch(fetches)
             }
             Message::FileChanged(p) => {
                 if self.dirty {
                     return self.show_toast("External change ignored (unsaved edits)".into());
                 }
-                Task::perform(load_file(p), Message::FileLoaded)
+                let p = canonicalize_existing_path(p);
+                let Some(request) = self.begin_watcher_reload(p.clone()) else {
+                    return Task::none();
+                };
+                Task::perform(load_file(p), move |result| Message::FileChangedLoaded {
+                    request,
+                    result,
+                })
+            }
+            Message::FileChangedLoaded { request, result } => {
+                if !self.watcher_reload_is_current(&request) {
+                    return Task::none();
+                }
+                self.pending_watcher_reload = None;
+                if self.dirty {
+                    return self.show_toast("External change ignored (unsaved edits)".into());
+                }
+                match result {
+                    Ok((path, source)) if path == request.path => {
+                        self.update(Message::FileLoaded(Ok((path, source))))
+                    }
+                    Ok(_) => Task::none(),
+                    Err(error) => self.update(Message::FileLoaded(Err(error))),
+                }
             }
             Message::OpenLink(url) => {
                 // Split off a `#fragment` suffix (heading anchor).
@@ -7044,7 +8401,13 @@ impl App {
                 if let Some(full) = self.full_mindmap.as_mut() {
                     full.preview_viewport = Some(v);
                 }
+                let preview_restore = self.take_current_quick_slot_preview_restore();
                 self.last_scroll_at = Some(std::time::Instant::now());
+                let checkpoint = if preview_restore.is_some() {
+                    Task::none()
+                } else {
+                    self.checkpoint_active_quick_slot()
+                };
                 let needs_rebuild = self.full_mindmap.as_ref().is_some_and(|full| {
                     matches!(full.preview, FullMindmapPreview::Document { .. })
                         && (bounds_changed
@@ -7053,12 +8416,20 @@ impl App {
                                 .needs_rebuild(Self::full_mindmap_preview_body_offset(full)))
                 });
                 if !needs_rebuild {
-                    return Task::none();
+                    let restore = preview_restore.map_or_else(Task::none, |position| {
+                        self.quick_slot_restore_preview_position(position)
+                    });
+                    return Task::batch([checkpoint, restore]);
                 }
                 self.rebuild_full_mindmap_preview_here();
+                let restore = preview_restore.map_or_else(Task::none, |position| {
+                    self.quick_slot_restore_preview_position(position)
+                });
                 Task::batch([
+                    checkpoint,
                     self.prime_full_mindmap_preview_assets(),
                     self.measure_full_mindmap_preview_heights(),
+                    restore,
                 ])
             }
             Message::BodyScrolled(v) => {
@@ -7074,6 +8445,26 @@ impl App {
                 }
                 self.body_viewport = Some(v);
                 self.last_scroll_at = Some(std::time::Instant::now());
+                let checkpoint = if self.quick_slot_body_restore.is_some() {
+                    Task::none()
+                } else {
+                    self.checkpoint_active_quick_slot()
+                };
+                let restore = self.quick_slot_body_restore.and_then(|position| {
+                    let max = self
+                        .body_viewport
+                        .as_ref()
+                        .map(|viewport| {
+                            (viewport.content_bounds().height - viewport.bounds().height).max(0.0)
+                        })
+                        .unwrap_or(0.0);
+                    if max > 0.0 {
+                        self.quick_slot_body_restore = None;
+                        Some(self.quick_slot_restore_position(position))
+                    } else {
+                        None
+                    }
+                });
                 let offset = self.body_offset();
                 let anchor = self.nav_anchor.take();
                 if bounds_changed || self.virt_window.needs_rebuild(offset) {
@@ -7084,9 +8475,13 @@ impl App {
                         Some(idx) => self.rebuild_virt_around_block(idx),
                         None => self.rebuild_virt_here(),
                     }
-                    return self.measure_window_heights();
+                    return Task::batch([
+                        checkpoint,
+                        restore.unwrap_or_else(Task::none),
+                        self.measure_window_heights(),
+                    ]);
                 }
-                Task::none()
+                Task::batch([checkpoint, restore.unwrap_or_else(Task::none)])
             }
             Message::TableScrolled => {
                 self.last_scroll_at = Some(std::time::Instant::now());
@@ -7681,10 +9076,16 @@ impl App {
         let fold_chord = self.fold_chord_pending && !full_mindmap;
         let mindmap = self.view_mode == ViewMode::Mindmap && !full_mindmap;
         let vault_open = self.vault_open && !full_mindmap;
+        let quick_slots_allowed =
+            quick_slots_shortcuts_enabled(overlay_open, vault_open, focused, editing, self.dirty);
         let keys = iced::event::listen_with(|ev, status, _id| {
             let is_keyboard = matches!(
                 &ev,
-                iced::Event::Keyboard(iced::keyboard::Event::KeyPressed { .. })
+                iced::Event::Keyboard(
+                    iced::keyboard::Event::KeyPressed { .. }
+                        | iced::keyboard::Event::KeyReleased { .. }
+                        | iced::keyboard::Event::ModifiersChanged(_)
+                )
             );
             if !is_keyboard {
                 return None;
@@ -7707,6 +9108,7 @@ impl App {
             mindmap,
             vault_open,
             full_mindmap,
+            quick_slots_allowed,
         ))
         .map(
             |(
@@ -7721,21 +9123,53 @@ impl App {
                     mindmap,
                     vault_open,
                     full_mindmap,
+                    quick_slots_allowed,
                 ),
                 ev,
             )| {
                 use iced::keyboard::{key::Named, Event as KEv, Key};
-                let (key, modified_key, physical, mods) = match ev {
+                if let iced::Event::Keyboard(KEv::ModifiersChanged(modifiers)) = ev {
+                    return Message::QuickSlotsModifier(quick_slots_primary_modifier(modifiers));
+                }
+                let (key, modified_key, physical, mods, released) = match ev {
                     iced::Event::Keyboard(KEv::KeyPressed {
                         key,
                         modified_key,
                         physical_key,
                         modifiers,
                         ..
-                    }) => (key, modified_key, physical_key, modifiers),
+                    }) => (key, modified_key, physical_key, modifiers, false),
+                    iced::Event::Keyboard(KEv::KeyReleased {
+                        key,
+                        modified_key,
+                        physical_key,
+                        modifiers,
+                        ..
+                    }) => (key, modified_key, physical_key, modifiers, true),
                     _ => return Message::Noop,
                 };
+                if is_primary_modifier_key(&key) {
+                    return Message::QuickSlotsModifier(!released);
+                }
                 let cmd = mods.command() || mods.control();
+                // Quick Slot chords are physical-key based so alternate
+                // layouts cannot turn a digit/arrow into a different action.
+                // Never steal overlay/editor/vault input.
+                if !released {
+                    let surface_allowed = !overlay_open && !vault_open && !focused;
+                    if let Some(message) = quick_slot_physical_message(
+                        physical,
+                        mods,
+                        quick_slots_allowed,
+                        editing,
+                        surface_allowed,
+                    ) {
+                        return message;
+                    }
+                }
+                if released {
+                    return Message::Noop;
+                }
                 if reader_font_shortcuts_enabled(
                     full_mindmap,
                     mindmap,
@@ -8033,9 +9467,9 @@ impl App {
         let native_pinch = crate::native_pinch::subscription().map(Message::MindmapNativePinch);
         let macos_open = crate::macos_open::subscription().map(Message::OpenFileFinderPath);
         let window_events = iced::window::events().filter_map(|(id, event)| match event {
+            iced::window::Event::Unfocused => Some(Message::WindowUnfocused(id)),
             iced::window::Event::Opened { .. }
             | iced::window::Event::Focused
-            | iced::window::Event::Unfocused
             | iced::window::Event::Moved(_)
             | iced::window::Event::Rescaled(_) => Some(Message::RefreshWindowMode(id)),
             iced::window::Event::Resized(size) => Some(Message::WindowResized(id, size)),
@@ -8444,10 +9878,31 @@ impl App {
         } else {
             Space::new().into()
         };
+        let quick_slots_layer: Element<'_, Message> = if quick_slots_rail_visible(
+            self.quick_slots_rail_revealed,
+            self.overlay != Overlay::None,
+            self.vault_open,
+            self.search_open,
+            self.view_mode == ViewMode::Raw && self.editor.is_some(),
+            self.dirty,
+        ) {
+            quick_slots_rail(
+                self,
+                pal,
+                quick_slots_rail_left_offset(
+                    self.sidebar_open && self.workspace.is_some(),
+                    self.sidebar_width,
+                    full_mindmap,
+                ),
+            )
+        } else {
+            Space::new().into()
+        };
         let base: Element<'_, Message> = iced::widget::stack![
             Element::from(main),
             footer_layer,
             kb_button_layer,
+            quick_slots_layer,
             overlay_layer
         ]
         .into();
@@ -9203,6 +10658,128 @@ fn welcome_view<'a>(pal: Palette) -> Element<'a, Message> {
         .into(),
         pal,
     )
+}
+
+/// Transient modifier-driven Quick Slot rail. It deliberately has no enclosing
+/// panel: the nine fixed controls float at the supplied left offset and inherit
+/// the current theme roles used by the rest of the application.
+fn quick_slots_rail<'a>(app: &'a App, pal: Palette, left_offset: f32) -> Element<'a, Message> {
+    let mut controls = Column::new().spacing(6).align_x(iced::Alignment::Start);
+    for index in 0..crate::quick_slots::SLOT_COUNT {
+        let occupied = app.quick_slots.occupied(index);
+        let missing = occupied.is_some_and(|slot| {
+            app.quick_slots_workspace_root()
+                .and_then(|root| crate::quick_slots::resolve_path(root, &slot.relative_path))
+                .map_or(true, |path| !path.is_file())
+        });
+        let active = app.quick_slots.active == Some(index);
+        let assignable = app.current_quick_slot_context().is_some();
+        let label = container(
+            text((index + 1).to_string())
+                .size(12)
+                .font(editor_font())
+                .color(if active {
+                    pal.accent_fg
+                } else if missing {
+                    pal.accent
+                } else {
+                    pal.fg
+                }),
+        )
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .align_x(iced::alignment::Horizontal::Center)
+        .align_y(iced::alignment::Vertical::Center);
+        let mut slot_button = button(label)
+            .width(Length::Fixed(24.0))
+            .height(Length::Fixed(24.0))
+            .padding(Padding::ZERO)
+            .style(move |_, status| {
+                let background = if active {
+                    Some(Background::Color(pal.accent))
+                } else {
+                    match status {
+                        button::Status::Hovered | button::Status::Pressed => {
+                            Some(Background::Color(pal.surface_alt))
+                        }
+                        _ => Some(Background::Color(pal.surface)),
+                    }
+                };
+                button::Style {
+                    background,
+                    text_color: if active { pal.accent_fg } else { pal.fg },
+                    border: Border {
+                        color: if missing {
+                            pal.accent
+                        } else if occupied.is_some() {
+                            pal.accent
+                        } else {
+                            pal.rule
+                        },
+                        width: 1.0,
+                        radius: 5.0.into(),
+                    },
+                    ..Default::default()
+                }
+            });
+        slot_button = if occupied.is_some() {
+            slot_button.on_press(Message::QuickSlotActivate(index))
+        } else if assignable {
+            slot_button.on_press(Message::QuickSlotAssign(index))
+        } else {
+            slot_button
+        };
+        let slot_view: Element<'a, Message> = if let Some(slot) = occupied {
+            let filename = if missing {
+                format!("Missing: {}", slot.relative_path)
+            } else {
+                std::path::Path::new(&slot.relative_path)
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .map(str::to_owned)
+                    .unwrap_or_else(|| slot.relative_path.clone())
+            };
+            let details = container(
+                text(filename)
+                    .size(12)
+                    .color(if missing { pal.accent } else { pal.fg })
+                    .wrapping(iced::widget::text::Wrapping::None),
+            )
+            .width(Length::Fixed(220.0))
+            .height(Length::Fixed(24.0))
+            .padding(Padding::from([0, 6]))
+            .align_y(iced::alignment::Vertical::Center)
+            .clip(true)
+            .style(move |_| container::Style {
+                background: Some(pal.surface.into()),
+                border: Border {
+                    color: pal.rule,
+                    width: 1.0,
+                    radius: 6.0.into(),
+                },
+                ..Default::default()
+            });
+            irow![slot_button, details]
+                .spacing(6)
+        .align_y(iced::Alignment::Center)
+                .into()
+        } else {
+            irow![slot_button].into()
+    };
+        controls = controls.push(slot_view);
+    }
+    container(controls)
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .padding(Padding {
+            top: 0.0,
+            right: 0.0,
+            bottom: 0.0,
+            left: left_offset,
+        })
+        .align_x(iced::alignment::Horizontal::Left)
+        .align_y(iced::alignment::Vertical::Center)
+        .into()
 }
 
 fn search_bar_view<'a>(
@@ -10448,10 +12025,19 @@ fn byte_index_for_char(s: &str, n: usize) -> usize {
 
 /// Static, read-only keyboard cheatsheet. Grouped by category, no search, no
 /// cursor. Esc or backdrop click dismisses (handled by `overlay_frame`).
+const QUICK_SLOT_SHORTCUT_HINTS: &[(&str, &str)] = &[
+    ("⌘19", "Activate slots 1 to 9"),
+    ("⌘N", "Add current file to next empty slot"),
+    ("⌘↑", "Previous slot (outside Zen)"),
+    ("⌘↓", "Next slot (outside Zen)"),
+    ("⌘W", "Close active slot"),
+    ("⌘⇧W", "Close window"),
+];
+
 fn shortcuts_overlay<'a>(pal: Palette) -> Element<'a, Message> {
     // (group title, [(keys, action)]). Hand-authored so we can group by category
     // and include non-command bindings (arrows, Space) the palette omits.
-    let groups: [(&str, &[(&str, &str)]); 6] = [
+    let groups: [(&str, &[(&str, &str)]); 7] = [
         (
             "File",
             &[
@@ -10465,8 +12051,8 @@ fn shortcuts_overlay<'a>(pal: Palette) -> Element<'a, Message> {
             &[
                 ("⌘F", "Find in Document"),
                 ("⌘⇧F", "Search All Files"),
-                ("⌘↑", "Scroll to Top"),
-                ("⌘↓", "Scroll to Bottom"),
+                ("Home / g", "Reader top (outside Zen)"),
+                ("End / G", "Reader bottom (outside Zen)"),
                 ("↑ ↓", "Move outline / tree selection"),
                 ("Enter", "Jump to selection"),
             ],
@@ -10487,8 +12073,8 @@ fn shortcuts_overlay<'a>(pal: Palette) -> Element<'a, Message> {
         (
             "Edit",
             &[
-                ("⌘← ⌘→", "Line Start / End"),
-                ("⌘↑ ⌘↓", "Document Start / End"),
+                ("⌘← ⌘→", "Zen line start / end"),
+                ("⌘↑ ⌘↓", "Zen document start / end"),
                 ("⌘S", "Save"),
             ],
         ),
@@ -10504,12 +12090,17 @@ fn shortcuts_overlay<'a>(pal: Palette) -> Element<'a, Message> {
                 ("Space", "Fold / unfold node"),
             ],
         ),
+        ("Quick Slots", QUICK_SLOT_SHORTCUT_HINTS),
         ("Help", &[("⌘/", "Show Shortcuts")]),
     ];
 
     // Three balanced columns so the sheet is compact and nothing clips:
-    // File + Navigation | View | Edit + Mindmap + Help.
-    let columns: [&[(&str, &[(&str, &str)])]; 3] = [&groups[0..2], &groups[2..3], &groups[3..6]];
+    // File + Quick Slots | Navigation + Mindmap | View + Edit + Help.
+    let columns = [
+        vec![groups[0], groups[5]],
+        vec![groups[1], groups[4]],
+        vec![groups[2], groups[3], groups[6]],
+    ];
 
     let mut cols = irow![].spacing(24);
     for col_groups in columns {
@@ -11062,6 +12653,10 @@ fn is_tex_path(path: Option<&std::path::Path>) -> bool {
 }
 
 /// PDFs are extracted to markdown for viewing only; their source isn't editable
+fn canonicalize_existing_path(path: PathBuf) -> PathBuf {
+    std::fs::canonicalize(&path).unwrap_or(path)
+}
+
 /// text, so edit mode (⌘E / `ViewMode::Raw`) is disabled for them.
 fn is_pdf_path(path: Option<&std::path::Path>) -> bool {
     path.and_then(|p| p.extension())
@@ -11388,6 +12983,7 @@ async fn parse_full_mindmap_preview_guarded(
 }
 
 async fn load_file(p: PathBuf) -> Result<(PathBuf, String), String> {
+    let p = canonicalize_existing_path(p);
     #[cfg(feature = "pdf")]
     if p.extension()
         .and_then(|e| e.to_str())
@@ -11696,6 +13292,1416 @@ mod tests {
     use crate::ast::{Block, DiagramKind, ListItem};
 
     #[test]
+    fn quick_slot_physical_digits_and_arrows_are_layout_safe() {
+        use iced::keyboard::key::{Code, Physical};
+
+        assert_eq!(
+            quick_slot_digit_index(Physical::Code(Code::Digit1)),
+            Some(0)
+        );
+        assert_eq!(
+            quick_slot_digit_index(Physical::Code(Code::Digit9)),
+            Some(8)
+        );
+        assert_eq!(quick_slot_digit_index(Physical::Code(Code::Digit0)), None);
+        assert_eq!(
+            quick_slot_cycle_delta(Physical::Code(Code::ArrowUp)),
+            Some(-1)
+        );
+        assert_eq!(
+            quick_slot_cycle_delta(Physical::Code(Code::ArrowDown)),
+            Some(1)
+        );
+        assert_eq!(
+            quick_slot_cycle_delta(Physical::Code(Code::BracketLeft)),
+            None
+        );
+        assert_eq!(
+            quick_slot_cycle_delta(Physical::Code(Code::BracketRight)),
+            None
+        );
+        assert_eq!(quick_slot_cycle_delta(Physical::Code(Code::Slash)), None);
+    }
+
+    #[test]
+    fn quick_slot_primary_modifier_matches_platform_command() {
+        use iced::keyboard::Modifiers;
+
+        assert!(quick_slots_primary_modifier(Modifiers::COMMAND));
+        #[cfg(target_os = "macos")]
+        assert!(!quick_slots_primary_modifier(Modifiers::CTRL));
+        #[cfg(not(target_os = "macos"))]
+        assert!(!quick_slots_primary_modifier(Modifiers::LOGO));
+    }
+
+    #[test]
+    fn clean_zen_quick_slot_shortcuts_and_rail_yield_to_editor() {
+        assert!(quick_slots_shortcuts_enabled(
+            false, false, false, true, false
+        ));
+        assert!(!quick_slots_shortcuts_enabled(
+            false, false, false, true, true
+        ));
+        assert!(!quick_slots_shortcuts_enabled(
+            true, false, false, false, false
+        ));
+        assert!(!quick_slots_shortcuts_enabled(
+            false, true, false, false, false
+        ));
+        assert!(!quick_slots_shortcuts_enabled(
+            false, false, true, false, false
+        ));
+        assert!(quick_slots_shortcuts_enabled(
+            false, false, false, false, false
+        ));
+
+        assert!(quick_slots_rail_visible(
+            true, false, false, false, true, false
+        ));
+        assert!(!quick_slots_rail_visible(
+            true, false, false, false, true, true
+        ));
+        assert!(!quick_slots_rail_visible(
+            true, true, false, false, false, false
+        ));
+        assert!(quick_slots_rail_visible(
+            true, false, false, false, false, false
+        ));
+    }
+
+    #[test]
+    fn clean_zen_quick_slot_arrows_yield_to_editor_native_motion() {
+        use iced::keyboard::{key::Code, key::Physical, Modifiers};
+
+        let command = Modifiers::COMMAND;
+        // Clean Zen keeps the rail and explicit slot digits available while
+        // editor-native arrows continue to own document/line motion.
+        let quick_slots_allowed = true;
+        assert!(quick_slot_physical_message(
+            Physical::Code(Code::ArrowUp),
+            command,
+            quick_slots_allowed,
+            true,
+            true,
+        )
+        .is_none());
+        assert!(quick_slot_physical_message(
+            Physical::Code(Code::ArrowDown),
+            command,
+            quick_slots_allowed,
+            true,
+            true,
+        )
+        .is_none());
+        assert!(quick_slot_physical_message(
+            Physical::Code(Code::ArrowLeft),
+            command,
+            quick_slots_allowed,
+            true,
+            true,
+        )
+        .is_none());
+        assert!(quick_slot_physical_message(
+            Physical::Code(Code::Digit1),
+            command,
+            quick_slots_allowed,
+            true,
+            true,
+        )
+        .is_some_and(|message| matches!(message, Message::QuickSlotActivate(0))));
+        assert!(quick_slot_physical_message(
+            Physical::Code(Code::Digit1),
+            command | Modifiers::ALT,
+            quick_slots_allowed,
+            true,
+            true,
+        )
+        .is_none());
+        assert!(quick_slot_physical_message(
+            Physical::Code(Code::KeyN),
+            command,
+            quick_slots_allowed,
+            true,
+            true,
+        )
+        .is_some_and(|message| matches!(message, Message::QuickSlotNew)));
+        assert!(matches!(
+            quick_slot_physical_message(
+                Physical::Code(Code::KeyW),
+                command,
+                quick_slots_allowed,
+                true,
+                true,
+            ),
+            Some(Message::QuickSlotClose)
+        ));
+        assert!(matches!(
+            quick_slot_physical_message(
+                Physical::Code(Code::KeyW),
+                command | Modifiers::SHIFT,
+                quick_slots_allowed,
+                true,
+                true,
+            ),
+            Some(Message::QuickSlotCloseWindow)
+        ));
+
+        // A dirty Zen buffer keeps editor-native digit chords intact too;
+        // slot actions must not steal them or emit a toast.
+        let dirty_quick_slots_allowed = false;
+        assert!(quick_slot_physical_message(
+            Physical::Code(Code::Digit1),
+            command,
+            dirty_quick_slots_allowed,
+            true,
+            true,
+        )
+        .is_none());
+        assert!(quick_slot_physical_message(
+            Physical::Code(Code::Digit1),
+            command | Modifiers::ALT,
+            dirty_quick_slots_allowed,
+            true,
+            true,
+        )
+        .is_none());
+        assert!(quick_slot_physical_message(
+            Physical::Code(Code::KeyN),
+            command,
+            dirty_quick_slots_allowed,
+            true,
+            true,
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn quick_slot_navigation_and_new_tab_remain_available_outside_editor() {
+        use iced::keyboard::{key::Code, key::Physical, Modifiers};
+
+        let command = Modifiers::COMMAND;
+        for _surface in ["rendered", "document-mindmap", "full-mindmap"] {
+            assert!(matches!(
+                quick_slot_physical_message(
+                    Physical::Code(Code::ArrowUp),
+                    command,
+                    true,
+                    false,
+                    true,
+                ),
+                Some(Message::QuickSlotCycle(-1))
+            ));
+            assert!(matches!(
+                quick_slot_physical_message(
+                    Physical::Code(Code::ArrowDown),
+                    command,
+                    true,
+                    false,
+                    true,
+                ),
+                Some(Message::QuickSlotCycle(1))
+            ));
+            assert!(matches!(
+                quick_slot_physical_message(Physical::Code(Code::KeyN), command, true, false, true,),
+                Some(Message::QuickSlotNew)
+            ));
+            assert!(quick_slot_physical_message(
+                Physical::Code(Code::ArrowLeft),
+                command,
+                true,
+                false,
+                true,
+            )
+            .is_none());
+        }
+    }
+
+    #[test]
+    fn quick_slots_rail_offsets_around_sidebar_and_full_mindmap() {
+        assert_eq!(
+            quick_slots_rail_left_offset(true, SIDEBAR_WIDTH, false),
+            SIDEBAR_WIDTH + QUICK_SLOTS_RAIL_GAP
+        );
+        assert_eq!(
+            quick_slots_rail_left_offset(true, SIDEBAR_WIDTH + 95.0, false),
+            SIDEBAR_WIDTH + 95.0 + QUICK_SLOTS_RAIL_GAP
+        );
+        assert_eq!(
+            quick_slots_rail_left_offset(false, SIDEBAR_WIDTH, false),
+            QUICK_SLOTS_RAIL_GAP
+        );
+        assert_eq!(
+            quick_slots_rail_left_offset(true, SIDEBAR_WIDTH, true),
+            QUICK_SLOTS_RAIL_GAP
+        );
+    }
+
+    #[test]
+    fn window_unfocused_clears_quick_slots_modifier() {
+        let mut app = App::default();
+        app.quick_slots_modifier_held = true;
+        app.quick_slots_rail_revealed = true;
+        let generation = app.quick_slots_modifier_generation;
+        let _ = app.update(Message::WindowUnfocused(iced::window::Id::unique()));
+        assert!(!app.quick_slots_modifier_held);
+        assert!(!app.quick_slots_rail_revealed);
+        assert_ne!(app.quick_slots_modifier_generation, generation);
+    }
+
+    #[test]
+    fn quick_slots_modifier_rail_reveal_is_delayed_and_cancelable() {
+        let mut app = App::default();
+        let initial_generation = app.quick_slots_modifier_generation;
+
+        let _ = app.update(Message::QuickSlotsModifier(true));
+        assert!(app.quick_slots_modifier_held);
+        assert!(!app.quick_slots_rail_revealed);
+        let generation = app.quick_slots_modifier_generation;
+        assert_ne!(generation, initial_generation);
+
+        // Duplicate platform events must not restart the reveal timer.
+        let _ = app.update(Message::QuickSlotsModifier(true));
+        assert_eq!(app.quick_slots_modifier_generation, generation);
+
+        let _ = app.update(Message::QuickSlotsModifierReveal(generation));
+        assert!(app.quick_slots_rail_revealed);
+
+        let _ = app.update(Message::QuickSlotsModifier(false));
+        assert!(!app.quick_slots_modifier_held);
+        assert!(!app.quick_slots_rail_revealed);
+        assert_ne!(app.quick_slots_modifier_generation, generation);
+
+        // A stale timer from the prior press cannot bring the rail back.
+        let _ = app.update(Message::QuickSlotsModifierReveal(generation));
+        assert!(!app.quick_slots_rail_revealed);
+    }
+
+    #[test]
+    fn app_tests_use_isolated_quick_slot_persistence() {
+        let app = App::default();
+        let isolated = app
+            .quick_slots_persistence_path
+            .as_ref()
+            .expect("tests must inject an isolated persistence path");
+        assert!(isolated.starts_with(std::env::temp_dir()));
+        assert_ne!(
+            Some(isolated.clone()),
+            crate::prefs::production_store_path_for_tests()
+        );
+    }
+
+    fn quick_slot_restore_test_app(label: &str) -> (App, PathBuf, PathBuf) {
+        let root = full_mindmap_test_dir(label);
+        let old_file = root.join("old.md");
+        let new_file = root.join("new.md");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(&old_file, "# Old\n").unwrap();
+        std::fs::write(&new_file, "# New\n").unwrap();
+        let mut app = App::default();
+        app.set_workspace(root.clone(), false);
+        (app, old_file, new_file)
+    }
+
+    #[test]
+    fn new_quick_slot_activates_same_file_without_overwriting_context() {
+        let (mut app, old_file, _new_file) = quick_slot_restore_test_app("new-slot-existing");
+        app.file = Some(old_file.clone());
+        app.source = "# Old\n".into();
+        app.saved_source = app.source.clone();
+        app.view_mode = ViewMode::Mindmap;
+        // Simulate a legacy persisted bank that retained a harmless CurDir
+        // segment; New Slot must still identify the current file.
+        app.quick_slots.slots[0] = Some(crate::quick_slots::QuickSlot {
+            relative_path: "./old.md".into(),
+            context: crate::quick_slots::SlotContext::default(),
+        });
+
+        let _ = app.update(Message::QuickSlotNew);
+
+        let slot = app.quick_slots.occupied(0).expect("existing file slot");
+        assert_eq!(slot.relative_path, "./old.md");
+        assert_eq!(slot.context.mode, crate::quick_slots::SlotMode::Rendered);
+        assert_eq!(app.quick_slots.active, Some(0));
+        let isolated = app.quick_slots_persistence_path.clone().unwrap();
+        let root = app.workspace.take().unwrap();
+        let _ = std::fs::remove_file(isolated);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn new_quick_slot_uses_first_empty_slot() {
+        let (mut app, old_file, new_file) = quick_slot_restore_test_app("new-slot-empty");
+        app.file = Some(old_file.clone());
+        app.source = "# Old\n".into();
+        app.saved_source = app.source.clone();
+        app.quick_slots.set(
+            0,
+            crate::quick_slots::QuickSlot {
+                relative_path: "new.md".into(),
+                context: crate::quick_slots::SlotContext::default(),
+            },
+        );
+
+        let _ = app.update(Message::QuickSlotNew);
+
+        assert_eq!(app.quick_slots.active, Some(1));
+        assert_eq!(
+            app.quick_slots
+                .occupied(0)
+                .map(|slot| slot.relative_path.as_str()),
+            Some("new.md")
+        );
+        assert_eq!(
+            app.quick_slots
+                .occupied(1)
+                .map(|slot| slot.relative_path.as_str()),
+            Some("old.md")
+        );
+        assert!(new_file.is_file());
+        let isolated = app.quick_slots_persistence_path.clone().unwrap();
+        let root = app.workspace.take().unwrap();
+        let _ = std::fs::remove_file(isolated);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn new_quick_slot_does_not_overwrite_full_bank() {
+        let (mut app, old_file, _new_file) = quick_slot_restore_test_app("new-slot-full");
+        app.file = Some(old_file.clone());
+        app.source = "# Old\n".into();
+        app.saved_source = app.source.clone();
+        for index in 0..crate::quick_slots::SLOT_COUNT {
+            assert!(app.quick_slots.set(
+                index,
+                crate::quick_slots::QuickSlot {
+                    relative_path: format!("slot-{index}.md"),
+                    context: crate::quick_slots::SlotContext::default(),
+                },
+            ));
+        }
+
+        let _ = app.update(Message::QuickSlotNew);
+
+        assert_eq!(app.quick_slots.active, None);
+        assert!(app
+            .toast
+            .as_ref()
+            .is_some_and(|toast| toast.text == "Quick Slots are full"));
+        for index in 0..crate::quick_slots::SLOT_COUNT {
+            let expected = format!("slot-{index}.md");
+            assert_eq!(
+                app.quick_slots
+                    .occupied(index)
+                    .map(|slot| slot.relative_path.as_str()),
+                Some(expected.as_str())
+            );
+        }
+        let isolated = app.quick_slots_persistence_path.clone().unwrap();
+        let root = app.workspace.take().unwrap();
+        let _ = std::fs::remove_file(isolated);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn new_quick_slot_activates_existing_full_mindmap_file_without_overwrite() {
+        let (mut app, old_file, _new_file) = quick_slot_restore_test_app("new-slot-full-mode");
+        let mut full = App::new_full_mindmap_state();
+        full.selected = Some(WorkspaceNodeId::File(old_file.clone()));
+        app.full_mindmap = Some(full);
+        app.quick_slots.set(
+            0,
+            crate::quick_slots::QuickSlot {
+                relative_path: "old.md".into(),
+                context: crate::quick_slots::SlotContext::default(),
+            },
+        );
+
+        let _ = app.update(Message::QuickSlotNew);
+
+        assert_eq!(app.quick_slots.active, Some(0));
+        assert_eq!(
+            app.quick_slots.occupied(0).map(|slot| slot.context.mode),
+            Some(crate::quick_slots::SlotMode::Rendered)
+        );
+        let isolated = app.quick_slots_persistence_path.clone().unwrap();
+        let root = app.workspace.take().unwrap();
+        let _ = std::fs::remove_file(isolated);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    fn deferred_full_preview_restore_for_workspace(
+        opened_root: PathBuf,
+        canonical_root: &std::path::Path,
+    ) -> (App, PathBuf, PendingQuickSlotRestore) {
+        let folder = canonical_root.join("notes");
+        let file = folder.join("note.md");
+        let canonical_root = std::fs::canonicalize(canonical_root).unwrap();
+        let folder = std::fs::canonicalize(folder).unwrap();
+        let file = std::fs::canonicalize(file).unwrap();
+
+        let mut app = App::default();
+        app.set_workspace(opened_root, false);
+        app.file = Some(file.clone());
+        app.source = "# Note\n\nPreview body\n".into();
+        app.saved_source = app.source.clone();
+        let mut full = App::new_full_mindmap_state();
+        full.expanded.insert(folder.clone());
+        app.full_mindmap = Some(full);
+
+        let _folder_task = app.begin_full_mindmap_folder_load(folder.clone());
+        let folder_request = app
+            .full_mindmap
+            .as_ref()
+            .and_then(|full| full.pending_folder_loads.get(&folder).cloned())
+            .expect("deferred folder should own a materialization request");
+        let slot = crate::quick_slots::QuickSlot {
+            relative_path: "notes/note.md".into(),
+            context: crate::quick_slots::SlotContext {
+                mode: crate::quick_slots::SlotMode::FullMindmap,
+                preview_position: 0.75,
+                ..Default::default()
+            },
+        };
+        app.quick_slots.set(0, slot);
+        let _ = app.begin_quick_slot_activation(0);
+        let _ = app.update(Message::QuickSlotRestorePending);
+        let snapshot = tree::load_expanded_folder(&folder, false).unwrap();
+        let _ = app.update(Message::FullMindmapFolderLoaded {
+            request: folder_request,
+            result: Ok((folder, snapshot)),
+        });
+        let guard = app
+            .quick_slot_preview_restore_guard
+            .clone()
+            .expect("deferred Full Mindmap restore should remain guarded");
+        assert_eq!(app.workspace.as_deref(), Some(canonical_root.as_path()));
+        assert_eq!(app.quick_slot_preview_restore, Some(0.75));
+        (app, file, guard)
+    }
+
+    #[test]
+    fn dotdot_workspace_open_uses_canonical_full_preview_identity() {
+        let root = full_mindmap_test_dir("workspace-dotdot-alias");
+        let folder = root.join("notes");
+        let file = folder.join("note.md");
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(&file, "# Note\n\nPreview body\n").unwrap();
+        let opened = root
+            .join("..")
+            .join(root.file_name().expect("workspace name"));
+        let (mut app, file, _guard) = deferred_full_preview_restore_for_workspace(opened, &root);
+        let request = app
+            .full_mindmap
+            .as_ref()
+            .and_then(|full| full.pending_preview.clone())
+            .expect("canonical preview request");
+        let parsed = parse_full_mindmap_preview_blocking(file.clone(), app.source.clone());
+        let _ = app.update(Message::FullMindmapPreviewParsed {
+            request,
+            result: Ok(parsed),
+        });
+        assert_eq!(app.take_current_quick_slot_preview_restore(), Some(0.75));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlink_workspace_open_uses_canonical_full_preview_identity() {
+        use std::os::unix::fs::symlink;
+
+        let root = full_mindmap_test_dir("workspace-symlink-real");
+        let alias = full_mindmap_test_dir("workspace-symlink-alias");
+        let folder = root.join("notes");
+        let file = folder.join("note.md");
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(&file, "# Note\n\nPreview body\n").unwrap();
+        symlink(&root, &alias).unwrap();
+
+        let (mut app, file, _guard) =
+            deferred_full_preview_restore_for_workspace(alias.clone(), &root);
+        let request = app
+            .full_mindmap
+            .as_ref()
+            .and_then(|full| full.pending_preview.clone())
+            .expect("canonical preview request");
+        let parsed = parse_full_mindmap_preview_blocking(file.clone(), app.source.clone());
+        let _ = app.update(Message::FullMindmapPreviewParsed {
+            request,
+            result: Ok(parsed),
+        });
+        assert_eq!(app.take_current_quick_slot_preview_restore(), Some(0.75));
+        let _ = std::fs::remove_file(alias);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn clearing_during_inflight_slot_restore_drops_stale_completion() {
+        let (mut app, _old_file, _new_file) = quick_slot_restore_test_app("stale-clear");
+        let old_slot = crate::quick_slots::QuickSlot {
+            relative_path: "old.md".into(),
+            context: crate::quick_slots::SlotContext::default(),
+        };
+        app.quick_slots.set(0, old_slot.clone());
+        let _load = app.begin_quick_slot_activation(0);
+        let _ = app.clear_quick_slot(0);
+        let old_path =
+            crate::quick_slots::resolve_path(app.workspace.as_deref().unwrap(), "old.md").unwrap();
+        let _ = app.update(Message::QuickSlotFileLoaded {
+            index: 0,
+            slot: old_slot,
+            result: Ok((old_path, "# stale\n".into())),
+        });
+        assert_eq!(app.file, None);
+        assert!(app.quick_slots.occupied(0).is_none());
+        let _ = std::fs::remove_dir_all(app.workspace.take().unwrap());
+    }
+
+    #[test]
+    fn overwriting_during_inflight_slot_restore_drops_stale_completion() {
+        let (mut app, _old_file, new_file) = quick_slot_restore_test_app("stale-overwrite");
+        let old_slot = crate::quick_slots::QuickSlot {
+            relative_path: "old.md".into(),
+            context: crate::quick_slots::SlotContext::default(),
+        };
+        app.quick_slots.set(0, old_slot.clone());
+        let _load = app.begin_quick_slot_activation(0);
+        app.file = Some(new_file.clone());
+        app.source = "# New\n".into();
+        app.saved_source = app.source.clone();
+        let _ = app.assign_quick_slot(0);
+        let old_path =
+            crate::quick_slots::resolve_path(app.workspace.as_deref().unwrap(), "old.md").unwrap();
+        let _ = app.update(Message::QuickSlotFileLoaded {
+            index: 0,
+            slot: old_slot,
+            result: Ok((old_path, "# stale\n".into())),
+        });
+        assert_eq!(app.file, Some(new_file));
+        assert_eq!(
+            app.quick_slots
+                .occupied(0)
+                .map(|slot| slot.relative_path.as_str()),
+            Some("new.md")
+        );
+        let _ = std::fs::remove_dir_all(app.workspace.take().unwrap());
+    }
+
+    #[test]
+    fn stale_watcher_completion_cannot_supersede_pending_slot_restore() {
+        let (mut app, old_file, _new_file) = quick_slot_restore_test_app("watcher-slot-race");
+        app.file = Some(old_file.clone());
+        app.source = "# Old\n".into();
+        app.saved_source = app.source.clone();
+        let _ = app.update(Message::FileChanged(old_file.clone()));
+        let watcher = app
+            .pending_watcher_reload
+            .clone()
+            .expect("watcher should own the old reload");
+
+        let slot = crate::quick_slots::QuickSlot {
+            relative_path: "new.md".into(),
+            context: crate::quick_slots::SlotContext::default(),
+        };
+        app.quick_slots.set(0, slot);
+        let _ = app.begin_quick_slot_activation(0);
+        assert!(app.pending_quick_slot_restore.is_some());
+        let _ = app.update(Message::FileChangedLoaded {
+            request: watcher,
+            result: Ok((old_file.clone(), "# Stale watcher\n".into())),
+        });
+
+        assert_eq!(app.file, Some(old_file));
+        assert_eq!(app.source, "# Old\n");
+        assert_eq!(app.quick_slots.active, Some(0));
+        assert!(app.pending_quick_slot_restore.is_some());
+        let _ = std::fs::remove_dir_all(app.workspace.take().unwrap());
+    }
+
+    #[test]
+    fn slot_completion_wins_over_pending_watcher_reload() {
+        let (mut app, old_file, new_file) = quick_slot_restore_test_app("watcher-slot-order");
+        app.file = Some(old_file.clone());
+        app.source = "# Old\n".into();
+        app.saved_source = app.source.clone();
+        let _ = app.update(Message::FileChanged(old_file.clone()));
+        let watcher = app
+            .pending_watcher_reload
+            .clone()
+            .expect("watcher should own the old reload");
+
+        let slot = crate::quick_slots::QuickSlot {
+            relative_path: "new.md".into(),
+            context: crate::quick_slots::SlotContext::default(),
+        };
+        app.quick_slots.set(0, slot.clone());
+        let _ = app.begin_quick_slot_activation(0);
+        let _ = app.update(Message::QuickSlotFileLoaded {
+            index: 0,
+            slot,
+            result: Ok((new_file.clone(), "# New\n".into())),
+        });
+        let _ = app.update(Message::FileChangedLoaded {
+            request: watcher,
+            result: Ok((old_file, "# Stale watcher\n".into())),
+        });
+
+        assert_eq!(app.file, Some(new_file));
+        assert_eq!(app.source, "# New\n");
+        assert_eq!(app.quick_slots.active, Some(0));
+        let _ = std::fs::remove_dir_all(app.workspace.take().unwrap());
+    }
+
+    #[test]
+    fn same_current_watcher_reload_applies_without_changing_slot_identity() {
+        let (mut app, old_file, _new_file) = quick_slot_restore_test_app("watcher-same-file");
+        app.file = Some(old_file.clone());
+        app.source = "# Old\n".into();
+        app.saved_source = app.source.clone();
+        app.quick_slots.set(
+            0,
+            crate::quick_slots::QuickSlot {
+                relative_path: "old.md".into(),
+                context: crate::quick_slots::SlotContext::default(),
+            },
+        );
+        app.quick_slots.active = Some(0);
+        let _ = app.update(Message::FileChanged(old_file.clone()));
+        let watcher = app
+            .pending_watcher_reload
+            .clone()
+            .expect("watcher should own same-file reload");
+        let _ = app.update(Message::FileChangedLoaded {
+            request: watcher,
+            result: Ok((old_file.clone(), "# Reloaded\n".into())),
+        });
+
+        assert_eq!(app.file, Some(old_file));
+        assert_eq!(app.source, "# Reloaded\n");
+        assert_eq!(app.quick_slots.active, Some(0));
+        assert!(app.pending_watcher_reload.is_none());
+        let _ = std::fs::remove_dir_all(app.workspace.take().unwrap());
+    }
+
+    #[test]
+    fn close_window_blocks_dirty_reader_and_full_mindmap() {
+        let mut app = App::default();
+        app.dirty = true;
+        let _ = app.update(Message::QuickSlotCloseWindow);
+        assert!(app
+            .toast
+            .as_ref()
+            .is_some_and(|toast| toast.text.contains("unsaved")));
+
+        let mut full = App::default();
+        full.full_mindmap = Some(App::new_full_mindmap_state());
+        full.dirty = true;
+        let _ = full.update(Message::QuickSlotCloseWindow);
+        assert!(full
+            .toast
+            .as_ref()
+            .is_some_and(|toast| toast.text.contains("unsaved")));
+    }
+
+    #[test]
+    fn clean_close_window_persists_active_slot_before_close_task() {
+        let (mut app, _old_file, _new_file) = quick_slot_restore_test_app("close-persist");
+        let root = app.workspace.clone().unwrap();
+        app.quick_slots.set(
+            0,
+            crate::quick_slots::QuickSlot {
+                relative_path: "old.md".into(),
+                context: crate::quick_slots::SlotContext::default(),
+            },
+        );
+        app.quick_slots.active = Some(0);
+        let _ = app.close_quick_slot_window();
+        let isolated = app.quick_slots_persistence_path.clone().unwrap();
+        let stored = crate::prefs::load_from(&isolated);
+        assert_eq!(stored.quick_slots.bank(&root).active, Some(0));
+        let _ = std::fs::remove_file(isolated);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn full_preview_restore_guard_rejects_overwrite() {
+        let (mut app, _old_file, _new_file) = quick_slot_restore_test_app("stale-preview");
+        let root = app.workspace.clone().unwrap();
+        let old_slot = crate::quick_slots::QuickSlot {
+            relative_path: "old.md".into(),
+            context: crate::quick_slots::SlotContext {
+                mode: crate::quick_slots::SlotMode::FullMindmap,
+                preview_position: 0.75,
+                ..Default::default()
+            },
+        };
+        app.quick_slots.set(0, old_slot.clone());
+        app.quick_slots.active = Some(0);
+        app.quick_slot_activation_generation = 1;
+        app.quick_slot_preview_restore_guard = Some(PendingQuickSlotRestore {
+            generation: 1,
+            index: 0,
+            slot: old_slot,
+            root_key: crate::quick_slots::workspace_key(&root),
+        });
+        app.quick_slot_preview_restore = Some(0.75);
+        app.quick_slots.set(
+            0,
+            crate::quick_slots::QuickSlot {
+                relative_path: "new.md".into(),
+                context: crate::quick_slots::SlotContext::default(),
+            },
+        );
+        assert_eq!(app.take_current_quick_slot_preview_restore(), None);
+        assert_eq!(app.quick_slot_preview_restore_guard, None);
+        assert_eq!(app.quick_slot_preview_restore, None);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn deferred_full_preview_source_reparse_preserves_current_slot_restore() {
+        let root = full_mindmap_test_dir("deferred-preview-restore");
+        let folder = root.join("notes");
+        let file = folder.join("note.md");
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(&file, "# Note\n\nPreview body\n").unwrap();
+        let root = std::fs::canonicalize(root).unwrap();
+        let folder = std::fs::canonicalize(folder).unwrap();
+        let file = std::fs::canonicalize(file).unwrap();
+
+        let mut app = App::default();
+        app.set_workspace(root.clone(), false);
+        app.file = Some(file.clone());
+        app.source = "# Note\n\nPreview body\n".into();
+        app.saved_source = app.source.clone();
+        let mut full = App::new_full_mindmap_state();
+        full.expanded.insert(folder.clone());
+        app.full_mindmap = Some(full);
+
+        let _folder_task = app.begin_full_mindmap_folder_load(folder.clone());
+        let folder_request = app
+            .full_mindmap
+            .as_ref()
+            .and_then(|full| full.pending_folder_loads.get(&folder).cloned())
+            .expect("deferred folder should own a materialization request");
+
+        let slot = crate::quick_slots::QuickSlot {
+            relative_path: "notes/note.md".into(),
+            context: crate::quick_slots::SlotContext {
+                mode: crate::quick_slots::SlotMode::FullMindmap,
+                preview_position: 0.75,
+                ..Default::default()
+            },
+        };
+        app.quick_slots.set(0, slot.clone());
+        let _ = app.begin_quick_slot_activation(0);
+        let _ = app.update(Message::QuickSlotRestorePending);
+        let guarded = app
+            .quick_slot_preview_restore_guard
+            .clone()
+            .expect("Quick Slot restore should be guarded before materialization");
+        assert_eq!(app.quick_slot_preview_restore, Some(0.75));
+
+        let snapshot = tree::load_expanded_folder(&folder, false).unwrap();
+        let _ = app.update(Message::FullMindmapFolderLoaded {
+            request: folder_request,
+            result: Ok((folder.clone(), snapshot)),
+        });
+        // The deferred folder completion reparses the already-open source. The
+        // current slot's position and identity guard must survive that handoff.
+        assert_eq!(app.quick_slot_preview_restore, Some(0.75));
+        assert_eq!(app.quick_slot_preview_restore_guard, Some(guarded.clone()));
+
+        let preview_request = app
+            .full_mindmap
+            .as_ref()
+            .and_then(|full| full.pending_preview.clone())
+            .expect("source reparse should own a preview request");
+        let parsed = parse_full_mindmap_preview_blocking(file.clone(), app.source.clone());
+        let _ = app.update(Message::FullMindmapPreviewParsed {
+            request: preview_request,
+            result: Ok(parsed),
+        });
+        assert_eq!(
+            app.take_current_quick_slot_preview_restore(),
+            Some(0.75),
+            "current identity may consume the preserved restore value"
+        );
+
+        // A changed slot identity must not consume the same saved value.
+        app.quick_slot_preview_restore_guard = Some(guarded);
+        app.quick_slot_preview_restore = Some(0.75);
+        app.quick_slots.set(
+            0,
+            crate::quick_slots::QuickSlot {
+                relative_path: "notes/other.md".into(),
+                context: crate::quick_slots::SlotContext::default(),
+            },
+        );
+        assert_eq!(app.take_current_quick_slot_preview_restore(), None);
+        assert_eq!(app.quick_slot_preview_restore, None);
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn quick_slot_context_never_persists_raw_zen_mode() {
+        let root = full_mindmap_test_dir("quick-slot-context");
+        let file = root.join("notes.md");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(&file, "# Notes\n").unwrap();
+
+        let mut app = App::default();
+        app.set_workspace(root.clone(), false);
+        app.file = Some(file.clone());
+        app.source = "# Notes\n".into();
+        app.saved_source = app.source.clone();
+        app.view_mode = ViewMode::Raw;
+        let (_, context) = app.current_quick_slot_context().expect("context");
+        assert_eq!(context.mode, crate::quick_slots::SlotMode::Rendered);
+        assert_eq!(context.body_position, 0.0);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn clean_zen_activation_leaves_editor_and_restores_active_reader_slot() {
+        let (mut app, old_file, _new_file) = quick_slot_restore_test_app("clean-zen-activate");
+        let old_file = std::fs::canonicalize(old_file).unwrap();
+        let slot = crate::quick_slots::QuickSlot {
+            relative_path: "old.md".into(),
+            context: crate::quick_slots::SlotContext::default(),
+        };
+        app.file = Some(old_file.clone());
+        app.source = "# Old\n".into();
+        app.saved_source = app.source.clone();
+        app.quick_slots.set(0, slot.clone());
+        app.quick_slots.active = Some(0);
+        app.view_mode = ViewMode::Raw;
+        app.editor = Some(iced::widget::text_editor::Content::with_text(
+            app.source.as_str(),
+        ));
+        app.dirty = false;
+
+        let _ = app.begin_quick_slot_activation(0);
+        let pending = app
+            .pending_quick_slot_restore
+            .clone()
+            .expect("clean Zen activation should own a restore");
+        assert!(app.quick_slot_restore_is_current(&pending));
+        assert_eq!(
+            crate::quick_slots::resolve_path(app.workspace.as_deref().unwrap(), "old.md"),
+            Some(old_file.clone())
+        );
+        let _ = app.update(Message::QuickSlotFileLoaded {
+            index: 0,
+            slot,
+            result: Ok((old_file, "# Old\n".into())),
+        });
+
+        assert_eq!(app.view_mode, ViewMode::Rendered);
+        assert!(app.editor.is_none());
+        assert!(!app.dirty);
+        assert_eq!(app.quick_slots.active, Some(0));
+        let _ = std::fs::remove_dir_all(app.workspace.take().unwrap());
+    }
+
+    #[test]
+    fn clean_zen_full_mindmap_activation_does_not_revive_editor_on_exit() {
+        let (mut app, old_file, _new_file) = quick_slot_restore_test_app("clean-zen-full-mindmap");
+        let root = app.workspace.clone().unwrap();
+        let slot = crate::quick_slots::QuickSlot {
+            relative_path: "old.md".into(),
+            context: crate::quick_slots::SlotContext {
+                mode: crate::quick_slots::SlotMode::FullMindmap,
+                preview_position: 0.5,
+                ..Default::default()
+            },
+        };
+        app.file = Some(old_file.clone());
+        app.source = "# Old\n".into();
+        app.saved_source = app.source.clone();
+        app.quick_slots.set(0, slot.clone());
+        app.quick_slots.active = Some(0);
+        app.view_mode = ViewMode::Raw;
+        app.editor = Some(iced::widget::text_editor::Content::with_text(
+            app.source.as_str(),
+        ));
+        app.dirty = false;
+
+        let _ = app.begin_quick_slot_activation(0);
+        assert!(app.full_mindmap.is_some());
+        assert_eq!(app.view_mode, ViewMode::Rendered);
+        assert!(app.editor.is_none());
+        assert!(app.zen_restore.is_none());
+        assert_eq!(app.quick_slots.occupied(0), Some(&slot));
+        assert_eq!(app.prefs.quick_slots.bank(&root).occupied(0), Some(&slot));
+        let isolated = app.quick_slots_persistence_path.clone().unwrap();
+        let stored = crate::prefs::load_from(&isolated);
+        assert_eq!(stored.quick_slots.bank(&root).occupied(0), Some(&slot));
+
+        let _ = app.update(Message::QuickSlotRestorePending);
+        let _ = app.exit_full_mindmap(false);
+        assert!(app.full_mindmap.is_none());
+        assert_eq!(app.view_mode, ViewMode::Rendered);
+        assert!(app.editor.is_none());
+        assert!(app.zen_restore.is_none());
+        let _ = std::fs::remove_file(isolated);
+        let _ = std::fs::remove_dir_all(app.workspace.take().unwrap());
+    }
+
+    #[test]
+    fn clean_zen_document_mindmap_activation_preserves_slot_context_in_bank_and_prefs() {
+        let (mut app, old_file, _new_file) =
+            quick_slot_restore_test_app("clean-zen-document-mindmap");
+        let root = app.workspace.clone().unwrap();
+        let slot = crate::quick_slots::QuickSlot {
+            relative_path: "old.md".into(),
+            context: crate::quick_slots::SlotContext {
+                mode: crate::quick_slots::SlotMode::DocumentMindmap,
+                body_position: 0.75,
+                mindmap_panel_open: true,
+                ..Default::default()
+            },
+        };
+        app.file = Some(old_file.clone());
+        app.source = "# Old\n".into();
+        app.saved_source = app.source.clone();
+        app.quick_slots.set(0, slot.clone());
+        app.quick_slots.active = Some(0);
+        app.view_mode = ViewMode::Raw;
+        app.editor = Some(iced::widget::text_editor::Content::with_text(
+            app.source.as_str(),
+        ));
+        app.dirty = false;
+
+        let _ = app.begin_quick_slot_activation(0);
+        assert_eq!(app.quick_slots.occupied(0), Some(&slot));
+        assert_eq!(app.prefs.quick_slots.bank(&root).occupied(0), Some(&slot));
+        let isolated = app.quick_slots_persistence_path.clone().unwrap();
+        let stored = crate::prefs::load_from(&isolated);
+        assert_eq!(stored.quick_slots.bank(&root).occupied(0), Some(&slot));
+
+        let _ = app.update(Message::QuickSlotFileLoaded {
+            index: 0,
+            slot: slot.clone(),
+            result: Ok((old_file, "# Old\n".into())),
+        });
+        assert_eq!(app.view_mode, ViewMode::Mindmap);
+        assert!(app.editor.is_none());
+        assert_eq!(app.quick_slots.occupied(0), Some(&slot));
+        let _ = std::fs::remove_file(isolated);
+        let _ = std::fs::remove_dir_all(app.workspace.take().unwrap());
+    }
+
+    #[test]
+    fn document_mindmap_slot_activation_from_full_mindmap_exits_navigator() {
+        let (mut app, old_file, new_file) =
+            quick_slot_restore_test_app("document-mindmap-from-full-mindmap");
+        let root = app.workspace.clone().unwrap();
+        let parent = root.join("parent");
+        std::fs::create_dir_all(&parent).unwrap();
+        std::fs::write(parent.join("child.md"), "# Child\n").unwrap();
+        let old_file = std::fs::canonicalize(old_file).unwrap();
+        let new_file = std::fs::canonicalize(new_file).unwrap();
+        app.file = Some(new_file);
+        app.source = "# New\n".into();
+        app.saved_source = app.source.clone();
+        app.view_mode = ViewMode::Mindmap;
+        let mut full = full_workspace_state(&root);
+        full.selected = Some(WorkspaceNodeId::Folder(parent));
+        app.full_mindmap = Some(full);
+        app.quick_slots.set(
+            0,
+            crate::quick_slots::QuickSlot {
+                relative_path: "old.md".into(),
+                context: crate::quick_slots::SlotContext {
+                    mode: crate::quick_slots::SlotMode::DocumentMindmap,
+                    mindmap_panel_open: true,
+                    ..Default::default()
+                },
+            },
+        );
+        // Selecting the parent folder clears the current active marker while
+        // keeping both bookmarks available in the bank.
+        app.quick_slots.active = None;
+
+        let _ = app.begin_quick_slot_activation(0);
+        assert!(
+            app.full_mindmap.is_none(),
+            "switching to a document slot must leave Full Mindmap"
+        );
+        let slot = app.quick_slots.occupied(0).unwrap().clone();
+        let _ = app.update(Message::QuickSlotFileLoaded {
+            index: 0,
+            slot,
+            result: Ok((old_file.clone(), "# Old\n".into())),
+        });
+
+        assert_eq!(app.file, Some(old_file));
+        assert_eq!(app.view_mode, ViewMode::Mindmap);
+        assert!(app.full_mindmap.is_none());
+        assert!(app.editor.is_none());
+        let isolated = app.quick_slots_persistence_path.clone().unwrap();
+        let _ = std::fs::remove_file(isolated);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn selecting_full_mindmap_parent_does_not_rewrite_document_slot_mode() {
+        let (mut app, old_file, _new_file) =
+            quick_slot_restore_test_app("full-mindmap-parent-keeps-document-slot");
+        let root = app.workspace.clone().unwrap();
+        let parent = root.join("parent");
+        std::fs::create_dir_all(&parent).unwrap();
+        std::fs::write(parent.join("child.md"), "# Child\n").unwrap();
+        let old_file = std::fs::canonicalize(old_file).unwrap();
+
+        app.file = Some(old_file.clone());
+        app.source = "# Old\n".into();
+        app.saved_source = app.source.clone();
+        app.view_mode = ViewMode::Mindmap;
+        app.load_ast_from_source();
+        let slot = crate::quick_slots::QuickSlot {
+            relative_path: "old.md".into(),
+            context: crate::quick_slots::SlotContext {
+                mode: crate::quick_slots::SlotMode::DocumentMindmap,
+                mindmap_panel_open: true,
+                ..Default::default()
+            },
+        };
+        app.quick_slots.set(0, slot.clone());
+        app.quick_slots.active = Some(0);
+        let mut full = full_workspace_state(&root);
+        full.selected = Some(WorkspaceNodeId::File(old_file.clone()));
+        app.full_mindmap = Some(full);
+
+        let _ = app.update(Message::FullMindmapSelectNode(
+            WorkspaceNodeId::Folder(parent),
+        ));
+
+        assert_eq!(app.quick_slots.occupied(0), Some(&slot));
+        assert_eq!(app.quick_slots.active, None);
+        let _ = app.begin_quick_slot_activation(0);
+        assert!(app.full_mindmap.is_none());
+        let _ = app.update(Message::QuickSlotFileLoaded {
+            index: 0,
+            slot,
+            result: Ok((old_file.clone(), "# Old\n".into())),
+        });
+        assert_eq!(app.file, Some(old_file));
+        assert_eq!(app.view_mode, ViewMode::Mindmap);
+        assert!(app.full_mindmap.is_none());
+        let isolated = app.quick_slots_persistence_path.clone().unwrap();
+        let _ = std::fs::remove_file(isolated);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn switching_quick_slots_checkpoints_outgoing_context_before_restore() {
+        let (mut app, old_file, _new_file) =
+            quick_slot_restore_test_app("switch-checkpoints-outgoing");
+        let root = app.workspace.clone().unwrap();
+        let outgoing = crate::quick_slots::QuickSlot {
+            relative_path: "old.md".into(),
+            context: crate::quick_slots::SlotContext::default(),
+        };
+        let incoming = crate::quick_slots::QuickSlot {
+            relative_path: "new.md".into(),
+            context: crate::quick_slots::SlotContext::default(),
+        };
+        app.file = Some(old_file);
+        app.source = "# Old\n".into();
+        app.saved_source = app.source.clone();
+        app.view_mode = ViewMode::Mindmap;
+        app.mindmap_selected = Some(crate::ast::BlockId(7));
+        app.mindmap_panel_open = true;
+        app.quick_slots.set(0, outgoing);
+        app.quick_slots.set(1, incoming);
+        app.quick_slots.active = Some(0);
+        app.dirty = false;
+
+        let _ = app.begin_quick_slot_activation(1);
+        let checkpointed = app.quick_slots.occupied(0).expect("outgoing slot");
+        assert_eq!(
+            checkpointed.context.mode,
+            crate::quick_slots::SlotMode::DocumentMindmap
+        );
+        assert_eq!(checkpointed.context.mindmap_selection, Some(7));
+        assert!(checkpointed.context.mindmap_panel_open);
+        let isolated = app.quick_slots_persistence_path.clone().unwrap();
+        let stored = crate::prefs::load_from(&isolated);
+        let stored_bank = stored.quick_slots.bank(&root);
+        let persisted = stored_bank.occupied(0).expect("persisted outgoing slot");
+        assert_eq!(
+            persisted.context.mode,
+            crate::quick_slots::SlotMode::DocumentMindmap
+        );
+        assert_eq!(persisted.context.mindmap_selection, Some(7));
+        assert!(persisted.context.mindmap_panel_open);
+        let _ = std::fs::remove_file(isolated);
+        let _ = std::fs::remove_dir_all(app.workspace.take().unwrap());
+    }
+
+    #[test]
+    fn picker_file_navigation_checkpoints_active_slot_before_load() {
+        let (mut app, old_file, new_file) =
+            quick_slot_restore_test_app("picker-checkpoints-outgoing");
+        app.file = Some(old_file);
+        app.source = "# Old\n".into();
+        app.saved_source = app.source.clone();
+        app.view_mode = ViewMode::Mindmap;
+        app.mindmap_selected = Some(crate::ast::BlockId(17));
+        app.mindmap_panel_open = true;
+        app.quick_slots.set(
+            0,
+            crate::quick_slots::QuickSlot {
+                relative_path: "old.md".into(),
+                context: crate::quick_slots::SlotContext::default(),
+            },
+        );
+        app.quick_slots.active = Some(0);
+        app.dirty = false;
+
+        let _ = app.update(Message::PickerOpenFile(new_file.clone()));
+
+        let checkpointed = app.quick_slots.occupied(0).expect("active slot");
+        assert_eq!(
+            checkpointed.context.mode,
+            crate::quick_slots::SlotMode::DocumentMindmap
+        );
+        assert_eq!(checkpointed.context.mindmap_selection, Some(17));
+        assert!(checkpointed.context.mindmap_panel_open);
+        // Complete the asynchronous picker read: manual navigation must clear
+        // the active marker in memory and in the persisted workspace bank.
+        let _ = app.update(Message::FileLoaded(Ok((new_file, "# New\n".into()))));
+        assert_eq!(app.quick_slots.active, None);
+        let isolated = app.quick_slots_persistence_path.clone().unwrap();
+        let stored = crate::prefs::load_from(&isolated);
+        let root = app.workspace.as_ref().expect("workspace root");
+        let persisted = stored.quick_slots.bank(root);
+        assert_eq!(persisted.active, None);
+        assert_eq!(
+            persisted.occupied(0).map(|slot| slot.context.mode),
+            Some(crate::quick_slots::SlotMode::DocumentMindmap)
+        );
+        assert_eq!(
+            persisted
+                .occupied(0)
+                .and_then(|slot| slot.context.mindmap_selection),
+            Some(17)
+        );
+        let _ = std::fs::remove_file(isolated);
+        let _ = std::fs::remove_dir_all(app.workspace.take().unwrap());
+    }
+
+    #[test]
+    fn ipc_file_navigation_checkpoints_active_slot_before_load() {
+        let (mut app, old_file, new_file) = quick_slot_restore_test_app("ipc-checkpoints-outgoing");
+        app.file = Some(old_file);
+        app.source = "# Old\n".into();
+        app.saved_source = app.source.clone();
+        app.view_mode = ViewMode::Mindmap;
+        app.mindmap_selected = Some(crate::ast::BlockId(23));
+        app.mindmap_panel_open = true;
+        app.quick_slots.set(
+            0,
+            crate::quick_slots::QuickSlot {
+                relative_path: "old.md".into(),
+                context: crate::quick_slots::SlotContext::default(),
+            },
+        );
+        app.quick_slots.active = Some(0);
+        app.dirty = false;
+
+        let _ = app.update(Message::Ipc(
+            crate::ipc::Request {
+                id: 17,
+                cmd: crate::ipc::Cmd::Open {
+                    file: new_file.to_string_lossy().into_owned(),
+                    line: Some(8),
+                    section: Some("Target".into()),
+                    focus: crate::ipc::FocusBehavior::Suppress,
+                },
+            },
+            std::sync::Arc::new(std::sync::Mutex::new(None)),
+        ));
+
+        let checkpointed = app.quick_slots.occupied(0).expect("active slot");
+        assert_eq!(
+            checkpointed.context.mode,
+            crate::quick_slots::SlotMode::DocumentMindmap
+        );
+        assert_eq!(checkpointed.context.mindmap_selection, Some(23));
+        assert!(checkpointed.context.mindmap_panel_open);
+        assert_eq!(app.pending_nav.as_ref().and_then(|nav| nav.line), Some(8));
+        let isolated = app.quick_slots_persistence_path.clone().unwrap();
+        let _ = std::fs::remove_file(isolated);
+        let _ = std::fs::remove_dir_all(app.workspace.take().unwrap());
+    }
+
+    #[test]
+    fn active_full_mindmap_slot_reactivates_after_manual_navigation() {
+        let (mut app, _old_file, new_file) =
+            quick_slot_restore_test_app("active-full-mindmap-manual-nav");
+        let slot = crate::quick_slots::QuickSlot {
+            relative_path: "old.md".into(),
+            context: crate::quick_slots::SlotContext {
+                mode: crate::quick_slots::SlotMode::FullMindmap,
+                preview_position: 0.6,
+                ..Default::default()
+            },
+        };
+        app.quick_slots.set(0, slot.clone());
+        app.quick_slots.active = Some(0);
+        app.file = Some(new_file);
+        app.source = "# New\n".into();
+        app.saved_source = app.source.clone();
+        app.view_mode = ViewMode::Rendered;
+        app.dirty = false;
+
+        let _ = app.begin_quick_slot_activation(0);
+        let pending = app
+            .pending_quick_slot_restore
+            .clone()
+            .expect("manual navigation must not suppress Full Mindmap restore");
+        assert_eq!(pending.slot, slot);
+        assert!(app.full_mindmap.is_some());
+        let _ = std::fs::remove_file(app.quick_slots_persistence_path.clone().unwrap());
+        let _ = std::fs::remove_dir_all(app.workspace.take().unwrap());
+    }
+
+    #[test]
+    fn active_rendered_slot_reactivates_after_manual_navigation() {
+        let (mut app, _old_file, new_file) =
+            quick_slot_restore_test_app("active-rendered-manual-nav");
+        let slot = crate::quick_slots::QuickSlot {
+            relative_path: "old.md".into(),
+            context: crate::quick_slots::SlotContext::default(),
+        };
+        app.quick_slots.set(0, slot.clone());
+        app.quick_slots.active = Some(0);
+        app.file = Some(new_file);
+        app.source = "# New\n".into();
+        app.saved_source = app.source.clone();
+        app.view_mode = ViewMode::Rendered;
+        app.dirty = false;
+
+        let _ = app.begin_quick_slot_activation(0);
+        let pending = app
+            .pending_quick_slot_restore
+            .clone()
+            .expect("manual navigation must not suppress Rendered restore");
+        assert_eq!(pending.slot, slot);
+        assert_eq!(app.quick_slots.active, Some(0));
+        let _ = std::fs::remove_file(app.quick_slots_persistence_path.clone().unwrap());
+        let _ = std::fs::remove_dir_all(app.workspace.take().unwrap());
+    }
+
+    #[test]
+    fn active_document_mindmap_slot_reactivates_when_mode_differs() {
+        let (mut app, old_file, _new_file) =
+            quick_slot_restore_test_app("active-document-mindmap-mode-mismatch");
+        let slot = crate::quick_slots::QuickSlot {
+            relative_path: "old.md".into(),
+            context: crate::quick_slots::SlotContext {
+                mode: crate::quick_slots::SlotMode::DocumentMindmap,
+                ..Default::default()
+            },
+        };
+        app.quick_slots.set(0, slot.clone());
+        app.quick_slots.active = Some(0);
+        app.file = Some(old_file);
+        app.source = "# Old\n".into();
+        app.saved_source = app.source.clone();
+        app.view_mode = ViewMode::Rendered;
+        app.dirty = false;
+
+        let _ = app.begin_quick_slot_activation(0);
+        let pending = app
+            .pending_quick_slot_restore
+            .clone()
+            .expect("mode mismatch must restore Document Mindmap");
+        assert_eq!(pending.slot, slot);
+        let _ = std::fs::remove_file(app.quick_slots_persistence_path.clone().unwrap());
+        let _ = std::fs::remove_dir_all(app.workspace.take().unwrap());
+    }
+
+    #[test]
+    fn full_mindmap_activation_of_content_slots_exits_to_saved_content_mode() {
+        for (label, mode) in [
+            ("rendered", crate::quick_slots::SlotMode::Rendered),
+            (
+                "document-mindmap",
+                crate::quick_slots::SlotMode::DocumentMindmap,
+            ),
+        ] {
+            let (mut app, old_file, new_file) =
+                quick_slot_restore_test_app(&format!("full-to-content-{label}"));
+            let slot = crate::quick_slots::QuickSlot {
+                relative_path: "new.md".into(),
+                context: crate::quick_slots::SlotContext {
+                    mode,
+                    ..Default::default()
+                },
+            };
+            let mut full = App::new_full_mindmap_state();
+            full.selected = Some(WorkspaceNodeId::File(old_file));
+            app.full_mindmap = Some(full);
+            app.quick_slots.set(0, slot.clone());
+
+            let _ = app.begin_quick_slot_activation(0);
+
+            assert!(
+                app.full_mindmap.is_none(),
+                "content slots must leave Full Mindmap before loading"
+            );
+            assert_eq!(app.quick_slots.active, Some(0));
+            assert_eq!(
+                app.pending_quick_slot_restore
+                    .as_ref()
+                    .map(|pending| pending.slot.context.mode),
+                Some(mode)
+            );
+            assert!(new_file.is_file());
+            let _ = std::fs::remove_file(app.quick_slots_persistence_path.clone().unwrap());
+            let _ = std::fs::remove_dir_all(app.workspace.take().unwrap());
+        }
+    }
+
+    #[test]
+    fn quick_slot_workspace_banks_restore_by_canonical_root() {
+        let first = full_mindmap_test_dir("quick-slot-bank-a");
+        let second = full_mindmap_test_dir("quick-slot-bank-b");
+        std::fs::create_dir_all(&first).unwrap();
+        std::fs::create_dir_all(&second).unwrap();
+        std::fs::write(first.join("a.md"), "# A\n").unwrap();
+        std::fs::write(second.join("b.md"), "# B\n").unwrap();
+
+        let mut app = App::default();
+        let mut bank = crate::quick_slots::WorkspaceSlots::default();
+        bank.set(
+            0,
+            crate::quick_slots::QuickSlot {
+                relative_path: "a.md".into(),
+                context: crate::quick_slots::SlotContext::default(),
+            },
+        );
+        app.prefs.quick_slots.put_bank(&first, bank);
+        app.set_workspace(first.clone(), false);
+        assert!(app.quick_slots.occupied(0).is_some());
+        app.set_workspace(second.clone(), false);
+        assert!(app.quick_slots.occupied(0).is_none());
+        app.set_workspace(first.clone(), false);
+        assert_eq!(
+            app.quick_slots
+                .occupied(0)
+                .map(|slot| slot.relative_path.as_str()),
+            Some("a.md")
+        );
+        let _ = std::fs::remove_dir_all(first);
+        let _ = std::fs::remove_dir_all(second);
+    }
+
+    #[test]
     fn diagram_hash_present_finds_nested_list_math() {
         let blocks = vec![(
             crate::ast::BlockId(1),
@@ -11986,6 +14992,21 @@ mod tests {
             Some(Message::FontSizeReset)
         ));
         assert!(reader_font_size_shortcut(&Key::Character("+".into()), Modifiers::NONE,).is_none());
+    }
+
+    #[test]
+    fn quick_slot_shortcut_hints_stay_within_four_characters() {
+        for (keys, _) in QUICK_SLOT_SHORTCUT_HINTS {
+            assert!(
+                keys.chars().count() <= 4,
+                "Quick Slot shortcut hint `{keys}` exceeds the four-character limit"
+            );
+        }
+    }
+
+    #[test]
+    fn quick_slot_shortcut_hints_include_close_active_slot() {
+        assert!(QUICK_SLOT_SHORTCUT_HINTS.contains(&("⌘W", "Close active slot")));
     }
 
     #[test]
@@ -12431,7 +15452,9 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        std::env::temp_dir().join(format!(
+        let temp_root =
+            std::fs::canonicalize(std::env::temp_dir()).unwrap_or_else(|_| std::env::temp_dir());
+        temp_root.join(format!(
             "rmdv-full-mindmap-{label}-{}-{stamp}",
             std::process::id()
         ))
@@ -13136,6 +16159,202 @@ mod tests {
             Some(file.as_path())
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn full_mindmap_picker_file_checkpoints_active_preview_before_index() {
+        let (mut app, old_file, new_file) =
+            quick_slot_restore_test_app("picker-checkpoints-full-mindmap");
+        let root = app.workspace.clone().expect("workspace root");
+        let mut full = App::new_full_mindmap_state();
+        full.selected = Some(WorkspaceNodeId::File(old_file.clone()));
+        app.full_mindmap = Some(full);
+        app.quick_slots.set(
+            0,
+            crate::quick_slots::QuickSlot {
+                relative_path: "old.md".into(),
+                context: crate::quick_slots::SlotContext {
+                    mode: crate::quick_slots::SlotMode::FullMindmap,
+                    preview_position: 0.75,
+                    ..Default::default()
+                },
+            },
+        );
+        app.quick_slots.active = Some(0);
+        app.dirty = false;
+
+        let _ = app.update(Message::PickerOpenFile(new_file.clone()));
+
+        let checkpointed = app.quick_slots.occupied(0).expect("active slot");
+        assert_eq!(checkpointed.relative_path, "old.md");
+        assert_eq!(
+            checkpointed.context.mode,
+            crate::quick_slots::SlotMode::FullMindmap
+        );
+        assert_eq!(
+            checkpointed.context.preview_position, 0.0,
+            "a viewport-less preview checkpoints its normalized relative position"
+        );
+        assert_eq!(
+            app.full_mindmap
+                .as_ref()
+                .and_then(|full| full.selected.clone()),
+            Some(WorkspaceNodeId::File(old_file.clone()))
+        );
+        let pending = app
+            .full_mindmap
+            .as_ref()
+            .and_then(|full| full.pending_workspace_load.as_ref())
+            .expect("picker should wait for parent indexing");
+        assert_eq!(pending.path, root);
+        assert_eq!(pending.open_after.as_ref(), Some(&new_file));
+
+        let isolated = app.quick_slots_persistence_path.clone().unwrap();
+        let _ = std::fs::remove_file(isolated);
+        let _ = std::fs::remove_dir_all(app.workspace.take().unwrap());
+    }
+
+    #[test]
+    fn full_mindmap_workspace_navigation_checkpoints_active_preview_before_index() {
+        let (mut app, old_file, _new_file) =
+            quick_slot_restore_test_app("workspace-checkpoints-full-mindmap");
+        let root = app.workspace.clone().expect("workspace root");
+        let next_root = root.with_file_name(format!(
+            "{}-next",
+            root.file_name().expect("workspace name").to_string_lossy()
+        ));
+        std::fs::create_dir_all(&next_root).unwrap();
+        std::fs::write(next_root.join("next.md"), "# Next\n").unwrap();
+
+        let mut full = App::new_full_mindmap_state();
+        full.selected = Some(WorkspaceNodeId::File(old_file.clone()));
+        app.full_mindmap = Some(full);
+        app.quick_slots.set(
+            0,
+            crate::quick_slots::QuickSlot {
+                relative_path: "old.md".into(),
+                context: crate::quick_slots::SlotContext {
+                    mode: crate::quick_slots::SlotMode::FullMindmap,
+                    preview_position: 0.5,
+                    ..Default::default()
+                },
+            },
+        );
+        app.quick_slots.active = Some(0);
+        app.dirty = false;
+
+        let _ = app.update(Message::OpenWorkspace(next_root.clone()));
+
+        let checkpointed = app.quick_slots.occupied(0).expect("active slot");
+        assert_eq!(checkpointed.relative_path, "old.md");
+        assert_eq!(
+            checkpointed.context.mode,
+            crate::quick_slots::SlotMode::FullMindmap
+        );
+        assert_eq!(checkpointed.context.preview_position, 0.0);
+        assert_eq!(
+            app.full_mindmap
+                .as_ref()
+                .and_then(|full| full.selected.clone()),
+            Some(WorkspaceNodeId::File(old_file))
+        );
+        assert_eq!(
+            app.full_mindmap
+                .as_ref()
+                .and_then(|full| full.pending_workspace_load.as_ref())
+                .map(|pending| pending.path.as_path()),
+            Some(next_root.as_path())
+        );
+
+        let isolated = app.quick_slots_persistence_path.clone().unwrap();
+        let _ = std::fs::remove_file(isolated);
+        let _ = std::fs::remove_dir_all(app.workspace.take().unwrap());
+        let _ = std::fs::remove_dir_all(next_root);
+    }
+
+    #[test]
+    fn full_mindmap_toggle_folder_checkpoints_and_clears_active_slot() {
+        let (mut app, old_file, _new_file) =
+            quick_slot_restore_test_app("toggle-folder-checkpoint");
+        let root = app.workspace.clone().expect("workspace root");
+        let folder = root.join("notes");
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(folder.join("note.md"), "# Note\n").unwrap();
+        let mut full = full_workspace_state(&root);
+        full.selected = Some(WorkspaceNodeId::File(old_file));
+        app.full_mindmap = Some(full);
+        app.quick_slots.set(
+            0,
+            crate::quick_slots::QuickSlot {
+                relative_path: "old.md".into(),
+                context: crate::quick_slots::SlotContext {
+                    mode: crate::quick_slots::SlotMode::FullMindmap,
+                    preview_position: 0.75,
+                    ..Default::default()
+                },
+            },
+        );
+        app.quick_slots.active = Some(0);
+        app.dirty = false;
+
+        let _ = app.update(Message::FullMindmapToggleNode(WorkspaceNodeId::Folder(
+            folder,
+        )));
+
+        let checkpointed = app.quick_slots.occupied(0).expect("slot remains stored");
+        assert_eq!(
+            checkpointed.context.mode,
+            crate::quick_slots::SlotMode::FullMindmap
+        );
+        assert_eq!(checkpointed.context.preview_position, 0.0);
+        assert_eq!(app.quick_slots.active, None);
+        let isolated = app.quick_slots_persistence_path.clone().unwrap();
+        let stored = crate::prefs::load_from(&isolated);
+        let persisted = stored.quick_slots.bank(&root);
+        assert_eq!(persisted.active, None);
+        assert_eq!(persisted.occupied(0), Some(checkpointed));
+
+        let _ = std::fs::remove_file(isolated);
+        let _ = std::fs::remove_dir_all(app.workspace.take().unwrap());
+    }
+
+    #[test]
+    fn full_mindmap_deselect_checkpoints_and_clears_active_slot() {
+        let (mut app, old_file, _new_file) = quick_slot_restore_test_app("deselect-checkpoint");
+        let root = app.workspace.clone().expect("workspace root");
+        let mut full = App::new_full_mindmap_state();
+        full.selected = Some(WorkspaceNodeId::File(old_file));
+        app.full_mindmap = Some(full);
+        app.quick_slots.set(
+            0,
+            crate::quick_slots::QuickSlot {
+                relative_path: "old.md".into(),
+                context: crate::quick_slots::SlotContext {
+                    mode: crate::quick_slots::SlotMode::FullMindmap,
+                    preview_position: 0.5,
+                    ..Default::default()
+                },
+            },
+        );
+        app.quick_slots.active = Some(0);
+        app.dirty = false;
+
+        let _ = app.update(Message::FullMindmapDeselect);
+
+        let checkpointed = app.quick_slots.occupied(0).expect("slot remains stored");
+        assert_eq!(
+            checkpointed.context.mode,
+            crate::quick_slots::SlotMode::FullMindmap
+        );
+        assert_eq!(checkpointed.context.preview_position, 0.0);
+        assert_eq!(app.quick_slots.active, None);
+        assert_eq!(app.full_mindmap.as_ref().unwrap().selected, None);
+        let isolated = app.quick_slots_persistence_path.clone().unwrap();
+        let stored = crate::prefs::load_from(&isolated);
+        assert_eq!(stored.quick_slots.bank(&root).active, None);
+
+        let _ = std::fs::remove_file(isolated);
+        let _ = std::fs::remove_dir_all(app.workspace.take().unwrap());
     }
 
     #[test]
@@ -13850,6 +17069,43 @@ mod tests {
     }
 
     #[test]
+    fn document_mindmap_root_left_checkpoints_active_slot_before_full_mindmap() {
+        let (mut app, old_file, _new_file) =
+            quick_slot_restore_test_app("document-root-left-checkpoint");
+        app.file = Some(old_file.clone());
+        app.source = "# Old\n".into();
+        app.saved_source = app.source.clone();
+        app.view_mode = ViewMode::Mindmap;
+        app.load_ast_from_source();
+        app.mindmap_selected = Some(crate::ast::BlockId(31));
+        app.mindmap_panel_open = true;
+        app.quick_slots.set(
+            0,
+            crate::quick_slots::QuickSlot {
+                relative_path: "old.md".into(),
+                context: crate::quick_slots::SlotContext::default(),
+            },
+        );
+        app.quick_slots.active = Some(0);
+        app.dirty = false;
+
+        let _ = app.update(Message::MindmapNavigate(MindmapDir::Left));
+
+        let checkpointed = app.quick_slots.occupied(0).expect("active slot");
+        assert_eq!(
+            checkpointed.context.mode,
+            crate::quick_slots::SlotMode::DocumentMindmap
+        );
+        assert_eq!(checkpointed.context.mindmap_selection, Some(31));
+        assert!(checkpointed.context.mindmap_panel_open);
+        assert!(app.full_mindmap.is_some());
+
+        let isolated = app.quick_slots_persistence_path.clone().unwrap();
+        let _ = std::fs::remove_file(isolated);
+        let _ = std::fs::remove_dir_all(app.workspace.take().unwrap());
+    }
+
+    #[test]
     fn document_mindmap_root_left_deselect_cancels_deferred_file_selection() {
         let dir = full_mindmap_test_dir("document-root-left-deselect");
         let file = dir.join("guide.md");
@@ -14316,6 +17572,43 @@ mod tests {
         assert!(app.workspace_snapshot_show_hidden);
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn full_mindmap_return_to_files_checkpoints_active_preview_before_exit() {
+        let (mut app, old_file, _new_file) = quick_slot_restore_test_app("return-files-checkpoint");
+        let mut full = App::new_full_mindmap_state();
+        full.selected = Some(WorkspaceNodeId::File(old_file));
+        app.full_mindmap = Some(full);
+        app.quick_slots.set(
+            0,
+            crate::quick_slots::QuickSlot {
+                relative_path: "old.md".into(),
+                context: crate::quick_slots::SlotContext {
+                    mode: crate::quick_slots::SlotMode::FullMindmap,
+                    preview_position: 0.75,
+                    ..Default::default()
+                },
+            },
+        );
+        app.quick_slots.active = Some(0);
+        app.dirty = false;
+
+        let _ = app.update(Message::FullMindmapReturnToFiles);
+
+        let checkpointed = app.quick_slots.occupied(0).expect("active slot");
+        assert_eq!(
+            checkpointed.context.mode,
+            crate::quick_slots::SlotMode::FullMindmap
+        );
+        assert_eq!(checkpointed.context.preview_position, 0.0);
+        assert!(app.full_mindmap.is_none());
+        assert!(app.sidebar_open);
+        assert_eq!(app.sidebar_tab, SidebarTab::Files);
+
+        let isolated = app.quick_slots_persistence_path.clone().unwrap();
+        let _ = std::fs::remove_file(isolated);
+        let _ = std::fs::remove_dir_all(app.workspace.take().unwrap());
     }
 
     #[test]
