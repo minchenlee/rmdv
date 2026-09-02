@@ -13,7 +13,7 @@ use iced::widget::{
 };
 use iced::{Background, Border, Color, Element, Length, Padding, Task, Theme};
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{
     atomic::{AtomicU64, Ordering},
     Arc, OnceLock,
@@ -673,6 +673,66 @@ fn quick_slot_cycle_delta(physical: iced::keyboard::key::Physical) -> Option<i8>
     }
 }
 
+fn is_refresh_key(
+    key: &iced::keyboard::Key,
+    physical: iced::keyboard::key::Physical,
+    modifiers: iced::keyboard::Modifiers,
+) -> bool {
+    if !(modifiers.command() || modifiers.control()) || modifiers.alt() {
+        return false;
+    }
+    matches!(key, iced::keyboard::Key::Character(c) if c == "r" || c == "R")
+        || matches!(
+            physical,
+            iced::keyboard::key::Physical::Code(iced::keyboard::key::Code::KeyR)
+        )
+}
+
+fn is_command_alt_key(
+    key: &iced::keyboard::Key,
+    physical: iced::keyboard::key::Physical,
+    modifiers: iced::keyboard::Modifiers,
+    character: &str,
+    physical_code: iced::keyboard::key::Code,
+) -> bool {
+    if !(modifiers.command() || modifiers.control()) || !modifiers.alt() {
+        return false;
+    }
+    matches!(key, iced::keyboard::Key::Character(c) if c.eq_ignore_ascii_case(character))
+        || matches!(
+            physical,
+            iced::keyboard::key::Physical::Code(code) if code == physical_code
+        )
+}
+
+fn is_reveal_file_key(
+    key: &iced::keyboard::Key,
+    physical: iced::keyboard::key::Physical,
+    modifiers: iced::keyboard::Modifiers,
+) -> bool {
+    is_command_alt_key(
+        key,
+        physical,
+        modifiers,
+        "r",
+        iced::keyboard::key::Code::KeyR,
+    )
+}
+
+fn is_copy_file_path_key(
+    key: &iced::keyboard::Key,
+    physical: iced::keyboard::key::Physical,
+    modifiers: iced::keyboard::Modifiers,
+) -> bool {
+    is_command_alt_key(
+        key,
+        physical,
+        modifiers,
+        "c",
+        iced::keyboard::key::Code::KeyC,
+    )
+}
+
 /// In document Mindmap mode, higher-level surfaces and the `⌘K` folding chord
 /// own the keyboard. Do not resize unseen panel text behind them.
 fn reader_font_shortcuts_enabled(
@@ -776,6 +836,14 @@ fn quick_slots_rail_left_offset(sidebar_open: bool, sidebar_width: f32, full_min
     }
 }
 
+fn fold_level_shortcut(key: &iced::keyboard::Key) -> Option<Message> {
+    let iced::keyboard::Key::Character(value) = key else {
+        return None;
+    };
+    let depth = value.chars().next()?.to_digit(10)?;
+    (depth <= 6).then_some(Message::FoldToLevel(depth as u8))
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Overlay {
     None,
@@ -834,6 +902,9 @@ pub enum Message {
     OpenCommandPalette,
     OpenThemePicker,
     OpenVaultSearch,
+    Refresh,
+    RevealFileInFinder,
+    CopyFilePath,
     VaultQueryChanged(String),
     /// Run the search for the current query (Enter when the query has changed).
     VaultRunSearch,
@@ -886,6 +957,18 @@ pub enum Message {
     OverlayConfirm,
     OverlayDescend,
     FileLoaded(Result<(PathBuf, String), String>),
+    FileLoadCompleted {
+        generation: u64,
+        result: Result<(PathBuf, String), String>,
+    },
+    RefreshFileLoaded {
+        request: PendingRefreshFile,
+        result: Result<(PathBuf, String), String>,
+    },
+    RefreshWorkspaceLoaded {
+        request: PendingRefreshWorkspace,
+        result: Result<(PathBuf, tree::WorkspaceSnapshot), String>,
+    },
     FileChanged(PathBuf),
     /// Identity-bearing completion for a file watcher reload. A watcher read
     /// must not share the generic navigation completion path: an explicit
@@ -893,6 +976,11 @@ pub enum Message {
     FileChangedLoaded {
         request: PendingWatcherReload,
         result: Result<(PathBuf, String), String>,
+    },
+    CheckClipboardCopy(String),
+    ClipboardCopyChecked {
+        expected: String,
+        actual: Option<String>,
     },
     OpenLink(String),
     ToggleTheme,
@@ -1142,6 +1230,38 @@ pub struct PendingWatcherReload {
     path: PathBuf,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingRefreshFile {
+    id: u64,
+    path: PathBuf,
+    generation: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingRefreshWorkspace {
+    id: u64,
+    path: PathBuf,
+    show_hidden: bool,
+}
+
+#[derive(Debug, Clone)]
+struct RefreshTracker {
+    id: u64,
+    has_workspace: bool,
+    has_file: bool,
+    file_skip_reason: Option<FileRefreshSkipReason>,
+    file_done: bool,
+    workspace_done: bool,
+    file_error: Option<String>,
+    workspace_error: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FileRefreshSkipReason {
+    UnsavedEdits,
+    DocumentChanged,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ZenRestoreState {
     pub sidebar_open: bool,
@@ -1242,6 +1362,15 @@ pub struct App {
     pub(crate) height_cache: crate::virt::HeightCache,
     pub toast: Option<Toast>,
     pub toast_seq: u64,
+    refresh_seq: u64,
+    /// Invalidates a file-refresh read when the visible document or an
+    /// overlapping save advances while that read is in flight.
+    file_refresh_generation: u64,
+    pending_refresh: Option<RefreshTracker>,
+    pending_refresh_file: Option<PendingRefreshFile>,
+    pending_refresh_workspace: Option<PendingRefreshWorkspace>,
+    pending_refresh_full_mindmap_workspace: Option<PendingFullMindmapWorkspaceLoad>,
+    pending_clipboard_copy: Option<String>,
     /// Persistent neutral progress feedback for the active Full Mindmap
     /// verification wave. Kept separate from attention/error toasts so a
     /// blocked action never loses its own priority or expiry timing.
@@ -1288,7 +1417,8 @@ pub struct App {
     /// gesture into the other graph.
     pub full_mindmap_native_pinch_log: f64,
     /// Cached mindmap layout, lazily rebuilt from (ast, file, mindmap_collapsed).
-    /// Every mutation of those inputs must call `invalidate_mindmap_layout`.
+    /// Every mutation of those inputs must invalidate it or atomically replace
+    /// it with a layout built from the new state.
     /// RefCell so `view(&self)` can populate it on first read.
     mindmap_layout: std::cell::RefCell<
         Option<(
@@ -1299,6 +1429,9 @@ pub struct App {
             >,
         )>,
     >,
+    /// Changes whenever the Document Mindmap graph is invalidated. The canvas
+    /// uses this to re-center the focused node after collapse/expand relayouts.
+    mindmap_layout_generation: std::cell::Cell<u64>,
     /// Pretty-printed subtree for the data-doc mindmap leaf panel, keyed by the
     /// shown node id. Recomputed when `mindmap_panel_shown` changes; cleared by
     /// `invalidate_mindmap_layout`.
@@ -1475,6 +1608,13 @@ impl Default for App {
             height_cache: crate::virt::HeightCache::default(),
             toast: None,
             toast_seq: 0,
+            refresh_seq: 0,
+            file_refresh_generation: 0,
+            pending_refresh: None,
+            pending_refresh_file: None,
+            pending_refresh_workspace: None,
+            pending_refresh_full_mindmap_workspace: None,
+            pending_clipboard_copy: None,
             full_mindmap_progress: None,
             custom_themes: Vec::new(),
             theme_id: crate::theme::ThemeId::Preset(preset),
@@ -1503,6 +1643,7 @@ impl Default for App {
             mindmap_native_pinch_log: 0.0,
             full_mindmap_native_pinch_log: 0.0,
             mindmap_layout: std::cell::RefCell::new(None),
+            mindmap_layout_generation: std::cell::Cell::new(0),
             mindmap_data_panel: std::cell::RefCell::new(None),
             diagram_cache: crate::diagram::DiagramCache::new(64),
             diagram_theme_id: 0,
@@ -2291,14 +2432,14 @@ impl App {
         }
 
     fn sync_editor_to_source(&mut self) -> bool {
-        let Some(ed) = self.editor.as_ref() else {
+        let Some(text) = self.editor.as_ref().map(|editor| editor.text()) else {
             return false;
         };
-        let text = ed.text();
         if text == self.source {
             self.dirty = self.source != self.saved_source;
             return false;
         }
+        self.bump_file_refresh_generation();
         self.source = text;
         self.reparse_source();
         self.dirty = self.source != self.saved_source;
@@ -2372,18 +2513,146 @@ impl App {
         }
     }
 
+    fn cancel_refresh_tracking(&mut self) {
+        self.pending_refresh = None;
+        self.pending_refresh_file = None;
+        self.pending_refresh_workspace = None;
+        self.pending_refresh_full_mindmap_workspace = None;
+    }
+
+    fn bump_file_refresh_generation(&mut self) {
+        self.file_refresh_generation = self.file_refresh_generation.wrapping_add(1);
+    }
+
     fn load_file_unless_dirty(&mut self, path: PathBuf) -> Task<Message> {
+        self.cancel_refresh_tracking();
         if let Some(blocked) = self.block_file_open_if_dirty() {
             return blocked;
-            }
-        let path = canonicalize_existing_path(path);
+        }
         let checkpoint = self.checkpoint_active_quick_slot();
         self.invalidate_pending_quick_slot_restore();
-        Task::batch([
-            checkpoint,
-            Task::perform(load_file(path), Message::FileLoaded),
-        ])
+        Task::batch([checkpoint, self.begin_generic_file_load(path)])
+    }
+
+    fn begin_generic_file_load(&mut self, path: PathBuf) -> Task<Message> {
+        self.cancel_refresh_tracking();
+        self.bump_file_refresh_generation();
+        let generation = self.file_refresh_generation;
+        Task::perform(load_file(path), move |result| Message::FileLoadCompleted {
+            generation,
+            result,
+        })
+    }
+
+    /// Apply file contents after the caller has established async ownership
+    /// and rechecked the dirty guard. Refresh uses this directly so the common
+    /// state transition does not cancel its still-pending workspace leg.
+    fn apply_loaded_file(&mut self, path: PathBuf, src: String) -> Task<Message> {
+        let pending_candidate = self.pending_quick_slot_restore.clone();
+        let pending_slot_restore = pending_candidate.clone().filter(|pending| {
+            self.quick_slot_restore_is_current(pending)
+                && self
+                    .quick_slots_workspace_root()
+                    .and_then(|root| {
+                        crate::quick_slots::resolve_path(root, &pending.slot.relative_path)
+                    })
+                    .is_some_and(|target| target == path)
+        });
+        if pending_candidate.is_some() && pending_slot_restore.is_none() {
+            self.invalidate_pending_quick_slot_restore();
         }
+        let switching_file = self.file.as_deref() != Some(path.as_path());
+        let refresh_full_mindmap_preview = self.full_mindmap.as_ref().is_some_and(|full| {
+            matches!(
+                full.selected.as_ref(),
+                Some(WorkspaceNodeId::File(selected)) if selected == &path
+            )
+        });
+        self.bump_file_refresh_generation();
+        crate::recent::add(&path);
+        if switching_file && pending_slot_restore.is_none() {
+            // Manual/file-finder navigation leaves the old slot checkpointed
+            // but unslotted; only an explicit Quick Slot activation may make
+            // the new file active.
+            self.clear_active_quick_slot();
+        }
+        if self.view_mode == ViewMode::Raw || self.editor.is_some() {
+            self.leave_zen_edit_mode(false);
+        }
+        if self.workspace.is_none() {
+            if let Some(parent) = path.parent().map(PathBuf::from) {
+                self.set_workspace(parent, false);
+            }
+        }
+        // Opening a DIFFERENT file: the body scrollable's offset gets clamped
+        // by iced on the next layout, but if the new content fits the viewport
+        // no scroll notification ever fires — the stale viewport would poison
+        // body-offset math. Watcher reloads of the same file keep it.
+        if self.file.as_deref() != Some(path.as_path()) {
+            self.body_viewport = None;
+        }
+        self.source = src;
+        self.saved_source = self.source.clone();
+        self.file = Some(path.clone());
+        self.dirty = false;
+        self.outline_cursor = 0;
+        self.is_data_doc = data_lang_for(self.file.as_deref()).is_some();
+        self.mindmap_collapsed.clear();
+        self.mindmap_selected = None;
+        self.mindmap_panel_shown = None;
+        self.load_ast_from_source();
+        self.error = None;
+        self.rebuild_matches();
+        self.mindmap_focus_first_child();
+        self.reveal_current_file();
+        let mut fetches: Vec<Task<Message>> = Vec::new();
+        for (_id, block) in &self.ast {
+            if let Block::Image { url, .. } = block {
+                if is_remote_url(url) && !self.image_cache.contains_key(url) {
+                    self.image_cache.insert(url.clone(), ImageState::Loading);
+                    let url = url.clone();
+                    fetches.push(Task::perform(fetch_image(url), |(url, result)| {
+                        Message::ImageFetched(url, result)
+                    }));
+                }
+            }
+        }
+        self.refresh_diagram_theme_id();
+        let prime = self.prime_diagram_cache();
+        let nav_task: Task<Message> = if let Some(nav) = self.pending_nav.take() {
+            let line = nav
+                .fragment
+                .as_deref()
+                .and_then(|fragment| {
+                    line_for_fragment(&self.source, fragment, is_tex_path(self.file.as_deref()))
+                })
+                .or(nav.line);
+            Task::done(Message::Ipc(
+                crate::ipc::Request {
+                    id: 0,
+                    cmd: crate::ipc::Cmd::Goto {
+                        line,
+                        section: nav.section,
+                        focus: crate::ipc::FocusBehavior::Default,
+                    },
+                },
+                std::sync::Arc::new(std::sync::Mutex::new(None)),
+            ))
+        } else {
+            Task::none()
+        };
+        fetches.push(prime);
+        fetches.push(nav_task);
+        let slot_restore = pending_slot_restore.map_or_else(Task::none, |pending| {
+            self.apply_quick_slot_restore_after_file(&path, pending.slot)
+        });
+        fetches.push(slot_restore);
+        if refresh_full_mindmap_preview {
+            let source = self.source_snapshot_for_preview();
+            fetches.push(self.begin_full_mindmap_preview_source(path, source));
+        }
+        Task::batch(fetches)
+    }
 
     fn new_full_mindmap_state() -> FullMindmapState {
         static NEXT_PREVIEW_NAMESPACE: AtomicU64 = AtomicU64::new(1);
@@ -2860,6 +3129,7 @@ impl App {
     /// outside the existing workspace; ordinary Full Mindmap entry preserves
     /// its already-indexed workspace exactly as before.
     fn enter_full_mindmap_at(&mut self, forced_start: Option<PathBuf>) -> Task<Message> {
+        self.cancel_refresh_tracking();
         self.overlay = Overlay::None;
         if self.full_mindmap.is_some() {
             self.cancel_full_mindmap_verification();
@@ -2932,6 +3202,7 @@ impl App {
     }
 
     fn finish_full_mindmap_exit(&mut self, return_to_files: bool) -> Task<Message> {
+        self.cancel_refresh_tracking();
         self.cancel_full_mindmap_verification();
         self.reset_full_mindmap_preview_window();
         self.quick_slot_preview_restore = None;
@@ -2961,11 +3232,8 @@ impl App {
         self.invalidate_pending_quick_slot_restore();
         if self.full_mindmap.is_none() {
             self.pending_nav = nav;
-            return Task::batch([
-                checkpoint,
-                Task::perform(load_file(path), Message::FileLoaded),
-            ]);
-    }
+            return Task::batch([checkpoint, self.begin_generic_file_load(path)]);
+        }
 
         // Do not let an older generic load consume the navigation intended for
         // this deferred request while the navigator is still visible.
@@ -2977,14 +3245,16 @@ impl App {
         } else {
             Task::batch([checkpoint, exit])
         }
-        }
+    }
 
     fn start_pending_ipc_file_open(&mut self, cleanup: Task<Message>) -> Task<Message> {
         let Some(PendingIpcFileOpen { path, nav }) = self.pending_ipc_file_open.take() else {
             return cleanup;
         };
+        self.cancel_refresh_tracking();
         self.pending_nav = nav;
-        Task::batch([cleanup, Task::perform(load_file(path), Message::FileLoaded)])
+        let load = self.begin_generic_file_load(path);
+        Task::batch([cleanup, load])
     }
 
     /// Start (or refresh) the workspace phase without touching sidebar state.
@@ -3165,6 +3435,230 @@ impl App {
         }
     }
 
+    fn apply_refreshed_workspace_snapshot(
+        &mut self,
+        path: PathBuf,
+        snapshot: tree::WorkspaceSnapshot,
+    ) {
+        let expanded = self.expanded.clone();
+        self.replace_workspace_snapshot(path, snapshot);
+        let root = self
+            .workspace_tree
+            .as_ref()
+            .expect("workspace snapshot was just installed")
+            .path
+            .clone();
+        let retained: HashSet<PathBuf> = expanded
+            .into_iter()
+            .filter(|folder| {
+                *folder == root
+                    || self
+                        .workspace_tree
+                        .as_ref()
+                        .is_some_and(|tree| tree::find_folder(tree, folder).is_some())
+            })
+            .collect();
+        self.expanded = retained;
+        self.expanded.insert(root);
+        let row_count = self
+            .workspace_tree
+            .as_ref()
+            .map(|tree| {
+                tree::flatten_with_files(tree, &self.workspace_sidebar_files, &self.expanded).len()
+            })
+            .unwrap_or(0);
+        self.tree_cursor = self.tree_cursor.min(row_count.saturating_sub(1));
+        self.reveal_current_file();
+        self.error = None;
+    }
+
+    fn begin_refresh_workspace_load(&mut self, path: PathBuf, id: u64) -> Task<Message> {
+        let request = PendingRefreshWorkspace {
+            id,
+            path: path.clone(),
+            show_hidden: self.show_hidden,
+        };
+        self.pending_refresh_workspace = Some(request.clone());
+        Task::perform(
+            load_workspace_snapshot(path, request.show_hidden),
+            move |result| Message::RefreshWorkspaceLoaded { request, result },
+        )
+    }
+
+    fn handle_refresh_workspace_loaded(
+        &mut self,
+        request: PendingRefreshWorkspace,
+        result: Result<(PathBuf, tree::WorkspaceSnapshot), String>,
+    ) -> Task<Message> {
+        let current = self.pending_refresh_workspace.as_ref() == Some(&request)
+            && self
+                .pending_refresh
+                .as_ref()
+                .is_some_and(|refresh| refresh.id == request.id)
+            && self.full_mindmap.is_none()
+            && self.workspace.as_deref() == Some(request.path.as_path())
+            && self.show_hidden == request.show_hidden;
+        if !current {
+            // A newer refresh, navigation, or hidden-file filter owns the
+            // current workspace. This completion must not overwrite it.
+            return Task::none();
+        }
+
+        self.pending_refresh_workspace = None;
+        let workspace_error = match result {
+            Ok((path, snapshot)) if path == request.path => {
+                self.apply_refreshed_workspace_snapshot(path, snapshot);
+                None
+            }
+            Ok((path, _)) => {
+                let error = format!("Loaded unexpected folder: {}", path.display());
+                self.error = Some(error.clone());
+                Some(error)
+            }
+            Err(error) => {
+                let message = format!("Couldn't refresh {}: {error}", request.path.display());
+                self.error = Some(message.clone());
+                Some(message)
+            }
+        };
+        if let Some(refresh) = self.pending_refresh.as_mut() {
+            if refresh.id == request.id {
+                refresh.workspace_done = true;
+                refresh.workspace_error = workspace_error;
+            }
+        }
+        self.finish_refresh()
+    }
+
+    fn refresh_completion_label(tracker: &RefreshTracker) -> String {
+        let mut errors = Vec::new();
+        if let Some(error) = &tracker.workspace_error {
+            errors.push(format!("Folder refresh failed: {error}"));
+        }
+        if let Some(error) = &tracker.file_error {
+            errors.push(format!("File refresh failed: {error}"));
+        }
+        if !errors.is_empty() {
+            return errors.join("; ");
+        }
+
+        if let Some(reason) = tracker.file_skip_reason {
+            let reason = match reason {
+                FileRefreshSkipReason::UnsavedEdits => "unsaved edits",
+                FileRefreshSkipReason::DocumentChanged => "document changed",
+            };
+            return if tracker.has_workspace {
+                format!("Folder refreshed; file refresh skipped ({reason})")
+            } else {
+                format!("File refresh skipped ({reason})")
+            };
+        }
+
+        match (tracker.has_workspace, tracker.has_file) {
+            (true, true) => "File and folder refreshed".to_string(),
+            (true, false) => "Folder refreshed".to_string(),
+            (false, true) => "File refreshed".to_string(),
+            (false, false) => "Nothing to refresh".to_string(),
+        }
+    }
+
+    fn finish_refresh(&mut self) -> Task<Message> {
+        let Some(tracker) = self.pending_refresh.as_ref() else {
+            return Task::none();
+        };
+        if !tracker.file_done || !tracker.workspace_done {
+            return Task::none();
+        }
+        let tracker = self
+            .pending_refresh
+            .take()
+            .expect("refresh tracker was just checked");
+        self.pending_refresh_file = None;
+        self.pending_refresh_workspace = None;
+        self.pending_refresh_full_mindmap_workspace = None;
+        let label = Self::refresh_completion_label(&tracker);
+        if tracker.workspace_error.is_some() || tracker.file_error.is_some() {
+            // A successful second leg may have cleared `self.error` while the
+            // first leg's failure was still waiting for the transaction to
+            // finish. Restore the aggregate failure as the final state.
+            self.error = Some(label.clone());
+        } else {
+            // A successful retry owns the refresh error surface. This matters
+            // in Full Mindmap, whose workspace snapshot path does not pass
+            // through the ordinary helpers that already clear `self.error`.
+            self.error = None;
+        }
+        self.show_toast(label)
+    }
+
+    fn refresh_status(&mut self) -> Task<Message> {
+        self.cancel_refresh_tracking();
+        self.refresh_seq = self.refresh_seq.wrapping_add(1);
+        let refresh_id = self.refresh_seq;
+        let has_workspace = self.workspace.is_some();
+        let has_file = self.file.is_some();
+        if has_file {
+            // Refresh is the latest file-read intent. A generic load that
+            // started before this command must not later replace its result.
+            self.bump_file_refresh_generation();
+        }
+        let file_skip_reason =
+            (has_file && self.dirty).then_some(FileRefreshSkipReason::UnsavedEdits);
+        let mut tasks = Vec::new();
+        let mut workspace_done = !has_workspace;
+
+        if let Some(path) = self.workspace.clone() {
+            if self.full_mindmap.is_some() {
+                let exit_after_refresh = self.pending_ipc_file_open.is_some();
+                tasks.push(self.begin_full_mindmap_workspace_load(
+                    path,
+                    false,
+                    None,
+                    true,
+                    false,
+                    exit_after_refresh,
+                ));
+                self.pending_refresh_full_mindmap_workspace = self
+                    .full_mindmap
+                    .as_ref()
+                    .and_then(|full| full.pending_workspace_load.clone());
+                workspace_done = self.pending_refresh_full_mindmap_workspace.is_none();
+            } else {
+                tasks.push(self.begin_refresh_workspace_load(path, refresh_id));
+                workspace_done = false;
+            }
+        }
+
+        let mut file_done = !has_file || file_skip_reason.is_some();
+        if has_file && !self.dirty {
+            if let Some(path) = self.file.clone() {
+                let request = PendingRefreshFile {
+                    id: refresh_id,
+                    path: path.clone(),
+                    generation: self.file_refresh_generation,
+                };
+                self.pending_refresh_file = Some(request.clone());
+                file_done = false;
+                tasks.push(Task::perform(load_file(path), move |result| {
+                    Message::RefreshFileLoaded { request, result }
+                }));
+            }
+        }
+
+        self.pending_refresh = Some(RefreshTracker {
+            id: refresh_id,
+            has_workspace,
+            has_file,
+            file_skip_reason,
+            file_done,
+            workspace_done,
+            file_error: None,
+            workspace_error: None,
+        });
+        tasks.push(self.finish_refresh());
+        Task::batch(tasks)
+    }
+
     fn set_workspace(&mut self, path: PathBuf, open_sidebar: bool) {
         let path = canonicalize_existing_path(path);
         match tree::build_workspace(&path, self.show_hidden) {
@@ -3193,6 +3687,7 @@ impl App {
         exit_after_refresh: bool,
     ) -> Task<Message> {
         let path = canonicalize_existing_path(path);
+        self.cancel_refresh_tracking();
         // Full Mindmap workspace changes replace the selected preview/root;
         // preserve the outgoing slot context before any request state moves.
         // The non-Full-Mindmap path is covered by `set_workspace`'s snapshot
@@ -3273,8 +3768,7 @@ impl App {
         let show_hidden = self.show_hidden;
         Task::batch([
             checkpoint,
-        Task::perform(
-                load_full_mindmap_workspace(path, show_hidden),
+            Task::perform(load_workspace_snapshot(path, show_hidden),
                 move |result| Message::FullMindmapWorkspaceLoaded { request, result },
             ),
         ])
@@ -3419,6 +3913,7 @@ impl App {
     /// late result cannot close the navigator after a newer request supersedes
     /// it, and its error has a navigator-local home instead of `App::error`.
     fn begin_full_mindmap_open(&mut self, path: PathBuf) -> Task<Message> {
+        self.cancel_refresh_tracking();
         if let Some(blocked) = self.block_file_open_if_dirty() {
             return blocked;
         }
@@ -4120,8 +4615,8 @@ impl App {
             Some(p) => {
                 if p.is_dir() {
                     Task::done(Message::OpenWorkspace(p))
-        } else {
-                    Task::perform(load_file(p), Message::FileLoaded)
+                } else {
+                    app.begin_generic_file_load(p)
                 }
             }
             None => Task::none(),
@@ -4422,7 +4917,27 @@ impl App {
     fn invalidate_mindmap_layout(&self) {
         *self.mindmap_layout.borrow_mut() = None;
         *self.mindmap_data_panel.borrow_mut() = None;
-                    }
+        self.mindmap_layout_generation
+            .set(self.mindmap_layout_generation.get().wrapping_add(1));
+    }
+
+    fn replace_mindmap_layout(
+        &self,
+        nodes: Vec<crate::mindmap::MNode>,
+        size: iced::Size,
+        paths: std::collections::HashMap<crate::ast::BlockId, Vec<crate::data_mindmap::PathSeg>>,
+    ) -> std::sync::Arc<Vec<crate::mindmap::MNode>> {
+        let nodes = std::sync::Arc::new(nodes);
+        *self.mindmap_layout.borrow_mut() = Some((
+            std::sync::Arc::clone(&nodes),
+            size,
+            std::sync::Arc::new(paths),
+        ));
+        *self.mindmap_data_panel.borrow_mut() = None;
+        self.mindmap_layout_generation
+            .set(self.mindmap_layout_generation.get().wrapping_add(1));
+        nodes
+    }
 
     /// Select root's first child if nothing is selected, opening the preview
     /// panel. Called on mindmap toggle-on and on file load while in mindmap
@@ -5519,6 +6034,9 @@ impl App {
         };
         let mut items = vec![
             ("Open Folder…  ⌘O", Message::OpenFolderPicker),
+            ("Refresh File / Folder  ⌘R", Message::Refresh),
+            ("Reveal File in Finder  ⌘⌥R", Message::RevealFileInFinder),
+            ("Copy Focused File Path  ⌘⌥C", Message::CopyFilePath),
             ("Find File in Workspace…  ⌘P", Message::OpenFileFinder),
             ("Toggle Sidebar  ⌘B", Message::ToggleSidebar),
             ("Toggle Hidden Files  ⌘⇧.", Message::ToggleHidden),
@@ -5551,6 +6069,20 @@ impl App {
             ("Clear All Quick Slots", Message::QuickSlotClearAll),
             ("Take Screenshot", Message::TakeScreenshot),
         ];
+        if self.view_mode == ViewMode::Mindmap && self.full_mindmap.is_none() {
+            items.extend([
+                (
+                    "Mindmap: Show All Node Levels  ⌘K 0",
+                    Message::FoldToLevel(0),
+                ),
+                ("Mindmap: Show 1 Node Level  ⌘K 1", Message::FoldToLevel(1)),
+                ("Mindmap: Show 2 Node Levels  ⌘K 2", Message::FoldToLevel(2)),
+                ("Mindmap: Show 3 Node Levels  ⌘K 3", Message::FoldToLevel(3)),
+                ("Mindmap: Show 4 Node Levels  ⌘K 4", Message::FoldToLevel(4)),
+                ("Mindmap: Show 5 Node Levels  ⌘K 5", Message::FoldToLevel(5)),
+                ("Mindmap: Show 6 Node Levels  ⌘K 6", Message::FoldToLevel(6)),
+            ]);
+        }
         #[cfg(any(target_os = "macos", target_os = "linux"))]
         if crate::cli_install::should_offer() {
             items.push(("Install CLI", Message::InstallCli));
@@ -5620,6 +6152,51 @@ impl App {
         }
     }
 
+    fn reveal_file_in_finder(path: &Path) -> Result<(), String> {
+        #[cfg(target_os = "macos")]
+        {
+            std::process::Command::new("open")
+                .arg("-R")
+                .arg(path)
+                .spawn()
+                .map(|_| ())
+                .map_err(|error| format!("couldn't launch Finder: {error}"))
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = path;
+            Err("Finder reveal is only supported on macOS".to_string())
+        }
+    }
+
+    fn focused_file_path(&self) -> Option<PathBuf> {
+        if let Some(WorkspaceNodeId::File(path)) = self
+            .full_mindmap
+            .as_ref()
+            .and_then(|full| full.selected.as_ref())
+        {
+            return Some(path.clone());
+        }
+
+        let files_sidebar_active = self.sidebar_open
+            && self.workspace.is_some()
+            && self.sidebar_tab == SidebarTab::Files
+            && self.full_mindmap.is_none();
+        if files_sidebar_active {
+            if let Some(root) = &self.workspace_tree {
+                let rows =
+                    tree::flatten_with_files(root, &self.workspace_sidebar_files, &self.expanded);
+                if let Some(row) = rows.get(self.tree_cursor) {
+                    if !row.node.is_dir() {
+                        return Some(row.node.path().to_path_buf());
+                    }
+                }
+            }
+        }
+
+        self.file.clone()
+    }
+
     fn reply(
         tx: &std::sync::Arc<
             std::sync::Mutex<Option<futures::channel::oneshot::Sender<crate::ipc::Response>>>,
@@ -5648,6 +6225,59 @@ impl App {
         }
         match msg {
             Message::Open(p) => self.load_file_unless_dirty(p),
+            Message::Refresh => self.refresh_status(),
+            Message::RevealFileInFinder => {
+                let Some(path) = self.focused_file_path() else {
+                    return self.show_toast("No file open".into());
+                };
+                let label = match Self::reveal_file_in_finder(&path) {
+                    Ok(()) => "Revealed in Finder".to_string(),
+                    Err(error) => error,
+                };
+                self.show_toast(label)
+            }
+            Message::CopyFilePath => {
+                let Some(path) = self.focused_file_path() else {
+                    return self.show_toast("No file open".into());
+                };
+                let Some(expected) = path.to_str().map(str::to_owned) else {
+                    return self.show_toast("File path cannot be copied as text".into());
+                };
+                self.pending_clipboard_copy = Some(expected.clone());
+                let toast = self.show_toast("Copying file path…".into());
+                let verify_expected = expected.clone();
+                let verify = Task::perform(
+                    async {
+                        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                    },
+                    move |_| Message::CheckClipboardCopy(verify_expected),
+                );
+                Task::batch([
+                    iced::clipboard::write::<Message>(expected.clone()),
+                    verify,
+                    toast,
+                ])
+            }
+            Message::CheckClipboardCopy(expected) => {
+                if self.pending_clipboard_copy.as_deref() != Some(expected.as_str()) {
+                    return Task::none();
+                }
+                iced::clipboard::read().map(move |actual| Message::ClipboardCopyChecked {
+                    expected: expected.clone(),
+                    actual,
+                })
+            }
+            Message::ClipboardCopyChecked { expected, actual } => {
+                if self.pending_clipboard_copy.as_deref() != Some(expected.as_str()) {
+                    return Task::none();
+                }
+                self.pending_clipboard_copy = None;
+                if actual.as_deref() == Some(expected.as_str()) {
+                    self.show_toast("File path copied".into())
+                } else {
+                    self.show_toast("Couldn't copy file path".into())
+                }
+            }
             Message::OpenFileFinderPath(p) => {
                 self.overlay = Overlay::None;
                 if self.full_mindmap.is_some() {
@@ -5657,6 +6287,7 @@ impl App {
                 }
             }
             Message::OpenWorkspace(p) => {
+                self.cancel_refresh_tracking();
                 // A workspace selected through Full Mindmap Mode should not
                 // silently alter the hidden sidebar's open/closed preference.
                 if self.full_mindmap.is_some() {
@@ -6163,8 +6794,47 @@ impl App {
             }
             Message::FoldToLevel(n) => {
                 self.fold_chord_pending = false;
+                // Node-depth folding belongs to the open document, including
+                // structured-data Mindmaps. Full Mindmap has independent
+                // workspace expansion state and must never mutate the hidden
+                // document.
+                if self.full_mindmap.is_some() {
+                    return Task::none();
+                }
+                if self.view_mode == ViewMode::Mindmap {
+                    let nodes = if self.is_data_doc {
+                        let lang = data_lang_for(self.file.as_deref()).unwrap_or("json");
+                        let (nodes, size, paths, collapsed) =
+                            crate::data_mindmap::build_layout_for_depth(
+                                &self.source,
+                                lang,
+                                self.file.as_deref(),
+                                n,
+                            );
+                        self.mindmap_collapsed = collapsed;
+                        self.replace_mindmap_layout(nodes, size, paths)
+                    } else {
+                        self.mindmap_collapsed = crate::mindmap::collapsed_for_depth(&self.ast, n);
+                        self.invalidate_mindmap_layout();
+                        self.mindmap_layout().0
+                    };
+                    let selected_is_visible = self
+                        .mindmap_selected
+                        .is_some_and(|selected| nodes.iter().any(|node| node.id == Some(selected)));
+                    if !selected_is_visible {
+                        let next = nodes
+                            .first()
+                            .and_then(|root| root.children.first())
+                            .and_then(|index| nodes.get(*index))
+                            .and_then(|node| node.id);
+                        self.mindmap_selected = next;
+                        self.mindmap_panel_shown =
+                            self.mindmap_panel_open.then_some(next).flatten();
+                    }
+                    return Task::none();
+                }
                 if self.is_data_doc {
-                    return self.show_toast("Fold for data formats not yet supported".into());
+                    return self.show_toast("Fold levels are available in Mindmap mode".into());
                 }
                 self.folded.clear();
                 if n > 0 {
@@ -7012,6 +7682,9 @@ impl App {
             Message::FullMindmapVerificationLoaded { request, result } => {
                 self.handle_full_mindmap_verification_loaded(request, result)
             }
+            Message::RefreshWorkspaceLoaded { request, result } => {
+                self.handle_refresh_workspace_loaded(request, result)
+            }
             Message::FullMindmapWorkspaceLoaded { request, result } => {
                 let current = self.full_mindmap.as_ref().is_some_and(|full| {
                     full.pending_workspace_load
@@ -7023,6 +7696,12 @@ impl App {
                     // this bounded index while it was running.
                     return Task::none();
                 }
+                let refresh_id = self
+                    .pending_refresh_full_mindmap_workspace
+                    .as_ref()
+                    .filter(|pending| *pending == &request)
+                    .and_then(|_| self.pending_refresh.as_ref().map(|refresh| refresh.id));
+                let mut refresh_error = None;
                 let open_after = request.open_after.clone();
                 let mut followup = Task::none();
                 match result {
@@ -7100,6 +7779,7 @@ impl App {
                     }
                     Ok((path, _)) => {
                         let message = format!("Indexed unexpected folder: {}", path.display());
+                        refresh_error = Some(message.clone());
                         if request.preserve_navigation {
                             self.show_hidden = self.workspace_snapshot_show_hidden;
                         }
@@ -7118,6 +7798,7 @@ impl App {
                     }
                     Err(error) => {
                         let message = format!("Couldn't index {}: {error}", request.path.display());
+                        refresh_error = Some(message.clone());
                         // The existing workspace snapshot is still filtered
                         // under the previous value. Revert the UI preference so
                         // every accepted failure leaves those two facts aligned.
@@ -7142,10 +7823,26 @@ impl App {
                         }
                     }
                 }
+                let refresh_toast = if let Some(refresh_id) = refresh_id {
+                    self.pending_refresh_full_mindmap_workspace = None;
+                    if let Some(refresh) = self.pending_refresh.as_mut() {
+                        if refresh.id == refresh_id {
+                            refresh.workspace_done = true;
+                            refresh.workspace_error = refresh_error;
+                        }
+                    }
+                    self.finish_refresh()
+                } else {
+                    Task::none()
+                };
                 self.invalidate_full_mindmap_layout();
-                followup
+                Task::batch([followup, refresh_toast])
             }
             Message::MindmapToggleNode(id) => {
+                self.mindmap_selected = Some(id);
+                if self.mindmap_panel_open {
+                    self.mindmap_panel_shown = Some(id);
+                }
                 if self.mindmap_collapsed.contains(&id) {
                     self.mindmap_collapsed.remove(&id);
                 } else {
@@ -7295,7 +7992,14 @@ impl App {
                     self.quick_slots_modifier_generation.wrapping_add(1);
                 refresh_window_mode_after_native_transition(id)
             }
-            Message::RefreshWindowMode(id) => refresh_window_mode_after_native_transition(id),
+            Message::RefreshWindowMode(id) => {
+                // AppKit local monitors must be registered after Iced has
+                // created the first NSWindow. Registering during `App::new`
+                // leaves the macOS event loop alive without ever creating a
+                // visible window on current macOS releases.
+                crate::native_pinch::install();
+                refresh_window_mode_after_native_transition(id)
+            }
             Message::RefreshWindowModeSettled(id) => refresh_window_mode(id),
             Message::WindowModeChanged(mode) => {
                 self.window_fullscreen = matches!(mode, iced::window::Mode::Fullscreen);
@@ -7415,8 +8119,11 @@ impl App {
                 self.show_toast(label.into())
             }
             Message::EditorAction(action) => {
+                let edits = action.is_edit();
+                if edits {
+                    self.bump_file_refresh_generation();
+                }
                 if let Some(ed) = self.editor.as_mut() {
-                    let edits = action.is_edit();
                     if edits {
                         let prev = ed.text();
                         if self.edit_history.push_if_changed(prev) {
@@ -7434,24 +8141,34 @@ impl App {
                 Task::none()
             }
             Message::EditorUndo => {
+                let mut changed = false;
                 if let Some(ed) = self.editor.as_mut() {
                     if let Some(prev) = self.edit_history.pop() {
                         let current = ed.text();
                         self.edit_redo.push(current);
                         *ed = iced::widget::text_editor::Content::with_text(&prev);
                         self.dirty = prev != self.saved_source;
+                        changed = true;
                     }
+                }
+                if changed {
+                    self.bump_file_refresh_generation();
                 }
                 Task::none()
             }
             Message::EditorRedo => {
+                let mut changed = false;
                 if let Some(ed) = self.editor.as_mut() {
                     if let Some(next) = self.edit_redo.pop() {
                         let current = ed.text();
                         self.edit_history.push(current);
                         *ed = iced::widget::text_editor::Content::with_text(&next);
                         self.dirty = next != self.saved_source;
+                        changed = true;
                     }
+                }
+                if changed {
+                    self.bump_file_refresh_generation();
                 }
                 Task::none()
             }
@@ -7459,6 +8176,10 @@ impl App {
                 let Some(path) = self.file.clone() else {
                     return Task::none();
                 };
+                // A write can race a refresh read even when the visible text
+                // is unchanged. Advance ownership before dispatching it so a
+                // pre-save read cannot be accepted after this save settles.
+                self.bump_file_refresh_generation();
                 let text = match self.editor.as_ref() {
                     Some(ed) => ed.text(),
                     None => self.source.clone(),
@@ -7487,6 +8208,7 @@ impl App {
                 result: Ok(()),
                 saved_source,
             } => {
+                self.bump_file_refresh_generation();
                 // An older write may finish after a newer save was queued. Only
                 // advance the persisted baseline when this is still the source
                 // shown by the app; otherwise the newer write owns the state.
@@ -7505,6 +8227,7 @@ impl App {
                 result: Err(e),
                 saved_source,
             } => {
+                self.bump_file_refresh_generation();
                 // Keep the guard armed if the failed write is still the active
                 // document state. A later save may already have superseded it.
                 if self.source == saved_source {
@@ -7595,6 +8318,7 @@ impl App {
             Message::PickerOpenFile(path) => {
                 self.overlay = Overlay::None;
                 self.picker = None;
+                self.cancel_refresh_tracking();
                 if let Some(blocked) = self.block_file_open_if_dirty() {
                     return blocked;
                 }
@@ -7625,9 +8349,9 @@ impl App {
                 }
                 // The picker owns this file load rather than routing through
                 // `load_file_unless_dirty`; checkpoint the outgoing slot
-                // before the direct `FileLoaded` task can replace it.
+                // before the generic load can replace it.
                 let checkpoint = self.checkpoint_active_quick_slot();
-                let load = Task::perform(load_file(path), Message::FileLoaded);
+                let load = self.begin_generic_file_load(path);
                 if let Some(parent) = parent {
                     Task::batch([checkpoint, Task::done(Message::OpenWorkspace(parent)), load])
                 } else {
@@ -7728,6 +8452,69 @@ impl App {
                     }
                 }
                 Task::none()
+            }
+            Message::FileLoadCompleted { generation, result } => {
+                if generation != self.file_refresh_generation {
+                    // Refresh, save, edit, or a newer generic load superseded
+                    // this read before it reached the update loop.
+                    return Task::none();
+                }
+                self.update(Message::FileLoaded(result))
+            }
+            Message::RefreshFileLoaded { request, result } => {
+                let current = self.pending_refresh_file.as_ref() == Some(&request)
+                    && self
+                        .pending_refresh
+                        .as_ref()
+                        .is_some_and(|refresh| refresh.id == request.id)
+                    && self.file.as_deref() == Some(request.path.as_path());
+                if !current {
+                    // A newer navigation or refresh owns the current file.
+                    // This completion must not overwrite it.
+                    return Task::none();
+                }
+                self.pending_refresh_file = None;
+                let skip_reason = if self.dirty {
+                    Some(FileRefreshSkipReason::UnsavedEdits)
+                } else if request.generation != self.file_refresh_generation {
+                    Some(FileRefreshSkipReason::DocumentChanged)
+                } else {
+                    None
+                };
+                if let Some(reason) = skip_reason {
+                    if let Some(refresh) = self.pending_refresh.as_mut() {
+                        refresh.file_done = true;
+                        refresh.file_skip_reason = Some(reason);
+                    }
+                    return self.finish_refresh();
+                }
+                match result {
+                    Ok((path, source)) if path == request.path => {
+                        let load = self.apply_loaded_file(path, source);
+                        if let Some(refresh) = self.pending_refresh.as_mut() {
+                            refresh.file_done = true;
+                        }
+                        let toast = self.finish_refresh();
+                        Task::batch([load, toast])
+                    }
+                    Ok((path, _)) => {
+                        let error = format!("Loaded unexpected file: {}", path.display());
+                        self.error = Some(error.clone());
+                        if let Some(refresh) = self.pending_refresh.as_mut() {
+                            refresh.file_done = true;
+                            refresh.file_error = Some(error);
+                        }
+                        self.finish_refresh()
+                    }
+                    Err(error) => {
+                        self.error = Some(error.clone());
+                        if let Some(refresh) = self.pending_refresh.as_mut() {
+                            refresh.file_done = true;
+                            refresh.file_error = Some(error);
+                        }
+                        self.finish_refresh()
+                    }
+                }
             }
             Message::FileLoaded(Ok((path, src))) => {
                 let pending_candidate = self.pending_quick_slot_restore.clone();
@@ -7842,6 +8629,8 @@ impl App {
                 Task::batch(fetches)
             }
             Message::FileChanged(p) => {
+                self.cancel_refresh_tracking();
+                self.bump_file_refresh_generation();
                 if self.dirty {
                     return self.show_toast("External change ignored (unsaved edits)".into());
                 }
@@ -7913,6 +8702,7 @@ impl App {
                 Task::none()
             }
             Message::FileLoaded(Err(e)) => {
+                self.cancel_refresh_tracking();
                 self.pending_nav = None;
                 self.error = Some(e);
                 Task::none()
@@ -8134,8 +8924,11 @@ impl App {
                 Task::none()
             }
             Message::ToggleHidden => {
-                self.show_hidden = !self.show_hidden;
                 let full_active = self.full_mindmap.is_some();
+                if !full_active {
+                    self.cancel_refresh_tracking();
+                }
+                self.show_hidden = !self.show_hidden;
                 let workspace = self.workspace.clone();
                 let pending_workspace = self
                     .full_mindmap
@@ -9193,6 +9986,15 @@ impl App {
                 if is_shortcuts_key(&key, physical, mods) {
                     return Message::ToggleShortcuts;
                 }
+                if is_refresh_key(&key, physical, mods) {
+                    return Message::Refresh;
+                }
+                if is_reveal_file_key(&key, physical, mods) {
+                    return Message::RevealFileInFinder;
+                }
+                if is_copy_file_path_key(&key, physical, mods) {
+                    return Message::CopyFilePath;
+                }
                 // ⌘⌥B: alt+letter on macOS swaps the logical char, so match the
                 // physical KeyB code instead of the produced character.
                 if cmd && mods.alt() {
@@ -9212,19 +10014,10 @@ impl App {
                             return Message::MindmapCyclePanelWidth;
                         }
                     }
-                    if let Physical::Code(Code::KeyC) = physical {
-                        if tree_active {
-                            return Message::CopyTreePath;
-                        }
-                    }
                 }
                 if fold_chord {
-                    if let Key::Character(c) = &key {
-                        if let Some(d) = c.chars().next().and_then(|ch| ch.to_digit(10)) {
-                            if d <= 6 {
-                                return Message::FoldToLevel(d as u8);
-                            }
-                        }
+                    if let Some(message) = fold_level_shortcut(&key) {
+                        return message;
                     }
                     return Message::FoldChordCancel;
                 }
@@ -9585,7 +10378,7 @@ impl App {
                     panel_open: self.mindmap_panel_open,
                     panel_width: self.mindmap_panel_width,
                     autocenter: self.mindmap_autocenter,
-                    layout_generation: None,
+                    layout_generation: Some(self.mindmap_layout_generation.get()),
                     keyboard_zoom_enabled: self.overlay == Overlay::None
                         && !self.search_open
                         && !self.fold_chord_pending,
@@ -12042,6 +12835,9 @@ fn shortcuts_overlay<'a>(pal: Palette) -> Element<'a, Message> {
             "File",
             &[
                 ("⌘O", "Open Folder"),
+                ("⌘R", "Refresh File / Folder"),
+                ("⌘⌥R", "Reveal File in Finder"),
+                ("⌘⌥C", "Copy Focused File Path"),
                 ("⌘P", "Find File in Workspace"),
                 ("⌘S", "Save"),
             ],
@@ -12082,6 +12878,7 @@ fn shortcuts_overlay<'a>(pal: Palette) -> Element<'a, Message> {
             "Mindmap",
             &[
                 ("⌘M", "Toggle Mindmap"),
+                ("⌘K 0–6", "Show Through Node Level"),
                 ("⌘⌥B", "Toggle Panel"),
                 ("⌘⌥W", "Cycle Panel Width"),
                 ("= −", "Zoom Graph In / Out"),
@@ -13039,7 +13836,7 @@ async fn load_full_mindmap_preview(p: PathBuf) -> Result<(PathBuf, String), Stri
 /// Build the tree and file-finder index together on a blocking worker. The
 /// tree-side entry/file budgets guarantee a very large project cannot grow
 /// this task without bound.
-async fn load_full_mindmap_workspace(
+async fn load_workspace_snapshot(
     path: PathBuf,
     show_hidden: bool,
 ) -> Result<(PathBuf, tree::WorkspaceSnapshot), String> {
@@ -14867,6 +15664,643 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    #[test]
+    fn manual_refresh_rebuilds_workspace_in_background_and_preserves_expansion() {
+        let dir = full_mindmap_test_dir("manual-refresh-workspace");
+        let docs = dir.join("docs");
+        let added = docs.join("added.md");
+        std::fs::create_dir_all(&docs).unwrap();
+        std::fs::write(docs.join("existing.md"), "# Existing\n").unwrap();
+
+        let mut app = App::default();
+        app.set_workspace(dir.clone(), false);
+        app.expanded.insert(docs.clone());
+        std::fs::write(&added, "# Added\n").unwrap();
+
+        let _ = app.update(Message::Refresh);
+        let request = app
+            .pending_refresh_workspace
+            .clone()
+            .expect("workspace refresh should be pending");
+        assert!(!app.workspace_files.contains(&added));
+
+        let snapshot = tree::build_workspace(&request.path, request.show_hidden).unwrap();
+        let _ = app.update(Message::RefreshWorkspaceLoaded {
+            request,
+            result: Ok((dir.clone(), snapshot)),
+        });
+
+        assert!(app.workspace_files.contains(&added));
+        assert!(app.expanded.contains(&dir));
+        assert!(app.expanded.contains(&docs));
+        assert!(app.error.is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn stale_manual_workspace_refresh_completion_is_ignored() {
+        let dir = full_mindmap_test_dir("stale-manual-refresh-workspace");
+        let docs = dir.join("docs");
+        let added = docs.join("added.md");
+        std::fs::create_dir_all(&docs).unwrap();
+        std::fs::write(docs.join("existing.md"), "# Existing\n").unwrap();
+
+        let mut app = App::default();
+        app.set_workspace(dir.clone(), false);
+
+        let _ = app.update(Message::Refresh);
+        let stale_request = app
+            .pending_refresh_workspace
+            .clone()
+            .expect("first workspace refresh should be pending");
+        std::fs::write(&added, "# Added\n").unwrap();
+
+        let _ = app.update(Message::Refresh);
+        let current_request = app
+            .pending_refresh_workspace
+            .clone()
+            .expect("second workspace refresh should be pending");
+        let snapshot =
+            tree::build_workspace(&current_request.path, current_request.show_hidden).unwrap();
+
+        let _ = app.update(Message::RefreshWorkspaceLoaded {
+            request: stale_request,
+            result: Ok((dir.clone(), snapshot.clone())),
+        });
+        assert!(!app.workspace_files.contains(&added));
+
+        let _ = app.update(Message::RefreshWorkspaceLoaded {
+            request: current_request,
+            result: Ok((dir.clone(), snapshot)),
+        });
+        assert!(app.workspace_files.contains(&added));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn manual_workspace_refresh_is_cancelled_across_full_mindmap_entry_and_exit() {
+        let dir = full_mindmap_test_dir("manual-refresh-full-mindmap-transition");
+        let added = dir.join("added.md");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("existing.md"), "# Existing\n").unwrap();
+
+        let mut app = App::default();
+        app.set_workspace(dir.clone(), false);
+        std::fs::write(&added, "# Added\n").unwrap();
+
+        let _ = app.update(Message::Refresh);
+        let request = app
+            .pending_refresh_workspace
+            .clone()
+            .expect("ordinary workspace refresh should be pending");
+        let snapshot = tree::build_workspace(&request.path, request.show_hidden).unwrap();
+
+        let _ = app.update(Message::ToggleFullMindmap);
+        assert!(app.full_mindmap.is_some());
+        assert!(app.pending_refresh.is_none());
+        assert!(app.pending_refresh_workspace.is_none());
+        assert!(app.pending_refresh_file.is_none());
+        assert!(app.pending_refresh_full_mindmap_workspace.is_none());
+
+        let _ = app.update(Message::ExitFullMindmap);
+        assert!(app.full_mindmap.is_none());
+        let _ = app.update(Message::RefreshWorkspaceLoaded {
+            request,
+            result: Ok((dir.clone(), snapshot)),
+        });
+
+        assert!(!app.workspace_files.contains(&added));
+        assert!(app.pending_refresh.is_none());
+        assert!(app.pending_refresh_workspace.is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn full_mindmap_refresh_is_cancelled_by_normal_exit() {
+        let dir = full_mindmap_test_dir("full-mindmap-refresh-exit");
+        let added = dir.join("added.md");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("existing.md"), "# Existing\n").unwrap();
+
+        let mut app = App::default();
+        app.set_workspace(dir.clone(), false);
+        app.full_mindmap = Some(full_workspace_state(&dir));
+        std::fs::write(&added, "# Added\n").unwrap();
+
+        let _ = app.update(Message::Refresh);
+        let request = app
+            .full_mindmap
+            .as_ref()
+            .and_then(|full| full.pending_workspace_load.clone())
+            .expect("Full Mindmap workspace refresh should be pending");
+        assert_eq!(
+            app.pending_refresh_full_mindmap_workspace.as_ref(),
+            Some(&request)
+        );
+        let snapshot = tree::build_workspace(&request.path, app.show_hidden).unwrap();
+
+        let _ = app.update(Message::ExitFullMindmap);
+        assert!(app.full_mindmap.is_none());
+        assert!(app.pending_refresh.is_none());
+        assert!(app.pending_refresh_full_mindmap_workspace.is_none());
+        assert!(app.pending_refresh_file.is_none());
+
+        let _ = app.update(Message::FullMindmapWorkspaceLoaded {
+            request,
+            result: Ok((dir.clone(), snapshot)),
+        });
+        assert!(!app.workspace_files.contains(&added));
+        assert!(app.toast.is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn manual_refresh_does_not_discard_unsaved_file_edits() {
+        let file = PathBuf::from("/tmp/rmdv-manual-refresh.md");
+        let mut app = App::default();
+        app.file = Some(file);
+        app.source = "unsaved".into();
+        app.saved_source = "saved".into();
+        app.dirty = true;
+
+        let _ = app.update(Message::Refresh);
+
+        assert_eq!(app.source, "unsaved");
+        assert!(app
+            .toast
+            .as_ref()
+            .is_some_and(|toast| { toast.text.contains("unsaved edits") }));
+    }
+
+    #[test]
+    fn manual_refresh_shows_file_refreshed_toast() {
+        let dir = full_mindmap_test_dir("manual-refresh-file-toast");
+        let file = dir.join("manual-refresh.md");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(&file, "# Original\n").unwrap();
+        let mut app = App::default();
+        app.file = Some(file.clone());
+
+        let _ = app.update(Message::Refresh);
+        let request = app
+            .pending_refresh_file
+            .clone()
+            .expect("file refresh should be pending");
+        assert!(app.toast.is_none());
+
+        let _ = app.update(Message::RefreshFileLoaded {
+            request,
+            result: Ok((file, "# Refreshed\n".into())),
+        });
+
+        assert_eq!(
+            app.toast.as_ref().map(|toast| toast.text.as_str()),
+            Some("File refreshed")
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn manual_refresh_reports_file_failure_after_load() {
+        let file = PathBuf::from("/tmp/rmdv-manual-refresh-failure.md");
+        let mut app = App::default();
+        app.file = Some(file);
+
+        let _ = app.update(Message::Refresh);
+        let request = app
+            .pending_refresh_file
+            .clone()
+            .expect("file refresh should be pending");
+        let _ = app.update(Message::RefreshFileLoaded {
+            request,
+            result: Err("read failed".into()),
+        });
+
+        assert_eq!(
+            app.toast.as_ref().map(|toast| toast.text.as_str()),
+            Some("File refresh failed: read failed")
+        );
+    }
+
+    #[test]
+    fn manual_refresh_preserves_file_failure_after_workspace_success() {
+        let dir = full_mindmap_test_dir("refresh-file-failure-workspace-success");
+        let file = dir.join("current.md");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(&file, "# Current\n").unwrap();
+
+        let mut app = App::default();
+        app.set_workspace(dir.clone(), false);
+        app.file = Some(file.clone());
+        app.source = "# Current\n".into();
+        app.saved_source = app.source.clone();
+
+        let _ = app.update(Message::Refresh);
+        let file_request = app
+            .pending_refresh_file
+            .clone()
+            .expect("file refresh should be pending");
+        let workspace_request = app
+            .pending_refresh_workspace
+            .clone()
+            .expect("workspace refresh should be pending");
+
+        let _ = app.update(Message::RefreshFileLoaded {
+            request: file_request,
+            result: Err("read failed".into()),
+        });
+        assert!(app.toast.is_none());
+
+        let snapshot =
+            tree::build_workspace(&workspace_request.path, workspace_request.show_hidden).unwrap();
+        let _ = app.update(Message::RefreshWorkspaceLoaded {
+            request: workspace_request,
+            result: Ok((dir.clone(), snapshot)),
+        });
+
+        let expected = "File refresh failed: read failed";
+        assert_eq!(app.error.as_deref(), Some(expected));
+        assert_eq!(
+            app.toast.as_ref().map(|toast| toast.text.as_str()),
+            Some(expected)
+        );
+        assert!(app.pending_refresh.is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn manual_refresh_preserves_workspace_failure_after_file_success() {
+        let dir = full_mindmap_test_dir("refresh-workspace-failure-file-success");
+        let file = dir.join("current.md");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(&file, "# Current\n").unwrap();
+
+        let mut app = App::default();
+        app.set_workspace(dir.clone(), false);
+        app.file = Some(file.clone());
+        app.source = "# Current\n".into();
+        app.saved_source = app.source.clone();
+
+        let _ = app.update(Message::Refresh);
+        let file_request = app
+            .pending_refresh_file
+            .clone()
+            .expect("file refresh should be pending");
+        let workspace_request = app
+            .pending_refresh_workspace
+            .clone()
+            .expect("workspace refresh should be pending");
+
+        let _ = app.update(Message::RefreshWorkspaceLoaded {
+            request: workspace_request,
+            result: Err("scan failed".into()),
+        });
+        assert!(app.toast.is_none());
+
+        let _ = app.update(Message::RefreshFileLoaded {
+            request: file_request,
+            result: Ok((file, "# Refreshed\n".into())),
+        });
+
+        let expected = format!(
+            "Folder refresh failed: Couldn't refresh {}: scan failed",
+            dir.display()
+        );
+        assert_eq!(app.source, "# Refreshed\n");
+        assert_eq!(app.error.as_deref(), Some(expected.as_str()));
+        assert_eq!(
+            app.toast.as_ref().map(|toast| toast.text.as_str()),
+            Some(expected.as_str())
+        );
+        assert!(app.pending_refresh.is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn manual_refresh_rejects_file_read_started_before_edit_and_save() {
+        let dir = full_mindmap_test_dir("refresh-stale-after-save");
+        let file = dir.join("current.md");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(&file, "# Original\n").unwrap();
+
+        let mut app = App::default();
+        app.file = Some(file.clone());
+        app.source = "# Original\n".into();
+        app.saved_source = app.source.clone();
+
+        let _ = app.update(Message::Refresh);
+        let request = app
+            .pending_refresh_file
+            .clone()
+            .expect("file refresh should be pending");
+
+        app.editor = Some(iced::widget::text_editor::Content::with_text(
+            "# Saved edit\n",
+        ));
+        let _ = app.update(Message::SaveFile);
+        let _ = app.update(Message::FileSaved {
+            result: Ok(()),
+            saved_source: "# Saved edit\n".into(),
+        });
+        assert!(!app.dirty);
+
+        let _ = app.update(Message::RefreshFileLoaded {
+            request,
+            result: Ok((file, "# Stale pre-save read\n".into())),
+        });
+
+        assert_eq!(app.source, "# Saved edit\n");
+        assert_eq!(app.saved_source, "# Saved edit\n");
+        assert!(!app.dirty);
+        assert_eq!(
+            app.toast.as_ref().map(|toast| toast.text.as_str()),
+            Some("File refresh skipped (document changed)")
+        );
+        assert!(app.pending_refresh.is_none());
+        assert!(app.pending_refresh_file.is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn successful_full_mindmap_refresh_clears_previous_refresh_error() {
+        let dir = full_mindmap_test_dir("full-mindmap-refresh-retry");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("existing.md"), "# Existing\n").unwrap();
+
+        let mut app = App::default();
+        app.set_workspace(dir.clone(), false);
+        app.full_mindmap = Some(full_workspace_state(&dir));
+
+        let _ = app.update(Message::Refresh);
+        let failed_request = app
+            .full_mindmap
+            .as_ref()
+            .and_then(|full| full.pending_workspace_load.clone())
+            .expect("first Full Mindmap refresh should be pending");
+        let _ = app.update(Message::FullMindmapWorkspaceLoaded {
+            request: failed_request,
+            result: Err("scan failed".into()),
+        });
+        assert!(app.error.is_some());
+        assert!(app
+            .full_mindmap
+            .as_ref()
+            .and_then(|full| full.load_error.as_ref())
+            .is_some());
+
+        let _ = app.update(Message::Refresh);
+        let retry = app
+            .full_mindmap
+            .as_ref()
+            .and_then(|full| full.pending_workspace_load.clone())
+            .expect("retry should replace the failed refresh");
+        let snapshot = tree::build_workspace(&retry.path, app.show_hidden).unwrap();
+        let _ = app.update(Message::FullMindmapWorkspaceLoaded {
+            request: retry,
+            result: Ok((dir.clone(), snapshot)),
+        });
+
+        assert!(app.error.is_none());
+        assert!(app
+            .full_mindmap
+            .as_ref()
+            .is_some_and(|full| full.load_error.is_none()));
+        assert_eq!(
+            app.toast.as_ref().map(|toast| toast.text.as_str()),
+            Some("Folder refreshed")
+        );
+        assert!(app.pending_refresh.is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn newer_refresh_rejects_an_older_generic_file_load_completion() {
+        let old = PathBuf::from("/tmp/rmdv-refresh-current.md");
+        let new = PathBuf::from("/tmp/rmdv-generic-load-target.md");
+        let mut app = App::default();
+        app.file = Some(old.clone());
+        app.source = "current".into();
+        app.saved_source = app.source.clone();
+
+        let _ = app.load_file_unless_dirty(new.clone());
+        let generic_generation = app.file_refresh_generation;
+        let _ = app.update(Message::Refresh);
+        let refresh_request = app
+            .pending_refresh_file
+            .clone()
+            .expect("newer refresh should own the current file");
+        assert_ne!(generic_generation, refresh_request.generation);
+
+        let _ = app.update(Message::FileLoadCompleted {
+            generation: generic_generation,
+            result: Ok((new, "stale generic load".into())),
+        });
+        assert_eq!(app.file.as_deref(), Some(old.as_path()));
+        assert_eq!(app.source, "current");
+        assert!(app.pending_refresh.is_some());
+
+        let _ = app.update(Message::RefreshFileLoaded {
+            request: refresh_request,
+            result: Ok((old.clone(), "refreshed current".into())),
+        });
+        assert_eq!(app.file.as_deref(), Some(old.as_path()));
+        assert_eq!(app.source, "refreshed current");
+        assert!(app.pending_refresh.is_none());
+    }
+
+    #[test]
+    fn newer_generic_file_load_cancels_refresh_without_stranding_tracker() {
+        let old = PathBuf::from("/tmp/rmdv-refresh-before-navigation.md");
+        let new = PathBuf::from("/tmp/rmdv-navigation-after-refresh.md");
+        let mut app = App::default();
+        app.file = Some(old.clone());
+        app.source = "current".into();
+        app.saved_source = app.source.clone();
+
+        let _ = app.update(Message::Refresh);
+        let stale_refresh = app
+            .pending_refresh_file
+            .clone()
+            .expect("refresh should start first");
+        let _ = app.load_file_unless_dirty(new.clone());
+        let generic_generation = app.file_refresh_generation;
+        assert!(app.pending_refresh.is_none());
+
+        let _ = app.update(Message::RefreshFileLoaded {
+            request: stale_refresh,
+            result: Ok((old, "stale refresh".into())),
+        });
+        assert_eq!(app.source, "current");
+        assert!(app.pending_refresh.is_none());
+
+        let _ = app.update(Message::FileLoadCompleted {
+            generation: generic_generation,
+            result: Ok((new.clone(), "new navigation".into())),
+        });
+        assert_eq!(app.file.as_deref(), Some(new.as_path()));
+        assert_eq!(app.source, "new navigation");
+        assert!(app.pending_refresh.is_none());
+    }
+
+    #[test]
+    fn stale_manual_refresh_completion_is_ignored_after_navigation() {
+        let old = PathBuf::from("/tmp/rmdv-refresh-old.md");
+        let new = PathBuf::from("/tmp/rmdv-refresh-new.md");
+        let mut app = App::default();
+        app.file = Some(old.clone());
+        app.source = "old".into();
+        app.saved_source = "old".into();
+
+        let _ = app.update(Message::Refresh);
+        let request = app
+            .pending_refresh_file
+            .clone()
+            .expect("file refresh should be pending");
+        let _ = app.update(Message::Open(new));
+        let _ = app.update(Message::RefreshFileLoaded {
+            request,
+            result: Ok((old, "stale refresh".into())),
+        });
+
+        assert_eq!(app.source, "old");
+        assert!(app.pending_refresh.is_none());
+    }
+
+    #[test]
+    fn command_alt_file_shortcuts_accept_logical_and_physical_keys() {
+        use iced::keyboard::key::{Code, Physical};
+        use iced::keyboard::{Key, Modifiers};
+
+        let modifiers = Modifiers::COMMAND | Modifiers::ALT;
+        assert!(is_reveal_file_key(
+            &Key::Character("r".into()),
+            Physical::Code(Code::KeyR),
+            modifiers,
+        ));
+        assert!(is_copy_file_path_key(
+            &Key::Character("x".into()),
+            Physical::Code(Code::KeyC),
+            modifiers,
+        ));
+        assert!(!is_refresh_key(
+            &Key::Character("r".into()),
+            Physical::Code(Code::KeyR),
+            modifiers,
+        ));
+    }
+
+    #[test]
+    fn copy_file_path_shows_feedback_for_current_file() {
+        let mut app = App::default();
+        let current = PathBuf::from("/tmp/rmdv-copy-path.md");
+        app.file = Some(current.clone());
+
+        assert_eq!(app.focused_file_path(), Some(current));
+
+        let _ = app.update(Message::CopyFilePath);
+
+        assert_eq!(
+            app.toast.as_ref().map(|toast| toast.text.as_str()),
+            Some("Copying file path…")
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn copy_file_path_rejects_non_unicode_path() {
+        use std::ffi::OsString;
+        use std::os::unix::ffi::OsStringExt;
+
+        let path = PathBuf::from(OsString::from_vec(b"/tmp/rmdv-\xff.md".to_vec()));
+        let mut app = App::default();
+        app.file = Some(path);
+
+        let _ = app.update(Message::CopyFilePath);
+
+        assert_eq!(
+            app.toast.as_ref().map(|toast| toast.text.as_str()),
+            Some("File path cannot be copied as text")
+        );
+        assert!(app.pending_clipboard_copy.is_none());
+    }
+
+    #[test]
+    fn clipboard_copy_verification_shows_success_or_failure_feedback() {
+        let expected = "/tmp/rmdv-copy-path.md".to_string();
+        let mut success = App::default();
+        success.pending_clipboard_copy = Some(expected.clone());
+        let _ = success.update(Message::ClipboardCopyChecked {
+            expected: expected.clone(),
+            actual: Some(expected.clone()),
+        });
+        assert_eq!(
+            success.toast.as_ref().map(|toast| toast.text.as_str()),
+            Some("File path copied")
+        );
+
+        let mut failure = App::default();
+        failure.pending_clipboard_copy = Some(expected.clone());
+        let _ = failure.update(Message::ClipboardCopyChecked {
+            expected,
+            actual: None,
+        });
+        assert_eq!(
+            failure.toast.as_ref().map(|toast| toast.text.as_str()),
+            Some("Couldn't copy file path")
+        );
+    }
+
+    #[test]
+    fn copy_file_path_uses_full_mindmap_file_focus() {
+        let current = PathBuf::from("/tmp/rmdv-current.md");
+        let focused = PathBuf::from("/tmp/rmdv-focused-in-mindmap.md");
+        let mut app = App::default();
+        app.file = Some(current);
+        app.full_mindmap = Some(App::new_full_mindmap_state());
+        app.full_mindmap.as_mut().unwrap().selected = Some(WorkspaceNodeId::File(focused.clone()));
+
+        assert_eq!(app.focused_file_path(), Some(focused));
+    }
+
+    #[test]
+    fn copy_file_path_uses_focused_file_sidebar_row() {
+        let dir = full_mindmap_test_dir("copy-focused-sidebar");
+        let focused = dir.join("focused.md");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(&focused, "# Focused\n").unwrap();
+
+        let mut app = App::default();
+        app.set_workspace(dir.clone(), false);
+        app.sidebar_open = true;
+        app.sidebar_tab = SidebarTab::Files;
+        app.file = Some(dir.join("current.md"));
+        let rows = tree::flatten_with_files(
+            app.workspace_tree.as_ref().unwrap(),
+            &app.workspace_sidebar_files,
+            &app.expanded,
+        );
+        app.tree_cursor = rows
+            .iter()
+            .position(|row| row.node.path() == focused)
+            .expect("focused sidebar file should be visible");
+
+        assert_eq!(app.focused_file_path(), Some(focused));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn reveal_file_without_open_document_shows_feedback() {
+        let mut app = App::default();
+
+        let _ = app.update(Message::RevealFileInFinder);
+
+        assert_eq!(
+            app.toast.as_ref().map(|toast| toast.text.as_str()),
+            Some("No file open")
+        );
+    }
+
     fn editor_key_press(
         key: iced::keyboard::Key,
         physical_key: iced::keyboard::key::Physical,
@@ -14944,6 +16378,238 @@ mod tests {
             )),
             Some(Binding::Select(Motion::DocumentEnd))
         ));
+    }
+
+    fn heading(id: u64, level: u8, label: &str) -> (BlockId, Block) {
+        (
+            BlockId(id),
+            Block::Heading {
+                level,
+                id: label.to_lowercase(),
+                inlines: vec![crate::ast::Inline::Text(label.to_string())],
+            },
+        )
+    }
+
+    #[test]
+    fn document_mindmap_fold_levels_limit_visible_heading_depth_and_zero_resets() {
+        let mut app = App::default();
+        app.view_mode = ViewMode::Mindmap;
+        app.ast = vec![
+            heading(1, 1, "Root child"),
+            heading(2, 2, "Grandchild"),
+            heading(3, 3, "Great-grandchild"),
+            heading(4, 1, "Root sibling"),
+        ];
+
+        let (nodes, _, _) = app.mindmap_layout();
+        assert_eq!(nodes.iter().map(|node| node.level).max(), Some(3));
+
+        app.mindmap_selected = Some(BlockId(3));
+        app.mindmap_panel_shown = Some(BlockId(3));
+        app.mindmap_panel_open = true;
+        let initial_generation = app.mindmap_layout_generation.get();
+        let _ = app.update(Message::FoldToLevel(1));
+        let (nodes, _, _) = app.mindmap_layout();
+        assert_eq!(nodes.iter().map(|node| node.level).max(), Some(1));
+        assert_eq!(
+            nodes.iter().filter_map(|node| node.id).collect::<Vec<_>>(),
+            vec![BlockId(1), BlockId(4)]
+        );
+        assert!(app.folded.is_empty());
+        assert_eq!(
+            app.mindmap_collapsed,
+            HashSet::from([BlockId(1), BlockId(2)])
+        );
+        assert_eq!(app.mindmap_selected, Some(BlockId(1)));
+        assert_eq!(app.mindmap_panel_shown, Some(BlockId(1)));
+        assert!(app.mindmap_panel_open);
+        assert_eq!(
+            app.mindmap_layout_generation.get(),
+            initial_generation.wrapping_add(1)
+        );
+
+        let _ = app.update(Message::FoldToLevel(2));
+        let (nodes, _, _) = app.mindmap_layout();
+        assert_eq!(nodes.iter().map(|node| node.level).max(), Some(2));
+        assert!(nodes.iter().any(|node| node.id == Some(BlockId(2))));
+        assert!(nodes.iter().all(|node| node.id != Some(BlockId(3))));
+
+        let _ = app.update(Message::FoldToLevel(0));
+        let (nodes, _, _) = app.mindmap_layout();
+        assert!(app.mindmap_collapsed.is_empty());
+        assert_eq!(nodes.iter().map(|node| node.level).max(), Some(3));
+        assert!(nodes.iter().any(|node| node.id == Some(BlockId(3))));
+
+        app.mindmap_collapsed.insert(BlockId(1));
+        app.invalidate_mindmap_layout();
+        app.full_mindmap = Some(App::new_full_mindmap_state());
+        let _ = app.update(Message::FoldToLevel(0));
+        assert_eq!(app.mindmap_collapsed, HashSet::from([BlockId(1)]));
+    }
+
+    #[test]
+    fn document_mindmap_fold_levels_use_structural_depth_when_headings_skip_ranks() {
+        let mut app = App::default();
+        app.view_mode = ViewMode::Mindmap;
+        app.ast = vec![
+            heading(1, 3, "Direct child"),
+            heading(2, 5, "Grandchild"),
+            heading(3, 6, "Great-grandchild"),
+            heading(4, 2, "Direct sibling"),
+        ];
+
+        let _ = app.update(Message::FoldToLevel(1));
+        let (nodes, _, _) = app.mindmap_layout();
+        assert_eq!(
+            nodes.iter().filter_map(|node| node.id).collect::<Vec<_>>(),
+            vec![BlockId(1), BlockId(4)]
+        );
+
+        let _ = app.update(Message::FoldToLevel(2));
+        let (nodes, _, _) = app.mindmap_layout();
+        assert_eq!(
+            nodes.iter().filter_map(|node| node.id).collect::<Vec<_>>(),
+            vec![BlockId(1), BlockId(2), BlockId(4)]
+        );
+
+        let _ = app.update(Message::FoldToLevel(0));
+        let (nodes, _, _) = app.mindmap_layout();
+        assert_eq!(
+            nodes.iter().filter_map(|node| node.id).collect::<Vec<_>>(),
+            vec![BlockId(1), BlockId(2), BlockId(3), BlockId(4)]
+        );
+    }
+
+    #[test]
+    fn document_mindmap_node_toggle_selects_focus_anchor_and_advances_layout_generation() {
+        let mut app = App::default();
+        app.view_mode = ViewMode::Mindmap;
+        app.ast = vec![heading(1, 1, "Top"), heading(2, 2, "Child")];
+        app.mindmap_panel_open = true;
+        let generation = app.mindmap_layout_generation.get();
+
+        let _ = app.update(Message::MindmapToggleNode(BlockId(1)));
+
+        assert_eq!(app.mindmap_selected, Some(BlockId(1)));
+        assert_eq!(app.mindmap_panel_shown, Some(BlockId(1)));
+        assert!(app.mindmap_collapsed.contains(&BlockId(1)));
+        assert_eq!(
+            app.mindmap_layout_generation.get(),
+            generation.wrapping_add(1)
+        );
+    }
+
+    #[test]
+    fn data_mindmap_depth_folding_supports_json_yaml_and_toml() {
+        for (source, extension) in [
+            (r#"{"a":{"b":{"c":1}}}"#, "json"),
+            ("a:\n  b:\n    c: 1\n", "yaml"),
+            ("[a.b]\nc = 1\n", "toml"),
+        ] {
+            let mut app = App::default();
+            app.file = Some(PathBuf::from(format!("nested.{extension}")));
+            app.source = source.into();
+            app.is_data_doc = true;
+            app.view_mode = ViewMode::Mindmap;
+            app.invalidate_mindmap_layout();
+
+            let (nodes, _, _) = app.mindmap_layout();
+            assert_eq!(
+                nodes.iter().map(|node| node.level).max(),
+                Some(3),
+                "{extension} full graph"
+            );
+
+            let _ = app.update(Message::FoldToLevel(1));
+            assert!(
+                app.mindmap_layout.borrow().is_some(),
+                "{extension} depth update should cache its single-pass layout"
+            );
+            let (nodes, _, _) = app.mindmap_layout();
+            assert_eq!(
+                nodes.iter().map(|node| node.level).max(),
+                Some(1),
+                "{extension} depth 1"
+            );
+
+            let _ = app.update(Message::FoldToLevel(0));
+            let (nodes, _, _) = app.mindmap_layout();
+            assert!(app.mindmap_collapsed.is_empty());
+            assert_eq!(
+                nodes.iter().map(|node| node.level).max(),
+                Some(3),
+                "{extension} reset"
+            );
+
+            app.mindmap_selected = Some(BlockId(0));
+            let _ = app.update(Message::MindmapToggleSelected);
+            let (nodes, _, paths) = app.mindmap_layout();
+            assert_eq!(nodes.len(), 1, "{extension} collapsed root");
+            assert!(nodes[0].has_hidden_children, "{extension} collapsed root");
+            assert_eq!(paths.len(), 1, "{extension} root-only preview paths");
+
+            let _ = app.update(Message::MindmapToggleSelected);
+            let (nodes, _, _) = app.mindmap_layout();
+            assert_eq!(
+                nodes.iter().map(|node| node.level).max(),
+                Some(3),
+                "{extension} expanded root"
+            );
+        }
+    }
+
+    #[test]
+    fn fold_level_shortcut_accepts_document_depths_zero_through_six() {
+        use iced::keyboard::Key;
+
+        for depth in 0..=6 {
+            assert!(matches!(
+                fold_level_shortcut(&Key::Character(depth.to_string().into())),
+                Some(Message::FoldToLevel(actual)) if actual == depth
+            ));
+        }
+        assert!(fold_level_shortcut(&Key::Character("7".into())).is_none());
+    }
+
+    #[test]
+    fn command_palette_exposes_node_depths_only_in_document_mindmap() {
+        let depth_commands = |app: &App| {
+            app.command_items()
+                .into_iter()
+                .filter(|(label, _)| label.starts_with("Mindmap: Show"))
+                .collect::<Vec<_>>()
+        };
+
+        let mut app = App::default();
+        assert!(depth_commands(&app).is_empty());
+
+        app.view_mode = ViewMode::Mindmap;
+        let commands = depth_commands(&app);
+        assert_eq!(
+            commands.iter().map(|(label, _)| *label).collect::<Vec<_>>(),
+            vec![
+                "Mindmap: Show All Node Levels  ⌘K 0",
+                "Mindmap: Show 1 Node Level  ⌘K 1",
+                "Mindmap: Show 2 Node Levels  ⌘K 2",
+                "Mindmap: Show 3 Node Levels  ⌘K 3",
+                "Mindmap: Show 4 Node Levels  ⌘K 4",
+                "Mindmap: Show 5 Node Levels  ⌘K 5",
+                "Mindmap: Show 6 Node Levels  ⌘K 6",
+            ]
+        );
+        for (depth, (_, message)) in commands.iter().enumerate() {
+            assert!(matches!(
+                message,
+                Message::FoldToLevel(actual) if *actual == depth as u8
+            ));
+        }
+
+        app.is_data_doc = true;
+        assert_eq!(depth_commands(&app).len(), 7);
+
+        app.full_mindmap = Some(App::new_full_mindmap_state());
+        assert!(depth_commands(&app).is_empty());
     }
 
     #[test]
@@ -15027,6 +16693,28 @@ mod tests {
         assert!(!is_shortcuts_key(
             &Key::Character("/".into()),
             Physical::Code(Code::Slash),
+            Modifiers::NONE,
+        ));
+    }
+
+    #[test]
+    fn refresh_key_accepts_logical_and_physical_key_r() {
+        use iced::keyboard::key::{Code, Physical};
+        use iced::keyboard::{Key, Modifiers};
+
+        assert!(is_refresh_key(
+            &Key::Character("r".into()),
+            Physical::Code(Code::KeyR),
+            Modifiers::COMMAND,
+        ));
+        assert!(is_refresh_key(
+            &Key::Character("R".into()),
+            Physical::Code(Code::KeyR),
+            Modifiers::CTRL,
+        ));
+        assert!(!is_refresh_key(
+            &Key::Character("r".into()),
+            Physical::Code(Code::KeyR),
             Modifiers::NONE,
         ));
     }
@@ -19773,6 +21461,83 @@ mod tests {
 
         assert!(app.full_mindmap.is_none());
         assert_eq!(app.file.as_deref(), Some(new.as_path()));
+        assert!(app.pending_nav.is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn ipc_open_survives_manual_refresh_during_full_mindmap_reconciliation() {
+        let dir = full_mindmap_test_dir("ipc-open-manual-refresh");
+        let old = dir.join("old.md");
+        let new = dir.join("new.md");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(&old, "# Old\n").unwrap();
+        std::fs::write(&new, "# New\n").unwrap();
+
+        let mut app = App::default();
+        app.set_workspace(dir.clone(), false);
+        app.file = Some(old.clone());
+        app.source = "# Old\n".into();
+        app.saved_source = app.source.clone();
+        app.full_mindmap = Some(full_workspace_state(&dir));
+        app.show_hidden = true;
+
+        let _ = app.update(Message::Ipc(
+            crate::ipc::Request {
+                id: 1,
+                cmd: crate::ipc::Cmd::Open {
+                    file: new.to_string_lossy().into_owned(),
+                    line: Some(3),
+                    section: Some("New".into()),
+                    focus: crate::ipc::FocusBehavior::Suppress,
+                },
+            },
+            std::sync::Arc::new(std::sync::Mutex::new(None)),
+        ));
+        let stale_reconciliation = app
+            .full_mindmap
+            .as_ref()
+            .and_then(|full| full.pending_workspace_load.clone())
+            .expect("IPC open should wait for hidden-snapshot reconciliation");
+        assert!(stale_reconciliation.exit_after_refresh);
+        assert!(app.pending_ipc_file_open.is_some());
+
+        let _ = app.update(Message::Refresh);
+        let active_reconciliation = app
+            .full_mindmap
+            .as_ref()
+            .and_then(|full| full.pending_workspace_load.clone())
+            .expect("manual refresh should preserve the reconciliation request");
+        assert_eq!(active_reconciliation, stale_reconciliation);
+        assert!(active_reconciliation.exit_after_refresh);
+        let stale_file_refresh = app
+            .pending_refresh_file
+            .clone()
+            .expect("the old visible file refresh may still be in flight");
+
+        let snapshot = tree::build_workspace(&dir, true).unwrap();
+        let _ = app.update(Message::FullMindmapWorkspaceLoaded {
+            request: active_reconciliation,
+            result: Ok((dir.clone(), snapshot)),
+        });
+        assert!(app.full_mindmap.is_none());
+        assert!(app.pending_ipc_file_open.is_none());
+        assert_eq!(app.pending_nav.as_ref().and_then(|nav| nav.line), Some(3));
+        assert!(app.pending_refresh.is_none());
+
+        let _ = app.update(Message::RefreshFileLoaded {
+            request: stale_file_refresh,
+            result: Ok((old, "# Stale refresh\n".into())),
+        });
+        assert_eq!(app.source, "# Old\n");
+
+        let ipc_generation = app.file_refresh_generation;
+        let _ = app.update(Message::FileLoadCompleted {
+            generation: ipc_generation,
+            result: Ok((new.clone(), "# New\n".into())),
+        });
+        assert_eq!(app.file.as_deref(), Some(new.as_path()));
+        assert_eq!(app.source, "# New\n");
         assert!(app.pending_nav.is_none());
         let _ = std::fs::remove_dir_all(&dir);
     }

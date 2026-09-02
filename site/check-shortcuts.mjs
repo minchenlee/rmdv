@@ -149,19 +149,23 @@ if (browserLayer.includes('mod && e.shiftKey && e.key.toLowerCase()')) {
 for (const fragment of [
   '"p" if cmd && mods.shift() => return Message::OpenCommandPalette',
   '("⌘⇧P", "Command Palette")',
-  '"/" if cmd => return Message::ToggleShortcuts',
+  'fn is_shortcuts_key(',
+  'c == "/"',
+  'key::Code::Slash',
+  'if is_shortcuts_key(&key, physical, mods)',
+  'return Message::ToggleShortcuts',
   '("⌘/", "Show Shortcuts")',
 ]) {
   if (!appSource.includes(fragment)) failures.push(`native auxiliary binding is missing ${fragment}`);
 }
 for (const feature of [
   'Fuzzy file finder (Cmd+P)',
-  'Mindmap view for any document including JSON and YAML (Cmd+M)',
+  'Mindmap view for Markdown, JSON, YAML, and TOML documents (Cmd+M)',
   'Full Mindmap workspace navigation for folders and files (Cmd+Shift+M)',
   'Vault-wide search with Zed-style full-page results (Cmd+Shift+F)',
   'In-document search (Cmd+F)',
   'Edit mode (Cmd+E)',
-  'Heading fold (Cmd+K 0-6)',
+  'Reader heading and Document Mindmap depth folding (Cmd+K 0-6)',
 ]) {
   if (!html.includes(feature)) failures.push(`structured feature shortcut is missing ${feature}`);
 }

@@ -1,11 +1,11 @@
 # MDV-017 — Workspace Quick Slots
 
-State: in_progress
+State: verified
 Owner: Min-Chen Lee
 Accountable lead / integrator: Codex `/root`
-Active writer: Quick Slots maker after dispatch
+Acceptance owner: Min-Chen Lee
 Created: 2026-07-27
-Updated: 2026-07-27
+Updated: 2026-09-02
 
 ## Outcome
 
@@ -143,13 +143,11 @@ or competing with the document and Mindmap surfaces.
 - Focused tests, `cargo check`, `cargo check --no-default-features`,
   `cargo test --lib`, `cargo test --tests`, focused rustfmt, and
   `git diff --check` pass on the exact candidate.
-- A GUI-capable macOS smoke must confirm Command press/release reveal, stable
-  24 px occupied filename rows, 1–9 activation, ArrowUp/ArrowDown cycling
-  outside Zen, Command+N existing-file activation, first-empty assignment and
-  full-bank guard, and Zen editor-native Command arrows,
-  `Command+W`, Full Mindmap retention, and rail placement on the exact binary.
-  The earlier smoke exercised superseded bracket/hover behavior, so native
-  interaction acceptance remains explicitly pending until this rerun.
+- A GUI-capable macOS smoke on the exact release binary confirmed Command
+  press/release reveal, stable occupied filename rows, slot activation/cycling,
+  Command+N, Zen close semantics, Full Mindmap retention, and rail placement.
+  The owner also re-tested the parent-folder switching regression and confirmed
+  that a document-Mindmap slot returns to its individual file mindmap mode.
 
 ## Stop and escalate when
 
@@ -176,7 +174,8 @@ or competing with the document and Mindmap surfaces.
   checkpoint boundaries and manual-navigation active-marker persistence.
 - [x] Fresh independent automated/static verification accepted the core
   candidate; the direct owner-requested rail/mode and shortcut-hint follow-up passes 375 tests.
-- [x] Native macOS smoke recorded as pending with exact boundary.
+- [x] Native macOS acceptance passed on the exact release binary, including the
+  Full Mindmap parent-folder/document-slot regression.
 
 ## Decision log
 
@@ -191,8 +190,8 @@ or competing with the document and Mindmap surfaces.
 
 ## Final evidence
 
-- Candidate: uncommitted `codex/quick-slots` worktree based on clean local
-  `main@67706d3`; no push, PR, merge, release, or deploy was performed.
+- Candidate: committed as `ca7a2f8` on `codex/quick-slots` and locally merged
+  into `main`; no push, PR, release, or deploy was performed.
 - Implementation: `src/quick_slots.rs`, `src/prefs.rs`, `src/app.rs`, and
   `src/lib.rs` provide nine canonical-workspace banks, relative-path safety,
   mode-aware restores, async request identity, direct assignment/activation,
@@ -208,23 +207,20 @@ or competing with the document and Mindmap surfaces.
   suppress a real bookmark jump was corrected so no-op identity now requires
   canonical file and visible reading-surface equality. Fresh code review and
   automated/static verification accepted the current checkpoint/navigation
-  candidate; native GUI acceptance remains pending.
+  candidate; native GUI acceptance passed on the exact release binary.
 - Direct validation for the current owner-requested follow-up passed targeted
-  Quick Slot regressions, full `cargo test --lib` (375), and
+  Quick Slot regressions, full serial release tests (414), and
   `cargo test --tests` (with one pre-existing unused-`Section` warning). The
   default and no-default `cargo check` gates both passed. The release build
   passed; its exact fresh arm64 binary is
   `/private/tmp/mdv-quick-slots-final-release/release/rmdv` with SHA-256
   `059e56605d7d500f32d6f4649ad083da1a5f77841789c7b65f3b4027eb73c721`.
-  Focused rustfmt and `git diff --check` passed. Native GUI acceptance remains
-  pending for the listed interaction boundaries.
+  Focused rustfmt and `git diff --check` passed. Native acceptance was confirmed
+  by the owner on the exact rebuilt release app.
 - The earlier native macOS smoke used a temporary, uninstalled `.app` whose
   executable SHA-256 matched that prior candidate (`fdbf527c36d47d26…`). It
   covered the superseded bracket-cycle and hover-only clear behavior, so it is
   retained as historical evidence only and does not establish acceptance for
   the current ArrowUp/ArrowDown, Command+N, or persistent-detail contract.
-- Native interaction acceptance for the current candidate is pending a rerun
-  covering physical modifier-only Command press/release, stable occupied-slot
-  filename details, arrow cycling, and Command+N tab creation. Computer Use
-  cannot issue a modifier-only event or reliably hold Command across a mouse
-  click, so those checks are not simulated or claimed.
+- Native interaction acceptance for the current candidate was confirmed by the
+  owner after the release rebuild, including the parent-folder edge case.

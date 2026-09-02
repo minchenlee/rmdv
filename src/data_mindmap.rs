@@ -4,7 +4,7 @@ use iced::Size;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
-/// Normalized view over both JSON and YAML so one walker serves both.
+/// Normalized view over JSON, YAML, and TOML so one walker serves all three.
 /// `Scalar(text, is_string)` keeps the source type so a string value like `"1"`
 /// renders quoted while a number `1` stays bare.
 #[derive(Debug, Clone, PartialEq)]
@@ -35,9 +35,11 @@ fn json_scalar(v: &serde_json::Value) -> (String, bool) {
 pub(crate) fn from_json(v: &serde_json::Value) -> DataValue {
     match v {
         serde_json::Value::Array(a) => DataValue::Array(a.iter().map(from_json).collect()),
-        serde_json::Value::Object(o) => {
-            DataValue::Object(o.iter().map(|(k, val)| (k.clone(), from_json(val))).collect())
-        }
+        serde_json::Value::Object(o) => DataValue::Object(
+            o.iter()
+                .map(|(k, val)| (k.clone(), from_json(val)))
+                .collect(),
+        ),
         scalar => {
             let (text, is_str) = json_scalar(scalar);
             DataValue::Scalar(text, is_str)
@@ -90,11 +92,24 @@ fn scalar_label(text: &str, is_string: bool) -> String {
 struct Builder<'a> {
     nodes: Vec<MNode>,
     paths: HashMap<BlockId, Vec<PathSeg>>,
-    collapsed: &'a HashSet<BlockId>,
+    explicit_collapsed: Option<&'a HashSet<BlockId>>,
+    collapse_depth: Option<u8>,
+    depth_collapsed: HashSet<BlockId>,
     next_id: u64,
 }
 
-impl<'a> Builder<'a> {
+fn has_rendered_children(value: &DataValue, level: u8) -> bool {
+    if level as usize >= MAX_DEPTH {
+        return true;
+    }
+    match value {
+        DataValue::Object(fields) => !fields.is_empty(),
+        DataValue::Array(elements) => !elements.is_empty(),
+        DataValue::Scalar(..) => false,
+    }
+}
+
+impl Builder<'_> {
     fn mint(&mut self) -> BlockId {
         let id = BlockId(self.next_id);
         self.next_id += 1;
@@ -119,6 +134,52 @@ impl<'a> Builder<'a> {
             y: 0.0,
         });
         idx
+    }
+
+    fn should_collapse(&self, id: BlockId, level: u8) -> bool {
+        self.explicit_collapsed
+            .is_some_and(|collapsed| collapsed.contains(&id))
+            || self
+                .collapse_depth
+                .is_some_and(|depth| depth > 0 && level >= depth)
+    }
+
+    /// Advance structural IDs through a hidden subtree without allocating
+    /// `MNode`s or preview paths. Depth folding still records every branching
+    /// descendant so expanding one frontier node preserves the requested depth.
+    fn skip_children(&mut self, value: &DataValue, level: u8) {
+        if level as usize >= MAX_DEPTH {
+            let _ = self.mint();
+            return;
+        }
+        match value {
+            DataValue::Object(fields) => {
+                for (_, value) in fields {
+                    self.skip_member(value, level);
+                }
+            }
+            DataValue::Array(elements) => {
+                for value in elements {
+                    self.skip_member(value, level);
+                }
+            }
+            DataValue::Scalar(..) => {}
+        }
+    }
+
+    fn skip_member(&mut self, value: &DataValue, level: u8) {
+        let id = self.mint();
+        if matches!(value, DataValue::Object(_) | DataValue::Array(_)) {
+            let node_level = level.saturating_add(1);
+            if self
+                .collapse_depth
+                .is_some_and(|depth| depth > 0 && node_level >= depth)
+                && has_rendered_children(value, node_level)
+            {
+                self.depth_collapsed.insert(id);
+            }
+            self.skip_children(value, node_level);
+        }
     }
 
     /// Walk `value`, attaching produced child nodes to `parent_idx`.
@@ -164,27 +225,36 @@ impl<'a> Builder<'a> {
                 self.nodes[parent_idx].children.push(idx);
             }
             DataValue::Object(_) | DataValue::Array(_) => {
-                let idx = self.push(head, level + 1, path.clone());
+                let node_level = level.saturating_add(1);
+                let idx = self.push(head, node_level, path.clone());
                 self.nodes[parent_idx].children.push(idx);
-                if self.collapsed.contains(&self.nodes[idx].id.unwrap()) {
+                let id = self.nodes[idx].id.expect("data mindmap nodes have IDs");
+                if self.should_collapse(id, node_level) && has_rendered_children(val, node_level) {
                     self.nodes[idx].has_hidden_children = true;
+                    if self.collapse_depth.is_some() {
+                        self.depth_collapsed.insert(id);
+                    }
+                    self.skip_children(val, node_level);
                 } else {
-                    self.walk_children(idx, val, level + 1, &path);
+                    self.walk_children(idx, val, node_level, &path);
                 }
             }
         }
     }
 }
 
-pub fn build_tree(
+fn build_tree_with_policy(
     root: &DataValue,
     doc_title: &str,
-    collapsed: &HashSet<BlockId>,
-) -> (Vec<MNode>, HashMap<BlockId, Vec<PathSeg>>) {
+    explicit_collapsed: Option<&HashSet<BlockId>>,
+    collapse_depth: Option<u8>,
+) -> (Vec<MNode>, HashMap<BlockId, Vec<PathSeg>>, HashSet<BlockId>) {
     let mut b = Builder {
         nodes: Vec::new(),
         paths: HashMap::new(),
-        collapsed,
+        explicit_collapsed,
+        collapse_depth,
+        depth_collapsed: HashSet::new(),
         next_id: 0,
     };
     let root_id = b.mint();
@@ -201,8 +271,22 @@ pub fn build_tree(
         x: 0.0,
         y: 0.0,
     });
-    b.walk_children(0, root, 0, &[]);
-    (b.nodes, b.paths)
+    if b.should_collapse(root_id, 0) && has_rendered_children(root, 0) {
+        b.nodes[0].has_hidden_children = true;
+        b.skip_children(root, 0);
+    } else {
+        b.walk_children(0, root, 0, &[]);
+    }
+    (b.nodes, b.paths, b.depth_collapsed)
+}
+
+pub fn build_tree(
+    root: &DataValue,
+    doc_title: &str,
+    collapsed: &HashSet<BlockId>,
+) -> (Vec<MNode>, HashMap<BlockId, Vec<PathSeg>>) {
+    let (nodes, paths, _) = build_tree_with_policy(root, doc_title, Some(collapsed), None);
+    (nodes, paths)
 }
 
 fn title_for(file: Option<&Path>) -> String {
@@ -253,7 +337,27 @@ fn parse_to_value(source: &str, lang: &str) -> Option<DataValue> {
         "yaml" => serde_yaml::from_str::<serde_yaml::Value>(source)
             .ok()
             .map(|v| from_yaml(&v)),
+        "toml" => toml::from_str::<toml::Value>(source)
+            .ok()
+            .map(|v| from_toml(&v)),
         _ => None,
+    }
+}
+
+pub(crate) fn from_toml(value: &toml::Value) -> DataValue {
+    match value {
+        toml::Value::String(value) => DataValue::Scalar(value.clone(), true),
+        toml::Value::Integer(value) => DataValue::Scalar(value.to_string(), false),
+        toml::Value::Float(value) => DataValue::Scalar(value.to_string(), false),
+        toml::Value::Boolean(value) => DataValue::Scalar(value.to_string(), false),
+        toml::Value::Datetime(value) => DataValue::Scalar(value.to_string(), false),
+        toml::Value::Array(values) => DataValue::Array(values.iter().map(from_toml).collect()),
+        toml::Value::Table(values) => DataValue::Object(
+            values
+                .iter()
+                .map(|(key, value)| (key.clone(), from_toml(value)))
+                .collect(),
+        ),
     }
 }
 
@@ -264,13 +368,18 @@ pub fn build_layout(
     collapsed: &HashSet<BlockId>,
 ) -> (Vec<MNode>, Size, HashMap<BlockId, Vec<PathSeg>>) {
     let title = title_for(file);
-    let (mut nodes, paths) = match lang {
-        "json" | "yaml" => match parse_to_value(source, lang) {
+    let (nodes, paths) = match lang {
+        "json" | "yaml" | "toml" => match parse_to_value(source, lang) {
             Some(v) => build_tree(&v, &title, collapsed),
             None => fallback(&title, &format!("⚠ invalid {lang}")),
         },
         other => fallback(&title, &format!("⚠ {other} mindmap not supported")),
     };
+    let (nodes, size) = finish_layout(nodes);
+    (nodes, size, paths)
+}
+
+fn finish_layout(mut nodes: Vec<MNode>) -> (Vec<MNode>, Size) {
     let mut y_cursor: f32 = crate::mindmap::PAD;
     crate::mindmap::layout(&mut nodes, 0, &mut y_cursor);
     let max_level = nodes.iter().map(|n| n.level).max().unwrap_or(0) as f32;
@@ -278,7 +387,51 @@ pub fn build_layout(
         + crate::mindmap::NODE_W
         + max_level * (crate::mindmap::NODE_W + crate::mindmap::X_GAP);
     let height = y_cursor + crate::mindmap::PAD;
-    (nodes, Size::new(width, height), paths)
+    (nodes, Size::new(width, height))
+}
+
+/// Build and lay out a depth-folded graph in one parse/walk. Hidden descendants
+/// advance structural IDs but do not allocate `MNode`s or preview paths.
+pub fn build_layout_for_depth(
+    source: &str,
+    lang: &str,
+    file: Option<&Path>,
+    depth: u8,
+) -> (
+    Vec<MNode>,
+    Size,
+    HashMap<BlockId, Vec<PathSeg>>,
+    HashSet<BlockId>,
+) {
+    let title = title_for(file);
+    let (nodes, paths, collapsed) = match lang {
+        "json" | "yaml" | "toml" => match parse_to_value(source, lang) {
+            Some(value) => build_tree_with_policy(&value, &title, None, Some(depth)),
+            None => {
+                let (nodes, paths) = fallback(&title, &format!("⚠ invalid {lang}"));
+                (nodes, paths, HashSet::new())
+            }
+        },
+        other => {
+            let (nodes, paths) = fallback(&title, &format!("⚠ {other} mindmap not supported"));
+            (nodes, paths, HashSet::new())
+        }
+    };
+    let (nodes, size) = finish_layout(nodes);
+    (nodes, size, paths, collapsed)
+}
+
+/// Collapse every branching node at or below `depth`, preserving the root at
+/// level 0. Prefer `build_layout_for_depth` when the folded layout is also
+/// needed so parsing and graph construction happen only once.
+pub fn collapsed_for_depth(
+    source: &str,
+    lang: &str,
+    file: Option<&Path>,
+    depth: u8,
+) -> HashSet<BlockId> {
+    let (_, _, _, collapsed) = build_layout_for_depth(source, lang, file, depth);
+    collapsed
 }
 
 /// Look up a YAML mapping value by the *stringified* form of its key.
@@ -288,10 +441,7 @@ pub fn build_layout(
 /// recorded as `"42"`/`"true"`. A direct `Value::String` lookup would miss it,
 /// so first try the fast string-key path, then fall back to scanning the
 /// mapping for a key whose scalar text matches.
-fn yaml_get_by_str_key<'a>(
-    cur: &'a serde_yaml::Value,
-    k: &str,
-) -> Option<&'a serde_yaml::Value> {
+fn yaml_get_by_str_key<'a>(cur: &'a serde_yaml::Value, k: &str) -> Option<&'a serde_yaml::Value> {
     if let Some(v) = cur.get(serde_yaml::Value::String(k.to_string())) {
         return Some(v);
     }
@@ -336,6 +486,22 @@ pub fn subtree_pretty(source: &str, lang: &str, path: &[PathSeg]) -> Option<Stri
                 other => serde_yaml::to_string(other).ok(),
             }
         }
+        "toml" => {
+            let root: toml::Value = toml::from_str(source).ok()?;
+            let mut cur = &root;
+            for seg in path {
+                cur = match seg {
+                    PathSeg::Key(key) => cur.get(key)?,
+                    PathSeg::Index(index) => cur.get(*index)?,
+                };
+            }
+            match cur {
+                toml::Value::String(value) => Some(value.clone()),
+                toml::Value::Array(_) => Some(cur.to_string()),
+                toml::Value::Table(_) => toml::to_string_pretty(cur).ok(),
+                scalar => Some(scalar.to_string()),
+            }
+        }
         _ => None,
     }
 }
@@ -358,13 +524,34 @@ mod tests {
     }
 
     #[test]
+    fn json_yaml_and_toml_normalize_alike() {
+        let json: serde_json::Value =
+            serde_json::from_str(r#"{"name":"rmdv","nested":{"enabled":true}}"#).unwrap();
+        let yaml: serde_yaml::Value =
+            serde_yaml::from_str("name: rmdv\nnested:\n  enabled: true\n").unwrap();
+        let toml: toml::Value =
+            toml::from_str("name = \"rmdv\"\n[nested]\nenabled = true\n").unwrap();
+        assert_eq!(from_json(&json), from_yaml(&yaml));
+        assert_eq!(from_json(&json), from_toml(&toml));
+    }
+
+    #[test]
     fn scalars_stringify() {
         let j: serde_json::Value = serde_json::from_str(r#"{"n":42,"b":true,"z":null}"#).unwrap();
         match from_json(&j) {
             DataValue::Object(fields) => {
-                assert_eq!(fields[0], ("n".into(), DataValue::Scalar("42".into(), false)));
-                assert_eq!(fields[1], ("b".into(), DataValue::Scalar("true".into(), false)));
-                assert_eq!(fields[2], ("z".into(), DataValue::Scalar("null".into(), false)));
+                assert_eq!(
+                    fields[0],
+                    ("n".into(), DataValue::Scalar("42".into(), false))
+                );
+                assert_eq!(
+                    fields[1],
+                    ("b".into(), DataValue::Scalar("true".into(), false))
+                );
+                assert_eq!(
+                    fields[2],
+                    ("z".into(), DataValue::Scalar("null".into(), false))
+                );
             }
             other => panic!("expected object, got {other:?}"),
         }
@@ -457,6 +644,62 @@ mod tests {
     }
 
     #[test]
+    fn collapsed_root_hides_children_without_retaining_hidden_paths() {
+        let value = obj(r#"{"left":{"deep":1},"right":2}"#);
+        let (full, _) = build_tree(&value, "f.json", &HashSet::new());
+        let full_ids = full.iter().filter_map(|node| node.id).collect::<Vec<_>>();
+
+        let (collapsed, paths) = build_tree(&value, "f.json", &HashSet::from([BlockId(0)]));
+
+        assert_eq!(collapsed.len(), 1);
+        assert!(collapsed[0].children.is_empty());
+        assert!(collapsed[0].has_hidden_children);
+        assert_eq!(paths.keys().copied().collect::<Vec<_>>(), vec![BlockId(0)]);
+
+        let (expanded, _) = build_tree(&value, "f.json", &HashSet::new());
+        assert_eq!(
+            expanded
+                .iter()
+                .filter_map(|node| node.id)
+                .collect::<Vec<_>>(),
+            full_ids
+        );
+    }
+
+    #[test]
+    fn collapsing_an_earlier_branch_preserves_later_sibling_identity() {
+        let value = obj(r#"{"left":{"deep":1},"right":{"deep":2}}"#);
+        let (full, _) = build_tree(&value, "f.json", &HashSet::new());
+        let left_id = full
+            .iter()
+            .find(|node| node.full_label == "left")
+            .and_then(|node| node.id)
+            .unwrap();
+        let right_id = full
+            .iter()
+            .find(|node| node.full_label == "right")
+            .and_then(|node| node.id)
+            .unwrap();
+        let hidden_left_id = full
+            .iter()
+            .find(|node| node.full_label == "deep: 1")
+            .and_then(|node| node.id)
+            .unwrap();
+
+        let (collapsed, paths) = build_tree(&value, "f.json", &HashSet::from([left_id]));
+
+        assert_eq!(
+            collapsed
+                .iter()
+                .find(|node| node.full_label == "right")
+                .and_then(|node| node.id),
+            Some(right_id)
+        );
+        assert_eq!(paths.len(), collapsed.len());
+        assert!(!paths.contains_key(&hidden_left_id));
+    }
+
+    #[test]
     fn build_layout_json_ok() {
         let (nodes, size, paths) = build_layout(r#"{"a":1,"b":2}"#, "json", None, &HashSet::new());
         assert_eq!(nodes.len(), 3);
@@ -479,10 +722,30 @@ mod tests {
     }
 
     #[test]
-    fn build_layout_unsupported_lang_falls_back() {
-        let (nodes, _, _) = build_layout("a = 1", "toml", None, &HashSet::new());
-        assert_eq!(nodes.len(), 2);
-        assert!(nodes[1].full_label.contains("not supported"));
+    fn build_layout_toml_recurses() {
+        let (nodes, _, _) = build_layout(
+            "name = \"rmdv\"\n[deps]\niced = \"0.14\"\n",
+            "toml",
+            None,
+            &HashSet::new(),
+        );
+        assert!(nodes.iter().any(|node| node.full_label == "deps"));
+        assert!(nodes.iter().any(|node| node.full_label == "iced: \"0.14\""));
+    }
+
+    #[test]
+    fn data_depth_collapse_keeps_root_and_requested_levels() {
+        for (source, lang) in [
+            (r#"{"a":{"b":{"c":1}}}"#, "json"),
+            ("a:\n  b:\n    c: 1\n", "yaml"),
+            ("[a.b]\nc = 1\n", "toml"),
+        ] {
+            let (nodes, _, paths, collapsed) = build_layout_for_depth(source, lang, None, 1);
+            assert_eq!(nodes.iter().map(|node| node.level).max(), Some(1), "{lang}");
+            assert_eq!(paths.len(), nodes.len(), "{lang} visible preview paths");
+            assert_eq!(collapsed.len(), 2, "{lang} collapsed branching nodes");
+            assert!(collapsed_for_depth(source, lang, None, 0).is_empty());
+        }
     }
 
     #[test]
@@ -497,6 +760,40 @@ mod tests {
     }
 
     #[test]
+    fn subtree_pretty_toml_object_and_scalar() {
+        let source = "[deps]\niced = \"0.14\"\nmajor = 1\n";
+        let object = subtree_pretty(source, "toml", &[PathSeg::Key("deps".into())]).unwrap();
+        assert!(object.contains("iced = \"0.14\""));
+        assert_eq!(
+            subtree_pretty(
+                source,
+                "toml",
+                &[PathSeg::Key("deps".into()), PathSeg::Key("iced".into())]
+            )
+            .as_deref(),
+            Some("0.14")
+        );
+        assert_eq!(
+            subtree_pretty(
+                source,
+                "toml",
+                &[PathSeg::Key("deps".into()), PathSeg::Key("major".into())]
+            )
+            .as_deref(),
+            Some("1")
+        );
+    }
+
+    #[test]
+    fn subtree_pretty_toml_array() {
+        let source = "tags = [\"rust\", \"gui\"]\n";
+        let preview = subtree_pretty(source, "toml", &[PathSeg::Key("tags".into())])
+            .expect("TOML array nodes should produce preview content");
+        assert!(preview.contains("rust"));
+        assert!(preview.contains("gui"));
+    }
+
+    #[test]
     fn subtree_pretty_bad_path_is_none() {
         let src = r#"{"a":1}"#;
         assert!(subtree_pretty(src, "json", &[PathSeg::Key("nope".into())]).is_none());
@@ -508,9 +805,15 @@ mod tests {
         let src = "42:\n  nested: ok\ntrue: yes\n";
         let int_path = vec![PathSeg::Key("42".into()), PathSeg::Key("nested".into())];
         let v = subtree_pretty(src, "yaml", &int_path).unwrap();
-        assert!(v.contains("ok"), "int-keyed subtree should resolve, got {v:?}");
+        assert!(
+            v.contains("ok"),
+            "int-keyed subtree should resolve, got {v:?}"
+        );
         let bool_path = vec![PathSeg::Key("true".into())];
         let b = subtree_pretty(src, "yaml", &bool_path).unwrap();
-        assert!(b.contains("yes"), "bool-keyed subtree should resolve, got {b:?}");
+        assert!(
+            b.contains("yes"),
+            "bool-keyed subtree should resolve, got {b:?}"
+        );
     }
 }
