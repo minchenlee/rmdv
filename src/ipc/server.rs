@@ -6,7 +6,7 @@ use interprocess::local_socket::{
     tokio::{prelude::*, Listener, Stream},
     GenericFilePath, ListenerOptions, ToFsName,
 };
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
 /// Message handed to the Iced update loop.
@@ -21,7 +21,13 @@ pub struct ListenerSet {
 
 /// Bind the listener, recovering from a stale socket.
 pub fn acquire() -> Result<ListenerSet> {
-    let paths = socket::candidate_paths();
+    acquire_paths(&socket::candidate_paths(), !socket::has_override())
+}
+
+/// Bind every usable endpoint in `paths`, in order. The first path is the
+/// stable endpoint; when `prepare_stable_parent` is set its parent directory is
+/// created user-private. Public for integration tests.
+pub fn acquire_paths(paths: &[PathBuf], prepare_stable_parent: bool) -> Result<ListenerSet> {
     // First try to connect — if something answers, the caller is not the instance.
     if paths.iter().any(|path| can_connect_blocking(path)) {
         return Err(anyhow!("instance already running"));
@@ -29,17 +35,9 @@ pub fn acquire() -> Result<ListenerSet> {
 
     let mut listeners = Vec::new();
     let mut last_error = None;
-    for path in &paths {
-        // Stale or absent — best-effort unlink (unix only; Windows pipes don't
-        // persist). The stable endpoint is attempted first, which prevents two
-        // concurrent starters from falling through to different aliases.
+    for (index, path) in paths.iter().enumerate() {
         #[cfg(unix)]
-        {
-            let _ = std::fs::remove_file(path);
-        }
-
-        #[cfg(unix)]
-        if Some(path) == paths.first() {
+        if index == 0 && prepare_stable_parent {
             if let Err(error) = prepare_stable_socket_parent(path) {
                 last_error = Some(anyhow!(
                     "prepare IPC socket directory {}: {error}",
@@ -48,28 +46,25 @@ pub fn acquire() -> Result<ListenerSet> {
                 continue;
             }
         }
+        #[cfg(not(unix))]
+        let _ = (index, prepare_stable_parent);
 
-        let name = match path_to_name(path) {
-            Ok(name) => name,
-            Err(error) => {
-                last_error = Some(anyhow!("invalid socket path {}: {error}", path.display()));
-                continue;
-            }
-        };
-        let opts = ListenerOptions::new().name(name);
-        match opts.create_tokio() {
+        match bind_endpoint(path) {
             Ok(listener) => listeners.push(listener),
             Err(error) => {
-                // A competing starter may have won the stable endpoint after
-                // the initial probe. Do not bind only the compatibility alias
-                // in that case and accidentally create a second instance.
-                if paths
-                    .iter()
-                    .any(|candidate| can_connect_blocking(candidate))
+                // Before this process owns any endpoint, a bind failure may
+                // mean a competing starter won after the initial probe; do not
+                // bind only the compatibility alias and become a second
+                // instance. Once an endpoint is ours, probing would reach our
+                // own listener, so a failed alias is simply skipped.
+                if listeners.is_empty()
+                    && paths
+                        .iter()
+                        .any(|candidate| can_connect_blocking(candidate))
                 {
                     return Err(anyhow!("instance already running"));
                 }
-                last_error = Some(anyhow!("bind {}: {error}", path.display()));
+                last_error = Some(error);
             }
         }
     }
@@ -81,9 +76,60 @@ pub fn acquire() -> Result<ListenerSet> {
     }
 }
 
+impl ListenerSet {
+    /// Number of bound endpoints.
+    pub fn len(&self) -> usize {
+        self.listeners.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.listeners.is_empty()
+    }
+}
+
+/// Bind one endpoint without displacing a live listener: an existing socket
+/// file is removed only after `AddrInUse` and a failed connect prove it stale.
+fn bind_endpoint(path: &Path) -> Result<Listener> {
+    let bind = || -> Result<Listener> {
+        let name = path_to_name(path)
+            .map_err(|error| anyhow!("invalid socket path {}: {error}", path.display()))?;
+        ListenerOptions::new()
+            .name(name)
+            .create_tokio()
+            .map_err(|error| anyhow!(BindError(path.to_path_buf(), error)))
+    };
+    match bind() {
+        Err(error) if is_addr_in_use(&error) && !can_connect_blocking(path) => {
+            #[cfg(unix)]
+            {
+                let _ = std::fs::remove_file(path);
+            }
+            bind()
+        }
+        other => other,
+    }
+}
+
+#[derive(Debug)]
+struct BindError(PathBuf, std::io::Error);
+
+impl std::fmt::Display for BindError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "bind {}: {}", self.0.display(), self.1)
+    }
+}
+
+impl std::error::Error for BindError {}
+
+fn is_addr_in_use(error: &anyhow::Error) -> bool {
+    error
+        .downcast_ref::<BindError>()
+        .is_some_and(|BindError(_, io)| io.kind() == std::io::ErrorKind::AddrInUse)
+}
+
 #[cfg(unix)]
 fn prepare_stable_socket_parent(path: &Path) -> std::io::Result<()> {
-    use std::os::unix::fs::PermissionsExt;
+    use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 
     let Some(parent) = path.parent() else {
         return Ok(());
@@ -92,7 +138,10 @@ fn prepare_stable_socket_parent(path: &Path) -> std::io::Result<()> {
         return Ok(());
     }
 
-    std::fs::create_dir_all(parent)?;
+    std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(parent)?;
     std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700))
 }
 

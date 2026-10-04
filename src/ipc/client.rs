@@ -10,6 +10,10 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 /// listening, `Ok(None)` if no instance is running (caller should become the
 /// instance), `Err` on protocol/io errors after a successful connect.
 pub async fn try_send(req: &Request) -> Result<Option<Response>> {
+    // A failing candidate (e.g. a permission error on the stable path) must
+    // not hide an instance reachable through a later alias.
+    let mut first_error = None;
+    let mut saw_no_listener = false;
     for path in socket::candidate_paths() {
         let name = match path_to_name(&path) {
             Ok(n) => n,
@@ -18,8 +22,14 @@ pub async fn try_send(req: &Request) -> Result<Option<Response>> {
 
         let stream = match Stream::connect(name).await {
             Ok(s) => s,
-            Err(e) if is_no_listener(&e) => continue,
-            Err(e) => return Err(anyhow!("connect failed: {e}")),
+            Err(e) if is_no_listener(&e) => {
+                saw_no_listener = true;
+                continue;
+            }
+            Err(e) => {
+                first_error.get_or_insert_with(|| anyhow!("connect {}: {e}", path.display()));
+                continue;
+            }
         };
 
         use tokio::io::split;
@@ -43,7 +53,10 @@ pub async fn try_send(req: &Request) -> Result<Option<Response>> {
 
     // Missing, redirected, or unusual terminal environment information must
     // not prevent the normal caller from becoming the first instance.
-    Ok(None)
+    match first_error {
+        Some(error) if !saw_no_listener => Err(error),
+        _ => Ok(None),
+    }
 }
 
 #[cfg(unix)]

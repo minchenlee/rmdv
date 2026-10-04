@@ -1,7 +1,24 @@
 use std::path::PathBuf;
 
+/// Explicit socket path override. When set, it is the only endpoint, which
+/// keeps isolated instances (benchmarks, tests) away from the personal one.
+pub const OVERRIDE_ENV: &str = "RMDV_SOCKET";
+
+fn override_path() -> Option<PathBuf> {
+    std::env::var_os(OVERRIDE_ENV)
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+}
+
+pub fn has_override() -> bool {
+    override_path().is_some()
+}
+
 #[cfg(unix)]
 pub fn candidate_paths() -> Vec<PathBuf> {
+    if let Some(path) = override_path() {
+        return vec![path];
+    }
     let uid = unsafe { libc::getuid() };
     crate::terminal::TerminalEnvironment::current().socket_paths(uid)
 }
@@ -22,5 +39,5 @@ pub fn default_path() -> PathBuf {
 
 #[cfg(windows)]
 pub fn candidate_paths() -> Vec<PathBuf> {
-    vec![default_path()]
+    vec![override_path().unwrap_or_else(default_path)]
 }

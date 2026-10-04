@@ -422,3 +422,49 @@ fn terminal_environment_detection_handles_shell_tmux_and_pipes() {
     assert!(!malformed.is_tmux());
     assert!(!malformed.is_interactive());
 }
+
+#[cfg(unix)]
+fn ipc_test_dir(tag: &str) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!("rmdv-ipc-{tag}-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
+/// A failed compatibility alias must not make the stable endpoint this process
+/// just bound look like another running instance.
+#[cfg(unix)]
+#[tokio::test]
+async fn acquire_keeps_stable_endpoint_when_alias_bind_fails() {
+    let dir = ipc_test_dir("alias");
+    let stable = dir.join("stable.sock");
+    let unusable_alias = dir.join("missing").join("alias.sock");
+    let listeners = rmdv::ipc::server::acquire_paths(&[stable.clone(), unusable_alias], false)
+        .expect("stable endpoint should be acquired");
+    assert_eq!(listeners.len(), 1);
+    assert!(std::os::unix::net::UnixStream::connect(&stable).is_ok());
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn acquire_reclaims_a_stale_socket_file() {
+    let dir = ipc_test_dir("stale");
+    let path = dir.join("stale.sock");
+    let _ = std::fs::remove_file(&path);
+    drop(std::os::unix::net::UnixListener::bind(&path).unwrap());
+    assert!(path.exists(), "std listener leaves its socket file behind");
+    let listeners = rmdv::ipc::server::acquire_paths(&[path.clone()], false)
+        .expect("stale socket should be reclaimed");
+    assert_eq!(listeners.len(), 1);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn acquire_never_displaces_a_live_listener() {
+    let dir = ipc_test_dir("live");
+    let path = dir.join("live.sock");
+    let _ = std::fs::remove_file(&path);
+    let live = std::os::unix::net::UnixListener::bind(&path).unwrap();
+    assert!(rmdv::ipc::server::acquire_paths(&[path.clone()], false).is_err());
+    assert!(std::os::unix::net::UnixStream::connect(&path).is_ok());
+    drop(live);
+}
