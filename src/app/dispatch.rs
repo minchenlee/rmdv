@@ -2641,6 +2641,7 @@ impl App {
                         match tree::build_workspace(&ws, self.show_hidden) {
                             Ok(snapshot) => {
                                 self.workspace_files = snapshot.files;
+                                self.workspace_files_rev = self.workspace_files_rev.wrapping_add(1);
                                 self.workspace_sidebar_files = snapshot.sidebar_files;
                                 self.workspace_tree = Some(snapshot.root);
                                 self.workspace_snapshot_show_hidden = self.show_hidden;
