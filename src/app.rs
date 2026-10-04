@@ -2155,11 +2155,13 @@ impl App {
                 if self.full_mindmap.is_some() {
                     let exit = self.exit_full_mindmap(false);
                     if self.full_mindmap.is_none() {
+                        self.supersede_file_loads();
                         Task::batch([checkpoint, exit, load])
                     } else {
                         Task::batch([checkpoint, exit])
                     }
                 } else {
+                    self.supersede_file_loads();
                     Task::batch([checkpoint, load])
                 }
             }
@@ -2522,6 +2524,13 @@ impl App {
 
     fn bump_file_refresh_generation(&mut self) {
         self.file_refresh_generation = self.file_refresh_generation.wrapping_add(1);
+    }
+
+    /// A Quick Slot read is the newest file intent: older generic loads and an
+    /// in-flight refresh must not land after it and override the slot.
+    fn supersede_file_loads(&mut self) {
+        self.cancel_refresh_tracking();
+        self.bump_file_refresh_generation();
     }
 
     fn load_file_unless_dirty(&mut self, path: PathBuf) -> Task<Message> {
@@ -14308,6 +14317,48 @@ mod tests {
         let mut app = App::default();
         app.set_workspace(root.clone(), false);
         (app, old_file, new_file)
+    }
+
+    #[test]
+    fn quick_slot_activation_rejects_older_generic_load_and_refresh() {
+        let (mut app, old_file, _new_file) = quick_slot_restore_test_app("slot-supersedes");
+        app.file = Some(old_file.clone());
+        app.source = "# Old\n".into();
+        app.saved_source = app.source.clone();
+        app.quick_slots.set(
+            0,
+            crate::quick_slots::QuickSlot {
+                relative_path: "new.md".into(),
+                context: crate::quick_slots::SlotContext::default(),
+            },
+        );
+        let other = old_file.with_file_name("other.md");
+        let _ = app.load_file_unless_dirty(other.clone());
+        let generic_generation = app.file_refresh_generation;
+        let _ = app.update(Message::Refresh);
+        let refresh_request = app
+            .pending_refresh_file
+            .clone()
+            .expect("refresh should own the current file");
+
+        let _ = app.update(Message::QuickSlotActivate(0));
+        assert_ne!(app.file_refresh_generation, refresh_request.generation);
+
+        let _ = app.update(Message::FileLoadCompleted {
+            generation: generic_generation,
+            result: Ok((other, "stale generic load".into())),
+        });
+        let _ = app.update(Message::RefreshFileLoaded {
+            request: refresh_request,
+            result: Ok((old_file.clone(), "stale refresh".into())),
+        });
+        assert_eq!(app.file.as_deref(), Some(old_file.as_path()));
+        assert_eq!(app.source, "# Old\n");
+
+        let isolated = app.quick_slots_persistence_path.clone().unwrap();
+        let root = app.workspace.take().unwrap();
+        let _ = std::fs::remove_file(isolated);
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
