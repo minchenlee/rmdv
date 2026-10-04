@@ -7983,3 +7983,57 @@ fn unknown_saved_theme_keeps_the_system_default() {
     assert_eq!(legacy.theme, None);
     assert!(!legacy.show_footer);
 }
+
+fn search_test_app(source: String) -> App {
+    let mut app = App::default();
+    app.ast = crate::parser::parse(&source).0;
+    app.source = source;
+    app.search_open = true;
+    app
+}
+
+#[test]
+fn small_document_search_updates_on_every_keystroke() {
+    let mut app = search_test_app("alpha beta\n\nalpha\n".into());
+    let _ = app.update(Message::QueryChanged("alpha".into()));
+    assert!(!app.search_pending);
+    assert_eq!(app.matches.len(), 2);
+}
+
+#[test]
+fn large_document_search_waits_for_the_latest_keystroke() {
+    let mut source = String::new();
+    while source.len() <= SEARCH_DEBOUNCE_MIN_BYTES {
+        source.push_str("alpha beta gamma\n\n");
+    }
+    let mut app = search_test_app(source);
+    let _ = app.update(Message::QueryChanged("al".into()));
+    let stale = app.search_generation;
+    let _ = app.update(Message::QueryChanged("beta".into()));
+    assert!(app.search_pending, "large documents debounce the search");
+    assert!(app.matches.is_empty(), "no search ran yet");
+
+    let _ = app.update(Message::SearchDebounced(stale));
+    assert!(app.matches.is_empty(), "a superseded timer must not search");
+
+    let _ = app.update(Message::SearchDebounced(app.search_generation));
+    assert!(!app.search_pending);
+    let hits = app.matches.len();
+    assert!(hits > 1);
+    assert_eq!(app.matches.get(0).map(|m| m.in_block), Some(0));
+
+    // Enter before the timer fires navigates the new query's results.
+    let _ = app.update(Message::QueryChanged("gamma".into()));
+    assert!(app.search_pending);
+    let _ = app.update(Message::NextMatch);
+    assert!(!app.search_pending);
+    assert_eq!(app.matches.len(), hits);
+    assert_eq!(app.match_idx, 1);
+
+    // Closing search drops a pending run.
+    let _ = app.update(Message::QueryChanged("alpha".into()));
+    let _ = app.update(Message::ToggleSearch);
+    assert!(!app.search_pending);
+    let _ = app.update(Message::SearchDebounced(app.search_generation));
+    assert!(app.matches.is_empty());
+}

@@ -488,7 +488,7 @@ pub(in crate::app) fn quick_slots_rail<'a>(
 
 pub(in crate::app) fn search_bar_view<'a>(
     query: &'a str,
-    matches: &'a [MatchPos],
+    matches: &'a Matches,
     idx: usize,
     pal: Palette,
 ) -> Element<'a, Message> {
