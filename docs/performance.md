@@ -119,8 +119,10 @@ cargo bench --bench cold_start          # parse + font-load microbenches
 vmmap --summary <pid> | grep "Physical footprint"
 ```
 
-Footprint measurements use isolated instances (`TMPDIR=<dir>` separates the
-IPC socket) so a running personal instance isn't disturbed. Caveat learned the
+Footprint measurements use isolated instances (`RMDV_SOCKET=<dir>/rmdv.sock`
+makes that path the only IPC endpoint) so a running personal instance isn't
+disturbed. `TMPDIR` alone no longer isolates an instance: the stable socket
+lives in the user cache directory. Caveat learned the
 hard way: footprint ≠ live heap — freed pages linger in malloc caches (see
 `ab1c5de`), so always cross-check a "leak" with `malloc_history`/`heap`
 before attributing.

@@ -10,35 +10,53 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 /// listening, `Ok(None)` if no instance is running (caller should become the
 /// instance), `Err` on protocol/io errors after a successful connect.
 pub async fn try_send(req: &Request) -> Result<Option<Response>> {
-    let path = socket::default_path();
-    let name = match path_to_name(&path) {
-        Ok(n) => n,
-        Err(e) => return Err(anyhow!("invalid socket path {}: {e}", path.display())),
-    };
+    // A failing candidate (e.g. a permission error on the stable path) must
+    // not hide an instance reachable through a later alias.
+    let mut first_error = None;
+    let mut saw_no_listener = false;
+    for path in socket::candidate_paths() {
+        let name = match path_to_name(&path) {
+            Ok(n) => n,
+            Err(_) => continue,
+        };
 
-    let stream = match Stream::connect(name).await {
-        Ok(s) => s,
-        Err(e) if is_no_listener(&e) => return Ok(None),
-        Err(e) => return Err(anyhow!("connect failed: {e}")),
-    };
+        let stream = match Stream::connect(name).await {
+            Ok(s) => s,
+            Err(e) if is_no_listener(&e) => {
+                saw_no_listener = true;
+                continue;
+            }
+            Err(e) => {
+                first_error.get_or_insert_with(|| anyhow!("connect {}: {e}", path.display()));
+                continue;
+            }
+        };
 
-    use tokio::io::split;
-    let (recv, mut send) = split(stream);
+        use tokio::io::split;
+        let (recv, mut send) = split(stream);
 
-    let mut line = serde_json::to_string(req)?;
-    line.push('\n');
-    send.write_all(line.as_bytes()).await?;
-    send.flush().await?;
-    drop(send); // half-close so server's read_line returns EOF after our line
+        let mut line = serde_json::to_string(req)?;
+        line.push('\n');
+        send.write_all(line.as_bytes()).await?;
+        send.flush().await?;
+        drop(send); // half-close so server's read_line returns EOF after our line
 
-    let mut reader = BufReader::new(recv);
-    let mut buf = String::new();
-    reader.read_line(&mut buf).await?;
-    if buf.is_empty() {
-        return Err(anyhow!("ipc disconnect"));
+        let mut reader = BufReader::new(recv);
+        let mut buf = String::new();
+        reader.read_line(&mut buf).await?;
+        if buf.is_empty() {
+            return Err(anyhow!("ipc disconnect"));
+        }
+        let resp: Response = serde_json::from_str(buf.trim_end())?;
+        return Ok(Some(resp));
     }
-    let resp: Response = serde_json::from_str(buf.trim_end())?;
-    Ok(Some(resp))
+
+    // Missing, redirected, or unusual terminal environment information must
+    // not prevent the normal caller from becoming the first instance.
+    match first_error {
+        Some(error) if !saw_no_listener => Err(error),
+        _ => Ok(None),
+    }
 }
 
 #[cfg(unix)]
