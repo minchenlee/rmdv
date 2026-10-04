@@ -2824,7 +2824,7 @@ impl App {
             }
             Message::QueryChanged(q) => {
                 self.query = q;
-                if self.source.len() < SEARCH_DEBOUNCE_MIN_BYTES {
+                if self.query.is_empty() || self.source.len() < SEARCH_DEBOUNCE_MIN_BYTES {
                     self.rebuild_matches();
                     return self.scroll_to_current_match();
                 }
@@ -2847,6 +2847,11 @@ impl App {
                     return Task::none();
                 }
                 self.rebuild_matches();
+                // Zen edit mode hides the find bar without clearing the
+                // query; keep results current but leave the scroll alone.
+                if !self.search_open {
+                    return Task::none();
+                }
                 self.scroll_to_current_match()
             }
             Message::NextMatch => {

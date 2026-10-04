@@ -2778,14 +2778,17 @@ impl App {
         } else if self.file.is_none() {
             welcome_view(pal)
         } else {
+            // Results still belong to the previous query while a debounced
+            // search is pending, so don't mark any hit as current.
+            let current = if self.search_pending {
+                None
+            } else {
+                self.matches.get(self.match_idx)
+            };
             let hl = Highlight {
                 query: self.query.clone(),
-                current_block: self.matches.get(self.match_idx).map(|m| m.block),
-                current_in_block: self
-                    .matches
-                    .get(self.match_idx)
-                    .map(|m| m.in_block)
-                    .unwrap_or(0),
+                current_block: current.map(|m| m.block),
+                current_in_block: current.map(|m| m.in_block).unwrap_or(0),
             };
             let body: Element<'_, Message> = if self.view_mode == ViewMode::Mindmap {
                 let (nodes, content_size, _) = self.mindmap_layout();
@@ -2963,7 +2966,13 @@ impl App {
 
         let reader_with_search: Element<'_, Message> = if self.search_open && !full_mindmap {
             column![
-                search_bar_view(&self.query, &self.matches, self.match_idx, pal),
+                search_bar_view(
+                    &self.query,
+                    &self.matches,
+                    self.match_idx,
+                    self.search_pending,
+                    pal,
+                ),
                 reader,
             ]
             .into()

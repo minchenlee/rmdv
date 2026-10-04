@@ -8003,8 +8003,10 @@ fn small_document_search_updates_on_every_keystroke() {
 #[test]
 fn large_document_search_waits_for_the_latest_keystroke() {
     let mut source = String::new();
+    let mut blocks = 0;
     while source.len() <= SEARCH_DEBOUNCE_MIN_BYTES {
-        source.push_str("alpha beta gamma\n\n");
+        source.push_str("alpha beta gamma gamma\n\n");
+        blocks += 1;
     }
     let mut app = search_test_app(source);
     let _ = app.update(Message::QueryChanged("al".into()));
@@ -8018,22 +8020,47 @@ fn large_document_search_waits_for_the_latest_keystroke() {
 
     let _ = app.update(Message::SearchDebounced(app.search_generation));
     assert!(!app.search_pending);
-    let hits = app.matches.len();
-    assert!(hits > 1);
-    assert_eq!(app.matches.get(0).map(|m| m.in_block), Some(0));
+    assert_eq!(app.matches.len(), blocks);
+    assert_eq!(
+        app.matches.get(1).map(|m| (m.block, m.in_block)),
+        Some((1, 0))
+    );
 
     // Enter before the timer fires navigates the new query's results.
     let _ = app.update(Message::QueryChanged("gamma".into()));
     assert!(app.search_pending);
+    assert_eq!(app.matches.len(), blocks, "still the previous query's hits");
     let _ = app.update(Message::NextMatch);
     assert!(!app.search_pending);
-    assert_eq!(app.matches.len(), hits);
+    assert_eq!(app.matches.len(), 2 * blocks);
     assert_eq!(app.match_idx, 1);
+    assert_eq!(
+        app.matches.get(1).map(|m| (m.block, m.in_block)),
+        Some((0, 1))
+    );
+
+    // Clearing the query needs no search, so it applies at once.
+    let _ = app.update(Message::QueryChanged(String::new()));
+    assert!(!app.search_pending);
+    assert!(app.matches.is_empty());
 
     // Closing search drops a pending run.
     let _ = app.update(Message::QueryChanged("alpha".into()));
     let _ = app.update(Message::ToggleSearch);
     assert!(!app.search_pending);
+}
+
+#[test]
+fn debounced_search_with_find_bar_hidden_updates_results_only() {
+    let mut source = String::new();
+    while source.len() <= SEARCH_DEBOUNCE_MIN_BYTES {
+        source.push_str("alpha beta\n\n");
+    }
+    let mut app = search_test_app(source);
+    let _ = app.update(Message::QueryChanged("beta".into()));
+    // Zen edit mode hides the find bar but keeps the query.
+    app.search_open = false;
     let _ = app.update(Message::SearchDebounced(app.search_generation));
-    assert!(app.matches.is_empty());
+    assert!(!app.search_pending);
+    assert!(!app.matches.is_empty());
 }

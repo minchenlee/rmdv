@@ -490,9 +490,12 @@ pub(in crate::app) fn search_bar_view<'a>(
     query: &'a str,
     matches: &'a Matches,
     idx: usize,
+    pending: bool,
     pal: Palette,
 ) -> Element<'a, Message> {
-    let counter = if matches.is_empty() {
+    let counter = if pending {
+        "…".into()
+    } else if matches.is_empty() {
         if query.is_empty() {
             String::new()
         } else {
