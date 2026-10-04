@@ -24,7 +24,7 @@ pub(in crate::app) fn primary_button<'a>(
                 background: Some(Background::Color(bg)),
                 text_color: pal.accent_fg,
                 border: Border {
-                    radius: 999.0.into(),
+                    radius: theme::radius::PILL.into(),
                     ..Default::default()
                 },
                 ..Default::default()
@@ -42,7 +42,7 @@ pub(in crate::app) fn ghost_lu<'a>(code: char, pal: Palette) -> button::Button<'
             },
             text_color: pal.muted,
             border: Border {
-                radius: 999.0.into(),
+                radius: theme::radius::PILL.into(),
                 ..Default::default()
             },
             ..Default::default()
@@ -61,13 +61,9 @@ pub(in crate::app) fn centered_card<'a>(
                 border: Border {
                     color: pal.rule,
                     width: 1.0,
-                    radius: 16.0.into(),
+                    radius: theme::radius::CARD.into(),
                 },
-                shadow: iced::Shadow {
-                    color: Color::from_rgba(0.0, 0.0, 0.0, 0.18),
-                    offset: iced::Vector::new(0.0, 8.0),
-                    blur_radius: 30.0,
-                },
+                shadow: theme::shadow::CARD,
                 ..Default::default()
             }),
     )
@@ -115,13 +111,13 @@ pub(crate) fn sleek_scrollable_style(
     let rail = scrollable::Rail {
         background: None,
         border: Border {
-            radius: 8.0.into(),
+            radius: theme::radius::LG.into(),
             ..Default::default()
         },
         scroller: scrollable::Scroller {
             background: Background::Color(scroller_color),
             border: Border {
-                radius: 8.0.into(),
+                radius: theme::radius::LG.into(),
                 ..Default::default()
             },
         },

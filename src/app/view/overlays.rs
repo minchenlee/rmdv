@@ -32,7 +32,7 @@ pub(in crate::app) fn folder_picker_overlay<'a>(
                         },
                         text_color: pal.fg,
                         border: Border {
-                            radius: 6.0.into(),
+                            radius: theme::radius::MD.into(),
                             ..Default::default()
                         },
                         ..Default::default()
@@ -80,7 +80,7 @@ pub(in crate::app) fn folder_picker_overlay<'a>(
                     },
                     text_color: pal.fg,
                     border: Border {
-                        radius: 6.0.into(),
+                        radius: theme::radius::MD.into(),
                         ..Default::default()
                     },
                     ..Default::default()
@@ -161,7 +161,7 @@ pub(in crate::app) fn file_finder_overlay<'a>(
                     },
                     text_color: pal.fg,
                     border: Border {
-                        radius: 6.0.into(),
+                        radius: theme::radius::MD.into(),
                         ..Default::default()
                     },
                     ..Default::default()
@@ -312,20 +312,16 @@ pub(in crate::app) fn shortcuts_overlay<'a>(pal: Palette) -> Element<'a, Message
             border: Border {
                 color: pal.rule,
                 width: 1.0,
-                radius: 16.0.into(),
+                radius: theme::radius::CARD.into(),
             },
-            shadow: iced::Shadow {
-                color: Color::from_rgba(0.0, 0.0, 0.0, 0.35),
-                offset: iced::Vector::new(0.0, 18.0),
-                blur_radius: 60.0,
-            },
+            shadow: theme::shadow::SHEET,
             ..Default::default()
         });
 
     let scrim = mouse_area(
         container(Space::new().width(Length::Fill).height(Length::Fill))
             .style(|_| container::Style {
-                background: Some(Background::Color(Color::from_rgba(0.0, 0.0, 0.0, 0.18))),
+                background: Some(Background::Color(theme::shadow::SCRIM)),
                 ..Default::default()
             })
             .width(Length::Fill)
@@ -378,7 +374,7 @@ pub(in crate::app) fn key_caps<'a>(keys: &str, pal: Palette) -> Element<'a, Mess
                         border: Border {
                             color: pal.rule,
                             width: 1.0,
-                            radius: 5.0.into(),
+                            radius: theme::radius::SM.into(),
                         },
                         ..Default::default()
                     }),
@@ -429,7 +425,7 @@ pub(in crate::app) fn command_overlay<'a>(
                     },
                     text_color: pal.fg,
                     border: Border {
-                        radius: 6.0.into(),
+                        radius: theme::radius::MD.into(),
                         ..Default::default()
                     },
                     ..Default::default()
@@ -495,7 +491,7 @@ pub(in crate::app) fn theme_overlay<'a>(
             border: Border {
                 color: swatch_pal.rule,
                 width: 1.0,
-                radius: 4.0.into(),
+                radius: theme::radius::XS.into(),
             },
             ..Default::default()
         });
@@ -509,7 +505,7 @@ pub(in crate::app) fn theme_overlay<'a>(
             border: Border {
                 color: swatch_pal.rule,
                 width: 1.0,
-                radius: 4.0.into(),
+                radius: theme::radius::XS.into(),
             },
             ..Default::default()
         });
@@ -542,7 +538,7 @@ pub(in crate::app) fn theme_overlay<'a>(
             },
             text_color: pal.fg,
             border: Border {
-                radius: 6.0.into(),
+                radius: theme::radius::MD.into(),
                 ..Default::default()
             },
             ..Default::default()
@@ -578,7 +574,7 @@ pub(in crate::app) fn picker_hint_footer<'a>(pal: Palette) -> Element<'a, Messag
                     border: Border {
                         color: pal.rule,
                         width: 1.0,
-                        radius: 4.0.into(),
+                        radius: theme::radius::XS.into(),
                     },
                     ..Default::default()
                 }),
@@ -637,7 +633,7 @@ pub(in crate::app) fn hint_pills<'a>(
                     border: Border {
                         color: pal.rule,
                         width: 1.0,
-                        radius: 4.0.into(),
+                        radius: theme::radius::XS.into(),
                     },
                     ..Default::default()
                 }),
@@ -667,20 +663,16 @@ pub(in crate::app) fn overlay_frame<'a>(
             border: Border {
                 color: pal.rule,
                 width: 1.0,
-                radius: 14.0.into(),
+                radius: theme::radius::DIALOG.into(),
             },
-            shadow: iced::Shadow {
-                color: Color::from_rgba(0.0, 0.0, 0.0, 0.28),
-                offset: iced::Vector::new(0.0, 14.0),
-                blur_radius: 50.0,
-            },
+            shadow: theme::shadow::DIALOG,
             ..Default::default()
         });
 
     let scrim = mouse_area(
         container(Space::new().width(Length::Fill).height(Length::Fill))
             .style(|_| container::Style {
-                background: Some(Background::Color(Color::from_rgba(0.0, 0.0, 0.0, 0.18))),
+                background: Some(Background::Color(theme::shadow::SCRIM)),
                 ..Default::default()
             })
             .width(Length::Fill)

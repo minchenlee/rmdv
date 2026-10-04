@@ -29,7 +29,7 @@ pub(in crate::app) fn sidebar_view<'a>(app: &'a App, pal: Palette) -> Element<'a
             border: Border {
                 color: pal.rule,
                 width: 1.0,
-                radius: 5.0.into(),
+                radius: theme::radius::SM.into(),
             },
             ..Default::default()
         })
@@ -140,7 +140,7 @@ pub(in crate::app) fn sidebar_tab_button<'a>(
             border: Border {
                 color: if active { pal.rule } else { Color::TRANSPARENT },
                 width: 1.0,
-                radius: 5.0.into(),
+                radius: theme::radius::SM.into(),
             },
             ..Default::default()
         }
@@ -258,7 +258,7 @@ pub(in crate::app) fn outline_row<'a>(
             },
             text_color: pal.fg,
             border: Border {
-                radius: 6.0.into(),
+                radius: theme::radius::MD.into(),
                 ..Default::default()
             },
             ..Default::default()
@@ -432,7 +432,7 @@ pub(in crate::app) fn tree_row<'a>(
                 border: Border {
                     color: Color::TRANSPARENT,
                     width: 0.0,
-                    radius: 6.0.into(),
+                    radius: theme::radius::MD.into(),
                 },
                 ..Default::default()
             }

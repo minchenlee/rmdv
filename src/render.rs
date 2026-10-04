@@ -601,7 +601,7 @@ fn render_block<'a>(
                     border: iced::Border {
                         color: pal_c.code_border,
                         width: 1.0,
-                        radius: 8.0.into(),
+                        radius: crate::theme::radius::LG.into(),
                     },
                     ..Default::default()
                 })
@@ -616,7 +616,7 @@ fn render_block<'a>(
                             border: iced::Border {
                                 color: pal_c.code_border,
                                 width: 1.0,
-                                radius: 6.0.into(),
+                                radius: crate::theme::radius::MD.into(),
                             },
                             ..Default::default()
                         },
@@ -1088,7 +1088,7 @@ fn render_math_block<'a>(
                             border: iced::Border {
                                 color: pal_t.rule,
                                 width: 1.0,
-                                radius: 5.0.into(),
+                                radius: crate::theme::radius::SM.into(),
                             },
                             ..Default::default()
                         }
@@ -1149,7 +1149,7 @@ fn render_diagram<'a>(
                     border: iced::Border {
                         color: pal_c.code_border,
                         width: 1.0,
-                        radius: 8.0.into(),
+                        radius: crate::theme::radius::LG.into(),
                     },
                     ..Default::default()
                 });
@@ -1167,7 +1167,7 @@ fn render_diagram<'a>(
                     border: iced::Border {
                         color: pal_c.code_border,
                         width: 1.0,
-                        radius: 6.0.into(),
+                        radius: crate::theme::radius::MD.into(),
                     },
                     ..Default::default()
                 });
@@ -1201,7 +1201,7 @@ fn render_diagram<'a>(
                             border: iced::Border {
                                 color: pal_t.rule,
                                 width: 1.0,
-                                radius: 5.0.into(),
+                                radius: crate::theme::radius::SM.into(),
                             },
                             ..Default::default()
                         }
@@ -1250,7 +1250,7 @@ fn source_code_block<'a>(
         border: iced::Border {
             color: pal_c.code_border,
             width: 1.0,
-            radius: 8.0.into(),
+            radius: crate::theme::radius::LG.into(),
         },
         ..Default::default()
     })
@@ -1268,7 +1268,7 @@ fn chip<'a>(pal: &Palette, label: &'a str, fg: iced::Color) -> Element<'a, Messa
             border: iced::Border {
                 color: pal_c.rule,
                 width: 1.0,
-                radius: 4.0.into(),
+                radius: crate::theme::radius::XS.into(),
             },
             ..Default::default()
         })

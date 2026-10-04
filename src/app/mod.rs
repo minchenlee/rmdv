@@ -2986,7 +2986,7 @@ impl App {
                         border: Border {
                             color: pal.rule,
                             width: 1.0,
-                            radius: 6.0.into(),
+                            radius: theme::radius::MD.into(),
                         },
                         ..Default::default()
                     }),

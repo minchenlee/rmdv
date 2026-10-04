@@ -238,7 +238,7 @@ pub(in crate::app) fn vault_search_page<'a>(
                             },
                             text_color: pal.accent,
                             border: Border {
-                                radius: 5.0.into(),
+                                radius: theme::radius::SM.into(),
                                 ..Default::default()
                             },
                             ..Default::default()
@@ -273,7 +273,7 @@ pub(in crate::app) fn vault_search_page<'a>(
                             },
                             text_color: pal.fg,
                             border: Border {
-                                radius: 5.0.into(),
+                                radius: theme::radius::SM.into(),
                                 ..Default::default()
                             },
                             ..Default::default()

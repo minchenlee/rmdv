@@ -13,7 +13,7 @@ pub(in crate::app) fn update_banner<'a>(version: &str, pal: Palette) -> Element<
     let dot = container(Space::new().width(7).height(7)).style(move |_| container::Style {
         background: Some(pal.accent.into()),
         border: Border {
-            radius: 999.0.into(),
+            radius: theme::radius::PILL.into(),
             ..Default::default()
         },
         ..Default::default()
@@ -37,7 +37,7 @@ pub(in crate::app) fn update_banner<'a>(version: &str, pal: Palette) -> Element<
             border: Border {
                 color: pal.rule,
                 width: 1.0,
-                radius: 999.0.into(),
+                radius: theme::radius::PILL.into(),
             },
             ..Default::default()
         })
@@ -53,7 +53,7 @@ pub(in crate::app) fn update_banner<'a>(version: &str, pal: Palette) -> Element<
         border: iced::Border {
             color: pal.rule,
             width: 1.0,
-            radius: 12.0.into(),
+            radius: theme::radius::XXL.into(),
         },
         text_color: Some(pal.fg),
         ..Default::default()
@@ -90,7 +90,7 @@ pub(in crate::app) fn status_footer<'a>(words: usize, pal: Palette) -> Element<'
             border: iced::Border {
                 color: pal.rule,
                 width: 1.0,
-                radius: 8.0.into(),
+                radius: theme::radius::LG.into(),
             },
             ..Default::default()
         });
@@ -116,7 +116,7 @@ pub(in crate::app) fn toast_overlay<'a>(toast: &Toast, pal: Palette) -> Element<
                 background: Some(Background::Color(pal.accent)),
                 text_color: pal.accent_fg,
                 border: Border {
-                    radius: 999.0.into(),
+                    radius: theme::radius::PILL.into(),
                     ..Default::default()
                 },
                 ..Default::default()
@@ -131,7 +131,7 @@ pub(in crate::app) fn toast_overlay<'a>(toast: &Toast, pal: Palette) -> Element<
             border: iced::Border {
                 color: pal.rule,
                 width: 1.0,
-                radius: 8.0.into(),
+                radius: theme::radius::LG.into(),
             },
             text_color: Some(pal.fg),
             ..Default::default()
@@ -190,7 +190,7 @@ pub(in crate::app) fn full_mindmap_progress_overlay<'a>(
                 .style(move |_| container::Style {
                     background: Some(pal.rule.into()),
                     border: Border {
-                        radius: 999.0.into(),
+                        radius: theme::radius::PILL.into(),
                         ..Default::default()
                     },
                     ..Default::default()
@@ -205,7 +205,7 @@ pub(in crate::app) fn full_mindmap_progress_overlay<'a>(
         border: Border {
             color: pal.rule,
             width: 1.0,
-            radius: 8.0.into(),
+            radius: theme::radius::LG.into(),
         },
         text_color: Some(pal.fg),
         ..Default::default()
@@ -291,7 +291,7 @@ pub(in crate::app) fn image_zoom_overlay<'a>(
             border: iced::Border {
                 color: pal.code_border,
                 width: 1.0,
-                radius: 8.0.into(),
+                radius: theme::radius::LG.into(),
             },
             ..Default::default()
         });
@@ -322,7 +322,7 @@ pub(in crate::app) fn welcome_view<'a>(pal: Palette) -> Element<'a, Message> {
                 border: Border {
                     color: pal.rule,
                     width: 1.0,
-                    radius: 5.0.into(),
+                    radius: theme::radius::SM.into(),
                 },
                 ..Default::default()
             }),
@@ -421,7 +421,7 @@ pub(in crate::app) fn quick_slots_rail<'a>(
                             pal.rule
                         },
                         width: 1.0,
-                        radius: 5.0.into(),
+                        radius: theme::radius::SM.into(),
                     },
                     ..Default::default()
                 }
@@ -459,7 +459,7 @@ pub(in crate::app) fn quick_slots_rail<'a>(
                 border: Border {
                     color: pal.rule,
                     width: 1.0,
-                    radius: 6.0.into(),
+                    radius: theme::radius::MD.into(),
                 },
                 ..Default::default()
             });
@@ -514,7 +514,7 @@ pub(in crate::app) fn search_bar_view<'a>(
                     border: Border {
                         color: pal.rule,
                         width: 1.0,
-                        radius: 999.0.into(),
+                        radius: theme::radius::PILL.into(),
                     },
                     icon: pal.muted,
                     placeholder: pal.subtle,
@@ -558,13 +558,9 @@ pub(in crate::app) fn floating_mindmap_hint<'a>(
             border: Border {
                 color: pal.rule,
                 width: 1.0,
-                radius: 10.0.into(),
+                radius: theme::radius::XL.into(),
             },
-            shadow: iced::Shadow {
-                color: Color::from_rgba(0.0, 0.0, 0.0, 0.22),
-                offset: iced::Vector::new(0.0, 5.0),
-                blur_radius: 14.0,
-            },
+            shadow: theme::shadow::HINT,
             ..Default::default()
         });
 
