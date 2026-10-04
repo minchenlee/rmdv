@@ -4689,6 +4689,174 @@ impl App {
         self.file.clone()
     }
 
+    /// Answer one CLI/IPC request and return any follow-up work.
+    fn handle_ipc(
+        &mut self,
+        req: crate::ipc::Request,
+        tx: std::sync::Arc<
+            std::sync::Mutex<Option<futures::channel::oneshot::Sender<crate::ipc::Response>>>,
+        >,
+    ) -> Task<Message> {
+        use crate::ipc::{Cmd, FocusBehavior, Mode, Response};
+        let id = req.id;
+        let mut follow_up: Task<Message> = Task::none();
+        // Tracks whether the handler should chain a focus-raise after
+        // the response. `Some(true)` = force raise, `Some(false)` =
+        // explicit suppress, `None` = not a nav command.
+        let mut nav_focus: Option<FocusBehavior> = None;
+        // Screenshot replies only after the file is written, so its
+        // handler stashes the sender and suppresses the sync reply.
+        let mut defer_reply = false;
+        let resp = match req.cmd {
+            Cmd::Current => {
+                let mode = match self.view_mode {
+                    ViewMode::Rendered => "view",
+                    ViewMode::Raw => "edit",
+                    ViewMode::Mindmap => "mindmap",
+                };
+                let body = serde_json::json!({
+                    "file": self.file.as_ref().map(|p| p.to_string_lossy().into_owned()),
+                    "line": current_line_estimate(self),
+                    "mode": mode,
+                    "folder": self.workspace.as_ref().map(|p| p.to_string_lossy().into_owned()),
+                });
+                Response::ok_with(id, body)
+            }
+            Cmd::Focus => {
+                follow_up = iced::window::latest().and_then(|wid| iced::window::gain_focus(wid));
+                Response::ok(id)
+            }
+            Cmd::Close => {
+                follow_up = iced::window::latest().and_then(|wid| iced::window::close(wid));
+                Response::ok(id)
+            }
+            Cmd::Mode { mode, focus } => {
+                let is_pdf = is_pdf_path(self.file.as_deref());
+                match mode {
+                    Mode::View => {
+                        if self.view_mode == ViewMode::Raw {
+                            follow_up = self.exit_zen_edit_mode();
+                        } else {
+                            self.view_mode = ViewMode::Rendered;
+                        }
+                    }
+                    // PDFs are view-only: coerce edit requests to View.
+                    Mode::Edit if is_pdf => self.view_mode = ViewMode::Rendered,
+                    Mode::Edit => {
+                        follow_up = self.enter_zen_edit_mode();
+                    }
+                    Mode::Mindmap => {
+                        if self.view_mode == ViewMode::Raw {
+                            self.sync_editor_to_source();
+                            self.editor = None;
+                            self.edit_history.clear();
+                            self.edit_redo.clear();
+                            self.restore_zen_chrome();
+                        }
+                        self.view_mode = ViewMode::Mindmap;
+                    }
+                }
+                nav_focus = Some(focus);
+                Response::ok(id)
+            }
+            Cmd::OpenFolder { dir } => {
+                follow_up = Task::done(Message::OpenWorkspace(std::path::PathBuf::from(dir)));
+                Response::ok(id)
+            }
+            Cmd::Reveal { file, focus } => {
+                if self.dirty {
+                    Response::err(id, self.unsaved_edits_open_message())
+                } else {
+                    follow_up = self.begin_ipc_file_open(std::path::PathBuf::from(file), None);
+                    nav_focus = Some(focus);
+                    Response::ok(id)
+                }
+            }
+            Cmd::Open {
+                file,
+                line,
+                section,
+                focus,
+            } => {
+                if self.dirty {
+                    Response::err(id, self.unsaved_edits_open_message())
+                } else {
+                    let path = std::path::PathBuf::from(file);
+                    follow_up = self.begin_ipc_file_open(
+                        path,
+                        Some(PendingNav {
+                            line,
+                            section,
+                            ..Default::default()
+                        }),
+                    );
+                    nav_focus = Some(focus);
+                    Response::ok(id)
+                }
+            }
+            Cmd::Goto {
+                line,
+                section,
+                focus,
+            } => {
+                nav_focus = Some(focus);
+                apply_goto(self, id, line, section)
+            }
+            Cmd::Screenshot { path } => {
+                // Capture is async: stash the path + sender, fire the
+                // window screenshot, and reply once the PNG is written.
+                self.pending_screenshot = Some((
+                    std::path::PathBuf::from(path),
+                    Some(std::sync::Arc::clone(&tx)),
+                ));
+                follow_up = iced::window::latest()
+                    .and_then(iced::window::screenshot)
+                    .map(Message::ScreenshotCaptured);
+                defer_reply = true;
+                Response::ok(id)
+            }
+            Cmd::Resize { width, height } => {
+                follow_up = iced::window::latest().and_then(move |wid| {
+                    iced::window::resize(wid, iced::Size::new(width as f32, height as f32))
+                });
+                Response::ok(id)
+            }
+            Cmd::Theme { slug } => match theme::preset_by_slug(&slug) {
+                Some(preset) => {
+                    follow_up = Task::done(Message::SetTheme(preset));
+                    Response::ok(id)
+                }
+                None => Response::err(id, format!("unknown theme: {slug}")),
+            },
+            Cmd::DemoBanner { version } => {
+                // Fake a ready update purely to render the banner. The
+                // artifact path is empty, so "Install" would no-op — this
+                // is for demos/screenshots only.
+                self.pending_update = Some(crate::update::ReadyUpdate {
+                    version,
+                    notes_url: None,
+                    artifact: std::path::PathBuf::new(),
+                    sha256: String::new(),
+                });
+                Response::ok(id)
+            }
+        };
+        if !defer_reply {
+            Self::reply(&tx, resp);
+        }
+        let should_focus = match nav_focus {
+            Some(FocusBehavior::Force) => true,
+            Some(FocusBehavior::Suppress) => false,
+            Some(FocusBehavior::Default) => self.prefs.auto_focus_on_nav,
+            None => false,
+        };
+        if should_focus {
+            let raise = iced::window::latest().and_then(|wid| iced::window::gain_focus(wid));
+            follow_up = Task::batch([follow_up, raise]);
+        }
+        follow_up
+    }
+
     fn reply(
         tx: &std::sync::Arc<
             std::sync::Mutex<Option<futures::channel::oneshot::Sender<crate::ipc::Response>>>,
@@ -8074,170 +8242,7 @@ impl App {
                 };
                 return self.show_toast(format!("Auto-focus on agent nav: {state}"));
             }
-            Message::Ipc(req, tx) => {
-                use crate::ipc::{Cmd, FocusBehavior, Mode, Response};
-                let id = req.id;
-                let mut follow_up: Task<Message> = Task::none();
-                // Tracks whether the handler should chain a focus-raise after
-                // the response. `Some(true)` = force raise, `Some(false)` =
-                // explicit suppress, `None` = not a nav command.
-                let mut nav_focus: Option<FocusBehavior> = None;
-                // Screenshot replies only after the file is written, so its
-                // handler stashes the sender and suppresses the sync reply.
-                let mut defer_reply = false;
-                let resp = match req.cmd {
-                    Cmd::Current => {
-                        let mode = match self.view_mode {
-                            ViewMode::Rendered => "view",
-                            ViewMode::Raw => "edit",
-                            ViewMode::Mindmap => "mindmap",
-                        };
-                        let body = serde_json::json!({
-                            "file": self.file.as_ref().map(|p| p.to_string_lossy().into_owned()),
-                            "line": current_line_estimate(self),
-                            "mode": mode,
-                            "folder": self.workspace.as_ref().map(|p| p.to_string_lossy().into_owned()),
-                        });
-                        Response::ok_with(id, body)
-                    }
-                    Cmd::Focus => {
-                        follow_up =
-                            iced::window::latest().and_then(|wid| iced::window::gain_focus(wid));
-                        Response::ok(id)
-                    }
-                    Cmd::Close => {
-                        follow_up = iced::window::latest().and_then(|wid| iced::window::close(wid));
-                        Response::ok(id)
-                    }
-                    Cmd::Mode { mode, focus } => {
-                        let is_pdf = is_pdf_path(self.file.as_deref());
-                        match mode {
-                            Mode::View => {
-                                if self.view_mode == ViewMode::Raw {
-                                    follow_up = self.exit_zen_edit_mode();
-                                } else {
-                                    self.view_mode = ViewMode::Rendered;
-                                }
-                            }
-                            // PDFs are view-only: coerce edit requests to View.
-                            Mode::Edit if is_pdf => self.view_mode = ViewMode::Rendered,
-                            Mode::Edit => {
-                                follow_up = self.enter_zen_edit_mode();
-                            }
-                            Mode::Mindmap => {
-                                if self.view_mode == ViewMode::Raw {
-                                    self.sync_editor_to_source();
-                                    self.editor = None;
-                                    self.edit_history.clear();
-                                    self.edit_redo.clear();
-                                    self.restore_zen_chrome();
-                                }
-                                self.view_mode = ViewMode::Mindmap;
-                            }
-                        }
-                        nav_focus = Some(focus);
-                        Response::ok(id)
-                    }
-                    Cmd::OpenFolder { dir } => {
-                        follow_up =
-                            Task::done(Message::OpenWorkspace(std::path::PathBuf::from(dir)));
-                        Response::ok(id)
-                    }
-                    Cmd::Reveal { file, focus } => {
-                        if self.dirty {
-                            Response::err(id, self.unsaved_edits_open_message())
-                        } else {
-                            follow_up =
-                                self.begin_ipc_file_open(std::path::PathBuf::from(file), None);
-                            nav_focus = Some(focus);
-                            Response::ok(id)
-                        }
-                    }
-                    Cmd::Open {
-                        file,
-                        line,
-                        section,
-                        focus,
-                    } => {
-                        if self.dirty {
-                            Response::err(id, self.unsaved_edits_open_message())
-                        } else {
-                            let path = std::path::PathBuf::from(file);
-                            follow_up = self.begin_ipc_file_open(
-                                path,
-                                Some(PendingNav {
-                                    line,
-                                    section,
-                                    ..Default::default()
-                                }),
-                            );
-                            nav_focus = Some(focus);
-                            Response::ok(id)
-                        }
-                    }
-                    Cmd::Goto {
-                        line,
-                        section,
-                        focus,
-                    } => {
-                        nav_focus = Some(focus);
-                        apply_goto(self, id, line, section)
-                    }
-                    Cmd::Screenshot { path } => {
-                        // Capture is async: stash the path + sender, fire the
-                        // window screenshot, and reply once the PNG is written.
-                        self.pending_screenshot = Some((
-                            std::path::PathBuf::from(path),
-                            Some(std::sync::Arc::clone(&tx)),
-                        ));
-                        follow_up = iced::window::latest()
-                            .and_then(iced::window::screenshot)
-                            .map(Message::ScreenshotCaptured);
-                        defer_reply = true;
-                        Response::ok(id)
-                    }
-                    Cmd::Resize { width, height } => {
-                        follow_up = iced::window::latest().and_then(move |wid| {
-                            iced::window::resize(wid, iced::Size::new(width as f32, height as f32))
-                        });
-                        Response::ok(id)
-                    }
-                    Cmd::Theme { slug } => match theme::preset_by_slug(&slug) {
-                        Some(preset) => {
-                            follow_up = Task::done(Message::SetTheme(preset));
-                            Response::ok(id)
-                        }
-                        None => Response::err(id, format!("unknown theme: {slug}")),
-                    },
-                    Cmd::DemoBanner { version } => {
-                        // Fake a ready update purely to render the banner. The
-                        // artifact path is empty, so "Install" would no-op — this
-                        // is for demos/screenshots only.
-                        self.pending_update = Some(crate::update::ReadyUpdate {
-                            version,
-                            notes_url: None,
-                            artifact: std::path::PathBuf::new(),
-                            sha256: String::new(),
-                        });
-                        Response::ok(id)
-                    }
-                };
-                if !defer_reply {
-                    Self::reply(&tx, resp);
-                }
-                let should_focus = match nav_focus {
-                    Some(FocusBehavior::Force) => true,
-                    Some(FocusBehavior::Suppress) => false,
-                    Some(FocusBehavior::Default) => self.prefs.auto_focus_on_nav,
-                    None => false,
-                };
-                if should_focus {
-                    let raise =
-                        iced::window::latest().and_then(|wid| iced::window::gain_focus(wid));
-                    follow_up = Task::batch([follow_up, raise]);
-                }
-                return follow_up;
-            }
+            Message::Ipc(req, tx) => self.handle_ipc(req, tx),
         }
     }
 
