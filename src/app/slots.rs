@@ -31,11 +31,7 @@ impl App {
         self.prefs
             .quick_slots
             .put_bank(&root, self.quick_slots.clone());
-        if let Some(path) = self.quick_slots_persistence_path.as_deref() {
-            crate::prefs::save_to(path, &self.prefs);
-        } else {
-            crate::prefs::save(&self.prefs);
-        }
+        self.save_prefs();
     }
 
     pub(super) fn invalidate_pending_quick_slot_restore(&mut self) {

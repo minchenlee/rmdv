@@ -7917,3 +7917,69 @@ fn file_finder_results_follow_query_and_workspace_reindex() {
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn chosen_theme_is_saved_and_restored_on_next_launch() {
+    let mut app = App::default();
+    let isolated = app.quick_slots_persistence_path.clone().unwrap();
+    let _ = app.update(Message::SetTheme(ThemePreset::Nord));
+    let saved = crate::prefs::load_from(&isolated);
+    assert_eq!(
+        saved.theme.as_deref(),
+        Some(theme::preset_slug(ThemePreset::Nord))
+    );
+
+    let mut next = App::default();
+    next.prefs = saved;
+    next.restore_saved_theme();
+    assert_eq!(next.theme_id, theme::ThemeId::Preset(ThemePreset::Nord));
+    assert_eq!(next.theme_preset, ThemePreset::Nord);
+    assert_eq!(next.palette, theme::palette_for(ThemePreset::Nord));
+    let _ = std::fs::remove_file(isolated);
+}
+
+#[test]
+fn chosen_custom_theme_is_saved_and_restored_on_next_launch() {
+    let custom = crate::theme_load::bundled()
+        .first()
+        .expect("rmdv bundles at least one custom theme")
+        .clone();
+    let mut app = App::default();
+    app.custom_themes = crate::theme_load::bundled().clone();
+    let isolated = app.quick_slots_persistence_path.clone().unwrap();
+    let _ = app.update(Message::SetCustomTheme(custom.slug.clone()));
+    let saved = crate::prefs::load_from(&isolated);
+    assert_eq!(saved.theme.as_deref(), Some(custom.slug.as_str()));
+
+    let mut next = App::default();
+    next.custom_themes = crate::theme_load::bundled().clone();
+    next.prefs = saved;
+    next.restore_saved_theme();
+    assert_eq!(next.theme_id, theme::ThemeId::Custom(custom.slug.clone()));
+    assert_eq!(next.palette, custom.palette);
+    let _ = std::fs::remove_file(isolated);
+}
+
+#[test]
+fn cycled_theme_is_saved() {
+    let mut app = App::default();
+    let isolated = app.quick_slots_persistence_path.clone().unwrap();
+    let _ = app.update(Message::ToggleTheme);
+    let saved = crate::prefs::load_from(&isolated);
+    assert_eq!(saved.theme, Some(app.theme_id.slug()));
+    let _ = std::fs::remove_file(isolated);
+}
+
+#[test]
+fn unknown_saved_theme_keeps_the_system_default() {
+    let mut app = App::default();
+    let before = (app.theme_id.clone(), app.palette);
+    app.prefs.theme = Some("deleted-custom-theme".into());
+    app.restore_saved_theme();
+    assert_eq!((app.theme_id.clone(), app.palette), before);
+
+    // Older prefs files have no `theme` key and must still load.
+    let legacy: crate::prefs::Prefs = serde_json::from_str(r#"{"show_footer":false}"#).unwrap();
+    assert_eq!(legacy.theme, None);
+    assert!(!legacy.show_footer);
+}
