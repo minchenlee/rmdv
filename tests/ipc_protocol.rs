@@ -473,3 +473,61 @@ async fn acquire_never_displaces_a_live_listener() {
     drop(live);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[tokio::test]
+async fn read_request_parses_one_line() {
+    let line = b"{\"id\":7,\"cmd\":\"focus\"}\n";
+    let req = rmdv::ipc::server::read_request(&line[..]).await.unwrap();
+    assert_eq!(req.id, 7);
+}
+
+#[tokio::test]
+async fn read_request_rejects_an_oversized_line() {
+    let huge = vec![b'x'; rmdv::ipc::server::MAX_REQUEST_BYTES as usize + 16];
+    let error = rmdv::ipc::server::read_request(&huge[..])
+        .await
+        .expect_err("a line past the cap must be refused");
+    assert!(error.to_string().contains("exceeds"), "{error}");
+}
+
+/// A client that connects and never sends a line must not stall later clients.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn silent_connection_does_not_block_other_clients() {
+    use futures::StreamExt;
+    use std::io::{BufRead, BufReader, Write};
+
+    let dir = ipc_test_dir("silent");
+    let path = dir.join("silent.sock");
+    let _ = std::fs::remove_file(&path);
+    let listeners = rmdv::ipc::server::acquire_paths(&[path.clone()], false).unwrap();
+    let (tx, mut rx) = futures::channel::mpsc::channel(8);
+    tokio::spawn(rmdv::ipc::server::run(listeners, tx));
+    tokio::spawn(async move {
+        while let Some((req, reply)) = rx.next().await {
+            let req: Request = req;
+            let _ = reply.send(Response::ok(req.id));
+        }
+    });
+
+    let silent = std::os::unix::net::UnixStream::connect(&path).unwrap();
+    let client_path = path.clone();
+    let reply = tokio::task::spawn_blocking(move || {
+        let mut stream = std::os::unix::net::UnixStream::connect(&client_path).unwrap();
+        stream
+            .set_read_timeout(Some(std::time::Duration::from_secs(3)))
+            .unwrap();
+        stream.write_all(b"{\"id\":9,\"cmd\":\"focus\"}\n").unwrap();
+        stream.shutdown(std::net::Shutdown::Write).unwrap();
+        let mut line = String::new();
+        BufReader::new(stream).read_line(&mut line).map(|_| line)
+    })
+    .await
+    .unwrap()
+    .expect("second client must be answered while the first stays silent");
+    let resp: Response = serde_json::from_str(reply.trim_end()).unwrap();
+    assert_eq!(resp.id, 9);
+    assert!(resp.ok);
+    drop(silent);
+    let _ = std::fs::remove_dir_all(&dir);
+}

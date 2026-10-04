@@ -7,7 +7,25 @@ use interprocess::local_socket::{
     GenericFilePath, ListenerOptions, ToFsName,
 };
 use std::path::{Path, PathBuf};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use std::time::Duration;
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+
+/// A connected client must deliver its request line within this window, so a
+/// silent connection cannot hold the serialised accept loop.
+const REQUEST_READ_TIMEOUT: Duration = Duration::from_secs(5);
+/// Upper bound on one request line; requests are small JSON objects.
+pub const MAX_REQUEST_BYTES: u64 = 1024 * 1024;
+/// How long a request may queue behind others before it is refused undispatched.
+const DISPATCH_QUEUE_TIMEOUT: Duration = Duration::from_secs(25);
+/// How long the app may take to answer. Screenshots reply only after the
+/// capture is written, which normally takes well under a second.
+const REPLY_TIMEOUT: Duration = Duration::from_secs(30);
+// Read + queue + reply budgets must finish inside the client's 65 s round
+// trip, so a request never runs after its client has already given up.
+const _: () = assert!(
+    REQUEST_READ_TIMEOUT.as_secs() + DISPATCH_QUEUE_TIMEOUT.as_secs() + REPLY_TIMEOUT.as_secs()
+        < crate::ipc::client::RESPONSE_TIMEOUT.as_secs()
+);
 
 /// Message handed to the Iced update loop.
 pub type Pending = (Request, oneshot::Sender<Response>);
@@ -161,24 +179,29 @@ fn can_connect_blocking(path: &Path) -> bool {
 }
 
 /// Run the listener loop, forwarding requests through `tx` and writing replies
-/// back to the connecting client. Serialises clients (one at a time) across
-/// both endpoint aliases.
+/// back to the connecting client. Requests are read concurrently but dispatched
+/// one at a time across both endpoint aliases.
 pub async fn run(listeners: ListenerSet, tx: mpsc::Sender<Pending>) {
     let gate = std::sync::Arc::new(tokio::sync::Mutex::new(()));
     let mut tasks = Vec::with_capacity(listeners.listeners.len());
     for listener in listeners.listeners {
         let gate = std::sync::Arc::clone(&gate);
-        let mut tx = tx.clone();
+        let tx = tx.clone();
         tasks.push(tokio::spawn(async move {
             loop {
                 let conn = match listener.accept().await {
                     Ok(c) => c,
                     Err(_) => continue,
                 };
-                let _guard = gate.lock().await;
-                if let Err(_e) = handle_one(conn, &mut tx).await {
+                let gate = std::sync::Arc::clone(&gate);
+                let tx = tx.clone();
+                // Each connection reads its request on its own task, so a
+                // slow or silent client never blocks the accept loop. Only
+                // the dispatch is serialised.
+                tokio::spawn(async move {
                     // best-effort: drop on protocol error, keep listening
-                }
+                    let _ = handle_one(conn, tx, &gate).await;
+                });
             }
         }));
     }
@@ -190,27 +213,52 @@ pub async fn run(listeners: ListenerSet, tx: mpsc::Sender<Pending>) {
     }
 }
 
-async fn handle_one(stream: Stream, tx: &mut mpsc::Sender<Pending>) -> Result<()> {
+async fn handle_one(
+    stream: Stream,
+    mut tx: mpsc::Sender<Pending>,
+    gate: &tokio::sync::Mutex<()>,
+) -> Result<()> {
     let (recv, mut send) = tokio::io::split(stream);
-    let mut reader = BufReader::new(recv);
+    let req = tokio::time::timeout(REQUEST_READ_TIMEOUT, read_request(recv))
+        .await
+        .map_err(|_| anyhow!("request read timed out"))??;
+    let id = req.id;
+
+    let Ok(_guard) = tokio::time::timeout(DISPATCH_QUEUE_TIMEOUT, gate.lock()).await else {
+        return write_response(&mut send, &Response::err(id, "instance busy, try again")).await;
+    };
+    let (reply_tx, reply_rx) = oneshot::channel();
+    tx.send((req, reply_tx)).await?;
+    let resp = match tokio::time::timeout(REPLY_TIMEOUT, reply_rx).await {
+        Ok(reply) => reply.unwrap_or_else(|_| Response::err(id, "instance shutdown")),
+        Err(_) => Response::err(id, "instance did not reply in time"),
+    };
+    write_response(&mut send, &resp).await
+}
+
+async fn write_response<W: tokio::io::AsyncWrite + Unpin>(
+    send: &mut W,
+    resp: &Response,
+) -> Result<()> {
+    let mut line = serde_json::to_string(resp)?;
+    line.push('\n');
+    send.write_all(line.as_bytes()).await?;
+    send.flush().await?;
+    Ok(())
+}
+
+/// Read one newline-terminated JSON request of at most [`MAX_REQUEST_BYTES`].
+pub async fn read_request<R: tokio::io::AsyncRead + Unpin>(recv: R) -> Result<Request> {
+    let mut reader = BufReader::new(recv.take(MAX_REQUEST_BYTES + 1));
     let mut buf = String::new();
     reader.read_line(&mut buf).await?;
     if buf.is_empty() {
         return Err(anyhow!("empty request"));
     }
-    let req: Request =
-        serde_json::from_str(buf.trim_end()).map_err(|e| anyhow!("bad json: {e}"))?;
-    let id = req.id;
-    let (reply_tx, reply_rx) = oneshot::channel();
-    tx.send((req, reply_tx)).await?;
-    let resp = reply_rx
-        .await
-        .unwrap_or_else(|_| Response::err(id, "instance shutdown"));
-    let mut line = serde_json::to_string(&resp)?;
-    line.push('\n');
-    send.write_all(line.as_bytes()).await?;
-    send.flush().await?;
-    Ok(())
+    if buf.len() as u64 > MAX_REQUEST_BYTES {
+        return Err(anyhow!("request exceeds {MAX_REQUEST_BYTES} bytes"));
+    }
+    serde_json::from_str(buf.trim_end()).map_err(|e| anyhow!("bad json: {e}"))
 }
 
 #[cfg(unix)]

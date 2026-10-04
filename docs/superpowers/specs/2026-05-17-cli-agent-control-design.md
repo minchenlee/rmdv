@@ -62,8 +62,8 @@ agent → `rmdv goto --line 42`
 | `src/main.rs` | Entry. Parse args via clap. Stateless subcommands (`theme`, `list-sections`) run and exit. Otherwise try-connect; client mode or instance mode. |
 | `src/cli.rs` | Clap derive structs, arg → `Request` mapping, JSON output helpers (`--pretty` flag). |
 | `src/ipc/mod.rs` | `Request`, `Response` types (serde). Re-exports. |
-| `src/ipc/server.rs` | `interprocess` listener inside `iced::Subscription`. One client at a time. |
-| `src/ipc/client.rs` | Connect, write one line, read one line, exit. |
+| `src/ipc/server.rs` | `interprocess` listener inside `iced::Subscription`. Requests are read concurrently and dispatched one at a time. |
+| `src/ipc/client.rs` | Connect (2 s per endpoint), write one line, read one line (65 s budget), exit. |
 | `src/ipc/socket.rs` | Platform path: user-private cache/runtime `rmdv-$UID.sock` plus a `$TMPDIR/rmdv-$UID.sock` compatibility endpoint (macOS/Linux), `\\.\pipe\rmdv-$user` (Windows). `RMDV_SOCKET` overrides both with a single explicit endpoint. An existing socket file is removed only after bind reports `AddrInUse` and a connect proves it stale. |
 | `src/ipc/sections.rs` | Stateless `list-sections` impl. Reused by IPC server (running instance) and standalone CLI (no instance). |
 | `src/parser.rs` | Emit byte offset for each block (from `pulldown-cmark` `OffsetIter`). |
@@ -159,7 +159,7 @@ Line-delimited JSON over a Unix domain socket (macOS/Linux) or named pipe (Windo
 4. Server writes one JSON line (response).
 5. Both sides close.
 
-Server accepts connections serially — one client at a time. Sufficient because commands are short and the Iced update loop is single-threaded anyway.
+Each connection is read on its own task, so a client that connects and never sends a line cannot block others: the request line must arrive within 5 s and is capped at 1 MiB. Dispatch into the Iced update loop is still serialised (one request at a time), which is sufficient because commands are short and the update loop is single-threaded anyway. A request that waits more than 25 s for its turn is answered `{"ok":false,"error":"instance busy, try again"}` without being dispatched, and the server waits at most 30 s for the app's reply (screenshots reply only after the file is written) before answering `{"ok":false,"error":"instance did not reply in time"}`. Read, queue and reply budgets together stay under the client's round-trip budget, so a command never runs after its client has given up. The client gives up after 2 s per endpoint when connecting and 65 s for the round trip, and exits with code 2.
 
 ### Stale socket recovery (startup)
 

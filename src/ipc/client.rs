@@ -4,7 +4,15 @@ use interprocess::local_socket::{
     tokio::{prelude::*, Stream},
     GenericFilePath, ToFsName,
 };
+use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+
+/// Per-endpoint connect budget. A local socket either answers at once or is
+/// not usable.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
+/// Round-trip budget once connected. The server's read, queue and reply
+/// budgets add up to less than this, so its own error reply arrives first.
+pub const RESPONSE_TIMEOUT: Duration = Duration::from_secs(65);
 
 /// Attempt a single round-trip. Returns `Ok(Some(response))` if an instance is
 /// listening, `Ok(None)` if no instance is running (caller should become the
@@ -20,35 +28,26 @@ pub async fn try_send(req: &Request) -> Result<Option<Response>> {
             Err(_) => continue,
         };
 
-        let stream = match Stream::connect(name).await {
-            Ok(s) => s,
-            Err(e) if is_no_listener(&e) => {
+        let stream = match tokio::time::timeout(CONNECT_TIMEOUT, Stream::connect(name)).await {
+            Ok(Ok(s)) => s,
+            Ok(Err(e)) if is_no_listener(&e) => {
                 saw_no_listener = true;
                 continue;
             }
-            Err(e) => {
+            Ok(Err(e)) => {
                 first_error.get_or_insert_with(|| anyhow!("connect {}: {e}", path.display()));
+                continue;
+            }
+            Err(_) => {
+                first_error.get_or_insert_with(|| anyhow!("connect {}: timed out", path.display()));
                 continue;
             }
         };
 
-        use tokio::io::split;
-        let (recv, mut send) = split(stream);
-
-        let mut line = serde_json::to_string(req)?;
-        line.push('\n');
-        send.write_all(line.as_bytes()).await?;
-        send.flush().await?;
-        drop(send); // half-close so server's read_line returns EOF after our line
-
-        let mut reader = BufReader::new(recv);
-        let mut buf = String::new();
-        reader.read_line(&mut buf).await?;
-        if buf.is_empty() {
-            return Err(anyhow!("ipc disconnect"));
-        }
-        let resp: Response = serde_json::from_str(buf.trim_end())?;
-        return Ok(Some(resp));
+        return tokio::time::timeout(RESPONSE_TIMEOUT, round_trip(stream, req))
+            .await
+            .map_err(|_| anyhow!("no reply from rmdv within {}s", RESPONSE_TIMEOUT.as_secs()))?
+            .map(Some);
     }
 
     // Missing, redirected, or unusual terminal environment information must
@@ -57,6 +56,24 @@ pub async fn try_send(req: &Request) -> Result<Option<Response>> {
         Some(error) if !saw_no_listener => Err(error),
         _ => Ok(None),
     }
+}
+
+async fn round_trip(stream: Stream, req: &Request) -> Result<Response> {
+    let (recv, mut send) = tokio::io::split(stream);
+
+    let mut line = serde_json::to_string(req)?;
+    line.push('\n');
+    send.write_all(line.as_bytes()).await?;
+    send.flush().await?;
+    drop(send); // half-close so server's read_line returns EOF after our line
+
+    let mut reader = BufReader::new(recv);
+    let mut buf = String::new();
+    reader.read_line(&mut buf).await?;
+    if buf.is_empty() {
+        return Err(anyhow!("ipc disconnect"));
+    }
+    Ok(serde_json::from_str(buf.trim_end())?)
 }
 
 #[cfg(unix)]
