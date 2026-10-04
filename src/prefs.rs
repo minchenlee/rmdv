@@ -85,11 +85,11 @@ pub fn save_to(path: &std::path::Path, prefs: &Prefs) {
         prefs.quick_slots = prefs.quick_slots.normalized();
         prefs
     };
-    if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    if let Ok(json) = serde_json::to_string_pretty(&prefs) {
-        let _ = std::fs::write(path, json);
+    let result = serde_json::to_string_pretty(&prefs)
+        .map_err(std::io::Error::other)
+        .and_then(|json| crate::fs_atomic::write_atomic(path, json.as_bytes()));
+    if let Err(error) = result {
+        eprintln!("rmdv: could not save {}: {error}", path.display());
     }
 }
 
