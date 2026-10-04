@@ -24,7 +24,7 @@ OCR-disabled explanation instead of an unexplained blank document.
 
 ## Owned and excluded surfaces
 
-- Owned: `src/pdf.rs`, the PDF load path in `src/app.rs`, focused fixtures/tests,
+- Owned: `src/pdf.rs`, the PDF load path in `src/app/loading.rs`, focused fixtures/tests,
   and user-facing empty-text guidance.
 - Excluded: liteparse/PDFium internals, OCR dependencies, packaging, updater,
   and non-PDF empty documents.

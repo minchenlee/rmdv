@@ -29,7 +29,7 @@ Iced/platform limitation with a reliable alternative evidence path.
 
 ## Owned and excluded surfaces
 
-- Owned: screenshot handling in `src/app.rs`, Zen editor capture reproduction,
+- Owned: screenshot handling in `src/app/ipc_handler.rs` and `src/app/dispatch.rs`, Zen editor capture reproduction,
   isolated test artifacts, and the native screenshot runbook if ported.
 - Excluded: general Zen behavior, toast semantics, unrelated visual polish,
   release packaging, and broad Iced upgrades without a proven need.

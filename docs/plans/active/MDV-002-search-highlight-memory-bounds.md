@@ -31,7 +31,7 @@ and navigation behavior.
 ## Owned and excluded surfaces
 
 - Owned: `src/search.rs` (`find_all`, `find_in_blocks`),
-  `src/highlight.rs` (`HlCache`), their callers in `src/app.rs`, focused tests,
+  `src/highlight.rs` (`HlCache`), their callers under `src/app/`, focused tests,
   and a reproducible benchmark artifact.
 - Excluded: Full Mindmap workspace indexing, PDF extraction, image/diagram
   caches, and unrelated formatting debt.

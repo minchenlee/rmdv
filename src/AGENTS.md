@@ -14,7 +14,15 @@ library exposes parsers, renderers, workspace models, and the IPC boundary;
 
 - [`lib.rs`](lib.rs) — crate module graph and public boundaries
 - [`main.rs`](main.rs) — process startup, single-instance fallback, and Iced wiring
-- [`app/mod.rs`](app/mod.rs) — `App`, `Message`, update/view/subscription, and async ownership; its unit tests live in [`app/tests.rs`](app/tests.rs)
+- [`app/mod.rs`](app/mod.rs) — `App` state, `view`, `subscription`, and shared helpers; its unit tests live in [`app/tests.rs`](app/tests.rs)
+- `app/` submodules, by concern:
+  - [`message.rs`](app/message.rs) and [`types.rs`](app/types.rs) — `Message` and small shared state types
+  - [`dispatch.rs`](app/dispatch.rs) — `App::update`; [`ipc_handler.rs`](app/ipc_handler.rs) — CLI/IPC requests and goto
+  - [`full_mindmap.rs`](app/full_mindmap.rs), [`full_mindmap_state.rs`](app/full_mindmap_state.rs), [`full_mindmap_view.rs`](app/full_mindmap_view.rs), and [`preview_worker.rs`](app/preview_worker.rs) — Full Mindmap Mode
+  - [`slots.rs`](app/slots.rs) — Quick Slots; [`keys.rs`](app/keys.rs) — key bindings
+  - [`loading.rs`](app/loading.rs), [`paths.rs`](app/paths.rs), [`scroll_tasks.rs`](app/scroll_tasks.rs), [`image_cache.rs`](app/image_cache.rs) — async loads, path helpers, scroll tasks, image cache
+  - [`view/`](app/view/) — free view functions (chrome, sidebar, overlays, vault search, widgets)
+- [`theme.rs`](theme.rs) — palettes plus the `radius` and `shadow` tokens; use them instead of literal radii and shadows
 - [`parser.rs`](parser.rs) and [`render.rs`](render.rs) — document AST and widget materialization
 - [`tree.rs`](tree.rs) and [`workspace_mindmap.rs`](workspace_mindmap.rs) — bounded filesystem graph and workspace nodes
 - [`../docs/superpowers/specs/2026-07-10-full-mindmap-mode-design.md`](../docs/superpowers/specs/2026-07-10-full-mindmap-mode-design.md) — current workspace-navigation contracts
