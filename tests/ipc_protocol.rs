@@ -442,6 +442,8 @@ async fn acquire_keeps_stable_endpoint_when_alias_bind_fails() {
         .expect("stable endpoint should be acquired");
     assert_eq!(listeners.len(), 1);
     assert!(std::os::unix::net::UnixStream::connect(&stable).is_ok());
+    drop(listeners);
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[cfg(unix)]
@@ -455,6 +457,8 @@ async fn acquire_reclaims_a_stale_socket_file() {
     let listeners = rmdv::ipc::server::acquire_paths(&[path.clone()], false)
         .expect("stale socket should be reclaimed");
     assert_eq!(listeners.len(), 1);
+    drop(listeners);
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[cfg(unix)]
@@ -467,4 +471,5 @@ async fn acquire_never_displaces_a_live_listener() {
     assert!(rmdv::ipc::server::acquire_paths(&[path.clone()], false).is_err());
     assert!(std::os::unix::net::UnixStream::connect(&path).is_ok());
     drop(live);
+    let _ = std::fs::remove_dir_all(&dir);
 }
