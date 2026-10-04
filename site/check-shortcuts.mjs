@@ -1,6 +1,18 @@
 import fs from 'node:fs';
 
-const appSource = fs.readFileSync(new URL('../src/app.rs', import.meta.url), 'utf8');
+// The app module is split across src/app/; read every non-test source file.
+function readRustTree(dir) {
+  return fs
+    .readdirSync(dir, { withFileTypes: true })
+    .sort((a, b) => a.name.localeCompare(b.name))
+    .flatMap((entry) => {
+      const url = new URL(entry.name + (entry.isDirectory() ? '/' : ''), dir);
+      if (entry.isDirectory()) return entry.name === 'tests' ? [] : [readRustTree(url)];
+      return entry.name.endsWith('.rs') && entry.name !== 'tests.rs' ? [fs.readFileSync(url, 'utf8')] : [];
+    })
+    .join('\n');
+}
+const appSource = readRustTree(new URL('../src/app/', import.meta.url));
 const html = fs.readFileSync(new URL('index.html', import.meta.url), 'utf8');
 const browserLayer = fs.readFileSync(new URL('app.js', import.meta.url), 'utf8');
 
