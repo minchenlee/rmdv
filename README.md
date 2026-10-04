@@ -125,7 +125,9 @@ files, and their structure as one graph. It is separate from document Mindmap
 | `=` / `−` | Mindmap zoom in / out | | `0` | Reset mindmap zoom |
 | `⌘⇧F` | Search whole vault | | `j` / `k` | Scroll down / up |
 | `g` / `G` | Top / bottom | | `Space` / `⇧Space` | Page down / up |
-| `Esc` | Exit Full Mindmap / close overlay | | | |
+| `⌘1–9` | Activate Quick Slot 1–9 | | `⌘N` | Add file to next empty slot |
+| `⌘↑` / `⌘↓` | Previous / next slot (outside Zen) | | `⌘W` | Close active slot |
+| `⌘⇧W` | Close window | | `Esc` | Exit Full Mindmap / close overlay |
 
 ## Historical performance benchmark
 

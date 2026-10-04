@@ -3941,7 +3941,11 @@ impl App {
                 self.cancel_full_mindmap_preview();
                 return checkpoint;
             }
-            return self.begin_full_mindmap_workspace_load(
+            // Enter is deliberate activation even while a refresh is queued:
+            // save the outgoing slot context, then cancel the preview.
+            let checkpoint = self.checkpoint_active_quick_slot();
+            self.cancel_full_mindmap_preview();
+            let load = self.begin_full_mindmap_workspace_load(
                 request.path,
                 request.select_root,
                 Some(path),
@@ -3949,6 +3953,7 @@ impl App {
                 request.return_to_files_after,
                 false,
             );
+            return Task::batch([checkpoint, load]);
         }
         // Enter is deliberate activation: cancel any read-only preview settle
         // or in-flight preview only after its outgoing slot context is saved.
@@ -8517,20 +8522,6 @@ impl App {
                 }
             }
             Message::FileLoaded(Ok((path, src))) => {
-                let pending_candidate = self.pending_quick_slot_restore.clone();
-                let pending_slot_restore = pending_candidate.clone().filter(|pending| {
-                    self.quick_slot_restore_is_current(pending)
-                        && self
-                            .quick_slots_workspace_root()
-                            .and_then(|root| {
-                                crate::quick_slots::resolve_path(root, &pending.slot.relative_path)
-                            })
-                            .is_some_and(|target| target == path)
-                });
-                if pending_candidate.is_some() && pending_slot_restore.is_none() {
-                    self.invalidate_pending_quick_slot_restore();
-                }
-                let switching_file = self.file.as_deref() != Some(path.as_path());
                 if self.dirty {
                     // An IPC/link/vault open can queue navigation before its
                     // asynchronous read returns. Do not let that stale target
@@ -8539,94 +8530,12 @@ impl App {
                     self.invalidate_pending_quick_slot_restore();
                     return self.show_toast(self.unsaved_edits_open_message());
                 }
-                crate::recent::add(&path);
-                if switching_file && pending_slot_restore.is_none() {
-                    // Manual/file-finder navigation leaves the old slot
-                    // checkpointed but unslotted; only an explicit Quick Slot
-                    // activation may make the new file active. Invalidate any
-                    // older debounce generation and write the cleared active
-                    // marker now, so a slow read cannot resurrect the old
-                    // selection from preferences.
-                    self.clear_active_quick_slot();
-                }
-                if self.view_mode == ViewMode::Raw || self.editor.is_some() {
-                    self.leave_zen_edit_mode(false);
-                }
-                if self.workspace.is_none() {
-                    if let Some(parent) = path.parent().map(PathBuf::from) {
-                        self.set_workspace(parent, false);
-                    }
-                }
-                // Opening a DIFFERENT file: the body scrollable's offset gets
-                // clamped by iced on the next layout, but if the new content
-                // fits the viewport no scroll notification ever fires — the
-                // stale viewport would poison body-offset math (current-line
-                // estimate, virt window). Watcher reloads of the same file
-                // keep it, preserving scroll position.
-                if self.file.as_deref() != Some(path.as_path()) {
-                    self.body_viewport = None;
-                }
-                self.source = src;
-                self.saved_source = self.source.clone();
-                self.file = Some(path.clone());
-                self.dirty = false;
-                self.outline_cursor = 0;
-                self.is_data_doc = data_lang_for(self.file.as_deref()).is_some();
-                self.mindmap_collapsed.clear();
-                self.mindmap_selected = None;
-                self.mindmap_panel_shown = None;
-                self.load_ast_from_source();
-                self.error = None;
-                self.rebuild_matches();
-                // Opening a file while in mindmap mode: focus root's first child
-                // (file load cleared the selection above).
-                self.mindmap_focus_first_child();
-                self.reveal_current_file();
-                let mut fetches: Vec<Task<Message>> = Vec::new();
-                for (_id, b) in &self.ast {
-                    if let Block::Image { url, .. } = b {
-                        if is_remote_url(url) && !self.image_cache.contains_key(url) {
-                            self.image_cache.insert(url.clone(), ImageState::Loading);
-                            let u = url.clone();
-                            fetches.push(Task::perform(fetch_image(u), |(url, res)| {
-                                Message::ImageFetched(url, res)
-                            }));
-                        }
-                    }
-                }
-                self.refresh_diagram_theme_id();
-                let prime = self.prime_diagram_cache();
-                let nav_task: Task<Message> = if let Some(nav) = self.pending_nav.take() {
-                    // A link `#fragment` resolves to a line via slug matching;
-                    // IPC `line`/`section` pass through unchanged.
-                    let line = nav
-                        .fragment
-                        .as_deref()
-                        .and_then(|f| {
-                            line_for_fragment(&self.source, f, is_tex_path(self.file.as_deref()))
-                        })
-                        .or(nav.line);
-                    Task::done(Message::Ipc(
-                        crate::ipc::Request {
-                            id: 0,
-                            cmd: crate::ipc::Cmd::Goto {
-                                line,
-                                section: nav.section,
-                                focus: crate::ipc::FocusBehavior::Default,
-                            },
-                        },
-                        std::sync::Arc::new(std::sync::Mutex::new(None)),
-                    ))
-                } else {
-                    Task::none()
-                };
-                let slot_restore = pending_slot_restore.map_or_else(Task::none, |pending| {
-                    self.apply_quick_slot_restore_after_file(&path, pending.slot)
-                });
-                fetches.push(prime);
-                fetches.push(nav_task);
-                fetches.push(slot_restore);
-                Task::batch(fetches)
+                // Non-refresh loads supersede a refresh transaction. The
+                // refresh-owned path calls `apply_loaded_file` directly after
+                // validating its own request and therefore keeps its workspace
+                // leg alive.
+                self.cancel_refresh_tracking();
+                self.apply_loaded_file(path, src)
             }
             Message::FileChanged(p) => {
                 self.cancel_refresh_tracking();
@@ -9949,7 +9858,9 @@ impl App {
                 // layouts cannot turn a digit/arrow into a different action.
                 // Never steal overlay/editor/vault input.
                 if !released {
-                    let surface_allowed = !overlay_open && !vault_open && !focused;
+                    // A pending ⌘K fold chord owns the next key, so ⌘K then
+                    // ⌘1 still folds instead of activating slot 1.
+                    let surface_allowed = !overlay_open && !vault_open && !focused && !fold_chord;
                     if let Some(message) = quick_slot_physical_message(
                         physical,
                         mods,
@@ -12816,10 +12727,8 @@ fn byte_index_for_char(s: &str, n: usize) -> usize {
     s.char_indices().nth(n).map(|(b, _)| b).unwrap_or(s.len())
 }
 
-/// Static, read-only keyboard cheatsheet. Grouped by category, no search, no
-/// cursor. Esc or backdrop click dismisses (handled by `overlay_frame`).
 const QUICK_SLOT_SHORTCUT_HINTS: &[(&str, &str)] = &[
-    ("⌘19", "Activate slots 1 to 9"),
+    ("⌘1–9", "Activate slots 1 to 9"),
     ("⌘N", "Add current file to next empty slot"),
     ("⌘↑", "Previous slot (outside Zen)"),
     ("⌘↓", "Next slot (outside Zen)"),
@@ -12827,6 +12736,8 @@ const QUICK_SLOT_SHORTCUT_HINTS: &[(&str, &str)] = &[
     ("⌘⇧W", "Close window"),
 ];
 
+/// Static, read-only keyboard cheatsheet. Grouped by category, no search, no
+/// cursor. Esc or backdrop click dismisses (handled by `overlay_frame`).
 fn shortcuts_overlay<'a>(pal: Palette) -> Element<'a, Message> {
     // (group title, [(keys, action)]). Hand-authored so we can group by category
     // and include non-command bindings (arrows, Space) the palette omits.
@@ -13449,11 +13360,11 @@ fn is_tex_path(path: Option<&std::path::Path>) -> bool {
         .is_some_and(|e| e.eq_ignore_ascii_case("tex"))
 }
 
-/// PDFs are extracted to markdown for viewing only; their source isn't editable
 fn canonicalize_existing_path(path: PathBuf) -> PathBuf {
     std::fs::canonicalize(&path).unwrap_or(path)
 }
 
+/// PDFs are extracted to markdown for viewing only; their source isn't editable
 /// text, so edit mode (⌘E / `ViewMode::Raw`) is disabled for them.
 fn is_pdf_path(path: Option<&std::path::Path>) -> bool {
     path.and_then(|p| p.extension())
