@@ -22,7 +22,8 @@ shortcuts). Each beat = **press → what appears → hold**. Whole run ≈ 2–3
 - **Press** `⌘P` → fuzzy file jumper. Type `oauth` → Enter.
 - **Show:** lands on `reference/api/v2/auth/oauth.md`. Point at the **breadcrumb** —
   four levels deep (`reference / api / v2 / auth`).
-- **Press** `⌘↑` / `⌘↓` a few times → jumps heading to heading; outline mirrors it.
+- **Press** Home / End or `g` / `G` → reader top/bottom. Outside Zen, `⌘↑` /
+  `⌘↓` cycle Quick Slots; Zen keeps Command arrows for native document motion.
 - **Say:** "Fuzzy-jump anywhere, deep trees, heading-to-heading nav."
 
 ## 2. Markdown kitchen sink (≈18s)
@@ -127,7 +128,8 @@ shortcuts). Each beat = **press → what appears → hold**. Whole run ≈ 2–3
 | `⌘M` | Mind map (markdown → doc map; json/yaml → data map) |
 | `⌘E` / `⌘S` | Edit / save |
 | `⌘⇧F` | Vault search |
-| `⌘↑` / `⌘↓` | Prev / next heading |
+| Home / End or `g` / `G` | Reader top / bottom |
+| `⌘↑` / `⌘↓` | Previous / next Quick Slot outside Zen; native document motion in Zen |
 | `← ↑ → ↓` | Walk a mind map |
 | `⌘=` / `⌘−` | Text zoom |
 | `Esc` | Close modal / exit search / drop edit |

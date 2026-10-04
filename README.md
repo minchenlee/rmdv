@@ -35,7 +35,10 @@ machine-readable IPC control interface.
 - Edit mode (`⌘E`)
 - Zen editing with unsaved-edit protection across navigation
 - 10 built-in theme presets: One Light/Dark, GitHub Light/Dark, Solarized Light/Dark, Gruvbox, Nord, Dracula, and Tokyo Night, with system follow
-- Keyboard-first: `j`/`k`/`g`/`G`, `⌘↑`/`⌘↓`, heading fold `⌘K 0–6`
+- Keyboard-first: `j`/`k`/`g`/`G` and Home/End scroll the reader; `⌘N` adds the
+  current file to the next empty Quick Slot and `⌘↑`/`⌘↓` cycles slots outside
+  Zen, while Zen keeps Command arrows for native document motion; heading fold
+  is `⌘K 0–6`
 - Auto-update: checks GitHub releases, SHA-256 verifies; signed + notarized on macOS
 - CJK-friendly: bundled Inter + JetBrains Mono, system font fallback
 - Drag and drop files or folders
@@ -122,7 +125,9 @@ files, and their structure as one graph. It is separate from document Mindmap
 | `=` / `−` | Mindmap zoom in / out | | `0` | Reset mindmap zoom |
 | `⌘⇧F` | Search whole vault | | `j` / `k` | Scroll down / up |
 | `g` / `G` | Top / bottom | | `Space` / `⇧Space` | Page down / up |
-| `Esc` | Exit Full Mindmap / close overlay | | | |
+| `⌘1–9` | Activate Quick Slot 1–9 | | `⌘N` | Add file to next empty slot |
+| `⌘↑` / `⌘↓` | Previous / next slot (outside Zen) | | `⌘W` | Close active slot |
+| `⌘⇧W` | Close window | | `Esc` | Exit Full Mindmap / close overlay |
 
 ## Historical performance benchmark
 

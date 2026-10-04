@@ -111,8 +111,8 @@ field, no cursor, no filtering. A scrollable `Column` of grouped rows.
 Group → rows, each row = key chip + action label. Groups:
 
 - **File** — Open Folder ⌘O, Find File ⌘P, Save ⌘S
-- **Navigation** — Find in Document ⌘F, Scroll Top ⌘↑, Scroll Bottom ⌘↓,
-  outline/tree arrows
+- **Navigation** — Find in Document ⌘F, reader top/bottom Home/End or g/G;
+  outside Zen, Quick Slot previous/next ⌘↑/⌘↓; outline/tree arrows
 - **View** — Toggle Sidebar ⌘B, Raw/Rendered ⌘E, Theme ⌘T, Hidden Files ⌘⇧.,
   Font ⌘+/⌘-/⌘0, Command Palette ⌘⇧P
 - **Mindmap** — Toggle Mindmap ⌘M, Toggle Panel ⌘⌥B, **Cycle Panel Width ⌘⌥W**,

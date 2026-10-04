@@ -20,6 +20,7 @@ pub mod parser;
 pub mod pdf;
 pub mod picker;
 pub mod prefs;
+pub mod quick_slots;
 pub mod recent;
 pub mod render;
 pub mod search;

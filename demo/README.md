@@ -25,7 +25,8 @@ Open this folder as a project (⌘O on the folder, or pass it on the CLI) so the
 - **⌘M** on any markdown page → markdown mind map. On a `.json`/`.yaml` → data mind map.
 - **⌘E** → edit mode (live, theme-aware highlighting).
 - **⌘⇧F** → search this whole vault.
-- **⌘↑ / ⌘↓** → jump between headings; the outline panel mirrors the structure.
+- **Home / End** or **g / G** → reader top/bottom; outside Zen, **⌘↑ / ⌘↓**
+  cycle Quick Slots (Zen keeps Command arrows for native document motion).
 - **Open Themes Folder** (command palette) → drop in a base16 theme.
 
 > Everything here is rendered natively — no browser, no JS, no Electron.
