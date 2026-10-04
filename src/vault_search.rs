@@ -108,9 +108,38 @@ fn scan_text(text: &str, query: &str, path: &Path, out: &mut Vec<VaultHit>) -> b
     false
 }
 
-/// Search every file in `files` for `query`. Reads files on the async runtime;
-/// debounced by an initial sleep so rapid keystrokes coalesce. Unreadable or
-/// non-UTF8 files are skipped. `seq` is echoed back unchanged for staleness.
+/// Files larger than this are skipped. With `READ_CONCURRENCY` (16) files in
+/// flight, each holding its bytes plus one lowercased copy, a query peaks at
+/// about 16 × 2 × 16 MiB = 512 MiB in the worst case, even in a vault with huge
+/// logs or exports. Skipped files are not reported to the UI yet.
+pub const MAX_FILE_BYTES: u64 = 16 * 1024 * 1024;
+
+/// Read `path` if it is at most `MAX_FILE_BYTES`; `None` if it is larger or
+/// unreadable. The read itself is capped, so a file that grows after the size
+/// check still cannot exceed the limit.
+async fn read_capped(path: &Path) -> Option<Vec<u8>> {
+    use tokio::io::AsyncReadExt;
+
+    let file = tokio::fs::File::open(path).await.ok()?;
+    let len = file.metadata().await.ok()?.len();
+    if len > MAX_FILE_BYTES {
+        return None;
+    }
+    // Sized up front so a full-size file does not double the buffer on its
+    // last read; the extra byte lets the length check below see growth.
+    let mut bytes = Vec::with_capacity(len as usize + 1);
+    file.take(MAX_FILE_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .await
+        .ok()?;
+    (bytes.len() as u64 <= MAX_FILE_BYTES).then_some(bytes)
+}
+
+/// Search every file in `files` for `query`. Reads files on the async runtime
+/// and scans them on blocking workers; debounced by an initial sleep so rapid
+/// keystrokes coalesce. Unreadable, non-UTF8, and oversized
+/// (`MAX_FILE_BYTES`) files are skipped. `seq` is echoed back unchanged for
+/// staleness.
 pub async fn run(files: Vec<PathBuf>, query: String, seq: u64) -> VaultResults {
     if query.is_empty() {
         return VaultResults {
@@ -136,15 +165,21 @@ pub async fn run(files: Vec<PathBuf>, query: String, seq: u64) -> VaultResults {
         .map(|path| {
             let query = query.clone();
             async move {
-                let Ok(bytes) = tokio::fs::read(&path).await else {
+                let Some(bytes) = read_capped(&path).await else {
                     return (Vec::new(), false);
                 };
-                let Ok(text) = String::from_utf8(bytes) else {
-                    return (Vec::new(), false);
-                };
-                let mut local = Vec::new();
-                let capped = scan_text(&text, &query, &path, &mut local);
-                (local, capped)
+                // Lowercasing and highlighting are CPU-bound; keep them off the
+                // async workers that also drive file reads.
+                tokio::task::spawn_blocking(move || {
+                    let Ok(text) = String::from_utf8(bytes) else {
+                        return (Vec::new(), false);
+                    };
+                    let mut local = Vec::new();
+                    let capped = scan_text(&text, &query, &path, &mut local);
+                    (local, capped)
+                })
+                .await
+                .unwrap_or_default()
             }
         })
         .buffered(READ_CONCURRENCY);
@@ -361,6 +396,36 @@ mod tests {
         assert!(r.truncated, "single file over cap must report truncated");
 
         let _ = std::fs::remove_file(&file);
+        let _ = std::fs::remove_dir(&dir);
+    }
+
+    #[test]
+    fn run_skips_files_over_the_size_cap() {
+        let dir = std::env::temp_dir().join(format!("rmdv_vault_size_test_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let small = dir.join("small.md");
+        std::fs::write(&small, "needle\n").unwrap();
+        // Sparse: the length exceeds the cap without writing 16 MiB of data.
+        let big = dir.join("big.md");
+        let file = std::fs::File::create(&big).unwrap();
+        file.set_len(MAX_FILE_BYTES + 1).unwrap();
+        drop(file);
+
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        assert!(rt.block_on(read_capped(&big)).is_none());
+        let r = rt.block_on(run(
+            vec![big.clone(), small.clone()],
+            "needle".to_string(),
+            1,
+        ));
+        assert_eq!(r.hits.len(), 1);
+        assert_eq!(r.hits[0].path, small);
+
+        let _ = std::fs::remove_file(&small);
+        let _ = std::fs::remove_file(&big);
         let _ = std::fs::remove_dir(&dir);
     }
 
