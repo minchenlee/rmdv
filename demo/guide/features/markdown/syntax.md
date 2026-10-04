@@ -10,7 +10,8 @@ Everything rmdv's renderer supports, in one page. Press **⌘M** to mind-map it,
 
 ## Headings drive the outline
 
-Use ⌘↑ / ⌘↓ to hop between these. The outline panel mirrors them.
+Use Home / End or g / G for reader top/bottom. Outside Zen, ⌘↑ / ⌘↓ cycle
+Quick Slots; Zen reserves Command arrows for native document motion.
 
 ### A third-level heading
 #### A fourth-level heading

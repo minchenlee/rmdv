@@ -13,7 +13,8 @@ rmdv opens a folder as a *vault* and renders any markdown file you click.
 | ⌘M | Mind map of the current doc |
 | ⌘E | Edit the current file |
 | ⌘⇧F | Search the whole vault |
-| ⌘↑ / ⌘↓ | Previous / next heading |
+| Home / End or g / G | Reader top / bottom |
+| ⌘↑ / ⌘↓ | Previous / next Quick Slot outside Zen; native document motion in Zen |
 | ⌘= / ⌘− | Zoom text in / out |
 
 ## Navigating a vault

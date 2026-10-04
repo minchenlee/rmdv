@@ -2,7 +2,7 @@
 
 [← back to README](../../../../README.md)
 
-Path: `projects/2026/q2/notes/` — four levels deep, to show the breadcrumb and ⌘↑/⌘↓.
+Path: `projects/2026/q2/notes/` — four levels deep, to show the breadcrumb.
 
 ## This week
 
