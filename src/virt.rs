@@ -75,7 +75,11 @@ pub struct VirtShape {
 
 impl HeightCache {
     pub fn get(&self, id: BlockId, b: &Block) -> f32 {
-        *self.measured.get(&id).unwrap_or(&estimate_height(b))
+        // Estimating walks the block's text, so only do it on a cache miss.
+        self.measured
+            .get(&id)
+            .copied()
+            .unwrap_or_else(|| estimate_height(b))
     }
 
     /// Whether this block has a layout measurement for the current viewport
