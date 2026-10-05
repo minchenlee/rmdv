@@ -8145,3 +8145,45 @@ fn typing_reuses_the_post_edit_text_as_the_next_undo_snapshot() {
     let _ = app.update(Message::EditorUndo);
     assert_eq!(text(&app), "abc");
 }
+
+#[test]
+fn local_images_load_through_a_task_into_the_budgeted_cache() {
+    let dir = std::env::temp_dir().join(format!("rmdv-local-image-test-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let pic = dir.join("pic.png");
+    let key = pic.to_string_lossy().into_owned();
+    std::fs::write(&pic, [7u8; 512]).unwrap();
+
+    let mut app = App::default();
+    app.file = Some(dir.join("doc.md"));
+    app.source = "# T\n\n![pic](pic.png)\n".into();
+    app.reparse_source();
+    let tasks = app.prime_document_images();
+    assert_eq!(tasks.len(), 1);
+    assert!(matches!(app.image_cache.get(&key), Some(ImageState::Loading)));
+    // Already loading: no second read.
+    assert!(app.prime_document_images().is_empty());
+
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let (read_key, result) = runtime.block_on(read_local_image(key.clone()));
+    assert_eq!(read_key, key);
+    let bytes = result.unwrap();
+    assert_eq!(bytes.len(), 512);
+    let before = app.image_cache.cost_bytes();
+    let _ = app.update(Message::ImageFetched(key.clone(), Ok(bytes)));
+    assert!(matches!(app.image_cache.get(&key), Some(ImageState::Loaded(_))));
+    assert_eq!(app.image_cache.cost_bytes(), before + 512);
+    assert!(app.prime_document_images().is_empty());
+
+    // A missing file fails, then is retried when the document loads again.
+    let (_, missing) = runtime.block_on(read_local_image(
+        dir.join("absent.png").to_string_lossy().into_owned(),
+    ));
+    assert!(missing.is_err());
+    let _ = app.update(Message::ImageFetched(key.clone(), Err("missing".into())));
+    assert!(matches!(app.image_cache.get(&key), Some(ImageState::Failed)));
+    assert_eq!(app.prime_document_images().len(), 1);
+    assert!(matches!(app.image_cache.get(&key), Some(ImageState::Loading)));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}

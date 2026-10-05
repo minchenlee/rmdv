@@ -1003,25 +1003,38 @@ fn render_image<'a>(
             _ => placeholder(format!("[loading: {alt} ({url})]")),
         }
     } else {
-        match resolve_image_path(url, img.current_file) {
-            Some(p) if p.exists() => {
+        // The open document's local images are read into the cache by a
+        // Task (keyed by resolved path). Nothing here touches the filesystem.
+        let Some(p) = resolve_image_path(url, img.current_file) else {
+            return placeholder(format!("[image missing: {alt} ({url})]"));
+        };
+        let key = p.to_string_lossy().into_owned();
+        match img.cache.get(&key) {
+            Some(ImageState::Loaded(h)) => mouse_area(image_widget(h.clone()))
+                .on_press(Message::OpenImageZoom(key))
+                .into(),
+            Some(ImageState::LoadedSvg { svg, .. }) => mouse_area(svg_widget(svg.clone()))
+                .on_press(Message::OpenImageZoom(key))
+                .into(),
+            Some(ImageState::Failed) => placeholder(format!("[image missing: {alt} ({url})]")),
+            Some(ImageState::Loading) => placeholder(format!("[loading: {alt} ({url})]")),
+            // Not read ahead (an image added while editing, or a preview of
+            // another file): let the renderer load the path lazily.
+            None => {
                 let is_svg = p
                     .extension()
                     .and_then(|e| e.to_str())
-                    .map(|e| e.eq_ignore_ascii_case("svg"))
-                    .unwrap_or(false);
-                let url_for_zoom = p.to_string_lossy().to_string();
+                    .is_some_and(|e| e.eq_ignore_ascii_case("svg"));
                 if is_svg {
-                    mouse_area(svg_widget(iced::widget::svg::Handle::from_path(p.clone())))
-                        .on_press(Message::OpenImageZoom(url_for_zoom))
+                    mouse_area(svg_widget(iced::widget::svg::Handle::from_path(p)))
+                        .on_press(Message::OpenImageZoom(key))
                         .into()
                 } else {
-                    mouse_area(image_widget(p.clone()))
-                        .on_press(Message::OpenImageZoom(url_for_zoom))
+                    mouse_area(image_widget(p))
+                        .on_press(Message::OpenImageZoom(key))
                         .into()
                 }
             }
-            _ => placeholder(format!("[image missing: {alt} ({url})]")),
         }
     }
 }
