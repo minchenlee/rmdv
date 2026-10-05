@@ -2325,6 +2325,37 @@ fn editor_key_binding_maps_shift_command_arrows_to_selection_motion() {
     ));
 }
 
+#[test]
+fn editor_key_binding_leaves_undo_chords_to_the_app() {
+    use iced::keyboard::key::{Code, Physical};
+    use iced::keyboard::{Key, Modifiers};
+    use iced::widget::text_editor::Binding;
+
+    // macOS reports the letter as the key's text even with ⌘ held, so a
+    // forwarded ⌘Z would insert "z" and cancel the app's EditorUndo.
+    let press = |c: &str, code, modifiers| {
+        let mut kp = editor_key_press(Key::Character(c.into()), Physical::Code(code), modifiers);
+        kp.text = Some(c.into());
+        kp
+    };
+    for (c, code, modifiers) in [
+        ("z", Code::KeyZ, Modifiers::COMMAND),
+        ("z", Code::KeyZ, Modifiers::COMMAND | Modifiers::SHIFT),
+        ("y", Code::KeyY, Modifiers::COMMAND),
+    ] {
+        assert!(editor_key_binding(press(c, code, modifiers)).is_none());
+    }
+    // Clipboard chords still reach the editor, and plain letters still type.
+    assert!(matches!(
+        editor_key_binding(press("v", Code::KeyV, Modifiers::COMMAND)),
+        Some(Binding::Paste)
+    ));
+    assert!(matches!(
+        editor_key_binding(press("z", Code::KeyZ, Modifiers::empty())),
+        Some(Binding::Insert('z'))
+    ));
+}
+
 fn heading(id: u64, level: u8, label: &str) -> (BlockId, Block) {
     (
         BlockId(id),
@@ -8237,4 +8268,101 @@ fn window_mode_settle_samples_at_250_and_600_ms_after_the_last_event() {
     assert_eq!(window_mode_settle_step(ms(400)), (true, Some(ms(200))));
     assert_eq!(window_mode_settle_step(ms(600)), (true, None));
     assert_eq!(window_mode_settle_step(ms(5000)), (true, None));
+}
+
+#[test]
+fn dirty_document_can_be_reopened_but_blocks_other_files() {
+    let dir = std::env::temp_dir().join(format!("rmdv-dirty-reopen-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let a = dir.join("a.md");
+    let b = dir.join("b.md");
+    std::fs::write(&a, "a").unwrap();
+    std::fs::write(&b, "b").unwrap();
+
+    let mut app = App::default();
+    app.file = Some(a.clone());
+    app.source = "a edited".into();
+    app.saved_source = "a".into();
+    app.dirty = true;
+    app.vault_open = true;
+
+    // Returning to the document being edited keeps the edits and leaves the
+    // vault page instead of warning about them.
+    let _ = app.update(Message::Open(a.clone()));
+    assert_eq!(app.file.as_deref(), Some(a.as_path()));
+    assert_eq!(app.source, "a edited");
+    assert!(app.dirty);
+    assert!(!app.vault_open);
+    assert!(app.toast.is_none());
+
+    // Another file stays blocked, and the toast names the way out.
+    let _ = app.update(Message::Open(b));
+    assert_eq!(app.file.as_deref(), Some(a.as_path()));
+    let toast = app
+        .toast
+        .as_ref()
+        .map(|t| t.text.clone())
+        .unwrap_or_default();
+    assert!(toast.contains("unsaved edits in a.md"), "{toast}");
+    assert!(toast.contains("\u{2318}S"), "{toast}");
+}
+
+#[test]
+fn undo_and_redo_keep_the_cursor_at_the_restored_edit() {
+    use iced::widget::text_editor::{Action, Content, Cursor, Edit, Position};
+    let doc: String = (0..200).map(|i| format!("line {i}\n")).collect();
+    let mut app = App::default();
+    app.saved_source = doc.clone();
+    app.editor = Some(Content::with_text(&doc));
+    let ed = |app: &App| app.editor.as_ref().unwrap().text();
+    let line = |app: &App| app.editor.as_ref().unwrap().cursor().position.line;
+
+    app.editor.as_mut().unwrap().move_to(Cursor {
+        position: Position {
+            line: 150,
+            column: 4,
+        },
+        selection: None,
+    });
+    for c in "中文!".chars() {
+        let _ = app.update(Message::EditorAction(Action::Edit(Edit::Insert(c))));
+    }
+    assert!(ed(&app).contains("line中文! 150"));
+
+    let _ = app.update(Message::EditorUndo);
+    assert!(ed(&app).contains("line中文 150"));
+    assert_eq!(line(&app), 150);
+    let _ = app.update(Message::EditorUndo);
+    let _ = app.update(Message::EditorUndo);
+    assert_eq!(ed(&app), doc);
+    assert_eq!(line(&app), 150);
+    assert!(!app.dirty);
+
+    let _ = app.update(Message::EditorRedo);
+    assert!(ed(&app).contains("line中 150"));
+    assert_eq!(line(&app), 150);
+    assert!(app.dirty);
+}
+
+#[test]
+fn restore_editor_text_splices_inserts_deletes_and_replacements() {
+    use iced::widget::text_editor::Content;
+    for (from, to) in [
+        ("abc\ndef\n", "abc\nXdef\n"),
+        ("abc\nXdef\n", "abc\ndef\n"),
+        ("héllo wörld", "héllo wörld!"),
+        ("一二三四", "一二X三四"),
+        ("一二X三四", "一二三四"),
+        ("aaa\nbbb\nccc", "aaa\nccc"),
+        ("same", "same"),
+        ("", "new\ntext"),
+        ("old\ntext", ""),
+        ("crlf\r\nline", "crlf\r\nline2"),
+    ] {
+        let mut ed = Content::with_text(from);
+        restore_editor_text(&mut ed, from, to);
+        assert_eq!(ed.text(), to, "{from:?} -> {to:?}");
+    }
+    assert_eq!(changed_span("一二三", "一X二三"), (3, 3, 4));
+    assert_eq!(changed_span("aa", "aaa"), (2, 2, 3));
 }

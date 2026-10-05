@@ -574,6 +574,73 @@ impl Default for App {
     }
 }
 
+/// Turn `ed` (showing `current`) into `target` by replacing only the span
+/// that differs, the way an editor's own undo does. Rebuilding the content
+/// would reset its scroll and put the cursor on the first line; a splice keeps
+/// the view where it was and leaves the cursor at the restored text.
+fn restore_editor_text(ed: &mut iced::widget::text_editor::Content, current: &str, target: &str) {
+    use iced::widget::text_editor::{Action, Content, Cursor, Edit, Position};
+    let (start, current_end, target_end) = changed_span(current, target);
+    let position = |offset: usize| {
+        let before = &current[..offset];
+        let line = before.matches('\n').count();
+        let column = offset - before.rfind('\n').map_or(0, |i| i + 1);
+        Position { line, column }
+    };
+    // Line endings other than `\n` do not map to (line, column) one to one.
+    if !current.contains('\r') && !target.contains('\r') {
+        let insert = &target[start..target_end];
+        if start == current_end && insert.is_empty() {
+            return;
+        }
+        // Always pass an anchor: `move_to` keeps any earlier selection when
+        // given none, and an empty one replaces nothing.
+        ed.move_to(Cursor {
+            position: position(current_end),
+            selection: Some(position(start)),
+        });
+        ed.perform(Action::Edit(if insert.is_empty() {
+            Edit::Delete
+        } else {
+            Edit::Paste(Arc::new(insert.to_string()))
+        }));
+        if ed.text() == target {
+            return;
+        }
+    }
+    *ed = Content::with_text(target);
+    let before = &target[..target_end];
+    ed.move_to(Cursor {
+        position: Position {
+            line: before.matches('\n').count(),
+            column: target_end - before.rfind('\n').map_or(0, |i| i + 1),
+        },
+        selection: None,
+    });
+}
+
+/// Byte span where `a` and `b` differ: the shared prefix length, then where
+/// the shared suffix starts in `a` and in `b`. Both ends sit on char
+/// boundaries of both strings.
+fn changed_span(a: &str, b: &str) -> (usize, usize, usize) {
+    let mut start = a.bytes().zip(b.bytes()).take_while(|(x, y)| x == y).count();
+    while !a.is_char_boundary(start) || !b.is_char_boundary(start) {
+        start -= 1;
+    }
+    let max_suffix = (a.len() - start).min(b.len() - start);
+    let mut suffix = a
+        .bytes()
+        .rev()
+        .zip(b.bytes().rev())
+        .take(max_suffix)
+        .take_while(|(x, y)| x == y)
+        .count();
+    while !a.is_char_boundary(a.len() - suffix) || !b.is_char_boundary(b.len() - suffix) {
+        suffix -= 1;
+    }
+    (start, a.len() - suffix, b.len() - suffix)
+}
+
 impl App {
     /// Record a new theme-provided typography base and re-apply the current
     /// font-zoom factor on top of it.
@@ -740,12 +807,37 @@ impl App {
         )
     }
 
-    fn block_file_open_if_dirty(&mut self) -> Option<Task<Message>> {
-        if self.dirty {
-            Some(self.show_toast(self.unsaved_edits_open_message()))
-        } else {
-            None
+    /// Guard a file open while the current document has unsaved edits.
+    /// Opening that same document again only returns to it, keeping the
+    /// edits, so leaving it (Full Mindmap, vault search, a picker) is never a
+    /// dead end. Any other file stays blocked until the edits are saved.
+    fn block_file_open_if_dirty(&mut self, target: &Path) -> Option<Task<Message>> {
+        if !self.dirty {
+            return None;
         }
+        let same_file = self.file.as_ref().is_some_and(|current| {
+            current == target
+                || canonicalize_existing_path(current.clone())
+                    == canonicalize_existing_path(target.to_path_buf())
+        });
+        if same_file {
+            self.overlay = Overlay::None;
+            self.picker = None;
+            self.vault_open = false;
+            if self.full_mindmap.is_some() {
+                return Some(self.exit_full_mindmap(false));
+            }
+            return Some(Task::none());
+        }
+        let name = self
+            .file
+            .as_ref()
+            .and_then(|p| p.file_name())
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        Some(self.show_toast(format!(
+            "unsaved edits in {name} \u{2014} press \u{2318}S to save before opening another file"
+        )))
     }
 
     fn cancel_refresh_tracking(&mut self) {
@@ -768,7 +860,7 @@ impl App {
 
     fn load_file_unless_dirty(&mut self, path: PathBuf) -> Task<Message> {
         self.cancel_refresh_tracking();
-        if let Some(blocked) = self.block_file_open_if_dirty() {
+        if let Some(blocked) = self.block_file_open_if_dirty(&path) {
             return blocked;
         }
         let checkpoint = self.checkpoint_active_quick_slot();

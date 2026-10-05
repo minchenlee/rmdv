@@ -230,7 +230,7 @@ impl App {
             }
             Message::VaultOpenHit(idx) => {
                 if let Some(hit) = self.vault_results.get(idx).cloned() {
-                    if let Some(blocked) = self.block_file_open_if_dirty() {
+                    if let Some(blocked) = self.block_file_open_if_dirty(&hit.path) {
                         return blocked;
                     }
                     self.vault_open = false;
@@ -1946,8 +1946,8 @@ impl App {
                 if let Some(ed) = self.editor.as_mut() {
                     if let Some(prev) = self.edit_history.pop() {
                         let current = ed.text();
+                        restore_editor_text(ed, &current, &prev);
                         self.edit_redo.push(current);
-                        *ed = iced::widget::text_editor::Content::with_text(&prev);
                         self.editor_text = None;
                         self.dirty = prev != self.saved_source;
                         changed = true;
@@ -1963,8 +1963,8 @@ impl App {
                 if let Some(ed) = self.editor.as_mut() {
                     if let Some(next) = self.edit_redo.pop() {
                         let current = ed.text();
+                        restore_editor_text(ed, &current, &next);
                         self.edit_history.push(current);
-                        *ed = iced::widget::text_editor::Content::with_text(&next);
                         self.editor_text = None;
                         self.dirty = next != self.saved_source;
                         changed = true;
@@ -2122,7 +2122,7 @@ impl App {
                 self.overlay = Overlay::None;
                 self.picker = None;
                 self.cancel_refresh_tracking();
-                if let Some(blocked) = self.block_file_open_if_dirty() {
+                if let Some(blocked) = self.block_file_open_if_dirty(&path) {
                     return blocked;
                 }
                 self.invalidate_pending_watcher_reload();
@@ -2392,7 +2392,7 @@ impl App {
                                 || e.eq_ignore_ascii_case("tex")
                         });
                         if is_md && path.is_file() {
-                            if let Some(blocked) = self.block_file_open_if_dirty() {
+                            if let Some(blocked) = self.block_file_open_if_dirty(&path) {
                                 return blocked;
                             }
                             if let Some(f) = fragment {
