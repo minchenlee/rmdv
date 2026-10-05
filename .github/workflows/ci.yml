@@ -68,21 +68,21 @@ jobs:
         run: |
           set -euo pipefail
           TARGET=x86_64-unknown-linux-gnu
-          cargo build --release --target "$TARGET"
 
           # rust-cache can restore a build whose libpdfium.so copy in
-          # target/*/deps was pruned, and the build script does not rerun.
+          # target/*/deps was pruned, and cargo then skips the build script.
           # Packaging falls back to the PDFium download cache; if that missed
-          # too, clean only the PDFium crate so its build script runs again.
+          # too, clean only the PDFium crate first so the one build below
+          # reruns its build script.
           pdfium_present() {
             { find "target/$TARGET/release" "$HOME/.cache/pdfium-rs" \
                 -name libpdfium.so -type f -print 2>/dev/null || true; } | grep -q .
           }
           if ! pdfium_present; then
-            echo "libpdfium.so missing after a cached build; rebuilding liteparse-pdfium-sys"
+            echo "libpdfium.so not cached; cleaning liteparse-pdfium-sys"
             cargo clean -p liteparse-pdfium-sys --release --target "$TARGET"
-            cargo build --release --target "$TARGET"
           fi
+          cargo build --release --target "$TARGET"
           pdfium_present
 
       - name: Package AppImage
