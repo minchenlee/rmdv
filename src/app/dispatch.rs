@@ -2416,6 +2416,7 @@ impl App {
                 if let Some(t) = typo {
                     self.set_typography_base(t);
                 }
+                self.persist_theme();
                 let changed = self.refresh_diagram_theme_id();
                 let preview_geometry = self.refresh_full_mindmap_preview_heights();
                 let toast = self.show_toast(label);
@@ -2435,6 +2436,7 @@ impl App {
                 self.theme_preset = t;
                 self.palette = theme::palette_for(t);
                 self.theme_id = theme::ThemeId::Preset(t);
+                self.persist_theme();
                 let changed = self.refresh_diagram_theme_id();
                 let preview_geometry = self.refresh_full_mindmap_preview_heights();
                 let toast = self.show_toast(t.label().to_string());
@@ -2456,6 +2458,7 @@ impl App {
                     self.palette = palette;
                     self.set_typography_base(typography);
                     self.theme_id = theme::ThemeId::Custom(slug.clone());
+                    self.persist_theme();
                     let changed = self.refresh_diagram_theme_id();
                     let preview_geometry = self.refresh_full_mindmap_preview_heights();
                     let toast = self.show_toast(label);

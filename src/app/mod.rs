@@ -569,6 +569,44 @@ impl App {
         self.typography.body_size
     }
 
+    /// Write `prefs` to the isolated test path when one is set, otherwise to
+    /// the user's config.
+    fn save_prefs(&self) {
+        if let Some(path) = self.quick_slots_persistence_path.as_deref() {
+            crate::prefs::save_to(path, &self.prefs);
+        } else {
+            crate::prefs::save(&self.prefs);
+        }
+    }
+
+    /// Remember the active theme so the next launch reopens with it.
+    fn persist_theme(&mut self) {
+        self.prefs.theme = Some(self.theme_id.slug());
+        self.save_prefs();
+    }
+
+    /// Re-apply the theme saved by [`Self::persist_theme`]. Presets win over a
+    /// custom theme with the same slug, matching `rmdv theme <slug>`. An
+    /// unknown slug (e.g. a deleted custom theme) keeps the system default.
+    fn restore_saved_theme(&mut self) {
+        let Some(slug) = self.prefs.theme.clone() else {
+            return;
+        };
+        if let Some(preset) = theme::preset_by_slug(&slug) {
+            self.theme_preset = preset;
+            self.palette = theme::palette_for(preset);
+            self.theme_id = theme::ThemeId::Preset(preset);
+        } else if let Some(t) = self.custom_themes.iter().find(|t| t.slug == slug) {
+            let (palette, typography) = (t.palette, t.typography);
+            self.palette = palette;
+            self.set_typography_base(typography);
+            self.theme_id = theme::ThemeId::Custom(slug);
+        } else {
+            return;
+        }
+        self.refresh_diagram_theme_id();
+    }
+
     fn invalidate_pending_watcher_reload(&mut self) {
         self.watcher_generation = self.watcher_generation.wrapping_add(1);
         self.pending_watcher_reload = None;
@@ -1287,6 +1325,7 @@ impl App {
         if !errs.is_empty() && app.error.is_none() {
             app.error = Some(format!("theme load: {}", errs.join("; ")));
         }
+        app.restore_saved_theme();
         let task = match initial {
             Some(p) => {
                 if p.is_dir() {

@@ -9,6 +9,10 @@ pub struct Prefs {
     pub auto_focus_on_nav: bool,
     #[serde(default = "default_true")]
     pub show_footer: bool,
+    /// Slug of the last chosen theme (a built-in preset or a custom theme).
+    /// `None` follows the system appearance.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub theme: Option<String>,
     /// Workspace-scoped Quick Slot banks live alongside the existing user
     /// preferences, never inside a workspace tree.
     #[serde(default, deserialize_with = "lenient_quick_slots")]
@@ -37,6 +41,7 @@ impl Default for Prefs {
         Prefs {
             auto_focus_on_nav: false,
             show_footer: true,
+            theme: None,
             quick_slots: crate::quick_slots::QuickSlotsStore::default(),
         }
     }
