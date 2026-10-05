@@ -87,6 +87,13 @@ impl SidebarFileIndex {
         self.by_parent.get(parent).map(Vec::as_slice).unwrap_or(&[])
     }
 
+    /// Swap in the files of a dedicated scan rooted at `folder`.
+    pub fn replace_subtree(&mut self, folder: &Path, scanned: SidebarFileIndex) {
+        self.by_parent
+            .retain(|parent, _| !parent.starts_with(folder));
+        self.by_parent.extend(scanned.by_parent);
+    }
+
     #[cfg(test)]
     fn contains(&self, path: &Path) -> bool {
         path.parent()
@@ -167,6 +174,53 @@ pub fn find_folder<'a>(node: &'a Node, path: &Path) -> Option<&'a Node> {
         .find_map(|child| find_folder(child, path))
 }
 
+fn find_folder_mut<'a>(node: &'a mut Node, path: &Path) -> Option<&'a mut Node> {
+    if node.path == path {
+        return node.is_dir.then_some(node);
+    }
+    if !path.starts_with(&node.path) {
+        return None;
+    }
+    node.children
+        .iter_mut()
+        .find(|child| path.starts_with(&child.path))
+        .and_then(|child| find_folder_mut(child, path))
+}
+
+/// Deepest folder of the retained tree that is `path` or one of its ancestors.
+pub fn deepest_folder<'a>(node: &'a Node, path: &Path) -> Option<&'a Node> {
+    if !node.is_dir || !path.starts_with(&node.path) {
+        return None;
+    }
+    node.children
+        .iter()
+        .find_map(|child| deepest_folder(child, path))
+        .or(Some(node))
+}
+
+/// Replace one folder's subtree with a dedicated scan rooted at that folder.
+/// A folder the workspace-wide budget stopped at keeps its lower-bound shell
+/// until the user expands it; the branch-local scan then gets its own budget.
+pub fn graft_folder(root: &mut Node, folder: &Path, scanned: Node) -> bool {
+    let Some(node) = find_folder_mut(root, folder) else {
+        return false;
+    };
+    node.children = scanned.children;
+    node.recursive_supported_file_count = scanned.recursive_supported_file_count;
+    true
+}
+
+impl Node {
+    /// True when the bounded scan stopped before this folder's subtree was
+    /// fully discovered (budget, depth, or read interruption below it).
+    pub fn scan_incomplete(&self) -> bool {
+        matches!(
+            self.recursive_supported_file_count,
+            Some(RecursiveFileCount::LowerBound(_))
+        )
+    }
+}
+
 pub fn build(root: &Path, show_hidden: bool) -> Node {
     build_workspace(root, show_hidden)
         .map(|snapshot| snapshot.root)
@@ -198,7 +252,7 @@ fn empty_root(root: &Path) -> Node {
     }
 }
 
-fn build_workspace_with_limits(
+pub(crate) fn build_workspace_with_limits(
     root: &Path,
     show_hidden: bool,
     tree_max_depth: usize,
@@ -949,6 +1003,53 @@ mod tests {
         );
         assert!(expanded_folders[0].children.is_empty());
         assert!(expanded_folders.iter().all(|folder| folder.path != empty));
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn grafting_a_budget_stopped_folder_fills_its_subtree_and_files() {
+        let root = test_dir("graft-budget-stopped");
+        let early = root.join("a");
+        let late = root.join("b");
+        let inner = late.join("inner");
+        std::fs::create_dir_all(&early).unwrap();
+        std::fs::create_dir_all(&inner).unwrap();
+        for name in ["1.md", "2.md", "3.md"] {
+            std::fs::write(early.join(name), "# Early\n").unwrap();
+        }
+        let note = late.join("note.md");
+        let deep = inner.join("deep.md");
+        std::fs::write(&note, "# Note\n").unwrap();
+        std::fs::write(&deep, "# Deep\n").unwrap();
+
+        // Root (a, b) + a's three files exhaust five entries before b.
+        let mut snapshot = build_workspace_with_limits(&root, false, 12, 8, 100, 5).unwrap();
+        let shell = find_folder(&snapshot.root, &late).expect("later folder stays visible");
+        assert!(shell.scan_incomplete());
+        assert!(shell.children.is_empty());
+        assert!(snapshot.sidebar_files.files_for(&late).is_empty());
+        assert_eq!(deepest_folder(&snapshot.root, &inner).unwrap().path, late);
+
+        let scanned = build_workspace(&late, false).unwrap();
+        assert!(graft_folder(&mut snapshot.root, &late, scanned.root));
+        snapshot
+            .sidebar_files
+            .replace_subtree(&late, scanned.sidebar_files);
+
+        let grafted = find_folder(&snapshot.root, &late).unwrap();
+        assert!(!grafted.scan_incomplete());
+        assert_eq!(grafted.name, "b");
+        assert_eq!(find_folder(&snapshot.root, &inner).unwrap().path, inner);
+        assert_eq!(snapshot.sidebar_files.files_for(&late), [note]);
+        assert_eq!(snapshot.sidebar_files.files_for(&inner), [deep]);
+        assert_eq!(snapshot.sidebar_files.files_for(&early).len(), 3);
+        let shell = grafted.clone();
+        assert!(!graft_folder(
+            &mut snapshot.root,
+            &root.join("missing"),
+            shell
+        ));
 
         std::fs::remove_dir_all(root).unwrap();
     }

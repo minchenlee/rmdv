@@ -8366,3 +8366,60 @@ fn restore_editor_text_splices_inserts_deletes_and_replacements() {
     assert_eq!(changed_span("一二三", "一X二三"), (3, 3, 4));
     assert_eq!(changed_span("aa", "aaa"), (2, 2, 3));
 }
+
+#[test]
+fn expanding_a_budget_stopped_folder_scans_it_once_and_fills_the_sidebar() {
+    let dir = full_mindmap_test_dir("lazy-folder-scan");
+    let early = dir.join("a");
+    let late = dir.join("b");
+    let inner = late.join("inner");
+    std::fs::create_dir_all(&early).unwrap();
+    std::fs::create_dir_all(&inner).unwrap();
+    for name in ["1.md", "2.md", "3.md"] {
+        std::fs::write(early.join(name), "# Early\n").unwrap();
+    }
+    let note = late.join("note.md");
+    std::fs::write(&note, "# Note\n").unwrap();
+    std::fs::write(inner.join("deep.md"), "# Deep\n").unwrap();
+
+    let mut app = App::default();
+    let snapshot = tree::build_workspace_with_limits(&dir, false, 12, 8, 100, 5).unwrap();
+    app.apply_workspace_snapshot(dir.clone(), snapshot, true);
+    let epoch = app.workspace_epoch;
+    assert!(app.workspace_sidebar_files.files_for(&late).is_empty());
+
+    // Expanding a fully scanned folder requests nothing.
+    let task = app.update(Message::TreeToggle(early.clone()));
+    assert_eq!(task.units(), 0);
+    assert!(app.sidebar_folder_scans.is_empty());
+
+    let task = app.update(Message::TreeToggle(late.clone()));
+    assert_eq!(task.units(), 1);
+    assert!(app.sidebar_folder_scans.contains(&late));
+
+    // A result from a replaced snapshot is dropped.
+    let scanned = tree::build_workspace(&late, false).unwrap();
+    let _ = app.update(Message::SidebarFolderScanned {
+        epoch: epoch.wrapping_sub(1),
+        folder: late.clone(),
+        result: Ok((late.clone(), scanned.clone())),
+    });
+    assert!(app.workspace_sidebar_files.files_for(&late).is_empty());
+
+    let task = app.update(Message::SidebarFolderScanned {
+        epoch,
+        folder: late.clone(),
+        result: Ok((late.clone(), scanned)),
+    });
+    assert_eq!(task.units(), 0);
+    assert_eq!(app.workspace_sidebar_files.files_for(&late), [note.clone()]);
+    assert!(app.workspace_files.contains(&note));
+    let tree = app.workspace_tree.as_ref().unwrap();
+    assert!(tree::find_folder(tree, &inner).is_some());
+
+    // Re-expanding the same folder in this epoch does not rescan it.
+    let _ = app.update(Message::TreeToggle(late.clone()));
+    let task = app.update(Message::TreeToggle(late.clone()));
+    assert_eq!(task.units(), 0);
+    let _ = std::fs::remove_dir_all(&dir);
+}

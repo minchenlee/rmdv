@@ -326,6 +326,12 @@ pub struct App {
     quick_slot_relative_memo: std::cell::RefCell<Option<(PathBuf, PathBuf, Option<String>)>>,
     /// Bumped whenever `workspace_files` is replaced; keys `file_finder_memo`.
     workspace_files_rev: u64,
+    /// Bumped whenever a new workspace snapshot replaces the tree; lazy
+    /// sidebar folder scans from an older snapshot are dropped.
+    workspace_epoch: u64,
+    /// Expanded folders already given a dedicated scan in this epoch, so a
+    /// folder that stays incomplete is never re-requested in a loop.
+    sidebar_folder_scans: HashSet<PathBuf>,
     /// Latest file-finder results; see `filtered_files`.
     file_finder_memo: std::cell::RefCell<Option<FileFinderMemo>>,
     /// T3 — diagram render cache. T4 will populate it from a pre-walk +
@@ -531,6 +537,8 @@ impl Default for App {
             mindmap_data_panel: std::cell::RefCell::new(None),
             quick_slot_relative_memo: std::cell::RefCell::new(None),
             workspace_files_rev: 0,
+            workspace_epoch: 0,
+            sidebar_folder_scans: HashSet::new(),
             file_finder_memo: std::cell::RefCell::new(None),
             diagram_cache: crate::diagram::DiagramCache::new(64),
             diagram_theme_id: 0,
@@ -1034,10 +1042,93 @@ impl App {
         self.workspace_tree = Some(snapshot.root);
         self.workspace_snapshot_show_hidden = self.show_hidden;
         self.workspace_truncated = snapshot.truncated;
+        self.begin_workspace_epoch();
         self.workspace = Some(path);
         if let Some(root) = self.workspace.clone() {
             self.load_quick_slots_for_workspace(&root);
         }
+    }
+
+    fn begin_workspace_epoch(&mut self) {
+        self.workspace_epoch = self.workspace_epoch.wrapping_add(1);
+        self.sidebar_folder_scans.clear();
+    }
+
+    /// Give each expanded folder the workspace-wide budget stopped at its own
+    /// bounded scan. A wide sibling (e.g. a 12k-entry folder) otherwise leaves
+    /// every later folder as an empty lower-bound shell.
+    fn load_incomplete_expanded_folders(&mut self) -> Task<Message> {
+        let Some(tree) = self.workspace_tree.as_ref() else {
+            return Task::none();
+        };
+        let mut folders: Vec<PathBuf> = self
+            .expanded
+            .iter()
+            .filter(|folder| **folder != tree.path && !self.sidebar_folder_scans.contains(*folder))
+            .filter(|folder| tree::find_folder(tree, folder).is_some_and(Node::scan_incomplete))
+            .cloned()
+            .collect();
+        // An ancestor's scan replaces its descendants; scan outermost first
+        // and let the follow-up pass pick up descendants still incomplete.
+        folders.sort();
+        folders.dedup_by(|later, earlier| later.starts_with(earlier));
+        let epoch = self.workspace_epoch;
+        let show_hidden = self.workspace_snapshot_show_hidden;
+        let mut tasks = Vec::with_capacity(folders.len());
+        for folder in folders {
+            self.sidebar_folder_scans.insert(folder.clone());
+            tasks.push(Task::perform(
+                load_workspace_snapshot(folder.clone(), show_hidden),
+                move |result| Message::SidebarFolderScanned {
+                    epoch,
+                    folder: folder.clone(),
+                    result,
+                },
+            ));
+        }
+        Task::batch(tasks)
+    }
+
+    fn handle_sidebar_folder_scanned(
+        &mut self,
+        epoch: u64,
+        folder: PathBuf,
+        result: Result<(PathBuf, tree::WorkspaceSnapshot), String>,
+    ) -> Task<Message> {
+        if epoch != self.workspace_epoch {
+            return Task::none();
+        }
+        // A failed scan stays recorded so it is not retried this epoch.
+        let Ok((_, snapshot)) = result else {
+            return Task::none();
+        };
+        let Some(root) = self.workspace_tree.as_mut() else {
+            return Task::none();
+        };
+        if !tree::graft_folder(root, &folder, snapshot.root) {
+            return Task::none();
+        }
+        self.workspace_sidebar_files
+            .replace_subtree(&folder, snapshot.sidebar_files);
+        if !snapshot.files.is_empty() {
+            self.workspace_files.extend(snapshot.files);
+            self.workspace_files.sort();
+            self.workspace_files.dedup();
+            self.workspace_files_rev = self.workspace_files_rev.wrapping_add(1);
+        }
+        let row_count = self
+            .workspace_tree
+            .as_ref()
+            .map(|tree| {
+                tree::flatten_with_files(tree, &self.workspace_sidebar_files, &self.expanded).len()
+            })
+            .unwrap_or(0);
+        self.tree_cursor = self.tree_cursor.min(row_count.saturating_sub(1));
+        // Descendants were replaced by fresh nodes; expanded ones that are
+        // still incomplete get their own scan.
+        self.sidebar_folder_scans
+            .retain(|scanned| scanned == &folder || !scanned.starts_with(&folder));
+        self.load_incomplete_expanded_folders()
     }
 
     fn apply_workspace_snapshot(
@@ -1080,10 +1171,14 @@ impl App {
             .into_iter()
             .filter(|folder| {
                 *folder == root
-                    || self
-                        .workspace_tree
-                        .as_ref()
-                        .is_some_and(|tree| tree::find_folder(tree, folder).is_some())
+                    || self.workspace_tree.as_ref().is_some_and(|tree| {
+                        // Folders inside a lazily scanned branch are absent
+                        // from the fresh bounded snapshot until that branch
+                        // is rescanned; keep them while they still exist.
+                        tree::deepest_folder(tree, folder).is_some_and(|found| {
+                            found.path == *folder || (found.scan_incomplete() && folder.is_dir())
+                        })
+                    })
             })
             .collect();
         self.expanded = retained;
