@@ -26,7 +26,7 @@ shortcut guidance so users can find it without overstating release state.
 
 ## Owned and excluded surfaces
 
-- Owned: `README.md`, the shortcuts-overlay content in `src/app.rs`, and any
+- Owned: `README.md`, the shortcuts-overlay content in `src/app/view/overlays.rs`, and any
   directly coupled static documentation.
 - Excluded: interaction implementation, screenshots unless explicitly needed,
   site deployment, packaging, and release metadata.

@@ -560,6 +560,47 @@ impl Typography {
     }
 }
 
+/// Corner radii shared by the app chrome and the renderer. Call sites name a
+/// step on this scale so a visual pass can retune radii here in one place.
+pub mod radius {
+    pub const XS: f32 = 4.0;
+    pub const SM: f32 = 5.0;
+    pub const MD: f32 = 6.0;
+    pub const LG: f32 = 8.0;
+    pub const XL: f32 = 10.0;
+    pub const XXL: f32 = 12.0;
+    /// Command palette, pickers, and other framed overlays.
+    pub const DIALOG: f32 = 14.0;
+    /// Centered cards and the shortcuts sheet.
+    pub const CARD: f32 = 16.0;
+    /// Fully rounded ends for chips and capsule buttons.
+    pub const PILL: f32 = 999.0;
+}
+
+/// Drop shadows by elevation, plus the scrim drawn behind modal overlays.
+pub mod shadow {
+    use iced::{Color, Shadow, Vector};
+
+    const fn drop(alpha: f32, y: f32, blur: f32) -> Shadow {
+        Shadow {
+            color: Color::from_rgba(0.0, 0.0, 0.0, alpha),
+            offset: Vector::new(0.0, y),
+            blur_radius: blur,
+        }
+    }
+
+    /// Floating keyboard hints.
+    pub const HINT: Shadow = drop(0.22, 5.0, 14.0);
+    /// Centered cards such as the welcome screen.
+    pub const CARD: Shadow = drop(0.18, 8.0, 30.0);
+    /// Framed overlays: command palette and pickers.
+    pub const DIALOG: Shadow = drop(0.28, 14.0, 50.0);
+    /// The shortcuts sheet, the highest surface.
+    pub const SHEET: Shadow = drop(0.35, 18.0, 60.0);
+    /// Dims the document behind a modal overlay.
+    pub const SCRIM: Color = Color::from_rgba(0.0, 0.0, 0.0, 0.18);
+}
+
 pub fn palette_for(preset: ThemePreset) -> Palette {
     match preset {
         ThemePreset::OneDark => Palette::ONE_DARK,
