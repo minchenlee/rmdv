@@ -233,7 +233,7 @@ pub(in crate::app) fn vault_search_page<'a>(
                         .width(Length::Fill)
                         .style(move |_, status| button::Style {
                             background: match status {
-                                button::Status::Hovered => Some(Background::Color(pal.surface_alt)),
+                                button::Status::Hovered => Some(Background::Color(pal.hover())),
                                 _ => None,
                             },
                             text_color: pal.accent,
@@ -265,9 +265,9 @@ pub(in crate::app) fn vault_search_page<'a>(
                         .width(Length::Fill)
                         .style(move |_, status| button::Style {
                             background: match (is_cursor, status) {
-                                (true, _) => Some(Background::Color(pal.surface_alt)),
+                                (true, _) => Some(Background::Color(pal.hover())),
                                 (_, button::Status::Hovered) => {
-                                    Some(Background::Color(pal.code_bg))
+                                    Some(Background::Color(pal.hover()))
                                 }
                                 _ => None,
                             },

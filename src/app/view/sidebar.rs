@@ -25,9 +25,9 @@ pub(in crate::app) fn sidebar_view<'a>(app: &'a App, pal: Palette) -> Element<'a
         )
         .padding(Padding::from([4, 8]))
         .style(move |_| container::Style {
-            background: Some(pal.surface_alt.into()),
+            background: Some(pal.chip().into()),
             border: Border {
-                color: pal.rule,
+                color: pal.border(),
                 width: 1.0,
                 radius: theme::radius::SM.into(),
             },
@@ -127,10 +127,10 @@ pub(in crate::app) fn sidebar_tab_button<'a>(
     .padding(Padding::from([3, 9]))
     .style(move |_, status| {
         let bg = if active {
-            Some(Background::Color(pal.surface_alt))
+            Some(Background::Color(pal.hover()))
         } else {
             match status {
-                button::Status::Hovered => Some(Background::Color(pal.surface_alt)),
+                button::Status::Hovered => Some(Background::Color(pal.hover())),
                 _ => None,
             }
         };
@@ -138,7 +138,11 @@ pub(in crate::app) fn sidebar_tab_button<'a>(
             background: bg,
             text_color: pal.fg,
             border: Border {
-                color: if active { pal.rule } else { Color::TRANSPARENT },
+                color: if active {
+                    pal.border()
+                } else {
+                    Color::TRANSPARENT
+                },
                 width: 1.0,
                 radius: theme::radius::SM.into(),
             },
@@ -343,13 +347,13 @@ pub(in crate::app) fn outline_row<'a>(
                 Some(Background::Color(pal.tree_selected_bg))
             } else {
                 match status {
-                    button::Status::Hovered => Some(Background::Color(pal.surface_alt)),
+                    button::Status::Hovered => Some(Background::Color(pal.hover())),
                     _ => None,
                 }
             },
             text_color: pal.fg,
             border: Border {
-                radius: theme::radius::MD.into(),
+                radius: theme::radius::SM.into(),
                 ..Default::default()
             },
             ..Default::default()
@@ -509,10 +513,10 @@ pub(in crate::app) fn tree_row<'a>(
             let bg = if is_current {
                 Some(Background::Color(pal.tree_selected_bg))
             } else if is_cursor {
-                Some(Background::Color(pal.surface_alt))
+                Some(Background::Color(pal.hover()))
             } else {
                 match status {
-                    button::Status::Hovered => Some(Background::Color(pal.surface_alt)),
+                    button::Status::Hovered => Some(Background::Color(pal.hover())),
                     _ => None,
                 }
             };
@@ -523,7 +527,7 @@ pub(in crate::app) fn tree_row<'a>(
                 border: Border {
                     color: Color::TRANSPARENT,
                     width: 0.0,
-                    radius: theme::radius::MD.into(),
+                    radius: theme::radius::SM.into(),
                 },
                 ..Default::default()
             }

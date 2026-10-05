@@ -28,14 +28,13 @@ pub(in crate::app) fn update_banner<'a>(version: &str, pal: Palette) -> Element<
         .padding(Padding::from([8, 14]))
         .style(move |_, status| button::Style {
             background: match status {
-                button::Status::Hovered | button::Status::Pressed => {
-                    Some(Background::Color(pal.surface_alt))
-                }
+                button::Status::Hovered => Some(Background::Color(pal.hover())),
+                button::Status::Pressed => Some(Background::Color(pal.active())),
                 _ => None,
             },
             text_color: pal.muted,
             border: Border {
-                color: pal.rule,
+                color: pal.border(),
                 width: 1.0,
                 radius: theme::radius::PILL.into(),
             },
@@ -49,11 +48,11 @@ pub(in crate::app) fn update_banner<'a>(version: &str, pal: Palette) -> Element<
     )
     .padding(Padding::from([8, 10]))
     .style(move |_| container::Style {
-        background: Some(pal.surface.into()),
+        background: Some(pal.popover().into()),
         border: iced::Border {
-            color: pal.rule,
+            color: pal.border(),
             width: 1.0,
-            radius: theme::radius::XXL.into(),
+            radius: theme::radius::MD.into(),
         },
         text_color: Some(pal.fg),
         ..Default::default()
@@ -88,9 +87,9 @@ pub(in crate::app) fn status_footer<'a>(words: usize, pal: Palette) -> Element<'
         .style(move |_| container::Style {
             background: Some(pill_bg.into()),
             border: iced::Border {
-                color: pal.rule,
+                color: pal.border(),
                 width: 1.0,
-                radius: theme::radius::LG.into(),
+                radius: theme::radius::MD.into(),
             },
             ..Default::default()
         });
@@ -127,11 +126,11 @@ pub(in crate::app) fn toast_overlay<'a>(toast: &Toast, pal: Palette) -> Element<
     let bubble = container(content)
         .padding([8, 14])
         .style(move |_| container::Style {
-            background: Some(pal.surface.into()),
+            background: Some(pal.popover().into()),
             border: iced::Border {
-                color: pal.rule,
+                color: pal.border(),
                 width: 1.0,
-                radius: theme::radius::LG.into(),
+                radius: theme::radius::MD.into(),
             },
             text_color: Some(pal.fg),
             ..Default::default()
@@ -201,11 +200,11 @@ pub(in crate::app) fn full_mindmap_progress_overlay<'a>(
     .width(Length::Fixed(320.0))
     .padding([8, 14])
     .style(move |_| container::Style {
-        background: Some(pal.surface.into()),
+        background: Some(pal.popover().into()),
         border: Border {
-            color: pal.rule,
+            color: pal.border(),
             width: 1.0,
-            radius: theme::radius::LG.into(),
+            radius: theme::radius::MD.into(),
         },
         text_color: Some(pal.fg),
         ..Default::default()
@@ -291,7 +290,7 @@ pub(in crate::app) fn image_zoom_overlay<'a>(
             border: iced::Border {
                 color: pal.code_border,
                 width: 1.0,
-                radius: theme::radius::LG.into(),
+                radius: theme::radius::SM.into(),
             },
             ..Default::default()
         });
@@ -318,9 +317,9 @@ pub(in crate::app) fn welcome_view<'a>(pal: Palette) -> Element<'a, Message> {
             )
             .padding(Padding::from([2, 7]))
             .style(move |_| container::Style {
-                background: Some(pal.surface_alt.into()),
+                background: Some(pal.chip().into()),
                 border: Border {
-                    color: pal.rule,
+                    color: pal.border(),
                     width: 1.0,
                     radius: theme::radius::SM.into(),
                 },
@@ -403,9 +402,8 @@ pub(in crate::app) fn quick_slots_rail<'a>(
                     Some(Background::Color(pal.accent))
                 } else {
                     match status {
-                        button::Status::Hovered | button::Status::Pressed => {
-                            Some(Background::Color(pal.surface_alt))
-                        }
+                        button::Status::Hovered => Some(Background::Color(pal.hover())),
+                        button::Status::Pressed => Some(Background::Color(pal.active())),
                         _ => Some(Background::Color(pal.surface)),
                     }
                 };
@@ -418,7 +416,7 @@ pub(in crate::app) fn quick_slots_rail<'a>(
                         } else if occupied.is_some() {
                             pal.accent
                         } else {
-                            pal.rule
+                            pal.border()
                         },
                         width: 1.0,
                         radius: theme::radius::SM.into(),
@@ -457,9 +455,9 @@ pub(in crate::app) fn quick_slots_rail<'a>(
             .style(move |_| container::Style {
                 background: Some(pal.surface.into()),
                 border: Border {
-                    color: pal.rule,
+                    color: pal.border(),
                     width: 1.0,
-                    radius: theme::radius::MD.into(),
+                    radius: theme::radius::SM.into(),
                 },
                 ..Default::default()
             });
@@ -513,9 +511,9 @@ pub(in crate::app) fn search_bar_view<'a>(
                 .padding(Padding::from([6, 10]))
                 .size(13)
                 .style(move |_, _| iced::widget::text_input::Style {
-                    background: pal.surface_alt.into(),
+                    background: pal.field().into(),
                     border: Border {
-                        color: pal.rule,
+                        color: pal.border(),
                         width: 1.0,
                         radius: theme::radius::PILL.into(),
                     },
@@ -537,7 +535,7 @@ pub(in crate::app) fn search_bar_view<'a>(
     .style(move |_| container::Style {
         background: Some(pal.surface.into()),
         border: Border {
-            color: pal.rule,
+            color: pal.border(),
             width: 1.0,
             radius: 0.0.into(),
         },
@@ -557,11 +555,11 @@ pub(in crate::app) fn floating_mindmap_hint<'a>(
         .padding(Padding::from([8, 16]))
         .clip(true)
         .style(move |_| container::Style {
-            background: Some(pal.surface.into()),
+            background: Some(pal.popover().into()),
             border: Border {
-                color: pal.rule,
+                color: pal.border(),
                 width: 1.0,
-                radius: theme::radius::XL.into(),
+                radius: theme::radius::MD.into(),
             },
             shadow: theme::shadow::HINT,
             ..Default::default()

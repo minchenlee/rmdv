@@ -37,7 +37,7 @@ pub(in crate::app) fn ghost_lu<'a>(code: char, pal: Palette) -> button::Button<'
         .padding(Padding::from([4, 8]))
         .style(move |_, status| button::Style {
             background: match status {
-                button::Status::Hovered => Some(Background::Color(pal.surface_alt)),
+                button::Status::Hovered => Some(Background::Color(pal.hover())),
                 _ => None,
             },
             text_color: pal.muted,
@@ -57,11 +57,11 @@ pub(in crate::app) fn centered_card<'a>(
         container(content)
             .padding(Padding::from([40, 56]))
             .style(move |_| container::Style {
-                background: Some(pal.surface.into()),
+                background: Some(pal.popover().into()),
                 border: Border {
-                    color: pal.rule,
+                    color: pal.border(),
                     width: 1.0,
-                    radius: theme::radius::CARD.into(),
+                    radius: theme::radius::LG.into(),
                 },
                 shadow: theme::shadow::CARD,
                 ..Default::default()
@@ -111,13 +111,13 @@ pub(crate) fn sleek_scrollable_style(
     let rail = scrollable::Rail {
         background: None,
         border: Border {
-            radius: theme::radius::LG.into(),
+            radius: theme::radius::PILL.into(),
             ..Default::default()
         },
         scroller: scrollable::Scroller {
             background: Background::Color(scroller_color),
             border: Border {
-                radius: theme::radius::LG.into(),
+                radius: theme::radius::PILL.into(),
                 ..Default::default()
             },
         },

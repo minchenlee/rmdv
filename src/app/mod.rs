@@ -2289,7 +2289,7 @@ impl App {
             .style(move |_| container::Style {
                 background: Some(pal_c.surface.into()),
                 border: Border {
-                    color: pal_c.rule,
+                    color: pal_c.border(),
                     width: 1.0,
                     radius: 0.0.into(),
                 },
@@ -3307,11 +3307,11 @@ impl App {
                 container(text("Keyboard shortcuts  ⌘/").size(12).color(pal.fg))
                     .padding(Padding::from([4, 8]))
                     .style(move |_| container::Style {
-                        background: Some(pal.surface.into()),
+                        background: Some(pal.popover().into()),
                         border: Border {
-                            color: pal.rule,
+                            color: pal.border(),
                             width: 1.0,
-                            radius: theme::radius::MD.into(),
+                            radius: theme::radius::SM.into(),
                         },
                         ..Default::default()
                     }),
