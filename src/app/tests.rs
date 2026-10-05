@@ -8160,7 +8160,10 @@ fn local_images_load_through_a_task_into_the_budgeted_cache() {
     app.reparse_source();
     let tasks = app.prime_document_images();
     assert_eq!(tasks.len(), 1);
-    assert!(matches!(app.image_cache.get(&key), Some(ImageState::Loading)));
+    assert!(matches!(
+        app.image_cache.get(&key),
+        Some(ImageState::Loading)
+    ));
     // Already loading: no second read.
     assert!(app.prime_document_images().is_empty());
 
@@ -8171,7 +8174,10 @@ fn local_images_load_through_a_task_into_the_budgeted_cache() {
     assert_eq!(bytes.len(), 512);
     let before = app.image_cache.cost_bytes();
     let _ = app.update(Message::ImageFetched(key.clone(), Ok(bytes)));
-    assert!(matches!(app.image_cache.get(&key), Some(ImageState::Loaded(_))));
+    assert!(matches!(
+        app.image_cache.get(&key),
+        Some(ImageState::Loaded(_))
+    ));
     assert_eq!(app.image_cache.cost_bytes(), before + 512);
     assert!(app.prime_document_images().is_empty());
 
@@ -8181,9 +8187,15 @@ fn local_images_load_through_a_task_into_the_budgeted_cache() {
     ));
     assert!(missing.is_err());
     let _ = app.update(Message::ImageFetched(key.clone(), Err("missing".into())));
-    assert!(matches!(app.image_cache.get(&key), Some(ImageState::Failed)));
+    assert!(matches!(
+        app.image_cache.get(&key),
+        Some(ImageState::Failed)
+    ));
     assert_eq!(app.prime_document_images().len(), 1);
-    assert!(matches!(app.image_cache.get(&key), Some(ImageState::Loading)));
+    assert!(matches!(
+        app.image_cache.get(&key),
+        Some(ImageState::Loading)
+    ));
 
     let _ = std::fs::remove_dir_all(&dir);
 }
