@@ -275,16 +275,16 @@ impl Palette {
         subtle: rgb(100, 106, 117),
         accent: rgb(229, 160, 107),
         accent_fg: rgb(26, 18, 12),
-        code_bg: rgb(36, 40, 47),
-        code_border: rgba(255, 255, 255, 0.06),
+        code_bg: rgb(48, 51, 59),               // bg + ink(0.035)
+        code_border: rgba(255, 255, 255, 0.08), // hairline(0.08)
         rule: rgba(255, 255, 255, 0.07),
-        selection: rgba(229, 160, 107, 0.25),
+        selection: rgba(229, 160, 107, 0.35),
         match_bg: rgba(229, 192, 123, 0.45),
         match_current_bg: rgba(229, 130, 50, 0.85),
         scroller: rgba(255, 255, 255, 0.0),
         scroller_hover: rgba(255, 255, 255, 0.22),
         indent_guide: rgba(255, 255, 255, 0.06),
-        tree_selected_bg: rgba(229, 160, 107, 0.12),
+        tree_selected_bg: rgba(229, 160, 107, 0.14),
         tree_selected_border: rgb(229, 160, 107),
         syntax: SyntaxPalette::ONE_DARK,
     };
@@ -294,16 +294,16 @@ impl Palette {
         bg: rgb(250, 250, 250),
         surface: rgb(255, 255, 255),
         surface_alt: rgb(240, 240, 241),
-        sidebar: rgb(245, 245, 246),
+        sidebar: rgb(242, 242, 243),
         fg: rgb(56, 58, 66),
         muted: rgb(112, 116, 124),
         subtle: rgb(160, 164, 172),
         accent: rgb(217, 119, 87),
         accent_fg: rgb(255, 255, 255),
-        code_bg: rgb(244, 244, 244),
-        code_border: rgba(0, 0, 0, 0.08),
+        code_bg: rgb(241, 241, 241),       // bg + ink(0.035)
+        code_border: rgba(0, 0, 0, 0.108), // hairline(0.08)
         rule: rgba(0, 0, 0, 0.08),
-        selection: rgba(217, 119, 87, 0.22),
+        selection: rgba(217, 119, 87, 0.24),
         match_bg: rgba(252, 207, 80, 0.65),
         match_current_bg: rgba(252, 130, 30, 0.90),
         scroller: rgba(0, 0, 0, 0.0),
@@ -325,16 +325,16 @@ impl Palette {
         subtle: rgb(110, 118, 129),
         accent: rgb(253, 140, 115),
         accent_fg: rgb(13, 17, 23),
-        code_bg: rgb(22, 27, 34),
-        code_border: rgb(48, 54, 61),
+        code_bg: rgb(21, 25, 31),               // bg + ink(0.035)
+        code_border: rgba(255, 255, 255, 0.08), // hairline(0.08)
         rule: rgb(48, 54, 61),
-        selection: rgba(253, 140, 115, 0.25),
+        selection: rgba(253, 140, 115, 0.35),
         match_bg: rgba(187, 128, 9, 0.45),
         match_current_bg: rgba(255, 140, 30, 0.85),
         scroller: rgba(255, 255, 255, 0.0),
         scroller_hover: rgba(255, 255, 255, 0.22),
         indent_guide: rgb(33, 38, 45),
-        tree_selected_bg: rgba(253, 140, 115, 0.12),
+        tree_selected_bg: rgba(253, 140, 115, 0.14),
         tree_selected_border: rgb(253, 140, 115),
         syntax: SyntaxPalette::GITHUB_DARK,
     };
@@ -350,16 +350,16 @@ impl Palette {
         subtle: rgb(140, 149, 159),
         accent: rgb(188, 76, 0),
         accent_fg: rgb(255, 255, 255),
-        code_bg: rgb(246, 248, 250),
+        code_bg: rgb(246, 246, 246), // bg + ink(0.035)
         code_border: rgb(208, 215, 222),
         rule: rgb(208, 215, 222),
-        selection: rgba(188, 76, 0, 0.18),
+        selection: rgba(188, 76, 0, 0.24),
         match_bg: rgba(252, 207, 80, 0.65),
         match_current_bg: rgba(252, 130, 30, 0.90),
         scroller: rgba(0, 0, 0, 0.0),
         scroller_hover: rgba(0, 0, 0, 0.30),
         indent_guide: rgb(208, 215, 222),
-        tree_selected_bg: rgba(188, 76, 0, 0.08),
+        tree_selected_bg: rgba(188, 76, 0, 0.10),
         tree_selected_border: rgb(188, 76, 0),
         syntax: SyntaxPalette::GITHUB_LIGHT,
     };
@@ -375,16 +375,16 @@ impl Palette {
         subtle: rgb(88, 110, 117),
         accent: rgb(203, 75, 22),
         accent_fg: rgb(253, 246, 227),
-        code_bg: rgb(7, 54, 66),
-        code_border: rgba(255, 255, 255, 0.07),
+        code_bg: rgb(9, 50, 61),                // bg + ink(0.035)
+        code_border: rgba(255, 255, 255, 0.08), // hairline(0.08)
         rule: rgba(255, 255, 255, 0.07),
-        selection: rgba(203, 75, 22, 0.25),
+        selection: rgba(203, 75, 22, 0.35),
         match_bg: rgba(181, 137, 0, 0.55),
         match_current_bg: rgba(203, 75, 22, 0.90),
         scroller: rgba(255, 255, 255, 0.0),
         scroller_hover: rgba(255, 255, 255, 0.22),
         indent_guide: rgba(255, 255, 255, 0.07),
-        tree_selected_bg: rgba(203, 75, 22, 0.12),
+        tree_selected_bg: rgba(203, 75, 22, 0.14),
         tree_selected_border: rgb(203, 75, 22),
         syntax: SyntaxPalette::SOLARIZED_DARK,
     };
@@ -395,15 +395,17 @@ impl Palette {
         surface: rgb(238, 232, 213),
         surface_alt: rgb(228, 222, 203),
         sidebar: rgb(245, 238, 219),
-        fg: rgb(101, 123, 131),
-        muted: rgb(131, 148, 150),
+        // One tone darker than canonical (base01 / base00) so body and muted
+        // text clear the 4.5 / 3.0 contrast floors on base3.
+        fg: rgb(88, 110, 117),
+        muted: rgb(101, 123, 131),
         subtle: rgb(147, 161, 161),
         accent: rgb(203, 75, 22),
         accent_fg: rgb(253, 246, 227),
-        code_bg: rgb(238, 232, 213),
-        code_border: rgba(0, 0, 0, 0.10),
+        code_bg: rgb(244, 237, 219),       // bg + ink(0.035)
+        code_border: rgba(0, 0, 0, 0.108), // hairline(0.08)
         rule: rgba(0, 0, 0, 0.10),
-        selection: rgba(203, 75, 22, 0.18),
+        selection: rgba(203, 75, 22, 0.24),
         match_bg: rgba(181, 137, 0, 0.45),
         match_current_bg: rgba(203, 75, 22, 0.85),
         scroller: rgba(0, 0, 0, 0.0),
@@ -425,16 +427,16 @@ impl Palette {
         subtle: rgb(124, 111, 100),   // gray
         accent: rgb(254, 128, 25),    // orange bright
         accent_fg: rgb(29, 32, 33),
-        code_bg: rgb(50, 48, 47),
-        code_border: rgba(255, 255, 255, 0.06),
+        code_bg: rgb(48, 48, 48),               // bg + ink(0.035)
+        code_border: rgba(255, 255, 255, 0.08), // hairline(0.08)
         rule: rgba(255, 255, 255, 0.07),
-        selection: rgba(254, 128, 25, 0.25),
+        selection: rgba(254, 128, 25, 0.35),
         match_bg: rgba(250, 189, 47, 0.45),
         match_current_bg: rgba(254, 128, 25, 0.85),
         scroller: rgba(255, 255, 255, 0.0),
         scroller_hover: rgba(255, 255, 255, 0.22),
         indent_guide: rgba(255, 255, 255, 0.06),
-        tree_selected_bg: rgba(254, 128, 25, 0.12),
+        tree_selected_bg: rgba(254, 128, 25, 0.14),
         tree_selected_border: rgb(254, 128, 25),
         syntax: SyntaxPalette::GRUVBOX_DARK,
     };
@@ -450,10 +452,10 @@ impl Palette {
         subtle: rgb(97, 110, 136),  // nord3 brightened
         accent: rgb(136, 192, 208), // nord8
         accent_fg: rgb(46, 52, 64),
-        code_bg: rgb(59, 66, 82),
-        code_border: rgba(255, 255, 255, 0.06),
+        code_bg: rgb(53, 59, 71),               // bg + ink(0.035)
+        code_border: rgba(255, 255, 255, 0.08), // hairline(0.08)
         rule: rgba(255, 255, 255, 0.07),
-        selection: rgba(136, 192, 208, 0.28),
+        selection: rgba(136, 192, 208, 0.35),
         match_bg: rgba(235, 203, 139, 0.45),         // nord13
         match_current_bg: rgba(208, 135, 112, 0.85), // nord12
         scroller: rgba(255, 255, 255, 0.0),
@@ -475,10 +477,10 @@ impl Palette {
         subtle: rgb(98, 114, 164),  // comment
         accent: rgb(189, 147, 249), // purple
         accent_fg: rgb(40, 42, 54),
-        code_bg: rgb(33, 34, 44),
-        code_border: rgba(255, 255, 255, 0.06),
+        code_bg: rgb(48, 49, 61),               // bg + ink(0.035)
+        code_border: rgba(255, 255, 255, 0.08), // hairline(0.08)
         rule: rgba(255, 255, 255, 0.07),
-        selection: rgba(189, 147, 249, 0.28),
+        selection: rgba(189, 147, 249, 0.35),
         match_bg: rgba(241, 250, 140, 0.45),
         match_current_bg: rgba(255, 184, 108, 0.85), // orange
         scroller: rgba(255, 255, 255, 0.0),
@@ -500,10 +502,10 @@ impl Palette {
         subtle: rgb(86, 95, 137),   // comment
         accent: rgb(122, 162, 247), // blue
         accent_fg: rgb(36, 40, 59),
-        code_bg: rgb(31, 35, 53),
-        code_border: rgba(255, 255, 255, 0.06),
+        code_bg: rgb(44, 48, 66),               // bg + ink(0.035)
+        code_border: rgba(255, 255, 255, 0.08), // hairline(0.08)
         rule: rgba(255, 255, 255, 0.07),
-        selection: rgba(122, 162, 247, 0.28),
+        selection: rgba(122, 162, 247, 0.35),
         match_bg: rgba(224, 175, 104, 0.45),         // yellow
         match_current_bg: rgba(255, 158, 100, 0.85), // orange
         scroller: rgba(255, 255, 255, 0.0),
@@ -513,6 +515,165 @@ impl Palette {
         tree_selected_border: rgb(122, 162, 247),
         syntax: SyntaxPalette::TOKYO_NIGHT,
     };
+}
+
+/// Saturation scale of the Soft syntax option, after zeron's muted tones.
+const SOFT_SATURATION: f32 = 0.72;
+
+impl SyntaxPalette {
+    /// The opt-in Soft variant: every hue is desaturated, and variables,
+    /// operators, and punctuation take the text color so fewer tones compete
+    /// with the code. The upstream presets themselves stay untouched.
+    pub fn softened(self, fg: Color) -> SyntaxPalette {
+        let soft = |c| desaturate(c, SOFT_SATURATION);
+        SyntaxPalette {
+            keyword: soft(self.keyword),
+            type_: soft(self.type_),
+            function: soft(self.function),
+            string: soft(self.string),
+            number: soft(self.number),
+            comment: soft(self.comment),
+            operator: fg,
+            constant: soft(self.constant),
+            variable: fg,
+            punctuation: fg,
+        }
+    }
+}
+
+/// Scales HSL saturation by `factor`, keeping hue, lightness, and alpha.
+fn desaturate(c: Color, factor: f32) -> Color {
+    let max = c.r.max(c.g).max(c.b);
+    let min = c.r.min(c.g).min(c.b);
+    let l = (max + min) / 2.0;
+    // In HSL every channel sits `(channel - l)` away from the lightness axis,
+    // and that distance is proportional to saturation.
+    let scale = |v: f32| l + (v - l) * factor;
+    Color::from_rgba(scale(c.r), scale(c.g), scale(c.b), c.a)
+}
+
+/// In light themes a 1px line reads weaker than the same alpha on a dark
+/// ground, so hairlines are scaled up there.
+const HAIRLINE_LIGHT_SCALE: f32 = 1.35;
+
+/// Overlay colors derived from `bg`, after zeron's ink/hairline/wash helpers.
+/// Callers write the alpha for a dark theme; light themes flip the tint. Dark
+/// or light is read from `bg` so custom themes need no extra flag.
+impl Palette {
+    /// This palette with the Soft syntax option applied when `soft` is set.
+    pub fn with_soft_syntax(self, soft: bool) -> Palette {
+        if soft {
+            Palette {
+                syntax: self.syntax.softened(self.fg),
+                ..self
+            }
+        } else {
+            self
+        }
+    }
+
+    pub fn is_dark(&self) -> bool {
+        relative_luminance(self.bg) < 0.18
+    }
+
+    /// Neutral tint: white over dark backgrounds, black over light ones.
+    pub fn ink(&self, alpha: f32) -> Color {
+        if self.is_dark() {
+            Color::from_rgba(1.0, 1.0, 1.0, alpha)
+        } else {
+            Color::from_rgba(0.0, 0.0, 0.0, alpha)
+        }
+    }
+
+    /// 1px border color.
+    pub fn hairline(&self, alpha: f32) -> Color {
+        if self.is_dark() {
+            self.ink(alpha)
+        } else {
+            self.ink((alpha * HAIRLINE_LIGHT_SCALE).min(0.5))
+        }
+    }
+
+    /// Fill close to the text tone, for hover, active, and selected states.
+    pub fn wash(&self, alpha: f32) -> Color {
+        if self.is_dark() {
+            Color::from_rgba(0.92, 0.92, 0.92, alpha)
+        } else {
+            Color::from_rgba(0.10, 0.10, 0.10, alpha)
+        }
+    }
+
+    /// Fill behind a hovered control or row.
+    pub fn hover(&self) -> Color {
+        self.wash(if self.is_dark() { 0.11 } else { 0.06 })
+    }
+
+    /// Fill behind a pressed control.
+    pub fn active(&self) -> Color {
+        self.wash(if self.is_dark() { 0.16 } else { 0.10 })
+    }
+
+    /// Opaque fill of floating layers (dialogs, cards, toasts, tooltips): a
+    /// step lighter than the content. Light themes lift only slightly and
+    /// rely on the hairline and shadow to separate the layer.
+    pub fn popover(&self) -> Color {
+        if self.is_dark() {
+            mix(self.bg, Color::WHITE, 0.05)
+        } else {
+            mix(self.bg, Color::WHITE, 0.6)
+        }
+    }
+
+    /// Fill of keycaps and static chips.
+    pub fn chip(&self) -> Color {
+        self.ink(0.06)
+    }
+
+    /// Fill of text inputs: a faint lift in dark themes, white in light ones.
+    pub fn field(&self) -> Color {
+        if self.is_dark() {
+            self.ink(0.03)
+        } else {
+            Color::WHITE
+        }
+    }
+
+    /// Border of chrome controls and framed surfaces.
+    pub fn border(&self) -> Color {
+        self.hairline(0.08)
+    }
+
+    /// Border that must stay visible, such as a focused or framed overlay.
+    pub fn border_strong(&self) -> Color {
+        self.hairline(0.14)
+    }
+}
+
+/// Linear blend from `a` toward `b`; `t` = 0 keeps `a`. The result is opaque.
+pub fn mix(a: Color, b: Color, t: f32) -> Color {
+    Color::from_rgb(
+        a.r + (b.r - a.r) * t,
+        a.g + (b.g - a.g) * t,
+        a.b + (b.b - a.b) * t,
+    )
+}
+
+/// WCAG 2 relative luminance of the color's RGB channels; alpha is ignored.
+pub fn relative_luminance(c: Color) -> f32 {
+    fn channel(v: f32) -> f32 {
+        if v <= 0.039_28 {
+            v / 12.92
+        } else {
+            ((v + 0.055) / 1.055).powf(2.4)
+        }
+    }
+    0.2126 * channel(c.r) + 0.7152 * channel(c.g) + 0.0722 * channel(c.b)
+}
+
+/// WCAG 2 contrast ratio between two opaque colors, from 1.0 to 21.0.
+pub fn contrast_ratio(a: Color, b: Color) -> f32 {
+    let (la, lb) = (relative_luminance(a), relative_luminance(b));
+    (la.max(lb) + 0.05) / (la.min(lb) + 0.05)
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -560,20 +721,19 @@ impl Typography {
     }
 }
 
-/// Corner radii shared by the app chrome and the renderer. Call sites name a
-/// step on this scale so a visual pass can retune radii here in one place.
+/// Corner radii shared by the app chrome and the renderer: one ladder of
+/// 6 / 10 / 16 plus a glyph-sized step and fully rounded ends. Call sites name
+/// a step, so a visual pass retunes radii here in one place.
 pub mod radius {
+    /// Inline code, keycaps, and other glyph-sized chips.
     pub const XS: f32 = 4.0;
-    pub const SM: f32 = 5.0;
-    pub const MD: f32 = 6.0;
-    pub const LG: f32 = 8.0;
-    pub const XL: f32 = 10.0;
-    pub const XXL: f32 = 12.0;
-    /// Command palette, pickers, and other framed overlays.
-    pub const DIALOG: f32 = 14.0;
-    /// Centered cards and the shortcuts sheet.
-    pub const CARD: f32 = 16.0;
-    /// Fully rounded ends for chips and capsule buttons.
+    /// Controls and list rows.
+    pub const SM: f32 = 6.0;
+    /// Code blocks, toasts, popovers, and floating islands.
+    pub const MD: f32 = 10.0;
+    /// Dialogs, pickers, centered cards, and the shortcuts sheet.
+    pub const LG: f32 = 16.0;
+    /// Fully rounded ends for chips, capsule buttons, and scrollbar thumbs.
     pub const PILL: f32 = 999.0;
 }
 
@@ -675,4 +835,105 @@ pub fn preset_by_slug(slug: &str) -> Option<ThemePreset> {
         .iter()
         .copied()
         .find(|p| preset_slug(*p) == slug)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn overlay_direction_follows_background_luminance() {
+        for preset in ThemePreset::ALL.iter().copied() {
+            let pal = palette_for(preset);
+            assert_eq!(pal.is_dark(), preset.is_dark(), "{preset:?}");
+            let ink = pal.ink(0.1);
+            let expected = if preset.is_dark() { 1.0 } else { 0.0 };
+            assert_eq!((ink.r, ink.g, ink.b), (expected, expected, expected));
+        }
+    }
+
+    #[test]
+    fn hairlines_are_stronger_on_light_backgrounds() {
+        let dark = palette_for(ThemePreset::OneDark);
+        let light = palette_for(ThemePreset::OneLight);
+        assert_eq!(dark.hairline(0.08).a, 0.08);
+        assert!((light.hairline(0.08).a - 0.108).abs() < 1e-6);
+        assert_eq!(light.hairline(0.9).a, 0.5);
+    }
+
+    #[test]
+    fn hover_and_active_are_ordered() {
+        for preset in ThemePreset::ALL.iter().copied() {
+            let pal = palette_for(preset);
+            assert!(pal.hover().a < pal.active().a, "{preset:?}");
+            assert!(pal.border().a < pal.border_strong().a, "{preset:?}");
+        }
+    }
+
+    #[test]
+    fn floating_layers_rise_above_content() {
+        for preset in ThemePreset::ALL.iter().copied() {
+            let pal = palette_for(preset);
+            let (pop, bg) = (
+                relative_luminance(pal.popover()),
+                relative_luminance(pal.bg),
+            );
+            // A pure-white light background has no room to rise.
+            assert!(pop > bg || (bg >= 1.0 && pop >= bg), "{preset:?}");
+        }
+    }
+
+    #[test]
+    fn every_preset_meets_the_contrast_floors() {
+        for preset in ThemePreset::ALL.iter().copied() {
+            let pal = palette_for(preset);
+            for (name, ground) in [
+                ("bg", pal.bg),
+                ("sidebar", pal.sidebar),
+                ("code_bg", pal.code_bg),
+                ("popover", pal.popover()),
+            ] {
+                let ratio = contrast_ratio(pal.fg, ground);
+                assert!(ratio >= 4.5, "{preset:?} fg/{name} = {ratio:.2}");
+            }
+            for (name, ground) in [("bg", pal.bg), ("sidebar", pal.sidebar)] {
+                let ratio = contrast_ratio(pal.muted, ground);
+                assert!(ratio >= 3.0, "{preset:?} muted/{name} = {ratio:.2}");
+            }
+            let ratio = contrast_ratio(pal.accent_fg, pal.accent);
+            assert!(ratio >= 3.0, "{preset:?} accent_fg/accent = {ratio:.2}");
+        }
+    }
+
+    #[test]
+    fn light_presets_avoid_maximum_contrast_text() {
+        for preset in ThemePreset::ALL.iter().copied().filter(|p| !p.is_dark()) {
+            let pal = palette_for(preset);
+            let ratio = contrast_ratio(pal.fg, pal.bg);
+            assert!(ratio <= 17.0, "{preset:?} fg/bg = {ratio:.2}");
+        }
+    }
+
+    #[test]
+    fn soft_syntax_desaturates_hues_and_keeps_presets_untouched() {
+        for preset in ThemePreset::ALL.iter().copied() {
+            let pal = palette_for(preset);
+            let soft = pal.with_soft_syntax(true);
+            assert_eq!(pal.with_soft_syntax(false), pal);
+            assert_eq!(soft.syntax.variable, pal.fg);
+            assert_eq!(soft.syntax.operator, pal.fg);
+            assert_eq!(soft.syntax.punctuation, pal.fg);
+            let spread = |c: Color| c.r.max(c.g).max(c.b) - c.r.min(c.g).min(c.b);
+            assert!(spread(soft.syntax.keyword) <= spread(pal.syntax.keyword));
+            assert_eq!(soft.bg, pal.bg);
+        }
+        let grey = Color::from_rgb(0.4, 0.4, 0.4);
+        assert_eq!(desaturate(grey, SOFT_SATURATION), grey);
+    }
+
+    #[test]
+    fn contrast_ratio_matches_wcag_reference_values() {
+        assert!((contrast_ratio(Color::BLACK, Color::WHITE) - 21.0).abs() < 1e-3);
+        assert!((contrast_ratio(Color::WHITE, Color::WHITE) - 1.0).abs() < 1e-6);
+    }
 }

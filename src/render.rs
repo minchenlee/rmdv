@@ -595,13 +595,13 @@ fn render_block<'a>(
                 );
             }
             let body = container(rich_text(out))
-                .padding(Padding::from(14))
+                .padding(Padding::from([10, 12]))
                 .style(move |_| container::Style {
                     background: Some(pal_c.code_bg.into()),
                     border: iced::Border {
                         color: pal_c.code_border,
                         width: 1.0,
-                        radius: crate::theme::radius::LG.into(),
+                        radius: crate::theme::radius::MD.into(),
                     },
                     ..Default::default()
                 })
@@ -616,7 +616,7 @@ fn render_block<'a>(
                             border: iced::Border {
                                 color: pal_c.code_border,
                                 width: 1.0,
-                                radius: crate::theme::radius::MD.into(),
+                                radius: crate::theme::radius::SM.into(),
                             },
                             ..Default::default()
                         },
@@ -814,7 +814,10 @@ fn make_span<'a>(
     if let Some(c) = bg {
         s = s.background(c);
     } else if code {
-        s = s.background(pal.code_bg);
+        s = s.background(pal.chip()).border(iced::Border {
+            radius: crate::theme::radius::XS.into(),
+            ..Default::default()
+        });
     }
     if let Some(url) = &st.link {
         s = s
@@ -1162,7 +1165,7 @@ fn render_diagram<'a>(
                     border: iced::Border {
                         color: pal_c.code_border,
                         width: 1.0,
-                        radius: crate::theme::radius::LG.into(),
+                        radius: crate::theme::radius::MD.into(),
                     },
                     ..Default::default()
                 });
@@ -1180,7 +1183,7 @@ fn render_diagram<'a>(
                     border: iced::Border {
                         color: pal_c.code_border,
                         width: 1.0,
-                        radius: crate::theme::radius::MD.into(),
+                        radius: crate::theme::radius::SM.into(),
                     },
                     ..Default::default()
                 });
@@ -1257,13 +1260,13 @@ fn source_code_block<'a>(
             .size(typ.code_size)
             .color(color),
     )
-    .padding(Padding::from(14))
+    .padding(Padding::from([10, 12]))
     .style(move |_| container::Style {
         background: Some(pal_c.code_bg.into()),
         border: iced::Border {
             color: pal_c.code_border,
             width: 1.0,
-            radius: crate::theme::radius::LG.into(),
+            radius: crate::theme::radius::MD.into(),
         },
         ..Default::default()
     })
@@ -1277,9 +1280,9 @@ fn chip<'a>(pal: &Palette, label: &'a str, fg: iced::Color) -> Element<'a, Messa
     container(text(label).size(11).color(fg))
         .padding(Padding::from([2, 8]))
         .style(move |_| container::Style {
-            background: Some(pal_c.surface_alt.into()),
+            background: Some(pal_c.chip().into()),
             border: iced::Border {
-                color: pal_c.rule,
+                color: pal_c.border(),
                 width: 1.0,
                 radius: crate::theme::radius::XS.into(),
             },

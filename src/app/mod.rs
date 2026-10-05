@@ -440,7 +440,7 @@ impl Default for App {
             ast: Vec::new(),
             theme_mode: mode,
             theme_preset: preset,
-            palette: theme::palette_for(preset),
+            palette: theme::palette_for(preset).with_soft_syntax(prefs.soft_syntax),
             typography: Typography::DEFAULT,
             typography_base: Typography::DEFAULT,
             font_scale: 1.0,
@@ -665,6 +665,25 @@ impl App {
         self.typography.body_size
     }
 
+    /// Install a theme's palette. Every theme change goes through here so the
+    /// Soft syntax option is never skipped.
+    fn apply_palette(&mut self, palette: Palette) {
+        self.palette = palette.with_soft_syntax(self.prefs.soft_syntax);
+    }
+
+    /// The current theme's palette before the Soft syntax option.
+    fn theme_palette(&self) -> Palette {
+        match &self.theme_id {
+            theme::ThemeId::Custom(slug) => self
+                .custom_themes
+                .iter()
+                .find(|t| &t.slug == slug)
+                .map(|t| t.palette)
+                .unwrap_or_else(|| theme::palette_for(self.theme_preset)),
+            theme::ThemeId::Preset(p) => theme::palette_for(*p),
+        }
+    }
+
     /// Write `prefs` to the isolated test path when one is set, otherwise to
     /// the user's config.
     fn save_prefs(&self) {
@@ -690,11 +709,11 @@ impl App {
         };
         if let Some(preset) = theme::preset_by_slug(&slug) {
             self.theme_preset = preset;
-            self.palette = theme::palette_for(preset);
+            self.apply_palette(theme::palette_for(preset));
             self.theme_id = theme::ThemeId::Preset(preset);
         } else if let Some(t) = self.custom_themes.iter().find(|t| t.slug == slug) {
             let (palette, typography) = (t.palette, t.typography);
-            self.palette = palette;
+            self.apply_palette(palette);
             self.set_typography_base(typography);
             self.theme_id = theme::ThemeId::Custom(slug);
         } else {
@@ -2289,7 +2308,7 @@ impl App {
             .style(move |_| container::Style {
                 background: Some(pal_c.surface.into()),
                 border: Border {
-                    color: pal_c.rule,
+                    color: pal_c.border(),
                     width: 1.0,
                     radius: 0.0.into(),
                 },
@@ -2324,6 +2343,7 @@ impl App {
             ("Decrease Font Size  ⌘-", Message::FontSizeDown),
             ("Reset Font Size  ⌘0", Message::FontSizeReset),
             ("Toggle Status Footer", Message::ToggleFooter),
+            ("Toggle Soft Syntax Colors", Message::ToggleSoftSyntax),
             ("Toggle Mindmap  ⌘M", Message::ToggleMindmap),
             ("Toggle Full Mindmap Mode  ⌘⇧M", Message::ToggleFullMindmap),
             ("Toggle Mindmap Panel  ⌘⌥B", panel_toggle),
@@ -3307,11 +3327,11 @@ impl App {
                 container(text("Keyboard shortcuts  ⌘/").size(12).color(pal.fg))
                     .padding(Padding::from([4, 8]))
                     .style(move |_| container::Style {
-                        background: Some(pal.surface.into()),
+                        background: Some(pal.popover().into()),
                         border: Border {
-                            color: pal.rule,
+                            color: pal.border(),
                             width: 1.0,
-                            radius: theme::radius::MD.into(),
+                            radius: theme::radius::SM.into(),
                         },
                         ..Default::default()
                     }),

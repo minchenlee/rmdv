@@ -763,6 +763,19 @@ impl App {
                     .to_string(),
                 )
             }
+            Message::ToggleSoftSyntax => {
+                self.prefs.soft_syntax = !self.prefs.soft_syntax;
+                self.save_prefs();
+                self.apply_palette(self.theme_palette());
+                self.show_toast(
+                    if self.prefs.soft_syntax {
+                        "Soft syntax colors on"
+                    } else {
+                        "Soft syntax colors off"
+                    }
+                    .to_string(),
+                )
+            }
             Message::ToggleViewMode => {
                 if self.file.is_none() {
                     return Task::none();
@@ -2444,7 +2457,7 @@ impl App {
                 if let theme::ThemeId::Preset(p) = next_id {
                     self.theme_preset = p;
                 }
-                self.palette = pal;
+                self.apply_palette(pal);
                 if let Some(t) = typo {
                     self.set_typography_base(t);
                 }
@@ -2466,7 +2479,7 @@ impl App {
             }
             Message::SetTheme(t) => {
                 self.theme_preset = t;
-                self.palette = theme::palette_for(t);
+                self.apply_palette(theme::palette_for(t));
                 self.theme_id = theme::ThemeId::Preset(t);
                 self.persist_theme();
                 let changed = self.refresh_diagram_theme_id();
@@ -2487,7 +2500,7 @@ impl App {
             Message::SetCustomTheme(slug) => {
                 if let Some(t) = self.custom_themes.iter().find(|t| t.slug == slug) {
                     let (palette, typography, label) = (t.palette, t.typography, t.name.clone());
-                    self.palette = palette;
+                    self.apply_palette(palette);
                     self.set_typography_base(typography);
                     self.theme_id = theme::ThemeId::Custom(slug.clone());
                     self.persist_theme();
@@ -2518,7 +2531,7 @@ impl App {
                 if let theme::ThemeId::Custom(slug) = self.theme_id.clone() {
                     if let Some(t) = self.custom_themes.iter().find(|t| t.slug == slug) {
                         let (palette, typography) = (t.palette, t.typography);
-                        self.palette = palette;
+                        self.apply_palette(palette);
                         self.set_typography_base(typography);
                     }
                 }
@@ -2553,7 +2566,7 @@ impl App {
                 let active_changed = if let theme::ThemeId::Custom(slug) = self.theme_id.clone() {
                     if let Some(t) = self.custom_themes.iter().find(|t| t.slug == slug) {
                         let (palette, typography) = (t.palette, t.typography);
-                        self.palette = palette;
+                        self.apply_palette(palette);
                         self.set_typography_base(typography);
                         true
                     } else {

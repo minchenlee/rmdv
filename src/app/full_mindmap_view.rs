@@ -326,7 +326,7 @@ impl App {
             .style(move |_| container::Style {
                 background: Some(pal.surface.into()),
                 border: Border {
-                    color: pal.rule,
+                    color: pal.border(),
                     width: 1.0,
                     radius: 0.0.into(),
                 },

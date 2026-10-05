@@ -27,12 +27,12 @@ pub(in crate::app) fn folder_picker_overlay<'a>(
                     .padding(Padding::from([3, 6]))
                     .style(move |_, status| button::Style {
                         background: match status {
-                            button::Status::Hovered => Some(Background::Color(pal.surface_alt)),
+                            button::Status::Hovered => Some(Background::Color(pal.hover())),
                             _ => None,
                         },
                         text_color: pal.fg,
                         border: Border {
-                            radius: theme::radius::MD.into(),
+                            radius: theme::radius::SM.into(),
                             ..Default::default()
                         },
                         ..Default::default()
@@ -74,13 +74,13 @@ pub(in crate::app) fn folder_picker_overlay<'a>(
                 .height(Length::Fixed(32.0))
                 .style(move |_, status| button::Style {
                     background: match (is_sel, status) {
-                        (true, _) => Some(Background::Color(pal.surface_alt)),
-                        (_, button::Status::Hovered) => Some(Background::Color(pal.surface_alt)),
+                        (true, _) => Some(Background::Color(pal.hover())),
+                        (_, button::Status::Hovered) => Some(Background::Color(pal.hover())),
                         _ => None,
                     },
                     text_color: pal.fg,
                     border: Border {
-                        radius: theme::radius::MD.into(),
+                        radius: theme::radius::SM.into(),
                         ..Default::default()
                     },
                     ..Default::default()
@@ -155,13 +155,13 @@ pub(in crate::app) fn file_finder_overlay<'a>(
                 .height(Length::Fixed(32.0))
                 .style(move |_, status| button::Style {
                     background: match (is_sel, status) {
-                        (true, _) => Some(Background::Color(pal.surface_alt)),
-                        (_, button::Status::Hovered) => Some(Background::Color(pal.surface_alt)),
+                        (true, _) => Some(Background::Color(pal.hover())),
+                        (_, button::Status::Hovered) => Some(Background::Color(pal.hover())),
                         _ => None,
                     },
                     text_color: pal.fg,
                     border: Border {
-                        radius: theme::radius::MD.into(),
+                        radius: theme::radius::SM.into(),
                         ..Default::default()
                     },
                     ..Default::default()
@@ -308,11 +308,11 @@ pub(in crate::app) fn shortcuts_overlay<'a>(pal: Palette) -> Element<'a, Message
         .max_width(1060.0)
         .max_height(520.0)
         .style(move |_| container::Style {
-            background: Some(pal.surface.into()),
+            background: Some(pal.popover().into()),
             border: Border {
-                color: pal.rule,
+                color: pal.border(),
                 width: 1.0,
-                radius: theme::radius::CARD.into(),
+                radius: theme::radius::LG.into(),
             },
             shadow: theme::shadow::SHEET,
             ..Default::default()
@@ -370,9 +370,9 @@ pub(in crate::app) fn key_caps<'a>(keys: &str, pal: Palette) -> Element<'a, Mess
                     .align_x(iced::alignment::Horizontal::Center)
                     .align_y(iced::alignment::Vertical::Center)
                     .style(move |_| container::Style {
-                        background: Some(pal.surface_alt.into()),
+                        background: Some(pal.chip().into()),
                         border: Border {
-                            color: pal.rule,
+                            color: pal.border(),
                             width: 1.0,
                             radius: theme::radius::SM.into(),
                         },
@@ -419,13 +419,13 @@ pub(in crate::app) fn command_overlay<'a>(
                 .height(Length::Fixed(32.0))
                 .style(move |_, status| button::Style {
                     background: match (is_sel, status) {
-                        (true, _) => Some(Background::Color(pal.surface_alt)),
-                        (_, button::Status::Hovered) => Some(Background::Color(pal.surface_alt)),
+                        (true, _) => Some(Background::Color(pal.hover())),
+                        (_, button::Status::Hovered) => Some(Background::Color(pal.hover())),
                         _ => None,
                     },
                     text_color: pal.fg,
                     border: Border {
-                        radius: theme::radius::MD.into(),
+                        radius: theme::radius::SM.into(),
                         ..Default::default()
                     },
                     ..Default::default()
@@ -489,7 +489,7 @@ pub(in crate::app) fn theme_overlay<'a>(
         .style(move |_| container::Style {
             background: Some(swatch_pal.accent.into()),
             border: Border {
-                color: swatch_pal.rule,
+                color: swatch_pal.border(),
                 width: 1.0,
                 radius: theme::radius::XS.into(),
             },
@@ -503,7 +503,7 @@ pub(in crate::app) fn theme_overlay<'a>(
         .style(move |_| container::Style {
             background: Some(swatch_pal.bg.into()),
             border: Border {
-                color: swatch_pal.rule,
+                color: swatch_pal.border(),
                 width: 1.0,
                 radius: theme::radius::XS.into(),
             },
@@ -532,13 +532,13 @@ pub(in crate::app) fn theme_overlay<'a>(
         .width(Length::Fill)
         .style(move |_, status| button::Style {
             background: match (is_sel, status) {
-                (true, _) => Some(Background::Color(pal.surface_alt)),
-                (_, button::Status::Hovered) => Some(Background::Color(pal.surface_alt)),
+                (true, _) => Some(Background::Color(pal.hover())),
+                (_, button::Status::Hovered) => Some(Background::Color(pal.hover())),
                 _ => None,
             },
             text_color: pal.fg,
             border: Border {
-                radius: theme::radius::MD.into(),
+                radius: theme::radius::SM.into(),
                 ..Default::default()
             },
             ..Default::default()
@@ -570,9 +570,9 @@ pub(in crate::app) fn picker_hint_footer<'a>(pal: Palette) -> Element<'a, Messag
             container(text(k).size(11).color(pal.fg))
                 .padding(Padding::from([2, 6]))
                 .style(move |_| container::Style {
-                    background: Some(pal.surface_alt.into()),
+                    background: Some(pal.chip().into()),
                     border: Border {
-                        color: pal.rule,
+                        color: pal.border(),
                         width: 1.0,
                         radius: theme::radius::XS.into(),
                     },
@@ -614,7 +614,7 @@ pub(in crate::app) fn picker_hint_footer<'a>(pal: Palette) -> Element<'a, Messag
 }
 
 /// A compact inline row of `key — label` hint pills, matching the picker footer
-/// style (surface_alt cap, rule border, subtle label). Reused for floating mind
+/// style (chip cap, hairline border, subtle label). Reused for floating mind
 /// map hints and the sidebar tab-row hint.
 pub(in crate::app) fn hint_pills<'a>(
     items: &[(&'a str, &'a str)],
@@ -629,9 +629,9 @@ pub(in crate::app) fn hint_pills<'a>(
             container(text(k.to_string()).size(11).color(pal.fg))
                 .padding(Padding::from([2, 6]))
                 .style(move |_| container::Style {
-                    background: Some(pal.surface_alt.into()),
+                    background: Some(pal.chip().into()),
                     border: Border {
-                        color: pal.rule,
+                        color: pal.border(),
                         width: 1.0,
                         radius: theme::radius::XS.into(),
                     },
@@ -659,11 +659,11 @@ pub(in crate::app) fn overlay_frame<'a>(
         .height(Length::Fill)
         .clip(true)
         .style(move |_| container::Style {
-            background: Some(pal.surface.into()),
+            background: Some(pal.popover().into()),
             border: Border {
-                color: pal.rule,
+                color: pal.border(),
                 width: 1.0,
-                radius: theme::radius::DIALOG.into(),
+                radius: theme::radius::LG.into(),
             },
             shadow: theme::shadow::DIALOG,
             ..Default::default()

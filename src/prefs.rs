@@ -13,6 +13,9 @@ pub struct Prefs {
     /// `None` follows the system appearance.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub theme: Option<String>,
+    /// Soft syntax colors: desaturated hues on top of any theme.
+    #[serde(default)]
+    pub soft_syntax: bool,
     /// Workspace-scoped Quick Slot banks live alongside the existing user
     /// preferences, never inside a workspace tree.
     #[serde(default, deserialize_with = "lenient_quick_slots")]
@@ -42,6 +45,7 @@ impl Default for Prefs {
             auto_focus_on_nav: false,
             show_footer: true,
             theme: None,
+            soft_syntax: false,
             quick_slots: crate::quick_slots::QuickSlotsStore::default(),
         }
     }
