@@ -84,6 +84,11 @@ impl App {
             }
             Message::OpenFileFinderPath(p) => {
                 self.overlay = Overlay::None;
+                // AppKit forwards argv paths as open-file events, so a bare
+                // directory launch arrives here too; it is a workspace.
+                if p.is_dir() {
+                    return self.update(Message::OpenWorkspace(p));
+                }
                 if self.full_mindmap.is_some() {
                     self.begin_full_mindmap_open(p)
                 } else {

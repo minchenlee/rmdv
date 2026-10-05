@@ -551,6 +551,17 @@ fn dotdot_workspace_open_uses_canonical_full_preview_identity() {
     let _ = std::fs::remove_dir_all(root);
 }
 
+#[test]
+fn directory_open_event_opens_workspace_without_error_card() {
+    let root = full_mindmap_test_dir("dir-open-event");
+    std::fs::write(root.join("note.md"), "# Note\n").unwrap();
+    let mut app = App::default();
+    let _ = app.update(Message::OpenFileFinderPath(root.clone()));
+    assert!(app.workspace.is_some());
+    assert!(app.error.is_none());
+    let _ = std::fs::remove_dir_all(root);
+}
+
 #[cfg(unix)]
 #[test]
 fn symlink_workspace_open_uses_canonical_full_preview_identity() {
