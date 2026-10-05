@@ -174,13 +174,10 @@ pub(in crate::app) fn sidebar_files_body<'a>(
         }
         // Build only the rows near the viewport; spacers keep the list's
         // full height so scroll offsets and keyboard edge-scroll still match.
-        let window = sidebar_row_window(app.tree_viewport.as_ref(), rows.len());
-        list = list.push(Space::new().height(window.start as f32 * SIDEBAR_ROW_H));
-        for (i, r) in rows.iter().enumerate().take(window.end).skip(window.start) {
-            let row_el = tree_row(r.node, r.depth, &app.expanded, current, i == cursor, pal);
-            list = list.push(row_el);
-        }
-        list = list.push(Space::new().height((rows.len() - window.end) as f32 * SIDEBAR_ROW_H));
+        list = push_sidebar_rows(list, app.tree_viewport.as_ref(), rows.len(), |i| {
+            let r = &rows[i];
+            tree_row(r.node, r.depth, &app.expanded, current, i == cursor, pal)
+        });
     }
     let list = list.width(Length::Fixed(content_w));
     // Nested single-axis scrollables: inner handles vertical, outer handles
@@ -215,17 +212,9 @@ pub(in crate::app) fn sidebar_outline_body<'a>(
                 .padding(Padding::from([8, 10])),
         );
     } else {
-        let window = sidebar_row_window(app.outline_viewport.as_ref(), sections.len());
-        list = list.push(Space::new().height(window.start as f32 * SIDEBAR_ROW_H));
-        for (i, s) in sections
-            .iter()
-            .enumerate()
-            .take(window.end)
-            .skip(window.start)
-        {
-            list = list.push(outline_row(s, i == app.outline_cursor, pal));
-        }
-        list = list.push(Space::new().height((sections.len() - window.end) as f32 * SIDEBAR_ROW_H));
+        list = push_sidebar_rows(list, app.outline_viewport.as_ref(), sections.len(), |i| {
+            outline_row(&sections[i], i == app.outline_cursor, pal)
+        });
     }
     scrollable(list.width(Length::Fill))
         .id(App::outline_scroll_id())
@@ -244,20 +233,65 @@ const SIDEBAR_LIST_TOP_PAD: f32 = 4.0;
 /// the next `view()` does not reveal blank space.
 const SIDEBAR_OVERSCAN: f32 = 600.0;
 
-/// Rows of a sidebar list worth building for `viewport`. Until the first
-/// viewport arrives every row is built.
+/// Rows of a sidebar list worth building for `viewport`: the band around the
+/// viewport, plus the first screenful. A list re-created after the sidebar was
+/// hidden starts at the top while `viewport` still holds the old offset, so the
+/// top rows must exist until the new scrollable reports its viewport. Until
+/// the first viewport arrives every row is built.
 pub(in crate::app) fn sidebar_row_window(
     viewport: Option<&iced::widget::scrollable::Viewport>,
     total: usize,
-) -> std::ops::Range<usize> {
+) -> [std::ops::Range<usize>; 2] {
     match viewport {
-        Some(viewport) => sidebar_rows_near(
+        Some(viewport) => sidebar_row_bands(
             viewport.absolute_offset().y,
             viewport.bounds().height,
             total,
         ),
-        None => 0..total,
+        None => [0..total, total..total],
     }
+}
+
+/// The first screenful and the band near `offset_y`, merged when they touch.
+pub(in crate::app) fn sidebar_row_bands(
+    offset_y: f32,
+    height: f32,
+    total: usize,
+) -> [std::ops::Range<usize>; 2] {
+    let head = sidebar_rows_near(0.0, height, total);
+    let near = sidebar_rows_near(offset_y, height, total);
+    if near.start <= head.end {
+        [0..near.end.max(head.end), total..total]
+    } else {
+        [head, near]
+    }
+}
+
+/// Push the rows `sidebar_row_window` selects, with spacers standing in for
+/// the rest so the column keeps its full height.
+fn push_sidebar_rows<'a>(
+    mut list: Column<'a, Message>,
+    viewport: Option<&iced::widget::scrollable::Viewport>,
+    total: usize,
+    row: impl Fn(usize) -> Element<'a, Message>,
+) -> Column<'a, Message> {
+    let mut next = 0;
+    for range in sidebar_row_window(viewport, total) {
+        if range.is_empty() {
+            continue;
+        }
+        if range.start > next {
+            list = list.push(Space::new().height((range.start - next) as f32 * SIDEBAR_ROW_H));
+        }
+        for i in range.clone() {
+            list = list.push(row(i));
+        }
+        next = range.end;
+    }
+    if total > next {
+        list = list.push(Space::new().height((total - next) as f32 * SIDEBAR_ROW_H));
+    }
+    list
 }
 
 /// Rows within the overscan band around a viewport scrolled to `offset_y` px

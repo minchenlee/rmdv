@@ -8095,5 +8095,15 @@ fn sidebar_rows_near_builds_only_the_overscanned_viewport() {
 
     // Short lists build every row.
     assert_eq!(sidebar_rows_near(0.0, 800.0, 10), 0..10);
-    assert_eq!(sidebar_row_window(None, 5000), 0..5000);
+    assert_eq!(sidebar_row_window(None, 5000), [0..5000, 5000..5000]);
+
+    // The first screenful is always built next to the viewport band, so a
+    // scrollable re-created at the top never shows blank space.
+    let [head, near] = sidebar_row_bands(26.0 * 2000.0, 800.0, 5000);
+    assert_eq!(head, sidebar_rows_near(0.0, 800.0, 5000));
+    assert_eq!(near, sidebar_rows_near(26.0 * 2000.0, 800.0, 5000));
+    let [merged, empty] = sidebar_row_bands(26.0 * 20.0, 800.0, 5000);
+    assert_eq!(merged.start, 0);
+    assert_eq!(merged.end, sidebar_rows_near(26.0 * 20.0, 800.0, 5000).end);
+    assert!(empty.is_empty());
 }
