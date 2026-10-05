@@ -1,6 +1,6 @@
 # MDV-031 — Visual refinement on the design tokens
 
-State: ready
+State: done
 Owner / accountable lead: owner (minchenlee); implementation by Claude
 Active writer: none
 Created: 2026-10-05
@@ -143,12 +143,11 @@ rejects can be reverted alone.
 
 - [x] Owner chose scope 1–4, no font change, Soft as an option (2026-10-05).
 - [x] Survey the style call sites and baseline contrast.
-- [ ] Item 1: overlay helpers and hover/border replacement.
-- [ ] Item 2: radius ladder and elevation.
-- [ ] Item 3: light-theme roles and contrast tests.
-- [ ] Item 4: code-block recipe and accent-derived tokens.
-- [ ] Item 5: Soft syntax option.
-- [ ] Screenshots, PR, Verify app, owner acceptance.
+- [x] Items 1–4: overlay helpers, radius ladder and elevation, light-theme
+  roles with contrast tests, code-block recipe and accent-derived tokens
+  (`466d6c9`).
+- [x] Item 5: Soft syntax option (`41666a2`).
+- [x] Screenshots, PR #47, Verify app build, owner approval (2026-10-05).
 
 ## Decision log
 
@@ -158,6 +157,9 @@ rejects can be reverted alone.
 | 2026-10-05 | Derive dark/light for overlays from `bg` luminance. | Custom themes have no preset flag; one rule covers both. |
 | 2026-10-05 | Solarized Light text and muted shift one step darker (`base01`, `base00`). | `base00` on `base3` is 4.13:1, below the 4.5 floor; `base0` muted is 2.93:1, below 3.0. `base01` is Solarized's own emphasis tone. |
 | 2026-10-05 | Ship as one PR with per-item commits. | Visual acceptance is one owner round; per-item commits keep rejection cheap. |
+| 2026-10-05 | `wash` is a neutral fill, not an accent tint. | Matches the zeron source; accent-derived colours are separate. |
+| 2026-10-05 | `match_bg` keeps each theme's yellow. | Deriving it from the accent would make search matches look like the selection in blue-accent themes (Nord, Tokyo Night). |
+| 2026-10-05 | Items 1–4 share one commit; Soft is its own commit. | Items 1 and 2 edit the same lines; Soft is the part most likely to be reverted alone. |
 
 ## Blockers and escalation
 
@@ -167,4 +169,28 @@ rejects can be reverted alone.
 
 ## Final evidence
 
-- Pending.
+- Merged as PR [#47](https://github.com/minchenlee/rmdv/pull/47), squash
+  `20838b1` on 2026-10-05 with owner authority. PR #46 (`71a408e`) landed
+  this plan.
+- Release verification on the PR head `41666a2`:
+  - `cargo test --release -- --test-threads=1`: 461 library tests (9 new)
+    plus all integration suites passed.
+  - The lean `--no-default-features` check passed, and so did the release
+    build. The first commit `466d6c9` also passes `cargo check` on its own.
+  - PR CI was green: Linux and macOS tests, the Windows check, and
+    `cargo audit`.
+- New tests:
+  - WCAG floors for all ten presets: `fg` ≥ 4.5 on `bg`, `sidebar`,
+    `code_bg`, and `popover`; `muted` ≥ 3.0; `accent_fg` ≥ 3.0.
+  - Light themes: `fg`/`bg` ≤ 17.
+  - Overlay direction, hairline scaling, and elevation.
+  - The Soft transform, plus an App test showing that Soft follows theme
+    changes and turns off cleanly.
+- Before, after, and Soft screenshots of `demo/` for all ten themes came from
+  the IPC harness. The same build was installed in the Verify app. The owner
+  reviewed the change and approved the merge (2026-10-05).
+- Follow-up found during capture:
+  - After `goto`, a table row clipped at the viewport top sometimes renders
+    without text.
+  - The pre-change binary shows it too, so this PR did not cause it.
+  - Tracked as `MDV-038`.

@@ -12,8 +12,9 @@ contract passed; code or prose merely existing is not sufficient.
 ## Active tasks
 
 Roadmap order (owner-approved 2026-10-04, re-confirmed 2026-10-05): phases 0–2,
-MDV-023, MDV-029, and MDV-024 to MDV-028 have landed (PRs #28–#43). Next is
-phase 3 visuals (MDV-031, then MDV-019), with the remaining phase-4 items
+MDV-023, MDV-029, MDV-024 to MDV-028, MDV-036, and the phase-3 visual pass
+MDV-031 have landed (PRs #28–#47). Next is the vibrancy spike (MDV-037) and
+MDV-019, with the remaining phase-4 items
 (MDV-008, MDV-030) alongside. Phase 5 tasks (MDV-032 to MDV-035) start with a
 design for the owner, not code. Sources:
 [`MDV-022`](plans/completed/MDV-022-refactor-phases-0-2.md) and
@@ -21,11 +22,12 @@ design for the owner, not code. Sources:
 
 | ID | Priority | State | Outcome | Acceptance | Plan | Blocked by |
 | --- | --- | --- | --- | --- | --- | --- |
+| MDV-037 | P2 | in_progress | Spike: optional macOS window vibrancy. A transparent window with an AppKit blur behind a translucent sidebar, behind `RMDV_VIBRANCY=1`. Decide keep, tune, or drop. | Verify app shows the blur behind the sidebar in dark and light themes without text-contrast loss or idle CPU/memory regression; owner decision. | — | Owner time. |
+| MDV-019 | P1 | ready | Theme Settings and Theme Studio, rebuilt on the MDV-031 design tokens rather than ported from the dirty pre-split candidate (owner decision 2026-10-04; the old diff is backed up outside the repo). | Design approved by the owner, then owner native acceptance. | — | Plan to be written. |
+| MDV-038 | P3 | proposed | After `goto`, a table row clipped at the viewport top sometimes renders without text (seen in screenshots on both pre- and post-MDV-031 builds). | Reproduce with the IPC harness, find the cause, and fix or record a bounded limitation. | — | — |
 | MDV-008 | P2 | ready | Clippy baseline: report-only in CI first, then tighten lint by lint. (The rustfmt half landed in PR #28; include the existing unused `Section` import warning in `tests/ipc_protocol.rs`.) | Recorded warning count; each tightening PR is lint-only with no behavior diff. | — | — |
 | MDV-030 | P2 | proposed | Consolidate HTTP/TLS dependencies (reqwest 0.12 → 0.13 alongside liteparse; evaluate dropping `aws-lc-sys`). | Build, tests, update check, and remote-image fetch unchanged; dependency count and build time measured. | — | The resvg 0.45/0.47 split needs iced and mermaid git revs; known cost. |
-| MDV-036 | P2 | review | Launching with a bare directory argument (`rmdv <dir>`) loads the folder but also shows a "Couldn't open file — Is a directory" card. | Bare-directory launch opens the workspace with no error card; file and `open-folder` launches unchanged; regression test. | PR [#45](https://github.com/minchenlee/rmdv/pull/45) | — |
 | MDV-002 | P2 | ready | Bound syntax-highlight cache memory by bytes (search results were bounded by PR #30 and #33). | `HlCache` source/total-byte budget with focused tests and measured evidence. | [`MDV-002`](plans/active/MDV-002-search-highlight-memory-bounds.md) | — |
-| MDV-031 | P2 | ready | Visual refinement using the zeron method: `ink`/`hairline`/`wash` overlay tokens, a 6/10/16 radius ladder with elevation steps, light-theme role reassignment, a code-block recipe with accent-derived selection tokens, and an opt-in Soft syntax option. | Owner native acceptance per theme (Soft on and off); contrast unit tests (fg ≥ 4.5, muted ≥ 3.0). | [`MDV-031`](plans/active/MDV-031-visual-refinement.md) | Visual change; owner time. |
 | MDV-032 | P1 | proposed | Move main-document parse and highlighting off the UI thread. | Design approved by the owner before code. | — | Core contract (request-identity guards). |
 | MDV-033 | P1 | proposed | Stabilize `BlockId` so inserting a block does not invalidate every later height and widget state. | Design approved by the owner before code. | — | Core contract (`BlockId`). |
 | MDV-034 | P2 | proposed | Pre-render diagrams near the viewport only, and fix the diagram LRU that only `peek`s. | Design approved by the owner before code; >64-diagram document renders every diagram. | — | — |
@@ -40,7 +42,6 @@ design for the owner, not code. Sources:
 
 | ID | Priority | Reason | Revisit trigger |
 | --- | --- | --- | --- |
-| MDV-019 | P1 | Theme Settings and Theme Studio will be rebuilt on the new design tokens rather than ported from its dirty pre-split candidate (owner decision 2026-10-04; the old diff is backed up outside the repo). | MDV-031 tokens have landed. |
 | MDV-021 | P1 | The v0.7.0 app payloads are signed, notarized, and Gatekeeper-accepted, but the release workflow does not independently sign the DMG containers, treats DMG stapling as best-effort, or fail closed on non-empty Windows app/setup files and their hashes before upload. | Before the next release candidate, add and exercise explicit artifact-integrity gates without changing Windows best-effort release policy. |
 | MDV-007 | P2 | One directory with more than 10,000 immediate entries is still truncated inside that directory. Budget exhaustion across siblings, the case the owner actually hit in `~/Documents`, was fixed in PR #43: a folder the budget skipped is scanned on its own when expanded. | A real directory with >10k immediate entries that hides needed files, or a bounded paging proposal with measurements. |
 
@@ -48,6 +49,8 @@ design for the owner, not code. Sources:
 
 | ID | Outcome | Evidence route |
 | --- | --- | --- |
+| MDV-031 | Visual refinement: derived overlay tokens, a 6/10/16 radius ladder with elevation, light-theme contrast fixes, a code-block recipe, and an opt-in Soft syntax option; owner-approved. | PR #47 and [`docs/plans/completed/MDV-031-visual-refinement.md`](plans/completed/MDV-031-visual-refinement.md). |
+| MDV-036 | A bare directory launch argument opens the workspace without a "Couldn't open file" card. | [PR #45](https://github.com/minchenlee/rmdv/pull/45), squash `3909cfa`. |
 | MDV-024–028 | Phase-2 performance round (sidebar rows, editor keystroke, local images, window events, mindmap animation) plus two acceptance fixes (⌘Z undo/scroll, lazy scan of budget-skipped folders); owner-accepted on device. | PRs #37–#43 and [`docs/plans/completed/MDV-024-028-phase-2-performance.md`](plans/completed/MDV-024-028-phase-2-performance.md). |
 | MDV-029 | CI runs Linux and macOS tests plus a Windows check on PRs, gates release builds on tests, reports `cargo audit`, and caches PDFium. | PR #36 and [`docs/plans/completed/MDV-029-ci-coverage-and-release-gates.md`](plans/completed/MDV-029-ci-coverage-and-release-gates.md). |
 | MDV-023 | Removed dead `first_frame_at` and the six Full Mindmap `expect("checked above")` panics. | PR #35 and [`docs/plans/completed/MDV-023-phase-1-leftovers.md`](plans/completed/MDV-023-phase-1-leftovers.md). |
