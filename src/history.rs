@@ -319,7 +319,7 @@ mod tests {
             }
             (prefix, suffix)
         }
-        for len in [0, 1, 63, 64, 65, 127, 128, 129, 300] {
+        for len in [0usize, 1, 63, 64, 65, 127, 128, 129, 300] {
             let old: Vec<u8> = (0..len).map(|i| b'a' + (i % 7) as u8).collect();
             for at in [0, len / 3, len / 2, len.saturating_sub(1), len] {
                 for edit in [&b""[..], b"Z", b"abc"] {
