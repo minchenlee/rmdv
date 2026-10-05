@@ -574,6 +574,73 @@ impl Default for App {
     }
 }
 
+/// Turn `ed` (showing `current`) into `target` by replacing only the span
+/// that differs, the way an editor's own undo does. Rebuilding the content
+/// would reset its scroll and put the cursor on the first line; a splice keeps
+/// the view where it was and leaves the cursor at the restored text.
+fn restore_editor_text(ed: &mut iced::widget::text_editor::Content, current: &str, target: &str) {
+    use iced::widget::text_editor::{Action, Content, Cursor, Edit, Position};
+    let (start, current_end, target_end) = changed_span(current, target);
+    let position = |offset: usize| {
+        let before = &current[..offset];
+        let line = before.matches('\n').count();
+        let column = offset - before.rfind('\n').map_or(0, |i| i + 1);
+        Position { line, column }
+    };
+    // Line endings other than `\n` do not map to (line, column) one to one.
+    if !current.contains('\r') && !target.contains('\r') {
+        let insert = &target[start..target_end];
+        if start == current_end && insert.is_empty() {
+            return;
+        }
+        // Always pass an anchor: `move_to` keeps any earlier selection when
+        // given none, and an empty one replaces nothing.
+        ed.move_to(Cursor {
+            position: position(current_end),
+            selection: Some(position(start)),
+        });
+        ed.perform(Action::Edit(if insert.is_empty() {
+            Edit::Delete
+        } else {
+            Edit::Paste(Arc::new(insert.to_string()))
+        }));
+        if ed.text() == target {
+            return;
+        }
+    }
+    *ed = Content::with_text(target);
+    let before = &target[..target_end];
+    ed.move_to(Cursor {
+        position: Position {
+            line: before.matches('\n').count(),
+            column: target_end - before.rfind('\n').map_or(0, |i| i + 1),
+        },
+        selection: None,
+    });
+}
+
+/// Byte span where `a` and `b` differ: the shared prefix length, then where
+/// the shared suffix starts in `a` and in `b`. Both ends sit on char
+/// boundaries of both strings.
+fn changed_span(a: &str, b: &str) -> (usize, usize, usize) {
+    let mut start = a.bytes().zip(b.bytes()).take_while(|(x, y)| x == y).count();
+    while !a.is_char_boundary(start) || !b.is_char_boundary(start) {
+        start -= 1;
+    }
+    let max_suffix = (a.len() - start).min(b.len() - start);
+    let mut suffix = a
+        .bytes()
+        .rev()
+        .zip(b.bytes().rev())
+        .take(max_suffix)
+        .take_while(|(x, y)| x == y)
+        .count();
+    while !a.is_char_boundary(a.len() - suffix) || !b.is_char_boundary(b.len() - suffix) {
+        suffix -= 1;
+    }
+    (start, a.len() - suffix, b.len() - suffix)
+}
+
 impl App {
     /// Record a new theme-provided typography base and re-apply the current
     /// font-zoom factor on top of it.

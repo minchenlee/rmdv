@@ -8306,3 +8306,63 @@ fn dirty_document_can_be_reopened_but_blocks_other_files() {
     assert!(toast.contains("unsaved edits in a.md"), "{toast}");
     assert!(toast.contains("\u{2318}S"), "{toast}");
 }
+
+#[test]
+fn undo_and_redo_keep_the_cursor_at_the_restored_edit() {
+    use iced::widget::text_editor::{Action, Content, Cursor, Edit, Position};
+    let doc: String = (0..200).map(|i| format!("line {i}\n")).collect();
+    let mut app = App::default();
+    app.saved_source = doc.clone();
+    app.editor = Some(Content::with_text(&doc));
+    let ed = |app: &App| app.editor.as_ref().unwrap().text();
+    let line = |app: &App| app.editor.as_ref().unwrap().cursor().position.line;
+
+    app.editor.as_mut().unwrap().move_to(Cursor {
+        position: Position {
+            line: 150,
+            column: 4,
+        },
+        selection: None,
+    });
+    for c in "中文!".chars() {
+        let _ = app.update(Message::EditorAction(Action::Edit(Edit::Insert(c))));
+    }
+    assert!(ed(&app).contains("line中文! 150"));
+
+    let _ = app.update(Message::EditorUndo);
+    assert!(ed(&app).contains("line中文 150"));
+    assert_eq!(line(&app), 150);
+    let _ = app.update(Message::EditorUndo);
+    let _ = app.update(Message::EditorUndo);
+    assert_eq!(ed(&app), doc);
+    assert_eq!(line(&app), 150);
+    assert!(!app.dirty);
+
+    let _ = app.update(Message::EditorRedo);
+    assert!(ed(&app).contains("line中 150"));
+    assert_eq!(line(&app), 150);
+    assert!(app.dirty);
+}
+
+#[test]
+fn restore_editor_text_splices_inserts_deletes_and_replacements() {
+    use iced::widget::text_editor::Content;
+    for (from, to) in [
+        ("abc\ndef\n", "abc\nXdef\n"),
+        ("abc\nXdef\n", "abc\ndef\n"),
+        ("héllo wörld", "héllo wörld!"),
+        ("一二三四", "一二X三四"),
+        ("一二X三四", "一二三四"),
+        ("aaa\nbbb\nccc", "aaa\nccc"),
+        ("same", "same"),
+        ("", "new\ntext"),
+        ("old\ntext", ""),
+        ("crlf\r\nline", "crlf\r\nline2"),
+    ] {
+        let mut ed = Content::with_text(from);
+        restore_editor_text(&mut ed, from, to);
+        assert_eq!(ed.text(), to, "{from:?} -> {to:?}");
+    }
+    assert_eq!(changed_span("一二三", "一X二三"), (3, 3, 4));
+    assert_eq!(changed_span("aa", "aaa"), (2, 2, 3));
+}

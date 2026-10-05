@@ -1946,8 +1946,8 @@ impl App {
                 if let Some(ed) = self.editor.as_mut() {
                     if let Some(prev) = self.edit_history.pop() {
                         let current = ed.text();
+                        restore_editor_text(ed, &current, &prev);
                         self.edit_redo.push(current);
-                        *ed = iced::widget::text_editor::Content::with_text(&prev);
                         self.editor_text = None;
                         self.dirty = prev != self.saved_source;
                         changed = true;
@@ -1963,8 +1963,8 @@ impl App {
                 if let Some(ed) = self.editor.as_mut() {
                     if let Some(next) = self.edit_redo.pop() {
                         let current = ed.text();
+                        restore_editor_text(ed, &current, &next);
                         self.edit_history.push(current);
-                        *ed = iced::widget::text_editor::Content::with_text(&next);
                         self.editor_text = None;
                         self.dirty = next != self.saved_source;
                         changed = true;
