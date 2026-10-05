@@ -4,25 +4,31 @@ Last verified: 2026-10-05 (Asia/Taipei)
 Stale after: 7 days
 Canonical repository: `/Users/liminchen/Documents/GitHub/mdv`
 Expected branch / HEAD / PR: start new work from the live `origin/main`
-(`a44552e` when verified). Latest release: `v0.7.0` → `9dd7217`; `main` is
+(`0ed7305` when verified). Latest release: `v0.7.0` → `9dd7217`; `main` is
 unreleased since then.
 Authority: This is a routing snapshot. Verify Git, GitHub, runtime identity, and
 manual evidence before mutation.
 
 ## Current outcome
 
-The first wave of the owner-approved refactor roadmap has landed: safety fixes,
-the `src/app/` module split with design tokens, three search/finder
-performance fixes, and theme persistence (PRs #28–#33, `MDV-022`). Quick Slots
-landed earlier through PR #26. The next roadmap step is `MDV-023` (phase-1
-leftovers), then build/CI (`MDV-029`).
+The refactor roadmap through phase 2 has landed:
+- PRs #28–#33 (`MDV-022`): safety fixes, the `src/app/` split with design
+  tokens, search and finder performance, and theme persistence.
+- `MDV-023`: phase-1 leftovers (PR #35).
+- `MDV-029`: CI coverage and release gates (PR #36).
+- `MDV-024`–`MDV-028`: the phase-2 performance round (PRs #37–#41).
+- Two acceptance fixes: ⌘Z undo (PR #42) and lazy scan of folders the
+  workspace budget skipped (PR #43).
+
+The owner accepted everything on device. Next is phase 3: `MDV-031`, then
+`MDV-019`.
 
 ## Live workstreams
 
 | ID | State | Owner | Outcome | Acceptance | Plan |
 | --- | --- | --- | --- | --- | --- |
-| MDV-023 | in_progress | Claude | Remove dead `first_frame_at` and the six `expect("checked above")` panics. | No behavior change; release tests and CI pass. | [`MDV-023`](docs/plans/active/MDV-023-phase-1-leftovers.md) |
-| MDV-029 | ready | Claude (next) | CI covers macOS/Windows and gates releases on tests. | Proven on a PR run; release gate exercised without publishing. | [`MDV-029`](docs/plans/active/MDV-029-ci-coverage-and-release-gates.md) |
+| MDV-031 | ready | Claude (next) | Zeron-method visual refinement on the design tokens. | Owner native acceptance per theme; contrast unit tests. | Plan to be written before work starts. |
+| MDV-036 | ready | Claude | Bare-directory launch stops showing a "Couldn't open file — Is a directory" card. | Regression test; file/`open-folder` launches unchanged. | — |
 
 The roadmap order and every other task are in [`docs/BACKLOG.md`](docs/BACKLOG.md).
 
@@ -31,8 +37,8 @@ The roadmap order and every other task are in [`docs/BACKLOG.md`](docs/BACKLOG.m
 - Merges, tags, releases, and deployments need explicit owner authority per
   action. Pushing branches and opening PRs after verification is authorized for
   roadmap work.
-- Performance items `MDV-024`–`MDV-028` and visual work `MDV-031`/`MDV-019`
-  need owner acceptance on device; batch them into one verify build per round.
+- Visual work `MDV-031`/`MDV-019` needs owner acceptance on device; batch it
+  into one verify build per round.
 - Phase-5 tasks (`MDV-032`–`MDV-035`) start with a design for the owner.
 - GitHub Actions: the repo is public and uses standard runners only, which do
   not consume the owner's (exhausted) private-repo minutes. Keep it that way.
@@ -41,28 +47,36 @@ The roadmap order and every other task are in [`docs/BACKLOG.md`](docs/BACKLOG.m
 
 ## Next safe actions
 
-1. Finish and verify `MDV-023`; open its PR and stop before merge.
-2. Start `MDV-029` on a fresh branch from `origin/main`.
-3. Plan one owner acceptance round covering `MDV-024`–`MDV-028`.
+1. Write the `MDV-031` plan (tokens, contrast tests, per-theme acceptance) and
+   start it on a fresh branch from `origin/main`.
+2. Fix `MDV-036` with a regression test; open its PR and stop before merge.
+3. Record the `MDV-008` clippy baseline (report-only).
 
 ## Verification state
 
 ### Verified now
 
-- `origin/main` is `a44552e`; PRs #28–#33 are squash-merged
-  (`f8a30fa`, `f9ba31f`, `fe7aa43`, `e675b51`, `5773bc6`, `a44552e`) and main
-  CI passed on each merge commit.
-- `cargo test --release -- --test-threads=1` on `a44552e`'s tree: 439 library
-  tests plus all integration suites pass (run on the owner-tested verify build,
-  identical tree).
-- Owner native acceptance of #28–#33 on a separately bundled verify app
-  (2026-10-04/05); details in [`MDV-022`](docs/plans/completed/MDV-022-refactor-phases-0-2.md).
+- `origin/main` is `0ed7305`. PRs #34–#43 were squash-merged on 2026-10-05
+  with owner authority (`48732fd`, `1c7a10b`, `8ab3ca9`, `f60da48`,
+  `b971c35`, `27fcd52`, `f280f82`, `f4ad819`, `1df1b13`, `0ed7305`).
+- Each PR's final head passed CI: Linux and macOS tests, the Windows check, and
+  the Linux package. Main push CI passed on each merge commit (`f280f82`'s run
+  was cancelled by the next push).
+- `main@0ed7305` source equals the owner-accepted verify build
+  `codex/verify-phase2@d408864`, except the order of tests in
+  `src/app/tests.rs` and the docs/CI files from #34 and #36. That build passed
+  `cargo test --release -- --test-threads=1` (452 library tests plus all
+  integration suites), the lean check, and a release build.
+- Owner native acceptance of #37–#43 on the verify app (2026-10-05); details in
+  [`MDV-024–028`](docs/plans/completed/MDV-024-028-phase-2-performance.md).
 - Local `main` is `1244e4c`, an ancestor of `origin/main`; old local-only
   commits are preserved on `archive/main-before-sync-20261004` (`MDV-010`
   closed by archival).
 
 ### Not verified / follow-up
 
+- A local release test run on the exact `0ed7305` tree. It is pending a free
+  machine slot; the source-equal verify build passed.
 - One unreproduced "Couldn't open file" card after relaunching the verify app
   (see `MDV-022`).
 - `HlCache` is bounded by entry count only (`MDV-002`).

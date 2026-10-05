@@ -11,25 +11,21 @@ contract passed; code or prose merely existing is not sufficient.
 
 ## Active tasks
 
-Roadmap order (owner-approved 2026-10-04, re-confirmed 2026-10-05): MDV-023 →
-phase 4 build/CI (MDV-029, MDV-008, MDV-030) → remaining phase 2 performance
-items in one owner acceptance round (MDV-024 to MDV-028) → phase 3 visuals
-(MDV-031, then MDV-019). Phase 5 tasks (MDV-032 to MDV-035) start with a design
-for the owner, not code. Source: [`MDV-022`](plans/completed/MDV-022-refactor-phases-0-2.md).
+Roadmap order (owner-approved 2026-10-04, re-confirmed 2026-10-05): phases 0–2,
+MDV-023, MDV-029, and MDV-024 to MDV-028 have landed (PRs #28–#43). Next is
+phase 3 visuals (MDV-031, then MDV-019), with the remaining phase-4 items
+(MDV-008, MDV-030) alongside. Phase 5 tasks (MDV-032 to MDV-035) start with a
+design for the owner, not code. Sources:
+[`MDV-022`](plans/completed/MDV-022-refactor-phases-0-2.md) and
+[`MDV-024–028`](plans/completed/MDV-024-028-phase-2-performance.md).
 
 | ID | Priority | State | Outcome | Acceptance | Plan | Blocked by |
 | --- | --- | --- | --- | --- | --- | --- |
-| MDV-023 | P2 | in_progress | Finish the phase-1 leftovers: drop the dead `first_frame_at` field and replace the six `expect("checked above")` calls with non-panicking control flow. | No behavior change; release tests, fmt, lean check, and CI pass. | [`MDV-023`](plans/active/MDV-023-phase-1-leftovers.md) | — |
-| MDV-029 | P1 | ready | CI covers what releases ship: macOS tests on PRs, a Windows `--no-default-features` check, a test gate in `release.yml`, `cargo audit`, and a working build cache. | Each job proven on a PR run; release gate exercised without publishing; runner choices stay free for this public repo. | [`MDV-029`](plans/active/MDV-029-ci-coverage-and-release-gates.md) | — |
-| MDV-008 | P2 | ready | Clippy baseline: report-only in CI first, then tighten lint by lint. (The rustfmt half landed in PR #28.) | Recorded warning count; each tightening PR is lint-only with no behavior diff. | — | — |
+| MDV-008 | P2 | ready | Clippy baseline: report-only in CI first, then tighten lint by lint. (The rustfmt half landed in PR #28; include the existing unused `Section` import warning in `tests/ipc_protocol.rs`.) | Recorded warning count; each tightening PR is lint-only with no behavior diff. | — | — |
 | MDV-030 | P2 | proposed | Consolidate HTTP/TLS dependencies (reqwest 0.12 → 0.13 alongside liteparse; evaluate dropping `aws-lc-sys`). | Build, tests, update check, and remote-image fetch unchanged; dependency count and build time measured. | — | The resvg 0.45/0.47 split needs iced and mermaid git revs; known cost. |
-| MDV-024 | P2 | ready | Virtualize the sidebar file tree and outline so `view()` does not rebuild every row. | Large-folder before/after measurement; keyboard nav, folding, and scroll restore unchanged; owner native check. | — | Owner acceptance round. |
-| MDV-025 | P2 | ready | Raw/Zen editor: stop doing ≥4 whole-document operations per keystroke. | 1 MiB document allocation/time measured before/after; undo, dirty state, and save unchanged; owner native check. | — | Owner acceptance round. |
-| MDV-026 | P2 | ready | Local images load through a Task and the byte-budgeted `ImageCache` instead of `p.exists()` in `view()`. | No filesystem calls in `view()`; cache budget covers local images; owner native check. | — | Owner acceptance round. |
-| MDV-027 | P2 | ready | Window Moved/Resized events stop spawning three Tasks each. | Event-to-task count measured; fullscreen enter/exit relayout still correct on device. | — | Owner acceptance round (past fullscreen-exit regression). |
-| MDV-028 | P2 | ready | Mindmap stops rebuilding `sync_anim` state on every redraw. | Per-frame cost measured at N≈2000; animation unchanged on device. | — | Owner acceptance round. |
+| MDV-036 | P2 | ready | Launching with a bare directory argument (`rmdv <dir>`) loads the folder but also shows a "Couldn't open file — Is a directory" card. | Bare-directory launch opens the workspace with no error card; file and `open-folder` launches unchanged; regression test. | — | — |
 | MDV-002 | P2 | ready | Bound syntax-highlight cache memory by bytes (search results were bounded by PR #30 and #33). | `HlCache` source/total-byte budget with focused tests and measured evidence. | [`MDV-002`](plans/active/MDV-002-search-highlight-memory-bounds.md) | — |
-| MDV-031 | P2 | proposed | Visual refinement using the zeron method: `ink`/`hairline`/`wash` overlays, a 6/10/16 radius ladder, light-theme role reassignment with contrast tests, code-block recipe, gentle sidebar/overlay fades. | Owner native acceptance per theme; contrast unit tests (fg/bg ≥ 4.5). | — | Visual change; owner time. |
+| MDV-031 | P2 | ready | Visual refinement using the zeron method: `ink`/`hairline`/`wash` overlays, a 6/10/16 radius ladder, light-theme role reassignment with contrast tests, code-block recipe, gentle sidebar/overlay fades. | Owner native acceptance per theme; contrast unit tests (fg/bg ≥ 4.5). | — | Visual change; owner time. |
 | MDV-032 | P1 | proposed | Move main-document parse and highlighting off the UI thread. | Design approved by the owner before code. | — | Core contract (request-identity guards). |
 | MDV-033 | P1 | proposed | Stabilize `BlockId` so inserting a block does not invalidate every later height and widget state. | Design approved by the owner before code. | — | Core contract (`BlockId`). |
 | MDV-034 | P2 | proposed | Pre-render diagrams near the viewport only, and fix the diagram LRU that only `peek`s. | Design approved by the owner before code; >64-diagram document renders every diagram. | — | — |
@@ -46,12 +42,15 @@ for the owner, not code. Source: [`MDV-022`](plans/completed/MDV-022-refactor-ph
 | --- | --- | --- | --- |
 | MDV-019 | P1 | Theme Settings and Theme Studio will be rebuilt on the new design tokens rather than ported from its dirty pre-split candidate (owner decision 2026-10-04; the old diff is backed up outside the repo). | MDV-031 tokens have landed. |
 | MDV-021 | P1 | The v0.7.0 app payloads are signed, notarized, and Gatekeeper-accepted, but the release workflow does not independently sign the DMG containers, treats DMG stapling as best-effort, or fail closed on non-empty Windows app/setup files and their hashes before upload. | Before the next release candidate, add and exercise explicit artifact-integrity gates without changing Windows best-effort release policy. |
-| MDV-007 | P2 | Initial workspace discovery examines at most 10,000 immediate entries, so an extremely wide directory may omit a later ordinary sibling. Current observed user roots are far below that shape. | A real affected directory, a product requirement for stronger guarantees, or a bounded algorithm proposal with measurements. |
+| MDV-007 | P2 | One directory with more than 10,000 immediate entries is still truncated inside that directory. Budget exhaustion across siblings, the case the owner actually hit in `~/Documents`, was fixed in PR #43: a folder the budget skipped is scanned on its own when expanded. | A real directory with >10k immediate entries that hides needed files, or a bounded paging proposal with measurements. |
 
 ## Recently completed
 
 | ID | Outcome | Evidence route |
 | --- | --- | --- |
+| MDV-024–028 | Phase-2 performance round (sidebar rows, editor keystroke, local images, window events, mindmap animation) plus two acceptance fixes (⌘Z undo/scroll, lazy scan of budget-skipped folders); owner-accepted on device. | PRs #37–#43 and [`docs/plans/completed/MDV-024-028-phase-2-performance.md`](plans/completed/MDV-024-028-phase-2-performance.md). |
+| MDV-029 | CI runs Linux and macOS tests plus a Windows check on PRs, gates release builds on tests, reports `cargo audit`, and caches PDFium. | PR #36 and [`docs/plans/completed/MDV-029-ci-coverage-and-release-gates.md`](plans/completed/MDV-029-ci-coverage-and-release-gates.md). |
+| MDV-023 | Removed dead `first_frame_at` and the six Full Mindmap `expect("checked above")` panics. | PR #35 and [`docs/plans/completed/MDV-023-phase-1-leftovers.md`](plans/completed/MDV-023-phase-1-leftovers.md). |
 | MDV-022 | Refactor phases 0–2 first wave: safety fixes, `src/app/` split with design tokens, vault-search, file-finder, and in-document search performance, and theme persistence; owner-accepted on device. | PRs #28–#33 and [`docs/plans/completed/MDV-022-refactor-phases-0-2.md`](plans/completed/MDV-022-refactor-phases-0-2.md). |
 | MDV-017 | Workspace Quick Slots merged after a clean port onto `main`. | [PR #26](https://github.com/minchenlee/rmdv/pull/26), squash `1b3b94b`. |
 | MDV-010 | Closed by archival: the owner aligned local `main` to `origin/main@1244e4c`; old local-only commits stay on `archive/main-before-sync-20261004`. | [`docs/plans/completed/MDV-010-local-main-reconciliation.md`](plans/completed/MDV-010-local-main-reconciliation.md). |

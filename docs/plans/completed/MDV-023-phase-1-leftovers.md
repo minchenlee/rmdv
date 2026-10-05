@@ -1,8 +1,8 @@
 # MDV-023 — Phase-1 leftovers
 
-State: in_progress
+State: done
 Owner / accountable lead: owner (minchenlee); implementation by Claude
-Active writer: Claude (`codex/phase1-leftovers`)
+Active writer: none
 Created: 2026-10-05
 Updated: 2026-10-05
 
@@ -37,10 +37,13 @@ Finish the two cleanups the refactor roadmap attached to the `src/app/` split
 
 ## Progress
 
-- [ ] Remove `first_frame_at`.
-- [ ] Replace the six `expect` calls.
-- [ ] Verify and open the PR; merge only with owner authority.
+- [x] Remove `first_frame_at`.
+- [x] Replace the six `expect` calls.
+- [x] Verify and open the PR; merge only with owner authority.
 
 ## Final evidence
 
-- Pending: PR, commands/results.
+- [PR #35](https://github.com/minchenlee/rmdv/pull/35), squash-merged as
+  `1c7a10b` on 2026-10-05 with owner authority; PR CI and main push CI passed.
+- Release tests, lean check, fmt, and `git diff --check` passed locally before
+  the PR; the change also shipped in the owner-accepted phase-2 verify build.
