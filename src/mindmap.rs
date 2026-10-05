@@ -323,6 +323,10 @@ pub struct MindmapState<Id = BlockId> {
     /// selected folder's focus across async child discovery even when the
     /// selected identity itself does not change.
     last_layout_generation: Option<u64>,
+    /// The node list `anim` was last synced against. Node lists are immutable
+    /// behind their `Arc`, so a redraw with the same list has nothing to sync.
+    /// A `Weak` keeps the allocation from being reused by a different list.
+    anim_nodes: Option<std::sync::Weak<Vec<MNode<Id>>>>,
     hovered_idx: Option<usize>,
     touch_points: Vec<(touch::Finger, Point)>,
     touch_span: Option<f32>,
@@ -347,6 +351,7 @@ impl<Id> Default for MindmapState<Id> {
             last_bounds_h: 0.0,
             last_panel_open: false,
             last_layout_generation: None,
+            anim_nodes: None,
             hovered_idx: None,
             touch_points: Vec::new(),
             touch_span: None,
@@ -578,6 +583,14 @@ where
 
     /// Update `anim` entries to reflect new targets. New nodes spawn at parent's current pos.
     fn sync_anim(&self, state: &mut MindmapState<Id>) {
+        let synced = state
+            .anim_nodes
+            .as_ref()
+            .is_some_and(|nodes| std::ptr::eq(nodes.as_ptr(), std::sync::Arc::as_ptr(&self.nodes)));
+        if synced {
+            return;
+        }
+        state.anim_nodes = Some(std::sync::Arc::downgrade(&self.nodes));
         let parents = self.parent_map();
         let now = Instant::now();
         // Build a snapshot of pre-existing current positions so we can read
@@ -1539,6 +1552,25 @@ mod tests {
         let mut y_cursor = PAD;
         layout(&mut nodes, 0, &mut y_cursor);
         nodes
+    }
+
+    #[test]
+    fn sync_anim_runs_once_per_node_list() {
+        let documents = PathId("/Users/me/Documents".into());
+        let program = canvas_program(folder_graph(None), documents.clone(), 1);
+        let mut state = MindmapState::default();
+        program.sync_anim(&mut state);
+        assert_eq!(state.anim.len(), program.nodes.len());
+
+        // A redraw with the same list must not rebuild animation state.
+        state.anim.clear();
+        program.sync_anim(&mut state);
+        assert!(state.anim.is_empty());
+
+        // A rebuilt list syncs again, even with identical contents.
+        let rebuilt = canvas_program(folder_graph(None), documents, 1);
+        rebuilt.sync_anim(&mut state);
+        assert_eq!(state.anim.len(), rebuilt.nodes.len());
     }
 
     fn nested_shell_graph(shell: bool) -> Vec<MNode<PathId>> {
