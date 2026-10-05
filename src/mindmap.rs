@@ -583,9 +583,10 @@ where
 
     /// Update `anim` entries to reflect new targets. New nodes spawn at parent's current pos.
     fn sync_anim(&self, state: &mut MindmapState<Id>) {
-        let synced = state.anim_nodes.as_ref().is_some_and(|nodes| {
-            std::ptr::eq(nodes.as_ptr(), std::sync::Arc::as_ptr(&self.nodes))
-        });
+        let synced = state
+            .anim_nodes
+            .as_ref()
+            .is_some_and(|nodes| std::ptr::eq(nodes.as_ptr(), std::sync::Arc::as_ptr(&self.nodes)));
         if synced {
             return;
         }
