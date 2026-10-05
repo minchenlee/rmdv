@@ -81,6 +81,13 @@ pub enum Message {
         request: PendingRefreshWorkspace,
         result: Result<(PathBuf, tree::WorkspaceSnapshot), String>,
     },
+    /// Dedicated scan of an expanded sidebar folder the workspace-wide budget
+    /// stopped at. `epoch` drops results from a replaced workspace snapshot.
+    SidebarFolderScanned {
+        epoch: u64,
+        folder: PathBuf,
+        result: Result<(PathBuf, tree::WorkspaceSnapshot), String>,
+    },
     FileChanged(PathBuf),
     /// Identity-bearing completion for a file watcher reload. A watcher read
     /// must not share the generic navigation completion path: an explicit

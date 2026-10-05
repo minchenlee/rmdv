@@ -4,6 +4,15 @@ use super::*;
 
 impl App {
     pub fn update(&mut self, msg: Message) -> Task<Message> {
+        let before = (self.workspace_epoch, self.expanded.len());
+        let task = self.dispatch_message(msg);
+        if (self.workspace_epoch, self.expanded.len()) == before {
+            return task;
+        }
+        Task::batch([task, self.load_incomplete_expanded_folders()])
+    }
+
+    fn dispatch_message(&mut self, msg: Message) -> Task<Message> {
         if let Some(rel) = self.queued_snap.take() {
             // Drain any pending IPC-driven scroll BEFORE dispatching the new
             // message so the snap lands before further state mutation.
@@ -1481,6 +1490,11 @@ impl App {
             Message::RefreshWorkspaceLoaded { request, result } => {
                 self.handle_refresh_workspace_loaded(request, result)
             }
+            Message::SidebarFolderScanned {
+                epoch,
+                folder,
+                result,
+            } => self.handle_sidebar_folder_scanned(epoch, folder, result),
             Message::FullMindmapWorkspaceLoaded { request, result } => {
                 let current = self.full_mindmap.as_ref().is_some_and(|full| {
                     full.pending_workspace_load
@@ -2657,6 +2671,7 @@ impl App {
                                 self.workspace_tree = Some(snapshot.root);
                                 self.workspace_snapshot_show_hidden = self.show_hidden;
                                 self.workspace_truncated = snapshot.truncated;
+                                self.begin_workspace_epoch();
                             }
                             Err(error) => {
                                 self.error =
