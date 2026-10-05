@@ -7983,3 +7983,84 @@ fn unknown_saved_theme_keeps_the_system_default() {
     assert_eq!(legacy.theme, None);
     assert!(!legacy.show_footer);
 }
+
+fn search_test_app(source: String) -> App {
+    let mut app = App::default();
+    app.ast = crate::parser::parse(&source).0;
+    app.source = source;
+    app.search_open = true;
+    app
+}
+
+#[test]
+fn small_document_search_updates_on_every_keystroke() {
+    let mut app = search_test_app("alpha beta\n\nalpha\n".into());
+    let _ = app.update(Message::QueryChanged("alpha".into()));
+    assert!(!app.search_pending);
+    assert_eq!(app.matches.len(), 2);
+}
+
+#[test]
+fn large_document_search_waits_for_the_latest_keystroke() {
+    let mut source = String::new();
+    let mut blocks = 0;
+    while source.len() <= SEARCH_DEBOUNCE_MIN_BYTES {
+        source.push_str("alpha beta gamma gamma\n\n");
+        blocks += 1;
+    }
+    let mut app = search_test_app(source);
+    let _ = app.update(Message::QueryChanged("al".into()));
+    let stale = app.search_generation;
+    let _ = app.update(Message::QueryChanged("beta".into()));
+    assert!(app.search_pending, "large documents debounce the search");
+    assert!(app.matches.is_empty(), "no search ran yet");
+
+    let _ = app.update(Message::SearchDebounced(stale));
+    assert!(app.matches.is_empty(), "a superseded timer must not search");
+
+    let _ = app.update(Message::SearchDebounced(app.search_generation));
+    assert!(!app.search_pending);
+    assert_eq!(app.matches.len(), blocks);
+    assert_eq!(
+        app.matches.get(1).map(|m| (m.block, m.in_block)),
+        Some((1, 0))
+    );
+
+    // Enter before the timer fires navigates the new query's results.
+    let _ = app.update(Message::QueryChanged("gamma".into()));
+    assert!(app.search_pending);
+    assert_eq!(app.matches.len(), blocks, "still the previous query's hits");
+    let _ = app.update(Message::NextMatch);
+    assert!(!app.search_pending);
+    assert_eq!(app.matches.len(), 2 * blocks);
+    assert_eq!(app.match_idx, 1);
+    assert_eq!(
+        app.matches.get(1).map(|m| (m.block, m.in_block)),
+        Some((0, 1))
+    );
+
+    // Clearing the query needs no search, so it applies at once.
+    let _ = app.update(Message::QueryChanged(String::new()));
+    assert!(!app.search_pending);
+    assert!(app.matches.is_empty());
+
+    // Closing search drops a pending run.
+    let _ = app.update(Message::QueryChanged("alpha".into()));
+    let _ = app.update(Message::ToggleSearch);
+    assert!(!app.search_pending);
+}
+
+#[test]
+fn debounced_search_with_find_bar_hidden_updates_results_only() {
+    let mut source = String::new();
+    while source.len() <= SEARCH_DEBOUNCE_MIN_BYTES {
+        source.push_str("alpha beta\n\n");
+    }
+    let mut app = search_test_app(source);
+    let _ = app.update(Message::QueryChanged("beta".into()));
+    // Zen edit mode hides the find bar but keeps the query.
+    app.search_open = false;
+    let _ = app.update(Message::SearchDebounced(app.search_generation));
+    assert!(!app.search_pending);
+    assert!(!app.matches.is_empty());
+}

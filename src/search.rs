@@ -88,25 +88,93 @@ pub struct MatchPos {
     pub in_block: usize,
 }
 
-pub fn find_in_blocks(blocks: &[(BlockId, Block)], query: &str) -> Vec<MatchPos> {
+/// In-document search results, stored as one entry per matching block rather
+/// than one per hit: a one-letter query on a large document can hit hundreds
+/// of thousands of times. `get(i)` yields the same `MatchPos` sequence the
+/// expanded list would, in document order.
+#[derive(Debug, Clone, Default)]
+pub struct Matches {
+    blocks: Vec<usize>,
+    /// Running hit total through each entry of `blocks`.
+    ends: Vec<usize>,
+}
+
+impl Matches {
+    pub fn len(&self) -> usize {
+        self.ends.last().copied().unwrap_or(0)
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.ends.is_empty()
+    }
+
+    pub fn clear(&mut self) {
+        self.blocks.clear();
+        self.ends.clear();
+    }
+
+    pub fn get(&self, index: usize) -> Option<MatchPos> {
+        if index >= self.len() {
+            return None;
+        }
+        let entry = self.ends.partition_point(|&end| end <= index);
+        let start = entry.checked_sub(1).map_or(0, |prev| self.ends[prev]);
+        Some(MatchPos {
+            block: self.blocks[entry],
+            in_block: index - start,
+        })
+    }
+}
+
+pub fn find_in_blocks(blocks: &[(BlockId, Block)], query: &str) -> Matches {
+    let mut out = Matches::default();
     if query.is_empty() {
-        return Vec::new();
+        return out;
     }
     let lowered = query.to_lowercase();
-    let mut out = Vec::new();
+    // Reused across blocks so a search allocates a handful of times, not
+    // twice per block.
+    let mut text = String::new();
+    let mut lower = String::new();
+    let mut total = 0;
     for (bi, (_id, b)) in blocks.iter().enumerate() {
-        let text = block_text(b);
-        let n = count_all_lowered(&text, &lowered);
-        for k in 0..n {
-            out.push(MatchPos {
-                block: bi,
-                in_block: k,
-            });
+        text.clear();
+        push_block_text(b, &mut text);
+        let n = count_lowered_into(&text, &lowered, &mut lower);
+        if n > 0 {
+            total += n;
+            out.blocks.push(bi);
+            out.ends.push(total);
         }
     }
     out
 }
 
+/// [`count_all_lowered`] that lowercases into a caller-owned buffer. ASCII
+/// text lowercases byte for byte, and can never contain a non-ASCII needle.
+fn count_lowered_into(haystack: &str, lowered_needle: &str, scratch: &mut String) -> usize {
+    scratch.clear();
+    if haystack.is_ascii() {
+        if !lowered_needle.is_ascii() {
+            return 0;
+        }
+        scratch.push_str(haystack);
+        scratch.make_ascii_lowercase();
+    } else {
+        for ch in haystack.chars() {
+            scratch.extend(ch.to_lowercase());
+        }
+    }
+    let mut count = 0;
+    let mut start = 0;
+    while let Some(idx) = scratch[start..].find(lowered_needle) {
+        count += 1;
+        start = start + idx + lowered_needle.len();
+    }
+    count
+}
+
+#[cfg(test)]
 fn block_text(b: &Block) -> String {
     let mut s = String::new();
     push_block_text(b, &mut s);
@@ -184,5 +252,55 @@ fn push_inline_text(i: &Inline, out: &mut String) {
                 push_inline_text(x, out);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The expanded per-hit list `find_in_blocks` used to return.
+    fn expanded(blocks: &[(BlockId, Block)], query: &str) -> Vec<(usize, usize)> {
+        let lowered = query.to_lowercase();
+        let mut out = Vec::new();
+        for (bi, (_id, b)) in blocks.iter().enumerate() {
+            for k in 0..count_all_lowered(&block_text(b), &lowered) {
+                out.push((bi, k));
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn compact_matches_equal_the_expanded_list() {
+        let src = "# The Engine\n\nthe THE tHe\n\nno hit here\n\n\
+                   - İstanbul ıi straße STRASSE\n- ﬁle and FILE\n\n\
+                   ```\nlet the = 1;\n```\n\n| the | x |\n| - | - |\n| a | the |\n";
+        let (ast, _) = crate::parser::parse(src);
+        for query in [
+            "the", "e", "i", "ss", "ß", "İ", "ﬁ", "zzz", "THE", "the the",
+        ] {
+            let want = expanded(&ast, query);
+            let got = find_in_blocks(&ast, query);
+            assert_eq!(got.len(), want.len(), "len for {query:?}");
+            assert_eq!(got.is_empty(), want.is_empty(), "is_empty for {query:?}");
+            let got: Vec<_> = (0..got.len())
+                .map(|i| got.get(i).map(|m| (m.block, m.in_block)).unwrap())
+                .collect();
+            assert_eq!(got, want, "positions for {query:?}");
+        }
+    }
+
+    #[test]
+    fn matches_get_past_the_end_and_clear() {
+        let (ast, _) = crate::parser::parse("a a\n\nb\n\na\n");
+        let mut m = find_in_blocks(&ast, "a");
+        assert_eq!(m.len(), 3);
+        assert!(m.get(3).is_none());
+        m.clear();
+        assert!(m.is_empty());
+        assert_eq!(m.len(), 0);
+        assert!(m.get(0).is_none());
+        assert!(find_in_blocks(&ast, "").is_empty());
     }
 }

@@ -3,7 +3,7 @@ use crate::icon::{self, ic};
 use crate::parser;
 use crate::picker::{self, Picker, PickerMode};
 use crate::render::Highlight;
-use crate::search::{self, MatchPos};
+use crate::search::{self, Matches};
 use crate::theme::{self, Palette, ThemeMode, ThemePreset, Typography};
 use crate::tree::{self, Node};
 use crate::workspace_mindmap::{self, WorkspaceGraph, WorkspaceNodeId, WorkspaceNodeKind};
@@ -26,6 +26,10 @@ pub use image_cache::{ImageCache, ImageState};
 const SIDEBAR_WIDTH: f32 = 280.0;
 const QUICK_SLOTS_RAIL_GAP: f32 = 10.0;
 const QUICK_SLOTS_RAIL_REVEAL_DELAY_MS: u64 = 500;
+/// In-document search runs on every keystroke below this source size and is
+/// debounced above it, where one search no longer fits inside a frame.
+const SEARCH_DEBOUNCE_MIN_BYTES: usize = 1024 * 1024;
+const SEARCH_DEBOUNCE_MS: u64 = 80;
 const READING_MAX: f32 = 780.0;
 const KEYBOARD_BUTTON_HEIGHT: f32 = 26.0; // 14px text at 1.3 line-height + 4px vertical padding on each side.
 const KEYBOARD_BUTTON_BOTTOM_PAD: f32 = 12.0;
@@ -147,8 +151,13 @@ pub struct App {
     pub show_footer: bool,
     pub error: Option<String>,
     pub query: String,
-    pub matches: Vec<MatchPos>,
+    pub matches: Matches,
     pub match_idx: usize,
+    /// Bumped per keystroke on large documents; a debounced search only runs
+    /// if no newer keystroke arrived (see [`SEARCH_DEBOUNCE_MIN_BYTES`]).
+    search_generation: u64,
+    /// The query changed but `matches` has not been rebuilt for it yet.
+    search_pending: bool,
     pub search_open: bool,
     pub workspace: Option<PathBuf>,
     /// Replace only together with a `workspace_files_rev` bump, so cached
@@ -424,8 +433,10 @@ impl Default for App {
             show_footer: prefs.show_footer,
             error: None,
             query: String::new(),
-            matches: Vec::new(),
+            matches: Matches::default(),
             match_idx: 0,
+            search_generation: 0,
+            search_pending: false,
             search_open: false,
             workspace: None,
             workspace_files: Vec::new(),
@@ -1851,6 +1862,15 @@ impl App {
     fn rebuild_matches(&mut self) {
         self.matches = search::find_in_blocks(&self.ast, &self.query);
         self.match_idx = 0;
+        self.search_pending = false;
+    }
+
+    /// Run a search the debounce is still holding back, so Enter right after
+    /// typing navigates the new query's results.
+    fn flush_pending_search(&mut self) {
+        if self.search_pending {
+            self.rebuild_matches();
+        }
     }
 
     pub fn blocks(&self) -> impl Iterator<Item = &Block> {
@@ -2758,14 +2778,17 @@ impl App {
         } else if self.file.is_none() {
             welcome_view(pal)
         } else {
+            // Results still belong to the previous query while a debounced
+            // search is pending, so don't mark any hit as current.
+            let current = if self.search_pending {
+                None
+            } else {
+                self.matches.get(self.match_idx)
+            };
             let hl = Highlight {
                 query: self.query.clone(),
-                current_block: self.matches.get(self.match_idx).map(|m| m.block),
-                current_in_block: self
-                    .matches
-                    .get(self.match_idx)
-                    .map(|m| m.in_block)
-                    .unwrap_or(0),
+                current_block: current.map(|m| m.block),
+                current_in_block: current.map(|m| m.in_block).unwrap_or(0),
             };
             let body: Element<'_, Message> = if self.view_mode == ViewMode::Mindmap {
                 let (nodes, content_size, _) = self.mindmap_layout();
@@ -2943,7 +2966,13 @@ impl App {
 
         let reader_with_search: Element<'_, Message> = if self.search_open && !full_mindmap {
             column![
-                search_bar_view(&self.query, &self.matches, self.match_idx, pal),
+                search_bar_view(
+                    &self.query,
+                    &self.matches,
+                    self.match_idx,
+                    self.search_pending,
+                    pal,
+                ),
                 reader,
             ]
             .into()

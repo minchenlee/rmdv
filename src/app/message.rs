@@ -118,6 +118,8 @@ pub enum Message {
     ScrollToBottom,
     ToggleSearch,
     QueryChanged(String),
+    /// Debounce timer for in-document search; carries the keystroke generation.
+    SearchDebounced(u64),
     NextMatch,
     PrevMatch,
     TreeScrolled(iced::widget::scrollable::Viewport),

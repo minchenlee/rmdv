@@ -2813,6 +2813,7 @@ impl App {
                     self.query.clear();
                     self.matches.clear();
                     self.match_idx = 0;
+                    self.search_pending = false;
                     self.restore_body_scroll()
                 } else {
                     Task::batch([
@@ -2823,16 +2824,45 @@ impl App {
             }
             Message::QueryChanged(q) => {
                 self.query = q;
+                if self.query.is_empty() || self.source.len() < SEARCH_DEBOUNCE_MIN_BYTES {
+                    self.rebuild_matches();
+                    return self.scroll_to_current_match();
+                }
+                // Searching a large document takes long enough to stall
+                // typing, so wait for a pause in keystrokes.
+                self.search_pending = true;
+                self.search_generation = self.search_generation.wrapping_add(1);
+                let generation = self.search_generation;
+                Task::perform(
+                    async move {
+                        tokio::time::sleep(std::time::Duration::from_millis(SEARCH_DEBOUNCE_MS))
+                            .await;
+                        generation
+                    },
+                    Message::SearchDebounced,
+                )
+            }
+            Message::SearchDebounced(generation) => {
+                if generation != self.search_generation || !self.search_pending {
+                    return Task::none();
+                }
                 self.rebuild_matches();
+                // Zen edit mode hides the find bar without clearing the
+                // query; keep results current but leave the scroll alone.
+                if !self.search_open {
+                    return Task::none();
+                }
                 self.scroll_to_current_match()
             }
             Message::NextMatch => {
+                self.flush_pending_search();
                 if !self.matches.is_empty() {
                     self.match_idx = (self.match_idx + 1) % self.matches.len();
                 }
                 self.scroll_to_current_match()
             }
             Message::PrevMatch => {
+                self.flush_pending_search();
                 if !self.matches.is_empty() {
                     self.match_idx = (self.match_idx + self.matches.len() - 1) % self.matches.len();
                 }
