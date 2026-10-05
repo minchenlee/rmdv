@@ -1256,7 +1256,7 @@ impl App {
     /// count from the caller (`TreeMove` already flattens for clamping) so the
     /// tree isn't flattened twice per keystroke.
     fn scroll_tree_to_cursor_with_len(&self, total: usize) -> Task<Message> {
-        const ROW_H: f32 = 26.0;
+        const ROW_H: f32 = SIDEBAR_ROW_H;
         if total == 0 {
             return Task::none();
         }
@@ -1270,8 +1270,7 @@ impl App {
     }
 
     fn scroll_outline_to_cursor(&self) -> Task<Message> {
-        // Row height matches `outline_row`'s fixed height.
-        const ROW_H: f32 = 26.0;
+        const ROW_H: f32 = SIDEBAR_ROW_H;
         let total = self.outline_sections.len();
         if total == 0 {
             return Task::none();

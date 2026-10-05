@@ -172,10 +172,12 @@ pub(in crate::app) fn sidebar_files_body<'a>(
                 content_w = w;
             }
         }
-        for (i, r) in rows.iter().enumerate() {
-            let row_el = tree_row(r.node, r.depth, &app.expanded, current, i == cursor, pal);
-            list = list.push(row_el);
-        }
+        // Build only the rows near the viewport; spacers keep the list's
+        // full height so scroll offsets and keyboard edge-scroll still match.
+        list = push_sidebar_rows(list, app.tree_viewport.as_ref(), rows.len(), |i| {
+            let r = &rows[i];
+            tree_row(r.node, r.depth, &app.expanded, current, i == cursor, pal)
+        });
     }
     let list = list.width(Length::Fixed(content_w));
     // Nested single-axis scrollables: inner handles vertical, outer handles
@@ -210,9 +212,9 @@ pub(in crate::app) fn sidebar_outline_body<'a>(
                 .padding(Padding::from([8, 10])),
         );
     } else {
-        for (i, s) in sections.iter().enumerate() {
-            list = list.push(outline_row(s, i == app.outline_cursor, pal));
-        }
+        list = push_sidebar_rows(list, app.outline_viewport.as_ref(), sections.len(), |i| {
+            outline_row(&sections[i], i == app.outline_cursor, pal)
+        });
     }
     scrollable(list.width(Length::Fill))
         .id(App::outline_scroll_id())
@@ -221,6 +223,95 @@ pub(in crate::app) fn sidebar_outline_body<'a>(
         .direction(slim_scroll_direction())
         .style(move |_, status| sleek_scrollable_style(status, pal, recently_scrolled))
         .into()
+}
+
+/// Fixed height of every file-tree and outline row.
+pub(in crate::app) const SIDEBAR_ROW_H: f32 = 26.0;
+/// Top padding of the sidebar lists, before their first row.
+const SIDEBAR_LIST_TOP_PAD: f32 = 4.0;
+/// Rows built beyond each edge of the viewport, so a scroll that lands before
+/// the next `view()` does not reveal blank space.
+const SIDEBAR_OVERSCAN: f32 = 600.0;
+
+/// Rows of a sidebar list worth building for `viewport`: the band around the
+/// viewport, plus the first screenful. A list re-created after the sidebar was
+/// hidden starts at the top while `viewport` still holds the old offset, so the
+/// top rows must exist until the new scrollable reports its viewport. Until
+/// the first viewport arrives every row is built.
+pub(in crate::app) fn sidebar_row_window(
+    viewport: Option<&iced::widget::scrollable::Viewport>,
+    total: usize,
+) -> [std::ops::Range<usize>; 2] {
+    match viewport {
+        Some(viewport) => sidebar_row_bands(
+            viewport.absolute_offset().y,
+            viewport.bounds().height,
+            total,
+        ),
+        None => [0..total, total..total],
+    }
+}
+
+/// The first screenful and the band near `offset_y`, merged when they touch.
+pub(in crate::app) fn sidebar_row_bands(
+    offset_y: f32,
+    height: f32,
+    total: usize,
+) -> [std::ops::Range<usize>; 2] {
+    let head = sidebar_rows_near(0.0, height, total);
+    let near = sidebar_rows_near(offset_y, height, total);
+    if near.start <= head.end {
+        [0..near.end.max(head.end), total..total]
+    } else {
+        [head, near]
+    }
+}
+
+/// Push the rows `sidebar_row_window` selects, with spacers standing in for
+/// the rest so the column keeps its full height.
+fn push_sidebar_rows<'a>(
+    mut list: Column<'a, Message>,
+    viewport: Option<&iced::widget::scrollable::Viewport>,
+    total: usize,
+    row: impl Fn(usize) -> Element<'a, Message>,
+) -> Column<'a, Message> {
+    let mut next = 0;
+    for range in sidebar_row_window(viewport, total) {
+        if range.is_empty() {
+            continue;
+        }
+        if range.start > next {
+            list = list.push(Space::new().height((range.start - next) as f32 * SIDEBAR_ROW_H));
+        }
+        for i in range.clone() {
+            list = list.push(row(i));
+        }
+        next = range.end;
+    }
+    if total > next {
+        list = list.push(Space::new().height((total - next) as f32 * SIDEBAR_ROW_H));
+    }
+    list
+}
+
+/// Rows within the overscan band around a viewport scrolled to `offset_y` px
+/// with `height` px visible. A stale offset past the end (the list shrank)
+/// still yields the list's last screenful.
+pub(in crate::app) fn sidebar_rows_near(
+    offset_y: f32,
+    height: f32,
+    total: usize,
+) -> std::ops::Range<usize> {
+    let offset = offset_y - SIDEBAR_LIST_TOP_PAD;
+    let top = offset - SIDEBAR_OVERSCAN;
+    let bottom = offset + height + SIDEBAR_OVERSCAN;
+    let span = ((bottom - top) / SIDEBAR_ROW_H).ceil() as usize;
+    let first = ((top / SIDEBAR_ROW_H).floor().max(0.0) as usize).min(total);
+    let last = ((bottom / SIDEBAR_ROW_H).ceil().max(0.0) as usize).min(total);
+    if first >= last {
+        return total.saturating_sub(span)..total;
+    }
+    first..last
 }
 
 pub(in crate::app) fn outline_row<'a>(
@@ -246,7 +337,7 @@ pub(in crate::app) fn outline_row<'a>(
     button(content)
         .padding(Padding::from([4, 8]))
         .width(Length::Fill)
-        .height(Length::Fixed(26.0))
+        .height(Length::Fixed(SIDEBAR_ROW_H))
         .style(move |_, status| button::Style {
             background: if is_cursor {
                 Some(Background::Color(pal.tree_selected_bg))
@@ -413,7 +504,7 @@ pub(in crate::app) fn tree_row<'a>(
     button(content)
         .padding(Padding::from([4, 8]))
         .width(Length::Fill)
-        .height(Length::Fixed(26.0))
+        .height(Length::Fixed(SIDEBAR_ROW_H))
         .style(move |_, status| {
             let bg = if is_current {
                 Some(Background::Color(pal.tree_selected_bg))
@@ -452,7 +543,7 @@ pub(in crate::app) fn indent_guide<'a>(pal: Palette) -> Element<'a, Message> {
             }),
     )
     .width(Length::Fixed(TREE_INDENT))
-    .height(Length::Fixed(26.0))
+    .height(Length::Fixed(SIDEBAR_ROW_H))
     .center_x(Length::Fixed(TREE_INDENT))
     .into()
 }
