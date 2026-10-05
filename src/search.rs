@@ -5,35 +5,59 @@ use crate::ast::{Block, BlockId, Inline, ListItem};
 ///
 /// `to_lowercase()` is not length-preserving for some scalars (Turkish `İ`,
 /// `ẞ`, ligatures), so a lowercased copy's offsets do not map onto the
-/// original. We lowercase once but keep an offset map from each lowercased
-/// byte back to the originating char's start in `haystack`, then translate the
-/// match positions back. O(n), non-overlapping (matches the previous contract).
+/// original. ASCII text lowercases byte-for-byte and needs no translation;
+/// otherwise matches found in the lowercased copy are walked back to the start
+/// of the source char that produced them. Peak extra memory is one lowercased
+/// copy of `haystack`. O(n), non-overlapping (matches the previous contract).
 pub fn find_all(haystack: &str, needle: &str) -> Vec<usize> {
     if needle.is_empty() {
         return Vec::new();
     }
     let n = needle.to_lowercase();
 
-    // Lowercase the haystack, recording for each resulting byte the original
-    // byte offset of the source char that produced it.
-    let mut h = String::with_capacity(haystack.len());
-    let mut map: Vec<usize> = Vec::with_capacity(haystack.len());
-    for (orig_off, ch) in haystack.char_indices() {
-        for lc in ch.to_lowercase() {
-            let before = h.len();
-            h.push(lc);
-            for _ in before..h.len() {
-                map.push(orig_off);
-            }
+    if haystack.is_ascii() {
+        // A non-ASCII needle can never occur in all-ASCII lowercased text.
+        if !n.is_ascii() {
+            return Vec::new();
         }
+        return match_starts(&haystack.to_ascii_lowercase(), &n);
     }
 
+    let mut h = String::with_capacity(haystack.len());
+    for ch in haystack.chars() {
+        h.extend(ch.to_lowercase());
+    }
+    let lowered = match_starts(&h, &n);
+    if lowered.is_empty() {
+        return lowered;
+    }
+    drop(h);
+
+    // Translate the ascending lowercased positions in one pass: each belongs to
+    // the source char whose lowercased bytes cover it.
+    let mut out = Vec::with_capacity(lowered.len());
+    let mut pending = lowered.into_iter().peekable();
+    let mut lc_end = 0;
+    for (orig_off, ch) in haystack.char_indices() {
+        lc_end += ch.to_lowercase().map(char::len_utf8).sum::<usize>();
+        while pending.next_if(|&pos| pos < lc_end).is_some() {
+            out.push(orig_off);
+        }
+        if pending.peek().is_none() {
+            break;
+        }
+    }
+    out
+}
+
+/// Non-overlapping start offsets of `needle` in `haystack`.
+fn match_starts(haystack: &str, needle: &str) -> Vec<usize> {
     let mut out = Vec::new();
     let mut start = 0;
-    while let Some(idx) = h[start..].find(&n) {
-        let lc_pos = start + idx;
-        out.push(map[lc_pos]);
-        start = lc_pos + n.len();
+    while let Some(idx) = haystack[start..].find(needle) {
+        let pos = start + idx;
+        out.push(pos);
+        start = pos + needle.len();
     }
     out
 }
