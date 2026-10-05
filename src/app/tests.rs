@@ -8107,3 +8107,41 @@ fn sidebar_rows_near_builds_only_the_overscanned_viewport() {
     assert_eq!(merged.end, sidebar_rows_near(26.0 * 20.0, 800.0, 5000).end);
     assert!(empty.is_empty());
 }
+
+#[test]
+fn typing_reuses_the_post_edit_text_as_the_next_undo_snapshot() {
+    use iced::widget::text_editor::{Action, Content, Edit, Motion};
+    let text = |app: &App| app.editor.as_ref().unwrap().text();
+    let mut app = App::default();
+    app.saved_source = "ab".into();
+    app.editor = Some(Content::with_text("ab"));
+
+    let _ = app.update(Message::EditorAction(Action::Move(Motion::DocumentEnd)));
+    let _ = app.update(Message::EditorAction(Action::Edit(Edit::Insert('c'))));
+    assert!(app.dirty);
+    assert_eq!(app.editor_text.as_deref(), Some(text(&app).as_str()));
+
+    // Cursor moves between edits do not change the text, so the cache stays.
+    let _ = app.update(Message::EditorAction(Action::Move(Motion::Left)));
+    let _ = app.update(Message::EditorAction(Action::Move(Motion::Right)));
+    assert!(app.editor_text.is_some());
+    let _ = app.update(Message::EditorAction(Action::Edit(Edit::Insert('d'))));
+    assert_eq!(text(&app), "abcd");
+
+    let _ = app.update(Message::EditorUndo);
+    assert_eq!(text(&app), "abc");
+    assert!(app.editor_text.is_none());
+    let _ = app.update(Message::EditorUndo);
+    assert_eq!(text(&app), "ab");
+    assert!(!app.dirty);
+    let _ = app.update(Message::EditorRedo);
+    assert_eq!(text(&app), "abc");
+    assert!(app.dirty);
+
+    // The first edit after a redo reads the replaced editor, not a stale cache.
+    let _ = app.update(Message::EditorAction(Action::Move(Motion::DocumentEnd)));
+    let _ = app.update(Message::EditorAction(Action::Edit(Edit::Insert('x'))));
+    assert_eq!(text(&app), "abcx");
+    let _ = app.update(Message::EditorUndo);
+    assert_eq!(text(&app), "abc");
+}

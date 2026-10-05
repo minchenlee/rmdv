@@ -254,6 +254,10 @@ pub struct App {
     pub zoom_url: Option<String>,
     pub view_mode: ViewMode,
     pub editor: Option<iced::widget::text_editor::Content>,
+    /// `editor`'s text as read right after the last edit action. The next edit
+    /// reuses it as its undo snapshot instead of reading the whole document
+    /// again. Cleared wherever `editor` is replaced.
+    pub editor_text: Option<String>,
     pub zen_restore: Option<ZenRestoreState>,
     /// Last document text known to have been persisted successfully. `source`
     /// may contain an unsaved Zen edit after switching back to rendered mode.
@@ -493,6 +497,7 @@ impl Default for App {
             zoom_url: None,
             view_mode: ViewMode::Rendered,
             editor: None,
+            editor_text: None,
             zen_restore: None,
             saved_source: String::new(),
             dirty: false,
@@ -686,6 +691,7 @@ impl App {
         self.editor = Some(iced::widget::text_editor::Content::with_text(
             self.source.as_str(),
         ));
+        self.editor_text = None;
         self.edit_history.clear();
         self.edit_redo.clear();
         self.view_mode = ViewMode::Raw;
@@ -697,6 +703,7 @@ impl App {
             self.sync_editor_to_source();
         }
         self.editor = None;
+        self.editor_text = None;
         self.edit_history.clear();
         self.edit_redo.clear();
         self.view_mode = ViewMode::Rendered;
