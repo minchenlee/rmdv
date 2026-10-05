@@ -1,6 +1,6 @@
 # MDV-029 — CI coverage and release gates
 
-State: ready
+State: done
 Owner / accountable lead: owner (minchenlee); implementation by Claude
 Active writer: none
 Created: 2026-10-05
@@ -50,11 +50,26 @@ commit whose tests fail.
 
 ## Progress
 
-- [ ] Triggers and new jobs.
-- [ ] Release gate.
-- [ ] `cargo audit`.
-- [ ] Cache experiment.
+- [x] Triggers and new jobs.
+- [x] Release gate.
+- [x] `cargo audit`.
+- [x] Cache experiment.
 
 ## Final evidence
 
-- Pending: PR, run links, timings.
+- [PR #36](https://github.com/minchenlee/rmdv/pull/36), squash-merged as
+  `8ab3ca9` on 2026-10-05 with owner authority.
+- `ci.yml` pushes run for `main` only; PRs get one `pull_request` run. Every
+  later PR (#37–#43) showed one run per push with `Tests / Linux tests`,
+  `Tests / macOS tests` (`macos-14`), `Windows check`, `Linux x86_64`, and
+  `cargo audit (report-only)`, all on standard runners.
+- Shared `tests.yml` is reused by `release.yml`; `build-macos`, `build-linux`,
+  and `build-windows` all declare `needs: tests`, and `release` needs all three
+  builds. Proven statically; no tag was pushed.
+- `cargo audit` baseline (2026-10-05): 5 vulnerabilities (crossbeam-epoch,
+  quick-xml ×2, quinn-proto, rustls) and 9 warnings (unmaintained paste,
+  rustybuzz, ttf-parser; unsound anyhow, event-listener, lru, memmap2). The job
+  stays report-only until the baseline is addressed.
+- Cache: the full `cargo clean` was replaced by caching the PDFium download;
+  the Linux package job dropped from 10–11 min to 2m28s on a cache hit.
+- Main push CI passed on every merge commit from `48732fd` to `0ed7305`.
