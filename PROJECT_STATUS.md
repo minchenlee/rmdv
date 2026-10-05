@@ -27,8 +27,8 @@ The owner accepted everything on device. Next is phase 3: `MDV-031`, then
 
 | ID | State | Owner | Outcome | Acceptance | Plan |
 | --- | --- | --- | --- | --- | --- |
-| MDV-031 | ready | Claude (next) | Zeron-method visual refinement on the design tokens. | Owner native acceptance per theme; contrast unit tests. | Plan to be written before work starts. |
-| MDV-036 | ready | Claude | Bare-directory launch stops showing a "Couldn't open file — Is a directory" card. | Regression test; file/`open-folder` launches unchanged. | — |
+| MDV-031 | ready | Claude (next) | Zeron-method visual refinement on the design tokens. | Owner native acceptance per theme; contrast unit tests. | [`MDV-031`](docs/plans/active/MDV-031-visual-refinement.md) |
+| MDV-036 | review | Claude | Bare-directory launch stops showing a "Couldn't open file — Is a directory" card. | Regression test; file/`open-folder` launches unchanged. | PR [#45](https://github.com/minchenlee/rmdv/pull/45), CI green, awaiting merge OK. |
 
 The roadmap order and every other task are in [`docs/BACKLOG.md`](docs/BACKLOG.md).
 
@@ -47,9 +47,9 @@ The roadmap order and every other task are in [`docs/BACKLOG.md`](docs/BACKLOG.m
 
 ## Next safe actions
 
-1. Write the `MDV-031` plan (tokens, contrast tests, per-theme acceptance) and
-   start it on a fresh branch from `origin/main`.
-2. Fix `MDV-036` with a regression test; open its PR and stop before merge.
+1. Implement `MDV-031` per its plan on a fresh branch from `origin/main`;
+   one PR, one Verify build, stop before merge.
+2. Merge PR #45 (`MDV-036`) once the owner approves.
 3. Record the `MDV-008` clippy baseline (report-only).
 
 ## Verification state
