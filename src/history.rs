@@ -112,19 +112,44 @@ impl SnapshotStack {
     }
 }
 
+/// Compared a chunk at a time with slice equality (memcmp) so a keystroke's
+/// whole-document scan runs at memory speed rather than byte by byte.
+const SCAN_CHUNK: usize = 64;
+
+/// Length of the shared start of `a` and `b`, up to `limit` bytes.
+fn common_prefix(a: &[u8], b: &[u8], limit: usize) -> usize {
+    let mut n = 0;
+    while n + SCAN_CHUNK <= limit && a[n..n + SCAN_CHUNK] == b[n..n + SCAN_CHUNK] {
+        n += SCAN_CHUNK;
+    }
+    while n < limit && a[n] == b[n] {
+        n += 1;
+    }
+    n
+}
+
+/// Length of the shared end of `a` and `b`, up to `limit` bytes.
+fn common_suffix(a: &[u8], b: &[u8], limit: usize) -> usize {
+    let (a_len, b_len) = (a.len(), b.len());
+    let mut n = 0;
+    while n + SCAN_CHUNK <= limit
+        && a[a_len - n - SCAN_CHUNK..a_len - n] == b[b_len - n - SCAN_CHUNK..b_len - n]
+    {
+        n += SCAN_CHUNK;
+    }
+    while n < limit && a[a_len - 1 - n] == b[b_len - 1 - n] {
+        n += 1;
+    }
+    n
+}
+
 /// Encode `old` as a reverse delta against its successor `new`.
 fn encode_delta(old: &str, new: &str) -> Entry {
     let a = old.as_bytes();
     let b = new.as_bytes();
     let max = a.len().min(b.len());
-    let mut prefix = 0;
-    while prefix < max && a[prefix] == b[prefix] {
-        prefix += 1;
-    }
-    let mut suffix = 0;
-    while suffix < max - prefix && a[a.len() - 1 - suffix] == b[b.len() - 1 - suffix] {
-        suffix += 1;
-    }
+    let prefix = common_prefix(a, b, max);
+    let suffix = common_suffix(a, b, max - prefix);
     Entry::Delta {
         prefix,
         suffix,
@@ -278,6 +303,43 @@ mod tests {
             assert_eq!(s.pop(), Some(format!("doc version {i} content")));
         }
         assert_eq!(s.pop(), None);
+    }
+
+    #[test]
+    fn chunked_scans_match_byte_by_byte_scans() {
+        fn naive(a: &[u8], b: &[u8]) -> (usize, usize) {
+            let max = a.len().min(b.len());
+            let mut prefix = 0;
+            while prefix < max && a[prefix] == b[prefix] {
+                prefix += 1;
+            }
+            let mut suffix = 0;
+            while suffix < max - prefix && a[a.len() - 1 - suffix] == b[b.len() - 1 - suffix] {
+                suffix += 1;
+            }
+            (prefix, suffix)
+        }
+        for len in [0usize, 1, 63, 64, 65, 127, 128, 129, 300] {
+            let old: Vec<u8> = (0..len).map(|i| b'a' + (i % 7) as u8).collect();
+            for at in [0, len / 3, len / 2, len.saturating_sub(1), len] {
+                for edit in [&b""[..], b"Z", b"abc"] {
+                    for removed in [0, 1, 70] {
+                        let end = (at + removed).min(len);
+                        let mut new = old[..at].to_vec();
+                        new.extend_from_slice(edit);
+                        new.extend_from_slice(&old[end..]);
+                        let max = old.len().min(new.len());
+                        let prefix = common_prefix(&old, &new, max);
+                        let suffix = common_suffix(&old, &new, max - prefix);
+                        assert_eq!(
+                            (prefix, suffix),
+                            naive(&old, &new),
+                            "len {len}, at {at}, edit {edit:?}, removed {removed}"
+                        );
+                    }
+                }
+            }
+        }
     }
 
     #[test]

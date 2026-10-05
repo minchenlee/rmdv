@@ -313,6 +313,7 @@ impl App {
             }
         };
         self.editor = None;
+        self.editor_text = None;
         self.zen_restore = None;
         self.mindmap_selected = slot
             .context

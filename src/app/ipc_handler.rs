@@ -110,6 +110,7 @@ impl App {
                         if self.view_mode == ViewMode::Raw {
                             self.sync_editor_to_source();
                             self.editor = None;
+                            self.editor_text = None;
                             self.edit_history.clear();
                             self.edit_redo.clear();
                             self.restore_zen_chrome();

@@ -769,6 +769,7 @@ impl App {
                     ViewMode::Raw => {
                         self.sync_editor_to_source();
                         self.editor = None;
+                        self.editor_text = None;
                         self.edit_history.clear();
                         self.edit_redo.clear();
                         self.restore_zen_chrome();
@@ -1920,7 +1921,10 @@ impl App {
                 }
                 if let Some(ed) = self.editor.as_mut() {
                     if edits {
-                        let prev = ed.text();
+                        // Non-edit actions (cursor, selection) leave the text
+                        // alone, so the text read after the last edit is still
+                        // current and saves a whole-document read here.
+                        let prev = self.editor_text.take().unwrap_or_else(|| ed.text());
                         if self.edit_history.push_if_changed(prev) {
                             if self.edit_history.len() > 200 {
                                 self.edit_history.drop_oldest();
@@ -1930,7 +1934,9 @@ impl App {
                     }
                     ed.perform(action);
                     if edits {
-                        self.dirty = ed.text() != self.saved_source;
+                        let text = ed.text();
+                        self.dirty = text != self.saved_source;
+                        self.editor_text = Some(text);
                     }
                 }
                 Task::none()
@@ -1942,6 +1948,7 @@ impl App {
                         let current = ed.text();
                         self.edit_redo.push(current);
                         *ed = iced::widget::text_editor::Content::with_text(&prev);
+                        self.editor_text = None;
                         self.dirty = prev != self.saved_source;
                         changed = true;
                     }
@@ -1958,6 +1965,7 @@ impl App {
                         let current = ed.text();
                         self.edit_history.push(current);
                         *ed = iced::widget::text_editor::Content::with_text(&next);
+                        self.editor_text = None;
                         self.dirty = next != self.saved_source;
                         changed = true;
                     }
