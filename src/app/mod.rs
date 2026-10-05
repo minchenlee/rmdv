@@ -740,12 +740,37 @@ impl App {
         )
     }
 
-    fn block_file_open_if_dirty(&mut self) -> Option<Task<Message>> {
-        if self.dirty {
-            Some(self.show_toast(self.unsaved_edits_open_message()))
-        } else {
-            None
+    /// Guard a file open while the current document has unsaved edits.
+    /// Opening that same document again only returns to it, keeping the
+    /// edits, so leaving it (Full Mindmap, vault search, a picker) is never a
+    /// dead end. Any other file stays blocked until the edits are saved.
+    fn block_file_open_if_dirty(&mut self, target: &Path) -> Option<Task<Message>> {
+        if !self.dirty {
+            return None;
         }
+        let same_file = self.file.as_ref().is_some_and(|current| {
+            current == target
+                || canonicalize_existing_path(current.clone())
+                    == canonicalize_existing_path(target.to_path_buf())
+        });
+        if same_file {
+            self.overlay = Overlay::None;
+            self.picker = None;
+            self.vault_open = false;
+            if self.full_mindmap.is_some() {
+                return Some(self.exit_full_mindmap(false));
+            }
+            return Some(Task::none());
+        }
+        let name = self
+            .file
+            .as_ref()
+            .and_then(|p| p.file_name())
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        Some(self.show_toast(format!(
+            "unsaved edits in {name} \u{2014} press \u{2318}S to save before opening another file"
+        )))
     }
 
     fn cancel_refresh_tracking(&mut self) {
@@ -768,7 +793,7 @@ impl App {
 
     fn load_file_unless_dirty(&mut self, path: PathBuf) -> Task<Message> {
         self.cancel_refresh_tracking();
-        if let Some(blocked) = self.block_file_open_if_dirty() {
+        if let Some(blocked) = self.block_file_open_if_dirty(&path) {
             return blocked;
         }
         let checkpoint = self.checkpoint_active_quick_slot();

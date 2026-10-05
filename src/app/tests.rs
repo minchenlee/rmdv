@@ -2325,6 +2325,37 @@ fn editor_key_binding_maps_shift_command_arrows_to_selection_motion() {
     ));
 }
 
+#[test]
+fn editor_key_binding_leaves_undo_chords_to_the_app() {
+    use iced::keyboard::key::{Code, Physical};
+    use iced::keyboard::{Key, Modifiers};
+    use iced::widget::text_editor::Binding;
+
+    // macOS reports the letter as the key's text even with ⌘ held, so a
+    // forwarded ⌘Z would insert "z" and cancel the app's EditorUndo.
+    let press = |c: &str, code, modifiers| {
+        let mut kp = editor_key_press(Key::Character(c.into()), Physical::Code(code), modifiers);
+        kp.text = Some(c.into());
+        kp
+    };
+    for (c, code, modifiers) in [
+        ("z", Code::KeyZ, Modifiers::COMMAND),
+        ("z", Code::KeyZ, Modifiers::COMMAND | Modifiers::SHIFT),
+        ("y", Code::KeyY, Modifiers::COMMAND),
+    ] {
+        assert!(editor_key_binding(press(c, code, modifiers)).is_none());
+    }
+    // Clipboard chords still reach the editor, and plain letters still type.
+    assert!(matches!(
+        editor_key_binding(press("v", Code::KeyV, Modifiers::COMMAND)),
+        Some(Binding::Paste)
+    ));
+    assert!(matches!(
+        editor_key_binding(press("z", Code::KeyZ, Modifiers::empty())),
+        Some(Binding::Insert('z'))
+    ));
+}
+
 fn heading(id: u64, level: u8, label: &str) -> (BlockId, Block) {
     (
         BlockId(id),
@@ -8237,4 +8268,41 @@ fn window_mode_settle_samples_at_250_and_600_ms_after_the_last_event() {
     assert_eq!(window_mode_settle_step(ms(400)), (true, Some(ms(200))));
     assert_eq!(window_mode_settle_step(ms(600)), (true, None));
     assert_eq!(window_mode_settle_step(ms(5000)), (true, None));
+}
+
+#[test]
+fn dirty_document_can_be_reopened_but_blocks_other_files() {
+    let dir = std::env::temp_dir().join(format!("rmdv-dirty-reopen-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let a = dir.join("a.md");
+    let b = dir.join("b.md");
+    std::fs::write(&a, "a").unwrap();
+    std::fs::write(&b, "b").unwrap();
+
+    let mut app = App::default();
+    app.file = Some(a.clone());
+    app.source = "a edited".into();
+    app.saved_source = "a".into();
+    app.dirty = true;
+    app.vault_open = true;
+
+    // Returning to the document being edited keeps the edits and leaves the
+    // vault page instead of warning about them.
+    let _ = app.update(Message::Open(a.clone()));
+    assert_eq!(app.file.as_deref(), Some(a.as_path()));
+    assert_eq!(app.source, "a edited");
+    assert!(app.dirty);
+    assert!(!app.vault_open);
+    assert!(app.toast.is_none());
+
+    // Another file stays blocked, and the toast names the way out.
+    let _ = app.update(Message::Open(b));
+    assert_eq!(app.file.as_deref(), Some(a.as_path()));
+    let toast = app
+        .toast
+        .as_ref()
+        .map(|t| t.text.clone())
+        .unwrap_or_default();
+    assert!(toast.contains("unsaved edits in a.md"), "{toast}");
+    assert!(toast.contains("\u{2318}S"), "{toast}");
 }

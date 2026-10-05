@@ -26,11 +26,14 @@ pub(super) fn editor_key_binding(
         }
     }
 
+    // Only the clipboard and select-all chords have iced bindings. iced has
+    // no undo, so ⌘Z/⌘⇧Z/⌘Y fall through to `Insert` of the letter (macOS
+    // reports the key's text with ⌘ held) and cancel the app's own undo.
     let cmd_or_ctrl = kp.modifiers.command() || kp.modifiers.control();
     if cmd_or_ctrl {
         let keep = matches!(
             kp.key.to_latin(kp.physical_key),
-            Some('c' | 'x' | 'v' | 'a' | 'z' | 'y')
+            Some('c' | 'x' | 'v' | 'a')
         );
         if !keep {
             return None;

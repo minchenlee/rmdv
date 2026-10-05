@@ -951,7 +951,7 @@ impl App {
     /// it, and its error has a navigator-local home instead of `App::error`.
     pub(super) fn begin_full_mindmap_open(&mut self, path: PathBuf) -> Task<Message> {
         self.cancel_refresh_tracking();
-        if let Some(blocked) = self.block_file_open_if_dirty() {
+        if let Some(blocked) = self.block_file_open_if_dirty(&path) {
             return blocked;
         }
         let path = canonicalize_existing_path(path);
