@@ -16,12 +16,18 @@ permissions:
   contents: read
 
 jobs:
+  # ── Tests gate every build job, so nothing publishes from a failing commit.
+  tests:
+    name: Tests
+    uses: ./.github/workflows/tests.yml
+
   # ── macOS: signed + notarized .dmg and .app.tar.gz (the in-app updater
   #    downloads the .app.tar.gz and self-replaces). Signing mirrors the
   #    c9watch release workflow: import a Developer ID cert into a temp
   #    keychain, codesign --options runtime, then notarize + staple.
   build-macos:
     name: macOS ${{ matrix.arch }}
+    needs: tests
     runs-on: macos-14
     strategy:
       fail-fast: false
@@ -160,6 +166,7 @@ jobs:
   # ── Linux: AppImage (the in-app updater swaps the single AppImage file).
   build-linux:
     name: Linux x86_64
+    needs: tests
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -259,6 +266,7 @@ jobs:
   #    publish job, so a build failure here is tolerated.
   build-windows:
     name: Windows x86_64
+    needs: tests
     runs-on: windows-latest
     continue-on-error: true
     steps:
