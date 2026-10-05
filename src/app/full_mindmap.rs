@@ -775,7 +775,9 @@ impl App {
             return_to_files_after,
             exit_after_refresh,
         };
-        let full = self.full_mindmap.as_mut().expect("checked above");
+        let Some(full) = self.full_mindmap.as_mut() else {
+            return checkpoint;
+        };
         full.pending_workspace_load = Some(request.clone());
         // A new refresh owns the status line. Do not leave an error from a
         // prior failed snapshot visible after a later refresh succeeds.
@@ -1002,7 +1004,9 @@ impl App {
             id: self.full_mindmap_request_seq,
             path: path.clone(),
         };
-        let full = self.full_mindmap.as_mut().expect("checked above");
+        let Some(full) = self.full_mindmap.as_mut() else {
+            return checkpoint;
+        };
         full.pending_open = Some(request.clone());
         full.load_error = None;
         Task::batch([
@@ -1154,7 +1158,9 @@ impl App {
         // the already-published version and miss the settle wake-up if the
         // stream waits for `changed()` before inspecting its current value.
         let settle_worker = self.start_full_mindmap_preview_settle_worker();
-        let full = self.full_mindmap.as_mut().expect("checked above");
+        let Some(full) = self.full_mindmap.as_mut() else {
+            return settle_worker;
+        };
         // A different selection supersedes both an older timer and an older
         // read. The old future may still complete, but its request no longer
         // matches `pending_preview` and is ignored.
@@ -1221,17 +1227,11 @@ impl App {
             id: self.full_mindmap_request_seq,
             path: path.clone(),
         };
-        let (preview_work_epoch, preview_work_cancel) = self
-            .full_mindmap
-            .as_ref()
-            .map(|full| {
-                (
-                    full.preview_work_epoch.load(Ordering::Acquire),
-                    Arc::clone(&full.preview_work_epoch),
-                )
-            })
-            .expect("checked above");
-        let full = self.full_mindmap.as_mut().expect("checked above");
+        let Some(full) = self.full_mindmap.as_mut() else {
+            return Task::none();
+        };
+        let preview_work_epoch = full.preview_work_epoch.load(Ordering::Acquire);
+        let preview_work_cancel = Arc::clone(&full.preview_work_epoch);
         // This direct path bypasses the settle timer; clear the watch value
         // as well as the compatibility field so an old worker cannot emit its
         // request again after this accepted read starts.
@@ -1282,7 +1282,9 @@ impl App {
         // path is unchanged. Clear old measurement ownership/window shape so
         // pending g1 results cannot poison the new parse's geometry.
         self.reset_full_mindmap_preview_window();
-        let full = self.full_mindmap.as_mut().expect("checked above");
+        let Some(full) = self.full_mindmap.as_mut() else {
+            return Task::none();
+        };
         self.full_mindmap_request_seq = self.full_mindmap_request_seq.wrapping_add(1);
         let request = PendingFullMindmapPreview {
             id: self.full_mindmap_request_seq,

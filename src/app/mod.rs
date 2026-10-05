@@ -228,8 +228,6 @@ pub struct App {
     pub overlay_viewport: Option<iced::widget::scrollable::Viewport>,
     pub body_viewport: Option<iced::widget::scrollable::Viewport>,
     pub last_body_range: std::cell::Cell<(usize, usize)>,
-    #[allow(dead_code)]
-    pub first_frame_at: Option<std::time::Instant>,
     pub last_scroll_at: Option<std::time::Instant>,
     pub sidebar_width: f32,
     pub sidebar_drag: Option<f32>,
@@ -474,7 +472,6 @@ impl Default for App {
             overlay_viewport: None,
             body_viewport: None,
             last_body_range: std::cell::Cell::new((0, 0)),
-            first_frame_at: None,
             last_scroll_at: None,
             sidebar_width: SIDEBAR_WIDTH,
             sidebar_drag: None,
