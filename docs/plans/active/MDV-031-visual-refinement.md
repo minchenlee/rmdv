@@ -19,12 +19,23 @@ syntax as an option.
 
 ## Scope
 
-1. **Derived overlay tokens.** Add `ink(alpha)`, `hairline()`, and
-   `wash(alpha)` helpers on `Palette`.
-   - `ink` tints with `fg` toward the dark/light side. Dark or light is decided
-     by the luminance of `bg`, not by preset, so custom themes work too.
-   - `hairline` is the 1px border; in light themes it is ×1.35 stronger.
-   - `wash` is an accent-tinted fill.
+1. **Derived overlay tokens.** Add `ink(alpha)`, `hairline(alpha)`, and
+   `wash(alpha)` helpers on `Palette`. Callers write the dark-theme alpha;
+   light themes flip the tint.
+   - Dark or light is decided by the luminance of `bg`, not by preset, so
+     custom themes work too.
+   - `ink` is white over dark backgrounds and black over light ones.
+   - `hairline` is the 1px border colour. In light themes its alpha is ×1.35
+     (capped at 0.5), because a thin line reads weaker on a light ground.
+   - `wash` is a neutral fill near the text tone (lightness 0.92 in dark
+     themes, 0.10 in light themes). It is used for hover, active, and
+     selected states.
+   - Named states on top of the helpers, using the zeron values:
+     - hover: `wash(0.11)` in dark themes, 0.06 in light themes.
+     - active: `wash(0.16)` in dark themes, 0.10 in light themes.
+     - border: `hairline(0.08)`; strong border: `hairline(0.14)`.
+   - Accent-derived colours (item 4) come from `accent` with alpha. `wash`
+     stays neutral.
    - Replace the hand-written hover fills (`pal.surface_alt` in the ~18
      `button::Status::Hovered`/`Pressed` arms of `src/app/view/*`) and the
      chrome borders with these helpers.
@@ -49,7 +60,8 @@ syntax as an option.
    - Code blocks: `ink(0.035)` fill, 1px hairline, radius 10, padding 12×10.
      Inline code uses radius `XS` and a lighter fill.
    - `selection`, `match_bg`, and `tree_selected_bg` become accent-derived
-     `wash` values with per-mode alphas. `match_current_bg` stays a strong
+     alpha colours with per-mode alphas: `selection` is 0.35 in dark themes
+     and 0.24 in light themes. `match_current_bg` stays a strong
      solid.
 5. **Soft syntax option.**
    - A command-palette toggle, "Toggle Soft Syntax Colors", persisted as
