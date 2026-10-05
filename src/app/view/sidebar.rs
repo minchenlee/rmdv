@@ -172,10 +172,15 @@ pub(in crate::app) fn sidebar_files_body<'a>(
                 content_w = w;
             }
         }
-        for (i, r) in rows.iter().enumerate() {
+        // Build only the rows near the viewport; spacers keep the list's
+        // full height so scroll offsets and keyboard edge-scroll still match.
+        let window = sidebar_row_window(app.tree_viewport.as_ref(), rows.len());
+        list = list.push(Space::new().height(window.start as f32 * SIDEBAR_ROW_H));
+        for (i, r) in rows.iter().enumerate().take(window.end).skip(window.start) {
             let row_el = tree_row(r.node, r.depth, &app.expanded, current, i == cursor, pal);
             list = list.push(row_el);
         }
+        list = list.push(Space::new().height((rows.len() - window.end) as f32 * SIDEBAR_ROW_H));
     }
     let list = list.width(Length::Fixed(content_w));
     // Nested single-axis scrollables: inner handles vertical, outer handles
@@ -210,9 +215,17 @@ pub(in crate::app) fn sidebar_outline_body<'a>(
                 .padding(Padding::from([8, 10])),
         );
     } else {
-        for (i, s) in sections.iter().enumerate() {
+        let window = sidebar_row_window(app.outline_viewport.as_ref(), sections.len());
+        list = list.push(Space::new().height(window.start as f32 * SIDEBAR_ROW_H));
+        for (i, s) in sections
+            .iter()
+            .enumerate()
+            .take(window.end)
+            .skip(window.start)
+        {
             list = list.push(outline_row(s, i == app.outline_cursor, pal));
         }
+        list = list.push(Space::new().height((sections.len() - window.end) as f32 * SIDEBAR_ROW_H));
     }
     scrollable(list.width(Length::Fill))
         .id(App::outline_scroll_id())
@@ -221,6 +234,50 @@ pub(in crate::app) fn sidebar_outline_body<'a>(
         .direction(slim_scroll_direction())
         .style(move |_, status| sleek_scrollable_style(status, pal, recently_scrolled))
         .into()
+}
+
+/// Fixed height of every file-tree and outline row.
+pub(in crate::app) const SIDEBAR_ROW_H: f32 = 26.0;
+/// Top padding of the sidebar lists, before their first row.
+const SIDEBAR_LIST_TOP_PAD: f32 = 4.0;
+/// Rows built beyond each edge of the viewport, so a scroll that lands before
+/// the next `view()` does not reveal blank space.
+const SIDEBAR_OVERSCAN: f32 = 600.0;
+
+/// Rows of a sidebar list worth building for `viewport`. Until the first
+/// viewport arrives every row is built.
+pub(in crate::app) fn sidebar_row_window(
+    viewport: Option<&iced::widget::scrollable::Viewport>,
+    total: usize,
+) -> std::ops::Range<usize> {
+    match viewport {
+        Some(viewport) => sidebar_rows_near(
+            viewport.absolute_offset().y,
+            viewport.bounds().height,
+            total,
+        ),
+        None => 0..total,
+    }
+}
+
+/// Rows within the overscan band around a viewport scrolled to `offset_y` px
+/// with `height` px visible. A stale offset past the end (the list shrank)
+/// still yields the list's last screenful.
+pub(in crate::app) fn sidebar_rows_near(
+    offset_y: f32,
+    height: f32,
+    total: usize,
+) -> std::ops::Range<usize> {
+    let offset = offset_y - SIDEBAR_LIST_TOP_PAD;
+    let top = offset - SIDEBAR_OVERSCAN;
+    let bottom = offset + height + SIDEBAR_OVERSCAN;
+    let span = ((bottom - top) / SIDEBAR_ROW_H).ceil() as usize;
+    let first = ((top / SIDEBAR_ROW_H).floor().max(0.0) as usize).min(total);
+    let last = ((bottom / SIDEBAR_ROW_H).ceil().max(0.0) as usize).min(total);
+    if first >= last {
+        return total.saturating_sub(span)..total;
+    }
+    first..last
 }
 
 pub(in crate::app) fn outline_row<'a>(
@@ -246,7 +303,7 @@ pub(in crate::app) fn outline_row<'a>(
     button(content)
         .padding(Padding::from([4, 8]))
         .width(Length::Fill)
-        .height(Length::Fixed(26.0))
+        .height(Length::Fixed(SIDEBAR_ROW_H))
         .style(move |_, status| button::Style {
             background: if is_cursor {
                 Some(Background::Color(pal.tree_selected_bg))
@@ -413,7 +470,7 @@ pub(in crate::app) fn tree_row<'a>(
     button(content)
         .padding(Padding::from([4, 8]))
         .width(Length::Fill)
-        .height(Length::Fixed(26.0))
+        .height(Length::Fixed(SIDEBAR_ROW_H))
         .style(move |_, status| {
             let bg = if is_current {
                 Some(Background::Color(pal.tree_selected_bg))
@@ -452,7 +509,7 @@ pub(in crate::app) fn indent_guide<'a>(pal: Palette) -> Element<'a, Message> {
             }),
     )
     .width(Length::Fixed(TREE_INDENT))
-    .height(Length::Fixed(26.0))
+    .height(Length::Fixed(SIDEBAR_ROW_H))
     .center_x(Length::Fixed(TREE_INDENT))
     .into()
 }

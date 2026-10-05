@@ -8064,3 +8064,36 @@ fn debounced_search_with_find_bar_hidden_updates_results_only() {
     assert!(!app.search_pending);
     assert!(!app.matches.is_empty());
 }
+
+#[test]
+fn sidebar_rows_near_builds_only_the_overscanned_viewport() {
+    // 5000 rows × 26 px, 800 px tall viewport, 600 px overscan each side.
+    let at_top = sidebar_rows_near(0.0, 800.0, 5000);
+    assert_eq!(at_top.start, 0);
+    assert!(at_top.end < 60, "{at_top:?}");
+
+    let middle = sidebar_rows_near(26.0 * 2000.0 + 4.0, 800.0, 5000);
+    assert!(
+        middle.start <= 2000 - 23 && middle.start >= 2000 - 24,
+        "{middle:?}"
+    );
+    assert!(
+        middle.end >= 2000 + 30 + 23 && middle.end <= 2000 + 30 + 25,
+        "{middle:?}"
+    );
+
+    let bottom = sidebar_rows_near(26.0 * 5000.0 - 800.0 + 8.0, 800.0, 5000);
+    assert_eq!(bottom.end, 5000);
+
+    // A stale offset from a longer list still shows the end of a short one.
+    let stale = sidebar_rows_near(26.0 * 4000.0, 800.0, 100);
+    assert_eq!(stale.end, 100);
+    assert!(stale.start <= 100 - 31, "{stale:?}");
+    let stale_long = sidebar_rows_near(26.0 * 9000.0, 800.0, 5000);
+    assert_eq!(stale_long.end, 5000);
+    assert!(stale_long.len() >= 30);
+
+    // Short lists build every row.
+    assert_eq!(sidebar_rows_near(0.0, 800.0, 10), 0..10);
+    assert_eq!(sidebar_row_window(None, 5000), 0..5000);
+}
