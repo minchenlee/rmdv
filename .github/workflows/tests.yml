@@ -1,0 +1,62 @@
+name: Tests
+
+# Shared test gate. `ci.yml` calls it on pull requests and pushes to main;
+# `release.yml` calls it before any build job, so a release cannot publish
+# from a commit whose tests fail on a platform it ships.
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  linux:
+    name: Linux tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-gnu
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: tests-x86_64-unknown-linux-gnu
+
+      - name: Install system deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-3-dev libxkbcommon-dev libwayland-dev \
+            libssl-dev pkg-config
+
+      - name: Check formatting
+        run: cargo fmt --all --check
+
+      - name: Run tests
+        run: cargo test --lib --tests --target x86_64-unknown-linux-gnu
+
+  macos:
+    name: macOS tests
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: tests-aarch64-apple-darwin
+
+      - name: Run tests
+        run: cargo test --lib --tests --target aarch64-apple-darwin
