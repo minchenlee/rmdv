@@ -351,25 +351,80 @@ pub(super) fn refresh_window_mode(id: iced::window::Id) -> Task<Message> {
     iced::window::mode(id).map(Message::WindowModeChanged)
 }
 
-/// Sample the window mode now and again after the native transition settles.
-///
-/// macOS native fullscreen enter/exit animates; the resize/focus event that
-/// triggers a refresh can fire *before* the mode flips, so a single immediate
-/// query can read the stale (pre-transition) mode on exit. The delayed second
-/// query lands after the animation completes and corrects the flag, restoring
-/// the windowed header reserve. See the fullscreen-exit relayout bug.
-pub(super) fn refresh_window_mode_after_native_transition(id: iced::window::Id) -> Task<Message> {
-    // Sample immediately, then again after the native animation could plausibly
-    // have settled. Two delayed samples (250ms + 600ms) because a single fixed
-    // delay can still land before a slow fullscreen-exit animation finishes.
-    let delayed = |ms: u64| {
-        Task::perform(
-            async move {
-                tokio::time::sleep(std::time::Duration::from_millis(ms)).await;
-                id
-            },
-            Message::RefreshWindowModeSettled,
-        )
-    };
-    Task::batch([refresh_window_mode(id), delayed(250), delayed(600)])
+/// First settle sample after the latest window event.
+pub(super) const WINDOW_MODE_SETTLE_FIRST: std::time::Duration =
+    std::time::Duration::from_millis(250);
+/// Final settle sample after the latest window event.
+pub(super) const WINDOW_MODE_SETTLE_FINAL: std::time::Duration =
+    std::time::Duration::from_millis(600);
+
+/// What a settle timer does when it fires `since` after the latest window
+/// event: whether to sample the mode, and when to fire again.
+pub(super) fn window_mode_settle_step(
+    since: std::time::Duration,
+) -> (bool, Option<std::time::Duration>) {
+    if since < WINDOW_MODE_SETTLE_FIRST {
+        (false, Some(WINDOW_MODE_SETTLE_FIRST - since))
+    } else if since < WINDOW_MODE_SETTLE_FINAL {
+        (true, Some(WINDOW_MODE_SETTLE_FINAL - since))
+    } else {
+        (true, None)
+    }
+}
+
+fn window_mode_settle_after(id: iced::window::Id, delay: std::time::Duration) -> Task<Message> {
+    Task::perform(
+        async move {
+            tokio::time::sleep(delay).await;
+            id
+        },
+        Message::RefreshWindowModeSettled,
+    )
+}
+
+impl App {
+    /// Sample the window mode now and again after the native transition settles.
+    ///
+    /// macOS native fullscreen enter/exit animates; the resize/focus event that
+    /// triggers a refresh can fire *before* the mode flips, so a single
+    /// immediate query can read the stale (pre-transition) mode on exit. Two
+    /// later samples, 250 ms and 600 ms after the *latest* event, land after
+    /// the animation completes and correct the flag, restoring the windowed
+    /// header reserve. See the fullscreen-exit relayout bug.
+    ///
+    /// Dragging or resizing sends these events at display rate. Only the first
+    /// event of a burst samples immediately and starts a timer; later events
+    /// just move the settle deadline that timer re-arms toward.
+    pub(super) fn refresh_window_mode_after_native_transition(
+        &mut self,
+        id: iced::window::Id,
+    ) -> Task<Message> {
+        self.window_mode_last_trigger = Some(std::time::Instant::now());
+        if self.window_mode_settle_armed {
+            return Task::none();
+        }
+        self.window_mode_settle_armed = true;
+        Task::batch([
+            refresh_window_mode(id),
+            window_mode_settle_after(id, WINDOW_MODE_SETTLE_FIRST),
+        ])
+    }
+
+    pub(super) fn window_mode_settle_fired(&mut self, id: iced::window::Id) -> Task<Message> {
+        let since = self
+            .window_mode_last_trigger
+            .map(|at| at.elapsed())
+            .unwrap_or(WINDOW_MODE_SETTLE_FINAL);
+        let (sample, again) = window_mode_settle_step(since);
+        self.window_mode_settle_armed = again.is_some();
+        let sample = if sample {
+            refresh_window_mode(id)
+        } else {
+            Task::none()
+        };
+        match again {
+            Some(delay) => Task::batch([sample, window_mode_settle_after(id, delay)]),
+            None => sample,
+        }
+    }
 }
