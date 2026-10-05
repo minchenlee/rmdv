@@ -27,14 +27,14 @@ pub fn add(path: &Path) {
     let Some(p) = store_path() else {
         return;
     };
-    if let Some(parent) = p.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
     let mut r = load();
     r.paths.retain(|x| x != path);
     r.paths.insert(0, path.to_path_buf());
     r.paths.truncate(MAX);
-    if let Ok(json) = serde_json::to_string_pretty(&r) {
-        let _ = std::fs::write(&p, json);
+    let result = serde_json::to_string_pretty(&r)
+        .map_err(std::io::Error::other)
+        .and_then(|json| crate::fs_atomic::write_atomic(&p, json.as_bytes()));
+    if let Err(error) = result {
+        eprintln!("rmdv: could not save {}: {error}", p.display());
     }
 }

@@ -1271,6 +1271,9 @@ pub struct ZenRestoreState {
 pub struct App {
     pub file: Option<PathBuf>,
     pub source: String,
+    /// Whitespace-separated word count of `source`, refreshed on every parse
+    /// so the footer never scans the whole document inside `view()`.
+    source_words: usize,
     pub ast: Vec<(BlockId, Block)>,
     pub theme_mode: ThemeMode,
     pub theme_preset: ThemePreset,
@@ -1436,6 +1439,11 @@ pub struct App {
     /// shown node id. Recomputed when `mindmap_panel_shown` changes; cleared by
     /// `invalidate_mindmap_layout`.
     mindmap_data_panel: std::cell::RefCell<Option<(crate::ast::BlockId, String)>>,
+    /// Last `(root, file) -> relative path` answer for the active Quick Slot.
+    /// The scroll checkpoint and the slot rail ask for the same pair on every
+    /// event, and each fresh answer costs two `canonicalize` calls. Cleared
+    /// whenever a file (re)loads.
+    quick_slot_relative_memo: std::cell::RefCell<Option<(PathBuf, PathBuf, Option<String>)>>,
     /// T3 — diagram render cache. T4 will populate it from a pre-walk +
     /// `iced::Task::perform` of `diagram::render_blocking`.
     pub diagram_cache: crate::diagram::DiagramCache,
@@ -1551,6 +1559,7 @@ impl Default for App {
         Self {
             file: None,
             source: String::new(),
+            source_words: 0,
             ast: Vec::new(),
             theme_mode: mode,
             theme_preset: preset,
@@ -1645,6 +1654,7 @@ impl Default for App {
             mindmap_layout: std::cell::RefCell::new(None),
             mindmap_layout_generation: std::cell::Cell::new(0),
             mindmap_data_panel: std::cell::RefCell::new(None),
+            quick_slot_relative_memo: std::cell::RefCell::new(None),
             diagram_cache: crate::diagram::DiagramCache::new(64),
             diagram_theme_id: 0,
             zoom_diagram: None,
@@ -1870,7 +1880,7 @@ impl App {
         let root = self.quick_slots_workspace_root()?;
         if self.full_mindmap.is_some() {
             let path = self.full_mindmap_selected_file()?;
-            crate::quick_slots::relative_path(root, &path)?;
+            self.quick_slot_relative_path(root, &path)?;
             return Some((
                 path,
                 crate::quick_slots::SlotContext {
@@ -1885,7 +1895,7 @@ impl App {
             ));
         }
         let path = self.file.clone()?;
-        crate::quick_slots::relative_path(root, &path)?;
+        self.quick_slot_relative_path(root, &path)?;
         let mode = if self.view_mode == ViewMode::Mindmap {
             crate::quick_slots::SlotMode::DocumentMindmap
         } else {
@@ -1901,6 +1911,18 @@ impl App {
                 ..Default::default()
             },
         ))
+    }
+
+    fn quick_slot_relative_path(&self, root: &Path, path: &Path) -> Option<String> {
+        let mut memo = self.quick_slot_relative_memo.borrow_mut();
+        if let Some((memo_root, memo_path, relative)) = memo.as_ref() {
+            if memo_root == root && memo_path == path {
+                return relative.clone();
+            }
+        }
+        let relative = crate::quick_slots::relative_path(root, path);
+        *memo = Some((root.to_path_buf(), path.to_path_buf(), relative.clone()));
+        relative
     }
 
     fn quick_slot_activation_is_current(
@@ -1956,7 +1978,7 @@ impl App {
         let Some(root) = self.quick_slots_workspace_root() else {
             return Task::none();
         };
-        let Some(relative) = crate::quick_slots::relative_path(root, &path) else {
+        let Some(relative) = self.quick_slot_relative_path(root, &path) else {
             return Task::none();
         };
         let owns = self
@@ -2557,6 +2579,7 @@ impl App {
     /// and rechecked the dirty guard. Refresh uses this directly so the common
     /// state transition does not cancel its still-pending workspace leg.
     fn apply_loaded_file(&mut self, path: PathBuf, src: String) -> Task<Message> {
+        self.quick_slot_relative_memo.replace(None);
         let pending_candidate = self.pending_quick_slot_restore.clone();
         let pending_slot_restore = pending_candidate.clone().filter(|pending| {
             self.quick_slot_restore_is_current(pending)
@@ -4986,6 +5009,7 @@ impl App {
         // Covers every `self.ast` write below; `self.file` and
         // `mindmap_collapsed` writes in FileLoaded happen before this call.
         self.invalidate_mindmap_layout();
+        self.source_words = self.source.split_whitespace().count();
         if let Some(ast) = self.synthesize_data_ast() {
             self.ast = ast;
             // Data docs are one synthesized block at line 1; reset block_lines
@@ -10549,7 +10573,7 @@ impl App {
         // Status footer floats over the reader (content scrolls behind it),
         // pinned bottom-right. Shown for any open document except mindmap.
         let footer_layer: Element<'_, Message> = if footer_visible {
-            status_footer(&self.source, pal)
+            status_footer(self.source_words, pal)
         } else {
             Space::new().into()
         };
@@ -10706,9 +10730,8 @@ fn update_banner<'a>(version: &str, pal: Palette) -> Element<'a, Message> {
 }
 
 /// Bottom status bar: word count + estimated reading time (~200 wpm).
-fn status_footer<'a>(source: &str, pal: Palette) -> Element<'a, Message> {
+fn status_footer<'a>(words: usize, pal: Palette) -> Element<'a, Message> {
     use iced::widget::{container, text as text_w};
-    let words = source.split_whitespace().count();
     let minutes = ((words as f32) / 200.0).ceil().max(1.0) as usize;
     let label = format!(
         "{} word{} · {} min read",
@@ -13713,9 +13736,48 @@ async fn load_file(p: PathBuf) -> Result<(PathBuf, String), String> {
             .map_err(|e| e.to_string())??;
         return Ok((p, md));
     }
-    let bytes = tokio::fs::read(&p).await.map_err(|e| e.to_string())?;
-    let s = String::from_utf8_lossy(&bytes).into_owned();
-    Ok((p, s))
+    let bytes = read_document_bytes(&p).await?;
+    Ok((p, document_text(bytes)))
+}
+
+/// Largest document the main viewer will read. Files past this are refused
+/// before reading instead of being pulled whole into memory.
+const MAX_DOCUMENT_BYTES: u64 = 64 * 1024 * 1024;
+
+async fn read_document_bytes(p: &Path) -> Result<Vec<u8>, String> {
+    use tokio::io::AsyncReadExt;
+
+    let file = tokio::fs::File::open(p).await.map_err(|e| e.to_string())?;
+    let len = file.metadata().await.map_err(|e| e.to_string())?.len();
+    if len > MAX_DOCUMENT_BYTES {
+        return Err(too_large_message(len));
+    }
+    // The size can change between the check and the read; never read past
+    // the cap either way.
+    let mut bytes = Vec::with_capacity(len as usize);
+    file.take(MAX_DOCUMENT_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .await
+        .map_err(|e| e.to_string())?;
+    if bytes.len() as u64 > MAX_DOCUMENT_BYTES {
+        return Err(too_large_message(bytes.len() as u64));
+    }
+    Ok(bytes)
+}
+
+fn too_large_message(len: u64) -> String {
+    format!(
+        "File is too large to open ({} MB; the limit is {} MB)",
+        len / (1024 * 1024),
+        MAX_DOCUMENT_BYTES / (1024 * 1024)
+    )
+}
+
+/// Decode without copying valid UTF-8; only invalid input pays for a lossy
+/// conversion.
+fn document_text(bytes: Vec<u8>) -> String {
+    String::from_utf8(bytes)
+        .unwrap_or_else(|error| String::from_utf8_lossy(error.as_bytes()).into_owned())
 }
 
 /// Read the complete Full Mindmap side-panel source on a worker. PDFs remain
@@ -13780,19 +13842,51 @@ async fn load_full_mindmap_folder(
     Ok((path, snapshot))
 }
 
+/// Remote images larger than this are refused instead of buffered whole.
+const MAX_REMOTE_IMAGE_BYTES: usize = 25 * 1024 * 1024;
+/// Concurrent remote image downloads; a document with many images queues the
+/// rest instead of opening one connection per image at once.
+const REMOTE_IMAGE_CONCURRENCY: usize = 4;
+
+/// One HTTP client for every image fetch, so TLS setup and pooled connections
+/// are reused. Iced drives all tasks on a single runtime, which the pool needs.
+static IMAGE_CLIENT: std::sync::LazyLock<Result<reqwest::Client, String>> =
+    std::sync::LazyLock::new(|| {
+        reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(15))
+            .user_agent(concat!("rmdv/", env!("CARGO_PKG_VERSION")))
+            .build()
+            .map_err(|e| e.to_string())
+    });
+
+static IMAGE_FETCH_PERMITS: std::sync::LazyLock<tokio::sync::Semaphore> =
+    std::sync::LazyLock::new(|| tokio::sync::Semaphore::new(REMOTE_IMAGE_CONCURRENCY));
+
 async fn fetch_image(url: String) -> (String, Result<Vec<u8>, String>) {
     let res = async {
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(15))
-            .user_agent("rmdv/0.2")
-            .build()
+        let client = IMAGE_CLIENT.as_ref().map_err(Clone::clone)?;
+        let _permit = IMAGE_FETCH_PERMITS
+            .acquire()
+            .await
             .map_err(|e| e.to_string())?;
-        let resp = client.get(&url).send().await.map_err(|e| e.to_string())?;
+        let mut resp = client.get(&url).send().await.map_err(|e| e.to_string())?;
         if !resp.status().is_success() {
             return Err(format!("http {}", resp.status()));
         }
-        let bytes = resp.bytes().await.map_err(|e| e.to_string())?;
-        Ok::<Vec<u8>, String>(bytes.to_vec())
+        let too_large = || format!("image larger than {} MB", MAX_REMOTE_IMAGE_BYTES >> 20);
+        let declared = resp.content_length().unwrap_or(0) as usize;
+        if declared > MAX_REMOTE_IMAGE_BYTES {
+            return Err(too_large());
+        }
+        // Stream so an undeclared or lying length still stops at the cap.
+        let mut bytes = Vec::with_capacity(declared);
+        while let Some(chunk) = resp.chunk().await.map_err(|e| e.to_string())? {
+            if bytes.len() + chunk.len() > MAX_REMOTE_IMAGE_BYTES {
+                return Err(too_large());
+            }
+            bytes.extend_from_slice(&chunk);
+        }
+        Ok::<Vec<u8>, String>(bytes)
     }
     .await;
     (url, res)
@@ -21879,5 +21973,30 @@ mod tests {
         let _ = app.update(Message::MindmapNativePinch(0.75));
         assert_eq!(app.full_mindmap_native_pinch_log, 0.75);
         assert_eq!(app.mindmap_native_pinch_log, 0.25);
+    }
+
+    #[test]
+    fn document_text_keeps_valid_utf8_and_repairs_invalid_bytes() {
+        assert_eq!(document_text(b"# Title".to_vec()), "# Title");
+        assert_eq!(document_text(vec![b'a', 0xff, b'b']), "a\u{fffd}b");
+    }
+
+    #[test]
+    fn oversized_documents_are_refused_before_reading() {
+        let path = std::env::temp_dir().join(format!("rmdv-oversized-{}.md", std::process::id()));
+        // A sparse file reports the size without writing the bytes.
+        let file = std::fs::File::create(&path).unwrap();
+        file.set_len(MAX_DOCUMENT_BYTES + 1).unwrap();
+        drop(file);
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let error = runtime
+            .block_on(read_document_bytes(&path))
+            .expect_err("a file past the cap must not be read");
+        assert!(error.contains("too large"), "{error}");
+        let _ = std::fs::remove_file(&path);
     }
 }

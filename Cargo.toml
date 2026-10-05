@@ -11,10 +11,8 @@ build = "build.rs"
 [dependencies]
 iced = { version = "0.14", features = ["tokio", "image", "advanced", "svg", "lazy", "canvas"] }
 pulldown-cmark = { version = "0.12", default-features = false, features = ["html"] }
-notify = "7"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
 open = "5"
-arboard = "3"
 dirs = "5"
 dark-light = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "fs", "sync", "time"] }

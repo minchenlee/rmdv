@@ -1860,8 +1860,14 @@ mod tests {
             })
             .collect();
         assert!(paras.iter().any(|p| p.contains("First")));
-        assert!(paras.iter().any(|p| p.contains("Second")), "2nd para dropped");
-        assert!(paras.iter().any(|p| p.contains("Third")), "3rd para dropped");
+        assert!(
+            paras.iter().any(|p| p.contains("Second")),
+            "2nd para dropped"
+        );
+        assert!(
+            paras.iter().any(|p| p.contains("Third")),
+            "3rd para dropped"
+        );
     }
 
     #[test]
@@ -1876,8 +1882,10 @@ mod tests {
             })
             .collect();
         assert_eq!(imgs, vec!["a.png".to_string(), "b.png".to_string()]);
-        let has_caption = b.iter().any(|bl| matches!(bl, Block::Paragraph(inl)
-            if inline_to_string(inl).contains("Two panels")));
+        let has_caption = b.iter().any(|bl| {
+            matches!(bl, Block::Paragraph(inl)
+            if inline_to_string(inl).contains("Two panels"))
+        });
         assert!(has_caption, "caption dropped");
     }
 

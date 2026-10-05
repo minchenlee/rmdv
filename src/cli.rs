@@ -3,7 +3,11 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 use std::path::PathBuf;
 
 #[derive(Debug, Parser)]
-#[command(name = "rmdv", version, about = "Lightweight beautiful markdown viewer")]
+#[command(
+    name = "rmdv",
+    version,
+    about = "Lightweight beautiful markdown viewer"
+)]
 pub struct Cli {
     /// File or directory to open (bare form).
     pub target: Option<PathBuf>,

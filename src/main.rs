@@ -49,7 +49,7 @@ fn main() -> iced::Result {
                     return launch_instance(Some(req));
                 }
                 Err(e) => {
-                    eprintln!("{{\"error\":\"{}\"}}", e.to_string().replace('"', "'"));
+                    eprintln!("{}", serde_json::json!({ "error": e.to_string() }));
                     std::process::exit(2);
                 }
             }

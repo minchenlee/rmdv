@@ -77,8 +77,7 @@ mod tests {
 
     #[test]
     fn copies_nested_tree() {
-        let base =
-            std::env::temp_dir().join(format!("rmdv-migrate-test-{}", std::process::id()));
+        let base = std::env::temp_dir().join(format!("rmdv-migrate-test-{}", std::process::id()));
         let src = base.join("mdv");
         let dst = base.join("rmdv");
         let _ = std::fs::remove_dir_all(&base);

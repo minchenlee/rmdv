@@ -70,7 +70,7 @@ fn scan_text(text: &str, query: &str, path: &Path, out: &mut Vec<VaultHit>) -> b
         }
         let line = table.line_for_byte(off);
         let li = (line as usize).saturating_sub(1); // 0-based index into `lines`
-        // Line start comes from the byte→line table (no extra backward scan).
+                                                    // Line start comes from the byte→line table (no extra backward scan).
         let line_start = table.line_start(line).unwrap_or(0);
         let col_start = text[line_start..off].chars().count();
         let col_end = col_start + q_chars;
@@ -268,7 +268,10 @@ mod tests {
         assert_eq!(m.number, 3);
         assert_eq!(m.text, "needle line3");
         // Numbers are sequential 1-based.
-        assert_eq!(ctx.iter().map(|c| c.number).collect::<Vec<_>>(), vec![1, 2, 3, 4, 5]);
+        assert_eq!(
+            ctx.iter().map(|c| c.number).collect::<Vec<_>>(),
+            vec![1, 2, 3, 4, 5]
+        );
     }
 
     #[test]
@@ -377,7 +380,10 @@ mod tests {
             .unwrap();
         let r = rt.block_on(run(vec![file.clone()], "needle".to_string(), 1));
         assert_eq!(r.hits.len(), MAX_HITS);
-        assert!(!r.truncated, "exact fill with no remainder is not truncated");
+        assert!(
+            !r.truncated,
+            "exact fill with no remainder is not truncated"
+        );
 
         let _ = std::fs::remove_file(&file);
         let _ = std::fs::remove_dir(&dir);

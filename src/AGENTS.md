@@ -47,7 +47,7 @@ library exposes parsers, renderers, workspace models, and the IPC boundary;
 - `cargo check --no-default-features` — check the Windows/lean feature path.
 - `cargo check --features pdf` — check the explicit PDF feature path.
 - `cargo build --release --bin rmdv` — build the runnable optimized binary.
-- `rustfmt --edition 2021 --check src/app.rs src/mindmap.rs src/virt.rs src/diagram.rs` — focused formatting gate for the current Full Mindmap/UI touch set; use the same form with the actual touched Rust files for other edits.
+- `cargo fmt --all --check` — formatting gate; CI runs the same command over the whole repo.
 
 ## Editing constraints
 
@@ -64,7 +64,7 @@ library exposes parsers, renderers, workspace models, and the IPC boundary;
 ## Verification
 
 1. Run the narrowest affected `cargo test --lib` filter or module test.
-2. Run `cargo check` and focused rustfmt for touched Rust files.
+2. Run `cargo check` and `cargo fmt --all --check`.
 3. Run `cargo test --tests` when public behavior, CLI/IPC, parsing, or fixture contracts cross the library boundary.
 4. Run `git diff --check` before handing off; use the root release build only when the change needs a runnable binary.
 

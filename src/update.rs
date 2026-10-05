@@ -113,8 +113,7 @@ pub async fn check_and_download() -> Result<Option<ReadyUpdate>> {
         .bytes()
         .await
         .context("read manifest body")?;
-    let manifest: Manifest =
-        serde_json::from_slice(&manifest_bytes).context("parse manifest")?;
+    let manifest: Manifest = serde_json::from_slice(&manifest_bytes).context("parse manifest")?;
 
     if !is_newer(&manifest.version, current) {
         return Ok(None);
@@ -136,7 +135,10 @@ pub async fn check_and_download() -> Result<Option<ReadyUpdate>> {
         .context("download artifact")?
         .error_for_status()
         .context("artifact status")?;
-    if resp.content_length().is_some_and(|len| len > MAX_ARTIFACT_BYTES) {
+    if resp
+        .content_length()
+        .is_some_and(|len| len > MAX_ARTIFACT_BYTES)
+    {
         bail!("artifact too large");
     }
     let bytes = resp.bytes().await.context("read artifact body")?;
