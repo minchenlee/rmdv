@@ -8199,3 +8199,42 @@ fn local_images_load_through_a_task_into_the_budgeted_cache() {
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn window_event_burst_shares_one_mode_refresh() {
+    let mut app = App::default();
+    let id = iced::window::Id::unique();
+    // Before: every Moved/Resized/Focused event queued an immediate mode query
+    // plus two settle timers (3 tasks). Now one burst queues the immediate
+    // query and a single timer.
+    let units: usize = (0..60)
+        .map(|_| app.update(Message::RefreshWindowMode(id)).units())
+        .sum();
+    assert_eq!(units, 2);
+    assert!(app.window_mode_settle_armed);
+
+    // The timer fires while events are still arriving: re-arm, no sample.
+    assert_eq!(app.update(Message::RefreshWindowModeSettled(id)).units(), 1);
+    assert!(app.window_mode_settle_armed);
+
+    // After the final settle delay the timer samples once and disarms.
+    app.window_mode_last_trigger =
+        std::time::Instant::now().checked_sub(std::time::Duration::from_millis(700));
+    assert_eq!(app.update(Message::RefreshWindowModeSettled(id)).units(), 1);
+    assert!(!app.window_mode_settle_armed);
+
+    // The next event starts a new burst with its own immediate sample.
+    assert_eq!(app.update(Message::RefreshWindowMode(id)).units(), 2);
+}
+
+#[test]
+fn window_mode_settle_samples_at_250_and_600_ms_after_the_last_event() {
+    use std::time::Duration;
+    let ms = Duration::from_millis;
+    assert_eq!(window_mode_settle_step(ms(0)), (false, Some(ms(250))));
+    assert_eq!(window_mode_settle_step(ms(100)), (false, Some(ms(150))));
+    assert_eq!(window_mode_settle_step(ms(250)), (true, Some(ms(350))));
+    assert_eq!(window_mode_settle_step(ms(400)), (true, Some(ms(200))));
+    assert_eq!(window_mode_settle_step(ms(600)), (true, None));
+    assert_eq!(window_mode_settle_step(ms(5000)), (true, None));
+}

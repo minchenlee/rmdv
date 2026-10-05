@@ -1777,7 +1777,7 @@ impl App {
                 // remeasure its retained layout deterministically.
                 let preview_geometry = self.refresh_full_mindmap_preview_heights();
                 Task::batch([
-                    refresh_window_mode_after_native_transition(id),
+                    self.refresh_window_mode_after_native_transition(id),
                     preview_geometry,
                 ])
             }
@@ -1786,7 +1786,7 @@ impl App {
                 self.quick_slots_rail_revealed = false;
                 self.quick_slots_modifier_generation =
                     self.quick_slots_modifier_generation.wrapping_add(1);
-                refresh_window_mode_after_native_transition(id)
+                self.refresh_window_mode_after_native_transition(id)
             }
             Message::RefreshWindowMode(id) => {
                 // AppKit local monitors must be registered after Iced has
@@ -1794,9 +1794,9 @@ impl App {
                 // leaves the macOS event loop alive without ever creating a
                 // visible window on current macOS releases.
                 crate::native_pinch::install();
-                refresh_window_mode_after_native_transition(id)
+                self.refresh_window_mode_after_native_transition(id)
             }
-            Message::RefreshWindowModeSettled(id) => refresh_window_mode(id),
+            Message::RefreshWindowModeSettled(id) => self.window_mode_settle_fired(id),
             Message::WindowModeChanged(mode) => {
                 self.window_fullscreen = matches!(mode, iced::window::Mode::Fullscreen);
                 Task::none()

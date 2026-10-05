@@ -225,6 +225,12 @@ pub struct App {
     /// True when the window is in native fullscreen, where macOS hides the
     /// traffic-light buttons and the sidebar header needs no reserved gap.
     pub window_fullscreen: bool,
+    /// When the latest window event that can precede a fullscreen transition
+    /// arrived. Settle samples of the window mode are timed from it.
+    pub window_mode_last_trigger: Option<std::time::Instant>,
+    /// Whether a settle timer is in flight. A burst of Moved/Resized events
+    /// shares that one timer instead of starting its own.
+    pub window_mode_settle_armed: bool,
     pub overlay_viewport: Option<iced::widget::scrollable::Viewport>,
     pub body_viewport: Option<iced::widget::scrollable::Viewport>,
     pub last_body_range: std::cell::Cell<(usize, usize)>,
@@ -473,6 +479,8 @@ impl Default for App {
             outline_viewport: None,
             window_size: None,
             window_fullscreen: false,
+            window_mode_last_trigger: None,
+            window_mode_settle_armed: false,
             overlay_viewport: None,
             body_viewport: None,
             last_body_range: std::cell::Cell::new((0, 0)),
