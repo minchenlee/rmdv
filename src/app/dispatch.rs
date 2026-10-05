@@ -87,6 +87,11 @@ impl App {
                 // AppKit forwards argv paths as open-file events, so a bare
                 // directory launch arrives here too; it is a workspace.
                 if p.is_dir() {
+                    // The launch argument was already opened by `App::new`;
+                    // reopening would rescan and collapse the tree.
+                    if self.workspace.as_ref() == Some(&canonicalize_existing_path(p.clone())) {
+                        return Task::none();
+                    }
                     return self.update(Message::OpenWorkspace(p));
                 }
                 if self.full_mindmap.is_some() {

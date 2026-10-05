@@ -554,10 +554,20 @@ fn dotdot_workspace_open_uses_canonical_full_preview_identity() {
 #[test]
 fn directory_open_event_opens_workspace_without_error_card() {
     let root = full_mindmap_test_dir("dir-open-event");
-    std::fs::write(root.join("note.md"), "# Note\n").unwrap();
+    let docs = root.join("docs");
+    std::fs::create_dir_all(&docs).unwrap();
+    std::fs::write(docs.join("note.md"), "# Note\n").unwrap();
     let mut app = App::default();
     let _ = app.update(Message::OpenFileFinderPath(root.clone()));
-    assert!(app.workspace.is_some());
+    assert_eq!(app.workspace, Some(root.clone()));
+    assert!(app.error.is_none());
+
+    // AppKit repeats the launch argument after `App::new` opened it; the
+    // second event must not rescan and collapse the tree.
+    app.expanded.insert(docs.clone());
+    let task = app.update(Message::OpenFileFinderPath(root.clone()));
+    assert_eq!(task.units(), 0);
+    assert!(app.expanded.contains(&docs));
     assert!(app.error.is_none());
     let _ = std::fs::remove_dir_all(root);
 }
