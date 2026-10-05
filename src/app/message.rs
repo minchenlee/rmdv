@@ -171,6 +171,7 @@ pub enum Message {
     FontSizeDown,
     FontSizeReset,
     ToggleFooter,
+    ToggleSoftSyntax,
     ToggleMindmap,
     /// A macOS magnification delta from the native event bridge. The shared
     /// canvas consumes the cumulative stream on its next redraw.

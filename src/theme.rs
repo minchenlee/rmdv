@@ -517,6 +517,41 @@ impl Palette {
     };
 }
 
+/// Saturation scale of the Soft syntax option, after zeron's muted tones.
+const SOFT_SATURATION: f32 = 0.72;
+
+impl SyntaxPalette {
+    /// The opt-in Soft variant: every hue is desaturated, and variables,
+    /// operators, and punctuation take the text color so fewer tones compete
+    /// with the code. The upstream presets themselves stay untouched.
+    pub fn softened(self, fg: Color) -> SyntaxPalette {
+        let soft = |c| desaturate(c, SOFT_SATURATION);
+        SyntaxPalette {
+            keyword: soft(self.keyword),
+            type_: soft(self.type_),
+            function: soft(self.function),
+            string: soft(self.string),
+            number: soft(self.number),
+            comment: soft(self.comment),
+            operator: fg,
+            constant: soft(self.constant),
+            variable: fg,
+            punctuation: fg,
+        }
+    }
+}
+
+/// Scales HSL saturation by `factor`, keeping hue, lightness, and alpha.
+fn desaturate(c: Color, factor: f32) -> Color {
+    let max = c.r.max(c.g).max(c.b);
+    let min = c.r.min(c.g).min(c.b);
+    let l = (max + min) / 2.0;
+    // In HSL every channel sits `(channel - l)` away from the lightness axis,
+    // and that distance is proportional to saturation.
+    let scale = |v: f32| l + (v - l) * factor;
+    Color::from_rgba(scale(c.r), scale(c.g), scale(c.b), c.a)
+}
+
 /// In light themes a 1px line reads weaker than the same alpha on a dark
 /// ground, so hairlines are scaled up there.
 const HAIRLINE_LIGHT_SCALE: f32 = 1.35;
@@ -525,6 +560,18 @@ const HAIRLINE_LIGHT_SCALE: f32 = 1.35;
 /// Callers write the alpha for a dark theme; light themes flip the tint. Dark
 /// or light is read from `bg` so custom themes need no extra flag.
 impl Palette {
+    /// This palette with the Soft syntax option applied when `soft` is set.
+    pub fn with_soft_syntax(self, soft: bool) -> Palette {
+        if soft {
+            Palette {
+                syntax: self.syntax.softened(self.fg),
+                ..self
+            }
+        } else {
+            self
+        }
+    }
+
     pub fn is_dark(&self) -> bool {
         relative_luminance(self.bg) < 0.18
     }
@@ -865,6 +912,23 @@ mod tests {
             let ratio = contrast_ratio(pal.fg, pal.bg);
             assert!(ratio <= 17.0, "{preset:?} fg/bg = {ratio:.2}");
         }
+    }
+
+    #[test]
+    fn soft_syntax_desaturates_hues_and_keeps_presets_untouched() {
+        for preset in ThemePreset::ALL.iter().copied() {
+            let pal = palette_for(preset);
+            let soft = pal.with_soft_syntax(true);
+            assert_eq!(pal.with_soft_syntax(false), pal);
+            assert_eq!(soft.syntax.variable, pal.fg);
+            assert_eq!(soft.syntax.operator, pal.fg);
+            assert_eq!(soft.syntax.punctuation, pal.fg);
+            let spread = |c: Color| c.r.max(c.g).max(c.b) - c.r.min(c.g).min(c.b);
+            assert!(spread(soft.syntax.keyword) <= spread(pal.syntax.keyword));
+            assert_eq!(soft.bg, pal.bg);
+        }
+        let grey = Color::from_rgb(0.4, 0.4, 0.4);
+        assert_eq!(desaturate(grey, SOFT_SATURATION), grey);
     }
 
     #[test]

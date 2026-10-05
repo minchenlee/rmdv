@@ -8423,3 +8423,24 @@ fn expanding_a_budget_stopped_folder_scans_it_once_and_fills_the_sidebar() {
     assert_eq!(task.units(), 0);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn soft_syntax_option_follows_theme_changes_and_turns_off_cleanly() {
+    let mut app = App::default();
+    let isolated = app.quick_slots_persistence_path.clone().unwrap();
+    let _ = app.update(Message::SetTheme(ThemePreset::Nord));
+    let nord = theme::palette_for(ThemePreset::Nord);
+    assert_eq!(app.palette, nord);
+
+    let _ = app.update(Message::ToggleSoftSyntax);
+    assert!(crate::prefs::load_from(&isolated).soft_syntax);
+    assert_eq!(app.palette.syntax.variable, nord.fg);
+    assert_ne!(app.palette.syntax.keyword, nord.syntax.keyword);
+
+    let _ = app.update(Message::SetTheme(ThemePreset::OneLight));
+    let one_light = theme::palette_for(ThemePreset::OneLight);
+    assert_eq!(app.palette, one_light.with_soft_syntax(true));
+
+    let _ = app.update(Message::ToggleSoftSyntax);
+    assert_eq!(app.palette, one_light);
+}
