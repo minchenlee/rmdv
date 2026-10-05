@@ -7877,3 +7877,43 @@ fn oversized_documents_are_refused_before_reading() {
     assert!(error.contains("too large"), "{error}");
     let _ = std::fs::remove_file(&path);
 }
+
+#[test]
+fn file_finder_results_follow_query_and_workspace_reindex() {
+    let dir = std::env::temp_dir().join(format!("rmdv-file-finder-memo-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("alpha.md"), "# a\n").unwrap();
+    std::fs::write(dir.join("beta.md"), "# b\n").unwrap();
+
+    let mut app = App::default();
+    app.set_workspace(dir.clone(), false);
+    let names = |app: &App| -> Vec<String> {
+        app.filtered_files()
+            .into_iter()
+            .map(|(_, rel, _)| rel)
+            .collect()
+    };
+
+    app.overlay_query = "bet".into();
+    assert_eq!(names(&app), vec!["beta.md"]);
+    assert_eq!(
+        names(&app),
+        vec!["beta.md"],
+        "a repeated call reuses the answer"
+    );
+    app.overlay_query = "alp".into();
+    assert_eq!(names(&app), vec!["alpha.md"]);
+
+    // Same root, same query, same file count: only the reindex differs.
+    app.overlay_query = "bet".into();
+    assert_eq!(names(&app), vec!["beta.md"]);
+    std::fs::rename(dir.join("beta.md"), dir.join("gamma.md")).unwrap();
+    app.set_workspace(dir.clone(), false);
+    assert!(
+        names(&app).is_empty(),
+        "a reindexed workspace must not reuse stale results"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}

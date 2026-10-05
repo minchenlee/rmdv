@@ -287,16 +287,36 @@ pub fn walk_markdown(
 }
 
 pub fn fuzzy_score(query: &str, candidate: &str) -> Option<i32> {
+    fuzzy_score_lowered(&query.to_lowercase(), candidate)
+}
+
+/// [`fuzzy_score`] with the query already lowercased, for scoring many
+/// candidates against one query. ASCII candidates are lowercased on the fly
+/// instead of into a fresh `String`.
+pub fn fuzzy_score_lowered(query: &str, candidate: &str) -> Option<i32> {
     if query.is_empty() {
         return Some(0);
     }
-    let q = query.to_lowercase();
-    let c = candidate.to_lowercase();
-    let mut q_iter = q.chars().peekable();
+    if candidate.is_ascii() {
+        let lowered = candidate.chars().map(|ch| ch.to_ascii_lowercase());
+        score_lowered(query, lowered, candidate.len())
+    } else {
+        score_lowered(query, candidate.to_lowercase().chars(), candidate.len())
+    }
+}
+
+/// Subsequence score of `query` over the lowercased candidate `chars`;
+/// `candidate_len` is the original candidate's byte length.
+fn score_lowered(
+    query: &str,
+    chars: impl Iterator<Item = char>,
+    candidate_len: usize,
+) -> Option<i32> {
+    let mut q_iter = query.chars().peekable();
     let mut score = 0i32;
     let mut prev_match = -1i32;
     let mut prev_char = ' ';
-    for (i, ch) in c.chars().enumerate() {
+    for (i, ch) in chars.enumerate() {
         if let Some(qc) = q_iter.peek() {
             if *qc == ch {
                 let i = i as i32;
@@ -321,7 +341,7 @@ pub fn fuzzy_score(query: &str, candidate: &str) -> Option<i32> {
     if q_iter.peek().is_some() {
         return None;
     }
-    score -= candidate.len() as i32 / 4;
+    score -= candidate_len as i32 / 4;
     Some(score)
 }
 
@@ -329,6 +349,71 @@ pub fn fuzzy_score(query: &str, candidate: &str) -> Option<i32> {
 mod tests {
     use super::*;
     use std::path::Path;
+
+    /// The previous allocate-both-sides scorer, kept as the oracle.
+    fn fuzzy_score_reference(query: &str, candidate: &str) -> Option<i32> {
+        if query.is_empty() {
+            return Some(0);
+        }
+        let q = query.to_lowercase();
+        let c = candidate.to_lowercase();
+        let mut q_iter = q.chars().peekable();
+        let mut score = 0i32;
+        let mut prev_match = -1i32;
+        let mut prev_char = ' ';
+        for (i, ch) in c.chars().enumerate() {
+            if let Some(qc) = q_iter.peek() {
+                if *qc == ch {
+                    let i = i as i32;
+                    score += 10;
+                    if prev_match >= 0 && i == prev_match + 1 {
+                        score += 15;
+                    }
+                    if matches!(prev_char, '/' | '_' | '-' | ' ') || i == 0 {
+                        score += 8;
+                    }
+                    prev_match = i;
+                    q_iter.next();
+                }
+            }
+            prev_char = ch;
+        }
+        if q_iter.peek().is_some() {
+            return None;
+        }
+        score -= candidate.len() as i32 / 4;
+        Some(score)
+    }
+
+    #[test]
+    fn fuzzy_score_matches_the_allocating_reference() {
+        let candidates = [
+            "",
+            "README.md",
+            "docs/plans/active/MDV-002-search.md",
+            "notes/Straße/ΟΔΟΣ.md",
+            "İstanbul trip.md",
+            "a_b-c d/e.MD",
+            "日本語/メモ.md",
+        ];
+        let queries = [
+            "", "r", "rdm", "DOCS", "plan act", "ss", "οδος", "i", "日メ", "zzz", "md",
+        ];
+        for candidate in candidates {
+            for query in queries {
+                assert_eq!(
+                    fuzzy_score(query, candidate),
+                    fuzzy_score_reference(query, candidate),
+                    "query={query:?} candidate={candidate:?}"
+                );
+                assert_eq!(
+                    fuzzy_score_lowered(&query.to_lowercase(), candidate),
+                    fuzzy_score_reference(query, candidate),
+                    "query={query:?} candidate={candidate:?}"
+                );
+            }
+        }
+    }
 
     #[cfg(feature = "pdf")]
     #[test]

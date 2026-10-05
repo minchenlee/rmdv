@@ -151,6 +151,8 @@ pub struct App {
     pub match_idx: usize,
     pub search_open: bool,
     pub workspace: Option<PathBuf>,
+    /// Replace only together with a `workspace_files_rev` bump, so cached
+    /// file-finder results are not reused for a different list.
     pub workspace_files: Vec<PathBuf>,
     /// Bounded lightweight path index used only to reconstruct ordinary Files
     /// sidebar rows across the full retained tree depth. Cmd+P and vault search
@@ -305,6 +307,10 @@ pub struct App {
     /// event, and each fresh answer costs two `canonicalize` calls. Cleared
     /// whenever a file (re)loads.
     quick_slot_relative_memo: std::cell::RefCell<Option<(PathBuf, PathBuf, Option<String>)>>,
+    /// Bumped whenever `workspace_files` is replaced; keys `file_finder_memo`.
+    workspace_files_rev: u64,
+    /// Latest file-finder results; see `filtered_files`.
+    file_finder_memo: std::cell::RefCell<Option<FileFinderMemo>>,
     /// T3 — diagram render cache. T4 will populate it from a pre-walk +
     /// `iced::Task::perform` of `diagram::render_blocking`.
     pub diagram_cache: crate::diagram::DiagramCache,
@@ -503,6 +509,8 @@ impl Default for App {
             mindmap_layout_generation: std::cell::Cell::new(0),
             mindmap_data_panel: std::cell::RefCell::new(None),
             quick_slot_relative_memo: std::cell::RefCell::new(None),
+            workspace_files_rev: 0,
+            file_finder_memo: std::cell::RefCell::new(None),
             diagram_cache: crate::diagram::DiagramCache::new(64),
             diagram_theme_id: 0,
             zoom_diagram: None,
@@ -839,6 +847,7 @@ impl App {
         let _ = self.checkpoint_active_quick_slot();
         self.persist_quick_slots_now();
         self.workspace_files = snapshot.files;
+        self.workspace_files_rev = self.workspace_files_rev.wrapping_add(1);
         self.workspace_sidebar_files = snapshot.sidebar_files;
         self.workspace_tree = Some(snapshot.root);
         self.workspace_snapshot_show_hidden = self.show_hidden;
@@ -2071,8 +2080,21 @@ impl App {
         items
     }
 
+    /// The top 200 workspace files for the file-finder query. View and key
+    /// handling call this on every frame and keypress, so the last answer is
+    /// kept until the query, the workspace root, or the file list changes.
     fn filtered_files(&self) -> Vec<(PathBuf, String, i32)> {
         let root = self.workspace.as_ref();
+        if let Some(memo) = self.file_finder_memo.borrow().as_ref() {
+            if memo.query == self.overlay_query
+                && memo.root.as_ref() == root
+                && memo.files_rev == self.workspace_files_rev
+                && memo.files_len == self.workspace_files.len()
+            {
+                return memo.results.clone();
+            }
+        }
+        let query = self.overlay_query.to_lowercase();
         let mut scored: Vec<(PathBuf, String, i32)> = self
             .workspace_files
             .iter()
@@ -2081,12 +2103,19 @@ impl App {
                     .and_then(|r| p.strip_prefix(r).ok())
                     .map(|x| x.to_string_lossy().into_owned())
                     .unwrap_or_else(|| p.to_string_lossy().into_owned());
-                let s = picker::fuzzy_score(&self.overlay_query, &rel)?;
+                let s = picker::fuzzy_score_lowered(&query, &rel)?;
                 Some((p.clone(), rel, s))
             })
             .collect();
         scored.sort_by(|a, b| b.2.cmp(&a.2).then_with(|| a.1.cmp(&b.1)));
         scored.truncate(200);
+        self.file_finder_memo.replace(Some(FileFinderMemo {
+            query: self.overlay_query.clone(),
+            root: root.cloned(),
+            files_rev: self.workspace_files_rev,
+            files_len: self.workspace_files.len(),
+            results: scored.clone(),
+        }));
         scored
     }
 

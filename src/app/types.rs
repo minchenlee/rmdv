@@ -148,3 +148,15 @@ pub struct ToastAction {
     pub label: String,
     pub message: Message,
 }
+
+/// File-finder results for one query over one workspace file list. `App`
+/// keeps the latest so view and key handling reuse it instead of rescoring
+/// every workspace file on each frame.
+#[derive(Debug, Clone)]
+pub(super) struct FileFinderMemo {
+    pub(super) query: String,
+    pub(super) root: Option<PathBuf>,
+    pub(super) files_rev: u64,
+    pub(super) files_len: usize,
+    pub(super) results: Vec<(PathBuf, String, i32)>,
+}
