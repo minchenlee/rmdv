@@ -781,6 +781,46 @@ impl App {
     /// Apply file contents after the caller has established async ownership
     /// and rechecked the dirty guard. Refresh uses this directly so the common
     /// state transition does not cancel its still-pending workspace leg.
+    /// Start loading the open document's images that are not cached yet:
+    /// remote URLs over HTTP, local files from disk. Both land in the
+    /// byte-budgeted `image_cache` through `Message::ImageFetched`.
+    fn prime_document_images(&mut self) -> Vec<Task<Message>> {
+        let mut fetches: Vec<Task<Message>> = Vec::new();
+        for (_id, block) in &self.ast {
+            if let Block::Image { url, .. } = block {
+                if is_remote_url(url) {
+                    if !self.image_cache.contains_key(url) {
+                        self.image_cache.insert(url.clone(), ImageState::Loading);
+                        let url = url.clone();
+                        fetches.push(Task::perform(fetch_image(url), |(url, result)| {
+                            Message::ImageFetched(url, result)
+                        }));
+                    }
+                } else if let Some(key) = local_image_key(url, self.file.as_deref()) {
+                    // Read local images off the UI thread into the budgeted
+                    // cache, so `view()` never touches the filesystem. A
+                    // missing file is retried on the next load, because an
+                    // agent may write the image after the document.
+                    let cached = matches!(
+                        self.image_cache.get(&key),
+                        Some(
+                            ImageState::Loading
+                                | ImageState::Loaded(_)
+                                | ImageState::LoadedSvg { .. }
+                        )
+                    );
+                    if !cached {
+                        self.image_cache.insert(key.clone(), ImageState::Loading);
+                        fetches.push(Task::perform(read_local_image(key), |(key, result)| {
+                            Message::ImageFetched(key, result)
+                        }));
+                    }
+                }
+            }
+        }
+        fetches
+    }
+
     fn apply_loaded_file(&mut self, path: PathBuf, src: String) -> Task<Message> {
         self.quick_slot_relative_memo.replace(None);
         let pending_candidate = self.pending_quick_slot_restore.clone();
@@ -840,18 +880,7 @@ impl App {
         self.rebuild_matches();
         self.mindmap_focus_first_child();
         self.reveal_current_file();
-        let mut fetches: Vec<Task<Message>> = Vec::new();
-        for (_id, block) in &self.ast {
-            if let Block::Image { url, .. } = block {
-                if is_remote_url(url) && !self.image_cache.contains_key(url) {
-                    self.image_cache.insert(url.clone(), ImageState::Loading);
-                    let url = url.clone();
-                    fetches.push(Task::perform(fetch_image(url), |(url, result)| {
-                        Message::ImageFetched(url, result)
-                    }));
-                }
-            }
-        }
+        let mut fetches = self.prime_document_images();
         self.refresh_diagram_theme_id();
         let prime = self.prime_diagram_cache();
         let nav_task: Task<Message> = if let Some(nav) = self.pending_nav.take() {
@@ -1759,7 +1788,8 @@ impl App {
             .ast
             .iter()
             .filter_map(|(_, b)| match b {
-                Block::Image { url, .. } => Some(url.clone()),
+                Block::Image { url, .. } if is_remote_url(url) => Some(url.clone()),
+                Block::Image { url, .. } => local_image_key(url, self.file.as_deref()),
                 _ => None,
             })
             .chain(self.zoom_url.clone())

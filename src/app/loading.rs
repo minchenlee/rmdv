@@ -138,6 +138,35 @@ pub(super) async fn fetch_image(url: String) -> (String, Result<Vec<u8>, String>
     (url, res)
 }
 
+/// Local images larger than this are not loaded.
+pub(super) const MAX_LOCAL_IMAGE_BYTES: u64 = 64 * 1024 * 1024;
+
+/// Cache key for a document's local image: its resolved path. The zoom modal
+/// opens the same key.
+pub(super) fn local_image_key(url: &str, current_file: Option<&std::path::Path>) -> Option<String> {
+    resolve_image_path(url, current_file).map(|path| path.to_string_lossy().into_owned())
+}
+
+/// Read a local image off the UI thread, keyed like `fetch_image` results.
+pub(super) async fn read_local_image(key: String) -> (String, Result<Vec<u8>, String>) {
+    let res = async {
+        let path = std::path::Path::new(&key);
+        let len = tokio::fs::metadata(path)
+            .await
+            .map_err(|e| e.to_string())?
+            .len();
+        if len > MAX_LOCAL_IMAGE_BYTES {
+            return Err(format!(
+                "image larger than {} MB",
+                MAX_LOCAL_IMAGE_BYTES >> 20
+            ));
+        }
+        tokio::fs::read(path).await.map_err(|e| e.to_string())
+    }
+    .await;
+    (key, res)
+}
+
 /// Rasterize SVG bytes to RGBA. Target ~2048px on the longer side.
 pub fn rasterize_svg(bytes: &[u8]) -> Result<(Vec<u8>, u32, u32), String> {
     use resvg::tiny_skia;
