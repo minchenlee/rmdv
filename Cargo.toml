@@ -58,7 +58,7 @@ liteparse = { version = "2", optional = true, default-features = false }
 # AppKit bridge used to forward magnification deltas back into the app.
 block2 = "0.6"
 objc2 = "0.6"
-objc2-app-kit = { version = "0.3", features = ["NSEvent", "NSApplication", "NSResponder", "block2"] }
+objc2-app-kit = { version = "0.3", features = ["NSEvent", "NSApplication", "NSResponder", "block2", "NSView", "NSVisualEffectView", "NSWindow", "NSColor", "NSGraphics", "objc2-core-foundation"] }
 objc2-foundation = { version = "0.3", features = ["NSArray", "NSString", "NSURL"] }
 
 [features]

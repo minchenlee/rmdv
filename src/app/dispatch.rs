@@ -1831,7 +1831,11 @@ impl App {
                 // leaves the macOS event loop alive without ever creating a
                 // visible window on current macOS releases.
                 crate::native_pinch::install();
-                self.refresh_window_mode_after_native_transition(id)
+                let vibrancy = self.install_vibrancy(id);
+                Task::batch([
+                    vibrancy,
+                    self.refresh_window_mode_after_native_transition(id),
+                ])
             }
             Message::RefreshWindowModeSettled(id) => self.window_mode_settle_fired(id),
             Message::WindowModeChanged(mode) => {

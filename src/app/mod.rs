@@ -410,6 +410,9 @@ pub struct App {
     /// A downloaded + verified update awaiting user-initiated install. Drives
     /// the update banner. `None` until the background check finds a newer build.
     pub pending_update: Option<crate::update::ReadyUpdate>,
+    /// Spike: the window is transparent with an AppKit blur behind it.
+    vibrancy: bool,
+    vibrancy_installed: bool,
 }
 
 #[cfg(test)]
@@ -578,6 +581,8 @@ impl Default for App {
             watcher_generation: 0,
             pending_watcher_reload: None,
             pending_update: None,
+            vibrancy: crate::macos_vibrancy::requested(),
+            vibrancy_installed: false,
         }
     }
 }
@@ -1675,6 +1680,48 @@ impl App {
             ),
             None => "rmdv".into(),
         }
+    }
+
+    /// Root background: transparent when the window shows the vibrancy blur,
+    /// so only the panels that paint their own fill cover it.
+    pub fn app_style(&self, theme: &Theme) -> iced::theme::Style {
+        iced::theme::Style {
+            background_color: if self.vibrancy {
+                Color::TRANSPARENT
+            } else {
+                theme.palette().background
+            },
+            text_color: theme.palette().text,
+        }
+    }
+
+    /// Spike: put the AppKit blur behind the first window once it exists.
+    fn install_vibrancy(&mut self, id: iced::window::Id) -> Task<Message> {
+        if !self.vibrancy || self.vibrancy_installed {
+            return Task::none();
+        }
+        self.vibrancy_installed = true;
+        iced::window::run(id, crate::macos_vibrancy::install).discard()
+    }
+
+    /// The palette for the sidebar column. With vibrancy on, the sidebar
+    /// paints no fill of its own; the ground behind it carries the tint.
+    fn chrome_palette(&self) -> Palette {
+        let mut pal = self.palette;
+        if self.vibrancy {
+            pal.sidebar = Color::TRANSPARENT;
+        }
+        pal
+    }
+
+    /// The ground behind the sidebar and the reader panel's rounded corner:
+    /// a translucent sidebar tint over the blur when vibrancy is on.
+    fn chrome_ground(&self) -> Color {
+        let mut ground = self.palette.sidebar;
+        if self.vibrancy {
+            ground.a = crate::macos_vibrancy::GLASS_ALPHA;
+        }
+        ground
     }
 
     pub fn theme(&self) -> Theme {
@@ -3236,8 +3283,8 @@ impl App {
                 // show the sidebar-colored area behind. Reader content has enough
                 // padding that no text falls into the corner curve.
                 irow![
-                    sidebar_view(self, pal),
-                    sidebar_resize_handle(pal),
+                    sidebar_view(self, self.chrome_palette()),
+                    sidebar_resize_handle(self.chrome_palette()),
                     container(reader_with_search)
                         .width(Length::Fill)
                         .height(Length::Fill)
@@ -3263,7 +3310,7 @@ impl App {
         // top-left corner needs to look like sidebar, so the cutout pixels
         // outside the reader's rounded background pick up sidebar color.
         let main_bg = if !full_mindmap && self.sidebar_open && self.workspace.is_some() {
-            pal.sidebar
+            self.chrome_ground()
         } else {
             pal.bg
         };
