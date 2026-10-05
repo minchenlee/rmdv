@@ -1,10 +1,10 @@
 # MDV-010 — Reconcile local and remote main
 
-State: deferred
+State: done (closed by archival)
 Owner / accountable lead: unassigned
 Active writer: none
 Created: 2026-07-18
-Updated: 2026-07-18
+Updated: 2026-10-05
 
 ## Outcome
 
@@ -53,15 +53,18 @@ merged work or losing the local branch as evidence.
   `origin/main@f75918c`.
 - [x] Re-check after the v0.5.0 release line: local `main` and `origin/main`
   both resolve to `7a0514d`, so the original divergence predicate is absent.
-- [ ] Build the patch-equivalence classification.
-- [ ] Produce and verify the isolated candidate.
-- [ ] Present the integration/archival decision to the owner.
+- [x] Present the integration/archival decision to the owner: on 2026-10-04 the
+  owner chose archival and aligned local `main` to `origin/main@1244e4c`.
+- [ ] Build the patch-equivalence classification — not done; superseded by the
+  archival decision.
+- [ ] Produce and verify the isolated candidate — not needed after archival.
 
 ## Decision log
 
 | Date | Decision | Evidence / reason |
 | --- | --- | --- |
 | 2026-07-18 | Compare behavior before applying commits. | PR #8 was squash-merged, so commit ancestry alone overstates missing work. |
+| 2026-10-04 | Close by archival, not integration. | The owner aligned local `main` to `origin/main@1244e4c`; the six local-only commits are preserved on `archive/main-before-sync-20261004` (`ba513d0`). No behavior was ported. |
 | 2026-07-18 | Defer while local and remote `main` are identical. | The patch-equivalence audit was not completed, so the task is not done; however, ordinary reconciliation has no current divergent branch to operate on. |
 
 ## Blockers and escalation
@@ -72,5 +75,9 @@ merged work or losing the local branch as evidence.
 
 ## Final evidence
 
-- Pending: classification table, candidate SHA/diff, commands/results, owner
-  decision, and remaining branch state.
+- Owner decision (2026-10-04): archive. Local `main` resolves to `1244e4c`, an
+  ancestor of `origin/main`, so the divergence predicate is absent.
+- Preserved evidence branches: `archive/main-pre-sync-20260718`,
+  `archive/main-before-sync-20260902`, `archive/main-before-sync-20261004`.
+- Not done: the per-commit patch-equivalence table. Reopen as a new task if any
+  archived local-only behavior is wanted again.

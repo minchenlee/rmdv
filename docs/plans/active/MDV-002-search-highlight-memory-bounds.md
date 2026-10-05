@@ -4,7 +4,7 @@ State: ready
 Owner / accountable lead: unassigned
 Active writer: none
 Created: 2026-07-18
-Updated: 2026-07-18
+Updated: 2026-10-05
 
 ## Outcome
 
@@ -50,6 +50,16 @@ and navigation behavior.
 ## Progress
 
 - [x] Confirm current unbounded vector entrypoints and entry-count-only cache.
+- [x] Vault search (`find_all`): ASCII fast path, offset map built only after a
+  hit, 16 MiB per-file cap, scan on `spawn_blocking`. 8 MiB file peak 72 → 8
+  MiB. PR #30 (`fe7aa43`).
+- [x] In-document search (`find_in_blocks`): results stored per matching block
+  (`search::Matches`) instead of per hit, so no truncation is needed; scratch
+  buffers; 80 ms debounce above 1 MiB. 8 MiB document: 84–123 → 17–33 ms per
+  keystroke, ~495k → ≤40 allocations, 24 → 5 MiB extra peak. PR #33
+  (`a44552e`).
+- [ ] `HlCache` (`src/highlight.rs`) is still bounded only by entry count
+  (`CACHE_MAX = 200`); add a source/total-byte budget.
 - [ ] Define budgets and the observable truncation/degradation contract.
 - [ ] Implement focused tests and the smallest bounded design.
 - [ ] Measure and run cross-boundary verification.
@@ -58,6 +68,7 @@ and navigation behavior.
 
 | Date | Decision | Evidence / reason |
 | --- | --- | --- |
+| 2026-10-05 | Compact search results instead of capping them. | Per-block counts keep every match navigable with memory proportional to matching blocks, so no truncation contract or UX change was needed. |
 | 2026-07-18 | Require byte budgets and measured evidence. | `find_all`/`find_in_blocks` retain vectors and `HlCache` does not currently express total source-byte ownership. |
 
 ## Blockers and escalation
