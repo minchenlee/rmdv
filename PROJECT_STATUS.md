@@ -4,7 +4,7 @@ Last verified: 2026-10-05 (Asia/Taipei)
 Stale after: 7 days
 Canonical repository: `/Users/liminchen/Documents/GitHub/mdv`
 Expected branch / HEAD / PR: start new work from the live `origin/main`
-(`0ed7305` when verified). Latest release: `v0.7.0` → `9dd7217`; `main` is
+(`20838b1` when verified). Latest release: `v0.7.0` → `9dd7217`; `main` is
 unreleased since then.
 Authority: This is a routing snapshot. Verify Git, GitHub, runtime identity, and
 manual evidence before mutation.
@@ -19,16 +19,19 @@ The refactor roadmap through phase 2 has landed:
 - `MDV-024`–`MDV-028`: the phase-2 performance round (PRs #37–#41).
 - Two acceptance fixes: ⌘Z undo (PR #42) and lazy scan of folders the
   workspace budget skipped (PR #43).
+- `MDV-036`: bare-directory launch fix (PR #45).
+- `MDV-031`: phase-3 visual refinement with the opt-in Soft syntax option
+  (PR #47).
 
-The owner accepted everything on device. Next is phase 3: `MDV-031`, then
+The owner approved each merge. Next is the `MDV-037` vibrancy spike, then
 `MDV-019`.
 
 ## Live workstreams
 
 | ID | State | Owner | Outcome | Acceptance | Plan |
 | --- | --- | --- | --- | --- | --- |
-| MDV-031 | ready | Claude (next) | Zeron-method visual refinement on the design tokens. | Owner native acceptance per theme; contrast unit tests. | [`MDV-031`](docs/plans/active/MDV-031-visual-refinement.md) |
-| MDV-036 | review | Claude | Bare-directory launch stops showing a "Couldn't open file — Is a directory" card. | Regression test; file/`open-folder` launches unchanged. | PR [#45](https://github.com/minchenlee/rmdv/pull/45), CI green, awaiting merge OK. |
+| MDV-037 | in_progress | Claude | Spike: optional macOS window vibrancy behind `RMDV_VIBRANCY=1`. | Verify-app screenshots in dark and light themes; idle CPU/memory check; owner keep/tune/drop decision. | Branch `spike/macos-vibrancy`; see [`docs/BACKLOG.md`](docs/BACKLOG.md). |
+| MDV-019 | ready | Claude (next) | Theme Settings and Theme Studio on the MDV-031 tokens. | Owner-approved design, then native acceptance. | Plan to be written. |
 
 The roadmap order and every other task are in [`docs/BACKLOG.md`](docs/BACKLOG.md).
 
@@ -37,8 +40,8 @@ The roadmap order and every other task are in [`docs/BACKLOG.md`](docs/BACKLOG.m
 - Merges, tags, releases, and deployments need explicit owner authority per
   action. Pushing branches and opening PRs after verification is authorized for
   roadmap work.
-- Visual work `MDV-031`/`MDV-019` needs owner acceptance on device; batch it
-  into one verify build per round.
+- Visual work (`MDV-037`, `MDV-019`) needs owner acceptance on device; batch
+  it into one verify build per round.
 - Phase-5 tasks (`MDV-032`–`MDV-035`) start with a design for the owner.
 - GitHub Actions: the repo is public and uses standard runners only, which do
   not consume the owner's (exhausted) private-repo minutes. Keep it that way.
@@ -47,16 +50,18 @@ The roadmap order and every other task are in [`docs/BACKLOG.md`](docs/BACKLOG.m
 
 ## Next safe actions
 
-1. Implement `MDV-031` per its plan on a fresh branch from `origin/main`;
-   one PR, one Verify build, stop before merge.
-2. Merge PR #45 (`MDV-036`) once the owner approves.
+1. Build and screenshot the `MDV-037` vibrancy spike; report to the owner for
+   a keep/tune/drop decision.
+2. Write the `MDV-019` plan and design for owner approval.
 3. Record the `MDV-008` clippy baseline (report-only).
 
 ## Verification state
 
 ### Verified now
 
-- `origin/main` is `0ed7305`. PRs #34–#43 were squash-merged on 2026-10-05
+- `origin/main` is `20838b1`. PRs #45 (`3909cfa`), #46 (`71a408e`), and #47
+  (`20838b1`) were squash-merged on 2026-10-05 with owner authority. Before
+  that, PRs #34–#43 were squash-merged on 2026-10-05
   with owner authority (`48732fd`, `1c7a10b`, `8ab3ca9`, `f60da48`,
   `b971c35`, `27fcd52`, `f280f82`, `f4ad819`, `1df1b13`, `0ed7305`).
 - Each PR's final head passed CI: Linux and macOS tests, the Windows check, and
@@ -75,8 +80,11 @@ The roadmap order and every other task are in [`docs/BACKLOG.md`](docs/BACKLOG.m
 
 ### Not verified / follow-up
 
-- A local release test run on the exact `0ed7305` tree. It is pending a free
-  machine slot; the source-equal verify build passed.
+- A local release test run on the exact `20838b1` tree. #45 and #47 were each
+  tested locally (#47: 461 library tests, lean check, release build) but not
+  together; main push CI covers the combination.
+- `MDV-038`: a table row clipped at the viewport top can render without text
+  after `goto` (pre-existing).
 - One unreproduced "Couldn't open file" card after relaunching the verify app
   (see `MDV-022`).
 - `HlCache` is bounded by entry count only (`MDV-002`).
