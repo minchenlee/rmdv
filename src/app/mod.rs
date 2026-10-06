@@ -3390,8 +3390,14 @@ impl App {
                 // paints the sidebar's tint itself and joins the sidebar.
                 let reader_panel: Element<'_, Message> = if self.glass() == Glass::Window {
                     stack![
+                        // The first layer sizes the stack, so it fills the area.
+                        container(corner_fill(
+                            self.chrome_palette().sidebar,
+                            READER_CORNER_RADIUS,
+                        ))
+                        .width(Length::Fill)
+                        .height(Length::Fill),
                         reader_panel,
-                        corner_fill(self.chrome_palette().sidebar, READER_CORNER_RADIUS),
                     ]
                     .into()
                 } else {
