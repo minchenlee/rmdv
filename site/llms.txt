@@ -47,19 +47,13 @@ rmdv has an agent-controllable IPC socket. Historical v0.2.0 benchmarks were mea
 
 ## IPC / agent control
 
-rmdv maintains a single-instance Unix socket. The `rmdv` CLI connects to it and returns immediately with JSON. Any AI coding agent or shell script can drive the viewer without user interaction. Example: `rmdv list-sections spec.md | jq` works as a pure stateless command even when rmdv is not running (it parses the file directly). This is rmdv's primary differentiator: no other Markdown viewer exposes a machine-readable socket interface designed for agentic workflows.
+rmdv maintains a single-instance Unix socket. The `rmdv` CLI connects to it and returns immediately with JSON. Any AI coding agent or shell script can drive the viewer without user interaction. Example: `rmdv list-sections spec.md | jq` works as a pure stateless command even when rmdv is not running (it parses the file directly).
+
+rmdv provides a CLI for opening Markdown files and navigating to a section or line. Scripts and coding agents can use these commands to bring a reader to relevant parts of a document.
 
 ## Comparison
 
-rmdv versus named alternatives (as of June 2026):
-
-- Marky: Tauri-based, paid, no agent IPC
-- Marked 2: macOS only, $14, no native LaTeX, no IPC
-- Glow: TUI (terminal only), no diagrams, no IPC socket
-- Obsidian: Electron, note-graph focus, native Mermaid/LaTeX need plugins, not free for commercial use
-- Typora: Electron, editor-first, $15, no IPC
-
-rmdv is the only option that is free, open-source, native (non-Electron), cross-platform, agent-controllable via IPC, and renders Mermaid + LaTeX without JavaScript.
+rmdv focuses on reading Markdown files and navigating their structure. Consider your existing editor or knowledge-management tool when editing, plugins, or a connected note library are central to your workflow.
 
 ## Install
 
