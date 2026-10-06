@@ -1,5 +1,6 @@
 use crate::ast::{Block, BlockId, Inline};
 use crate::icon::{self, ic};
+use crate::macos_vibrancy::Glass;
 use crate::parser;
 use crate::picker::{self, Picker, PickerMode};
 use crate::render::Highlight;
@@ -410,9 +411,13 @@ pub struct App {
     /// A downloaded + verified update awaiting user-initiated install. Drives
     /// the update banner. `None` until the background check finds a newer build.
     pub pending_update: Option<crate::update::ReadyUpdate>,
-    /// Spike: the window is transparent with an AppKit blur behind it.
-    vibrancy: bool,
-    vibrancy_installed: bool,
+    /// The window was created transparent, so window glass can show. Set at
+    /// launch from the saved glass mode (macOS only).
+    glass_capable: bool,
+    /// The window that hosts the glass blur view, once it exists.
+    glass_window: Option<iced::window::Id>,
+    /// The last (visible, dark) state pushed to the blur view.
+    glass_applied: Option<(bool, bool)>,
 }
 
 #[cfg(test)]
@@ -436,6 +441,7 @@ impl Default for App {
         let prefs = crate::prefs::load();
         #[cfg(test)]
         let prefs = crate::prefs::Prefs::default();
+        let glass_capable = crate::macos_vibrancy::launch_transparent(prefs.glass);
         Self {
             file: None,
             source: String::new(),
@@ -581,8 +587,9 @@ impl Default for App {
             watcher_generation: 0,
             pending_watcher_reload: None,
             pending_update: None,
-            vibrancy: crate::macos_vibrancy::requested(),
-            vibrancy_installed: false,
+            glass_capable,
+            glass_window: None,
+            glass_applied: None,
         }
     }
 }
@@ -1682,46 +1689,119 @@ impl App {
         }
     }
 
-    /// Root background: transparent when the window shows the vibrancy blur,
-    /// so only the panels that paint their own fill cover it.
+    /// The glass mode in effect: the saved mode, or off when the window was
+    /// not created transparent.
+    pub fn glass(&self) -> Glass {
+        if self.glass_capable {
+            self.prefs.glass
+        } else {
+            Glass::Off
+        }
+    }
+
+    fn glass_opacity(&self) -> f32 {
+        crate::macos_vibrancy::clamp_opacity(self.prefs.glass_opacity)
+    }
+
+    /// Root background: transparent while glass is on, so only the panels
+    /// that paint their own fill cover the blur.
     pub fn app_style(&self, theme: &Theme) -> iced::theme::Style {
         iced::theme::Style {
-            background_color: if self.vibrancy {
-                Color::TRANSPARENT
-            } else {
+            background_color: if self.glass() == Glass::Off {
                 theme.palette().background
+            } else {
+                Color::TRANSPARENT
             },
             text_color: theme.palette().text,
         }
     }
 
-    /// Spike: put the AppKit blur behind the first window once it exists.
-    fn install_vibrancy(&mut self, id: iced::window::Id) -> Task<Message> {
-        if !self.vibrancy || self.vibrancy_installed {
-            return Task::none();
+    /// Push the glass state to the AppKit blur view when it changed: shown
+    /// only while a glass mode is on, with the theme's light or dark
+    /// material. The first push installs the view.
+    fn sync_glass(&mut self) -> Option<Task<Message>> {
+        let id = self.glass_window?;
+        let want = (self.glass() != Glass::Off, self.is_dark());
+        if self.glass_applied == Some(want) {
+            return None;
         }
-        self.vibrancy_installed = true;
-        iced::window::run(id, crate::macos_vibrancy::install).discard()
+        self.glass_applied = Some(want);
+        let (visible, dark) = want;
+        Some(
+            iced::window::run(id, move |window| {
+                crate::macos_vibrancy::show(window, visible, dark)
+            })
+            .discard(),
+        )
     }
 
-    /// The palette for the sidebar column. With vibrancy on, the sidebar
-    /// paints no fill of its own; the ground behind it carries the tint.
+    /// Dim text over glass moves toward the body color as the tint gets
+    /// thinner, so it keeps its contrast against a busy wallpaper.
+    fn glass_text(&self, mut pal: Palette) -> Palette {
+        let thin = 1.0 - self.glass_opacity();
+        pal.muted = theme::mix(pal.muted, pal.fg, thin);
+        pal.subtle = theme::mix(pal.subtle, pal.fg, thin);
+        pal
+    }
+
+    /// The palette for the reader and everything above it.
+    fn view_palette(&self) -> Palette {
+        if self.glass() == Glass::Window {
+            self.glass_text(self.palette)
+        } else {
+            self.palette
+        }
+    }
+
+    /// The palette for the sidebar column. With sidebar glass, the sidebar
+    /// paints no fill (the ground behind it carries the tint); with
+    /// whole-window glass it paints its own translucent tint.
     fn chrome_palette(&self) -> Palette {
         let mut pal = self.palette;
-        if self.vibrancy {
-            pal.sidebar = Color::TRANSPARENT;
+        match self.glass() {
+            Glass::Off => {}
+            Glass::Sidebar => {
+                pal = self.glass_text(pal);
+                pal.sidebar = Color::TRANSPARENT;
+            }
+            Glass::Window => {
+                pal = self.glass_text(pal);
+                pal.sidebar.a = self.glass_opacity();
+            }
         }
         pal
     }
 
-    /// The ground behind the sidebar and the reader panel's rounded corner:
-    /// a translucent sidebar tint over the blur when vibrancy is on.
+    /// The ground behind the sidebar and the reader panel's rounded corner.
+    /// Whole-window glass leaves it clear: each panel paints its own tint,
+    /// so the translucent reader never stacks on a second tint.
     fn chrome_ground(&self) -> Color {
         let mut ground = self.palette.sidebar;
-        if self.vibrancy {
-            ground.a = crate::macos_vibrancy::GLASS_ALPHA;
+        match self.glass() {
+            Glass::Off => {}
+            Glass::Sidebar => ground.a = self.glass_opacity(),
+            Glass::Window => ground = Color::TRANSPARENT,
         }
         ground
+    }
+
+    /// Fill of the reader panel that sits directly on the window.
+    fn reader_ground(&self) -> Color {
+        let mut ground = self.palette.bg;
+        if self.glass() == Glass::Window {
+            ground.a = self.glass_opacity();
+        }
+        ground
+    }
+
+    /// Fill of views nested inside the reader ground: clear under
+    /// whole-window glass, since the ground already carries the tint.
+    pub(crate) fn reader_fill(&self) -> Color {
+        if self.glass() == Glass::Window {
+            Color::TRANSPARENT
+        } else {
+            self.palette.bg
+        }
     }
 
     pub fn theme(&self) -> Theme {
@@ -2413,6 +2493,12 @@ impl App {
             ("Clear All Quick Slots", Message::QuickSlotClearAll),
             ("Take Screenshot", Message::TakeScreenshot),
         ];
+        if cfg!(target_os = "macos") {
+            items.extend([
+                ("Cycle Window Glass", Message::CycleGlass),
+                ("Cycle Window Glass Opacity", Message::CycleGlassOpacity),
+            ]);
+        }
         if self.view_mode == ViewMode::Mindmap && self.full_mindmap.is_none() {
             items.extend([
                 (
@@ -3030,7 +3116,9 @@ impl App {
                 }
             });
         }
-        let pal = self.palette;
+        let pal = self.view_palette();
+        let reader_ground = self.reader_ground();
+        let reader_fill = self.reader_fill();
         let recently_scrolled = self
             .last_scroll_at
             .is_some_and(|t| t.elapsed() < std::time::Duration::from_millis(SCROLLER_FADE_MS));
@@ -3056,6 +3144,7 @@ impl App {
                 self.workspace.as_deref(),
                 self.vault_viewport.as_ref(),
                 pal,
+                reader_fill,
             )
         } else if let Some(err) = &self.error {
             centered_card(
@@ -3091,6 +3180,7 @@ impl App {
                     nodes,
                     content_size,
                     palette: pal,
+                    background: reader_fill,
                     selected: self.mindmap_selected,
                     // Document Mindmap keeps its historical selection-driven
                     // animated positioning. Full Mindmap passes a separate
@@ -3129,7 +3219,7 @@ impl App {
                         recently_scrolled,
                         self.mindmap_panel_width,
                     );
-                    let handle = mindmap_panel_resize_handle(pal);
+                    let handle = mindmap_panel_resize_handle(reader_fill);
                     irow![canvas_with_hint, handle, panel].into()
                 } else {
                     canvas_with_hint
@@ -3159,7 +3249,7 @@ impl App {
                             |hl, _theme| hl.to_format(),
                         )
                         .style(move |_, _| iced::widget::text_editor::Style {
-                            background: pal.bg.into(),
+                            background: reader_fill.into(),
                             border: Border {
                                 color: iced::Color::TRANSPARENT,
                                 width: 0.0,
@@ -3239,7 +3329,7 @@ impl App {
                     .width(Length::Fill)
                     .height(Length::Fill)
                     .style(move |_| container::Style {
-                        background: Some(pal.bg.into()),
+                        background: Some(reader_fill.into()),
                         ..Default::default()
                     })
                     .into()
@@ -3289,7 +3379,7 @@ impl App {
                         .width(Length::Fill)
                         .height(Length::Fill)
                         .style(move |_| container::Style {
-                            background: Some(pal.bg.into()),
+                            background: Some(reader_ground.into()),
                             border: Border {
                                 color: Color::TRANSPARENT,
                                 width: 0.0,
@@ -3312,7 +3402,7 @@ impl App {
         let main_bg = if !full_mindmap && self.sidebar_open && self.workspace.is_some() {
             self.chrome_ground()
         } else {
-            pal.bg
+            reader_ground
         };
         let main = container(main_area)
             .style(move |_| container::Style {

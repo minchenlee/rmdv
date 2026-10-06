@@ -107,7 +107,7 @@ fn launch_instance(initial: Option<ipc::Request>) -> iced::Result {
     let platform_specific = iced::window::settings::PlatformSpecific::default();
     let window = iced::window::Settings {
         platform_specific,
-        transparent: rmdv::macos_vibrancy::requested(),
+        transparent: rmdv::macos_vibrancy::launch_transparent(rmdv::prefs::load().glass),
         ..Default::default()
     };
 

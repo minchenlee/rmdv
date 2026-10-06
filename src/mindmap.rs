@@ -1,7 +1,9 @@
 use crate::ast::{Block, BlockId, Inline};
 use crate::theme::Palette;
 use iced::widget::canvas::{self, path, Fill, Path, Stroke, Text};
-use iced::{keyboard, mouse, touch, window, Point, Rectangle, Renderer, Size, Theme, Vector};
+use iced::{
+    keyboard, mouse, touch, window, Color, Point, Rectangle, Renderer, Size, Theme, Vector,
+};
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
@@ -382,6 +384,8 @@ pub struct MindmapProgram<'a, Id, Message> {
     pub nodes: std::sync::Arc<Vec<MNode<Id>>>,
     pub content_size: Size,
     pub palette: Palette,
+    /// Canvas fill; clear when the window glass shows through the reader.
+    pub background: Color,
     pub selected: Option<Id>,
     /// Optional viewport-focus request. When omitted, `selected` remains the
     /// focus target for backwards-compatible document mindmap behavior.
@@ -1113,7 +1117,7 @@ where
 
         // Background.
         let bg_path = Path::rectangle(Point::ORIGIN, bounds.size());
-        frame.fill(&bg_path, self.palette.bg);
+        frame.fill(&bg_path, self.background);
 
         let z = if state.initialized { state.zoom } else { 1.0 };
         let pan = state.pan;
@@ -1473,6 +1477,7 @@ mod tests {
             nodes: std::sync::Arc::new(nodes),
             content_size: Size::new(1200.0, 900.0),
             palette: Palette::ONE_DARK,
+            background: Palette::ONE_DARK.bg,
             selected: Some(selected.clone()),
             focus: Some(selected),
             panel_open: true,
@@ -1850,6 +1855,7 @@ mod tests {
                 nodes: graph.nodes.clone(),
                 content_size: graph.content_size,
                 palette: Palette::ONE_DARK,
+                background: Palette::ONE_DARK.bg,
                 selected: Some(selected),
                 focus: None,
                 panel_open: true,

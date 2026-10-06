@@ -16,6 +16,12 @@ pub struct Prefs {
     /// Soft syntax colors: desaturated hues on top of any theme.
     #[serde(default)]
     pub soft_syntax: bool,
+    /// Window glass (macOS): which panels let the desktop blur show through.
+    #[serde(default, deserialize_with = "lenient_glass")]
+    pub glass: crate::macos_vibrancy::Glass,
+    /// Theme tint over the glass, kept within `macos_vibrancy::OPACITY_LEVELS`.
+    #[serde(default = "default_glass_opacity")]
+    pub glass_opacity: f32,
     /// Workspace-scoped Quick Slot banks live alongside the existing user
     /// preferences, never inside a workspace tree.
     #[serde(default, deserialize_with = "lenient_quick_slots")]
@@ -24,6 +30,20 @@ pub struct Prefs {
 
 fn default_true() -> bool {
     true
+}
+
+fn default_glass_opacity() -> f32 {
+    crate::macos_vibrancy::DEFAULT_OPACITY
+}
+
+/// An unknown glass mode (e.g. from a newer build) turns glass off instead of
+/// failing the whole file.
+fn lenient_glass<'de, D>(deserializer: D) -> Result<crate::macos_vibrancy::Glass, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    Ok(serde_json::from_value(value).unwrap_or_default())
 }
 
 /// A malformed or newer-format Quick Slot store (e.g. after a downgrade) falls
@@ -46,6 +66,8 @@ impl Default for Prefs {
             show_footer: true,
             theme: None,
             soft_syntax: false,
+            glass: crate::macos_vibrancy::Glass::Off,
+            glass_opacity: crate::macos_vibrancy::DEFAULT_OPACITY,
             quick_slots: crate::quick_slots::QuickSlotsStore::default(),
         }
     }
@@ -113,6 +135,22 @@ mod tests {
         )
         .expect("other preferences must still load");
         assert!(prefs.auto_focus_on_nav);
+        assert!(!prefs.show_footer);
+    }
+
+    #[test]
+    fn glass_preferences_default_off_and_tolerate_unknown_modes() {
+        use crate::macos_vibrancy::{Glass, DEFAULT_OPACITY};
+        let prefs: Prefs = serde_json::from_str("{}").unwrap();
+        assert_eq!(prefs.glass, Glass::Off);
+        assert_eq!(prefs.glass_opacity, DEFAULT_OPACITY);
+        let prefs: Prefs =
+            serde_json::from_str(r#"{"glass":"window","glass_opacity":0.6}"#).unwrap();
+        assert_eq!(prefs.glass, Glass::Window);
+        assert_eq!(prefs.glass_opacity, 0.6);
+        let prefs: Prefs = serde_json::from_str(r#"{"glass":"frosted","show_footer":false}"#)
+            .expect("an unknown glass mode must not reset other preferences");
+        assert_eq!(prefs.glass, Glass::Off);
         assert!(!prefs.show_footer);
     }
     use crate::quick_slots::{QuickSlot, SlotContext, WorkspaceSlots};

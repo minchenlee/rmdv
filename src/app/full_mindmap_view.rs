@@ -52,6 +52,7 @@ impl App {
             nodes: graph.nodes.clone(),
             content_size: graph.content_size,
             palette: pal,
+            background: self.reader_fill(),
             selected: full.selected.clone(),
             // Keep the explicit navigator request distinct from the selected
             // ring. The shared canvas uses `selected` as a compatibility
@@ -98,18 +99,19 @@ impl App {
         let body: Element<'_, Message> = if full.panel_open {
             irow![
                 canvas,
-                full_mindmap_panel_resize_handle(pal),
+                full_mindmap_panel_resize_handle(self.reader_fill()),
                 self.full_mindmap_panel_view(&graph, pal, full.panel_width, recently_scrolled),
             ]
             .into()
         } else {
             canvas
         };
+        let fill = self.reader_fill();
         container(body)
             .width(Length::Fill)
             .height(Length::Fill)
             .style(move |_| container::Style {
-                background: Some(pal.bg.into()),
+                background: Some(fill.into()),
                 ..Default::default()
             })
             .into()

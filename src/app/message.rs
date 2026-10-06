@@ -172,6 +172,10 @@ pub enum Message {
     FontSizeReset,
     ToggleFooter,
     ToggleSoftSyntax,
+    /// Window glass: off → sidebar → whole window (macOS).
+    CycleGlass,
+    /// Window glass tint: 60 → 70 → 80 → 90 %.
+    CycleGlassOpacity,
     ToggleMindmap,
     /// A macOS magnification delta from the native event bridge. The shared
     /// canvas consumes the cumulative stream on its next redraw.

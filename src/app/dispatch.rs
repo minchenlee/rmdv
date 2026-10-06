@@ -5,7 +5,10 @@ use super::*;
 impl App {
     pub fn update(&mut self, msg: Message) -> Task<Message> {
         let before = (self.workspace_epoch, self.expanded.len());
-        let task = self.dispatch_message(msg);
+        let mut task = self.dispatch_message(msg);
+        if let Some(glass) = self.sync_glass() {
+            task = Task::batch([task, glass]);
+        }
         if (self.workspace_epoch, self.expanded.len()) == before {
             return task;
         }
@@ -775,6 +778,28 @@ impl App {
                     }
                     .to_string(),
                 )
+            }
+            Message::CycleGlass => {
+                self.prefs.glass = self.prefs.glass.next();
+                self.save_prefs();
+                let restart = if self.prefs.glass != Glass::Off && !self.glass_capable {
+                    " — restart rmdv to apply"
+                } else {
+                    ""
+                };
+                self.show_toast(format!(
+                    "Window glass: {}{restart}",
+                    self.prefs.glass.label()
+                ))
+            }
+            Message::CycleGlassOpacity => {
+                self.prefs.glass_opacity =
+                    crate::macos_vibrancy::next_opacity(self.glass_opacity());
+                self.save_prefs();
+                self.show_toast(format!(
+                    "Glass opacity: {:.0}%",
+                    self.glass_opacity() * 100.0
+                ))
             }
             Message::ToggleViewMode => {
                 if self.file.is_none() {
@@ -1831,11 +1856,11 @@ impl App {
                 // leaves the macOS event loop alive without ever creating a
                 // visible window on current macOS releases.
                 crate::native_pinch::install();
-                let vibrancy = self.install_vibrancy(id);
-                Task::batch([
-                    vibrancy,
-                    self.refresh_window_mode_after_native_transition(id),
-                ])
+                if self.glass_capable && self.glass_window.is_none() {
+                    // `update` pushes the glass state to this window next.
+                    self.glass_window = Some(id);
+                }
+                self.refresh_window_mode_after_native_transition(id)
             }
             Message::RefreshWindowModeSettled(id) => self.window_mode_settle_fired(id),
             Message::WindowModeChanged(mode) => {
