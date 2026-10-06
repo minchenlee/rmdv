@@ -138,9 +138,8 @@ pub(crate) fn sleek_scrollable_style(
 
 /// Fills the pixels outside a panel's rounded top-left corner, so the corner
 /// reads as part of the panel next to it instead of a gap. Stack it under the
-/// panel. Used under
-/// whole-window glass, where the reader's corner would otherwise show the
-/// untinted material.
+/// panel. Used under whole-window glass, where the reader's corner would
+/// otherwise show the untinted material.
 pub(in crate::app) fn corner_fill<'a>(color: Color, radius: f32) -> Element<'a, Message> {
     iced::widget::canvas(CornerFill { color, radius })
         .width(Length::Fixed(radius))

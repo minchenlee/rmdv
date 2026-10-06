@@ -176,6 +176,27 @@ pub enum Message {
     CycleGlass,
     /// Window glass tint: 60 → 70 → 80 → 90 %.
     CycleGlassOpacity,
+    /// Set the window glass mode directly (Settings page).
+    SetGlass(crate::macos_vibrancy::Glass),
+    /// Set the window glass tint directly (Settings page slider).
+    SetGlassOpacity(f32),
+    /// Settings page (⌘,): open, close, or toggle it.
+    OpenSettings,
+    CloseSettings,
+    ToggleSettings,
+    /// Move the Settings row cursor by ±1.
+    SettingsMove(i32),
+    /// Put the Settings row cursor on a row (pointer hover).
+    SettingsCursor(usize),
+    /// Space / Enter on the Settings cursor row.
+    SettingsActivate,
+    /// ← / → on the Settings cursor row.
+    SettingsStep(i32),
+    SettingsScrollTo(f32),
+    /// Relaunch rmdv so a launch-time setting (window glass) takes effect.
+    RestartApp,
+    /// Show `prefs.json` in Finder.
+    RevealPrefsFile,
     ToggleMindmap,
     /// A macOS magnification delta from the native event bridge. The shared
     /// canvas consumes the cumulative stream on its next redraw.

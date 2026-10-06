@@ -61,6 +61,17 @@ pub(super) fn reader_font_size_shortcut(
     Some(reader_action)
 }
 
+/// ⌘, (Ctrl+, off macOS) opens and closes the Settings page.
+pub(super) fn is_settings_key(
+    key: &iced::keyboard::Key,
+    modifiers: iced::keyboard::Modifiers,
+) -> bool {
+    (modifiers.command() || modifiers.control())
+        && !modifiers.shift()
+        && !modifiers.alt()
+        && matches!(key, iced::keyboard::Key::Character(c) if c == ",")
+}
+
 pub(super) fn is_shortcuts_key(
     key: &iced::keyboard::Key,
     physical: iced::keyboard::key::Physical,

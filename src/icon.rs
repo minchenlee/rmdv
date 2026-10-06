@@ -29,6 +29,8 @@ pub mod ic {
     pub const MOON: char = '\u{e11e}';
     pub const SUN: char = '\u{e178}';
     pub const COMMAND: char = '\u{e09a}';
+    /// Lucide "settings" — open the Settings page.
+    pub const SETTINGS: char = '\u{e154}';
     pub const PANEL_LEFT: char = '\u{e12a}';
     /// Lucide "panel-left-close" — collapse the left sidebar.
     pub const PANEL_LEFT_CLOSE: char = '\u{e21c}';
