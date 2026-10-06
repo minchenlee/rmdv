@@ -4217,7 +4217,7 @@ fn full_mindmap_lazy_exact_empty_shell_is_pruned_and_selection_normalized() {
 fn full_mindmap_lazy_exact_empty_nested_shell_selects_nearest_ancestor() {
     let dir = full_mindmap_test_dir("lazy-empty-nested-shell");
     let documents = dir.join("Documents");
-    let shell = documents.join("Shopee");
+    let shell = documents.join("Archive");
     std::fs::create_dir_all(&shell).unwrap();
     std::fs::write(documents.join("guide.md"), "# Guide\n").unwrap();
 
@@ -4231,7 +4231,7 @@ fn full_mindmap_lazy_exact_empty_nested_shell_selects_nearest_ancestor() {
         .unwrap();
     documents_node.children.push(Node {
         path: shell.clone(),
-        name: "Shopee".into(),
+        name: "Archive".into(),
         is_dir: true,
         children: Vec::new(),
         recursive_supported_file_count: Some(tree::RecursiveFileCount::LowerBound(0)),

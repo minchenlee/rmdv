@@ -498,7 +498,7 @@ may directly assign `file`, `source`, `saved_source`, `dirty`, or `editor`.
 The bounded workspace snapshot can contain a folder shell whose recursive
 count is `LowerBound(0)`: the scan stopped before proving whether the folder
 contains a supported file. Full Mindmap must not flash such a shell and then
-remove it (the unsupported-only `Shopee Backroom` case is the motivating
+remove it (the unsupported-only `Archive` case is the motivating
 example). A fixed delayed-reveal wave therefore snapshots only unresolved
 zero-lower-bound folders currently visible below expanded parents, hides those
 folders immediately, and verifies them on blocking workers before revealing

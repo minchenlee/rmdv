@@ -581,9 +581,9 @@ Last reconciled: 2026-07-18 (Asia/Taipei)
 
 - **Full Mindmap nearest-ancestor focus correction is independently accepted**
   at implementation commit `6f05ecf` with no P0/P1 findings, after the
-  metadata-only `/Shopee backroom`
+  metadata-only `/Archive`
   investigation on `feat/full-mindmap-mode`. The real path is
-  `~/Documents/Shopee Backroom`. A read-only production scan of
+  `~/Documents/Archive`. A read-only production scan of
   its parent retained the folder as `LowerBound(0)` because the bounded
   ancestor scan was truncated; the same production `load_expanded_folder`
   retry returned `folders=0`, `files=0`, `Exact(0)`, `truncated=false` with
@@ -1083,7 +1083,7 @@ For Full Mindmap, manually exercise both entry scenarios, recursive
 exact/lower-bound labels, Space/Right/Enter/Left/Esc, hidden refreshes, previews,
 dirty-document protection, and ordinary Files-sidebar scrolling/navigation in
 a large workspace with the recorded binary. Specifically verify that a
-unsupported-only folder such as `Shopee Backroom` never flashes into the graph,
+unsupported-only folder such as `Archive` never flashes into the graph,
 the progress toast advances and disappears, capped unverified excess remains
 truthfully labeled `scan limit reached`, exact-empty folders are absent,
 and nested folders beneath Documents are reachable from Home or an ancestor
@@ -1091,7 +1091,7 @@ without first making Documents the root. Expand a child beneath Documents with
 Space and Right and confirm the viewport remains focused on that folder/child
 after Loading completes rather than jumping to the user root. A/B/C/D/E/G and
 hidden additivity were accepted on earlier candidates. Expanding
-`Shopee Backroom` should not appear at all because it has no supported
+`Archive` should not appear at all because it has no supported
 descendants. Ordinary attention/error toasts must remain readable above the
 progress toast. For the preview-settle refinement, rapidly move across several
 files and confirm the selection ring moves immediately while no preview read
