@@ -32,6 +32,8 @@ const QUICK_SLOTS_RAIL_REVEAL_DELAY_MS: u64 = 500;
 const SEARCH_DEBOUNCE_MIN_BYTES: usize = 1024 * 1024;
 const SEARCH_DEBOUNCE_MS: u64 = 80;
 const READING_MAX: f32 = 780.0;
+/// Radius of the reader panel's top-left corner next to the sidebar.
+const READER_CORNER_RADIUS: f32 = 24.0;
 const KEYBOARD_BUTTON_HEIGHT: f32 = 26.0; // 14px text at 1.3 line-height + 4px vertical padding on each side.
 const KEYBOARD_BUTTON_BOTTOM_PAD: f32 = 12.0;
 const KEYBOARD_BUTTON_FOOTER_BOTTOM_PAD: f32 = 44.0;
@@ -3372,21 +3374,33 @@ impl App {
                 // it — so the corner pixels outside the radius are transparent and
                 // show the sidebar-colored area behind. Reader content has enough
                 // padding that no text falls into the corner curve.
+                let reader_panel = container(reader_with_search)
+                    .width(Length::Fill)
+                    .height(Length::Fill)
+                    .style(move |_| container::Style {
+                        background: Some(reader_ground.into()),
+                        border: Border {
+                            color: Color::TRANSPARENT,
+                            width: 0.0,
+                            radius: iced::border::top_left(READER_CORNER_RADIUS),
+                        },
+                        ..Default::default()
+                    });
+                // Whole-window glass leaves the ground clear, so the corner
+                // paints the sidebar's tint itself and joins the sidebar.
+                let reader_panel: Element<'_, Message> = if self.glass() == Glass::Window {
+                    stack![
+                        reader_panel,
+                        corner_fill(self.chrome_palette().sidebar, READER_CORNER_RADIUS),
+                    ]
+                    .into()
+                } else {
+                    reader_panel.into()
+                };
                 irow![
                     sidebar_view(self, self.chrome_palette()),
                     sidebar_resize_handle(self.chrome_palette()),
-                    container(reader_with_search)
-                        .width(Length::Fill)
-                        .height(Length::Fill)
-                        .style(move |_| container::Style {
-                            background: Some(reader_ground.into()),
-                            border: Border {
-                                color: Color::TRANSPARENT,
-                                width: 0.0,
-                                radius: iced::border::top_left(24),
-                            },
-                            ..Default::default()
-                        }),
+                    reader_panel,
                 ]
                 .into()
             } else {

@@ -135,3 +135,47 @@ pub(crate) fn sleek_scrollable_style(
         },
     }
 }
+
+/// Fills the pixels outside a panel's rounded top-left corner, so the corner
+/// reads as part of the panel next to it instead of a gap. Used under
+/// whole-window glass, where the reader's corner would otherwise show the
+/// untinted material.
+pub(in crate::app) fn corner_fill<'a>(color: Color, radius: f32) -> Element<'a, Message> {
+    iced::widget::canvas(CornerFill { color, radius })
+        .width(Length::Fixed(radius))
+        .height(Length::Fixed(radius))
+        .into()
+}
+
+struct CornerFill {
+    color: Color,
+    radius: f32,
+}
+
+impl<Message> iced::widget::canvas::Program<Message> for CornerFill {
+    type State = ();
+
+    fn draw(
+        &self,
+        _state: &(),
+        renderer: &iced::Renderer,
+        _theme: &Theme,
+        bounds: iced::Rectangle,
+        _cursor: iced::mouse::Cursor,
+    ) -> Vec<iced::widget::canvas::Geometry> {
+        use iced::widget::canvas::{Frame, Path};
+        use iced::Point;
+        let r = self.radius;
+        let mut frame = Frame::new(renderer, bounds.size());
+        // The square minus the quarter circle the panel's corner keeps: the
+        // arc is tangent to both edges, so its center is (r, r).
+        let shape = Path::new(|p| {
+            p.move_to(Point::new(r, 0.0));
+            p.arc_to(Point::ORIGIN, Point::new(0.0, r), r);
+            p.line_to(Point::ORIGIN);
+            p.close();
+        });
+        frame.fill(&shape, self.color);
+        vec![frame.into_geometry()]
+    }
+}
