@@ -97,13 +97,13 @@ artifacts, and an authenticated site deployment.
 
 ## Final evidence
 
-- `cargo check --target-dir /Users/liminchen/Documents/GitHub/mdv/target -j 2`
+- `cargo check --target-dir ~/Documents/GitHub/mdv/target -j 2`
   — passed.
-- `cargo check --no-default-features --target-dir /Users/liminchen/Documents/GitHub/mdv/target -j 2`
+- `cargo check --no-default-features --target-dir ~/Documents/GitHub/mdv/target -j 2`
   — passed.
-- `cargo test --lib --target-dir /Users/liminchen/Documents/GitHub/mdv/target -j 2`
+- `cargo test --lib --target-dir ~/Documents/GitHub/mdv/target -j 2`
   — 361 passed.
-- `cargo test --tests --target-dir /Users/liminchen/Documents/GitHub/mdv/target -j 2`
+- `cargo test --tests --target-dir ~/Documents/GitHub/mdv/target -j 2`
   — all library and integration targets passed; one pre-existing unused-import
   warning remains in `tests/ipc_protocol.rs`.
 - `node --check site/app.js`, `node --check site/check-shortcuts.mjs`, and
@@ -113,7 +113,7 @@ artifacts, and an authenticated site deployment.
   produced a 3.3 KiB invalid artifact, which was explicitly rejected. A scoped
   `cargo clean -p rmdv` removed 5.3 GiB of reproducible package artifacts; the
   forced release-profile rebuild then completed without warnings.
-- `cargo build --release --bin rmdv --target-dir /Users/liminchen/Documents/GitHub/mdv/target -j 2`
+- `cargo build --release --bin rmdv --target-dir ~/Documents/GitHub/mdv/target -j 2`
   — passed. The 34 MiB arm64 Mach-O reports `rmdv 0.7.0`; SHA-256
   `cc1109cb8a8850e23857d90a48fad6de53c9c05f361c9f26954021b3f105c474`.
 - `git diff --check` and the strict four-layer project-system audit — passed.

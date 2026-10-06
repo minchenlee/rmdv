@@ -2,7 +2,7 @@
 
 Last verified: 2026-10-05 (Asia/Taipei)
 Stale after: 7 days
-Canonical repository: `/Users/liminchen/Documents/GitHub/mdv`
+Canonical repository: `~/Documents/GitHub/mdv`
 Expected branch / HEAD / PR: start new work from the live `origin/main`
 (`20838b1` when verified). Latest release: `v0.7.0` → `9dd7217`; `main` is
 unreleased since then.

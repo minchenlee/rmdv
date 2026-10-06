@@ -1,7 +1,7 @@
 # Zen edit mode
 
 **Date:** 2026-07-06
-**Target:** `/Users/liminchen/Documents/GitHub/mdv`
+**Target:** `~/Documents/GitHub/mdv`
 
 Replace the existing raw edit mode with a Zen editing experience. `ViewMode::Raw`
 remains the app's edit mode internally and over IPC, but the user-facing surface

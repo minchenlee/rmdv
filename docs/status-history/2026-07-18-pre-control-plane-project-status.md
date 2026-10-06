@@ -59,7 +59,7 @@ Last reconciled: 2026-07-18 (Asia/Taipei)
   replace it with root focus; the accepted materialization still pans to the
   file's final layout position even when selection and layout generation are
   unchanged. The concrete
-  `/Users/liminchen/Documents/GitHub/c9watch/docs/plans/2026-02-18-popover-window-design.md`
+  `~/Documents/GitHub/c9watch/docs/plans/2026-02-18-popover-window-design.md`
   reproduction exposed a second root cause: the running workspace was `/`, and
   lexical `starts_with` alone incorrectly classified every absolute file as
   available even when the bounded accepted index stopped near `/Users`. The
@@ -325,8 +325,8 @@ Last reconciled: 2026-07-18 (Asia/Taipei)
 
 ## Read this first
 
-- Actual checkout: `/Users/liminchen/Documents/GitHub/mdv`
-- Legacy non-repo path: `/Users/liminchen/Documents/GitHub/mdv-main`
+- Actual checkout: `~/Documents/GitHub/mdv`
+- Legacy non-repo path: `~/Documents/GitHub/mdv-main`
 - Active branch: `feat/full-mindmap-mode`; the implementation was merged from
   PR head `19715ae1ce840fcedfa72705011e4abc0f40b892`, and this checkout keeps
   the feature line with the post-merge status snapshot. Remote `main` includes
@@ -583,7 +583,7 @@ Last reconciled: 2026-07-18 (Asia/Taipei)
   at implementation commit `6f05ecf` with no P0/P1 findings, after the
   metadata-only `/Shopee backroom`
   investigation on `feat/full-mindmap-mode`. The real path is
-  `/Users/liminchen/Documents/Shopee Backroom`. A read-only production scan of
+  `~/Documents/Shopee Backroom`. A read-only production scan of
   its parent retained the folder as `LowerBound(0)` because the bounded
   ancestor scan was truncated; the same production `load_expanded_folder`
   retry returned `folders=0`, `files=0`, `Exact(0)`, `truncated=false` with
@@ -731,11 +731,11 @@ Last reconciled: 2026-07-18 (Asia/Taipei)
   traversal. Commits through `8dc9ead` implement the four requested
   corrections: workspace Space toggles expansion, the root retains its count,
   hidden-on remains additive even if navigation occurs during its background
-  refresh, and `/Users/liminchen/Documents` is discoverable from the home
+  refresh, and `~/Documents` is discoverable from the home
   chooser. Targeted manual retest of these four corrections is still pending;
   main integration remains held.
 - Follow-up manual testing accepted hidden-entry additivity and
-  `/Users/liminchen/Documents` discovery. The user approved Luna's YES
+  `~/Documents` discovery. The user approved Luna's YES
   recommendation for no-project auto-adoption, and `eeb9889` implements the
   requested recursive collapsed-folder counts plus one folder-rooted explorer.
   Expanded folders use plain labels; collapsed exact folders show `N files`,
@@ -1041,7 +1041,7 @@ Last reconciled: 2026-07-18 (Asia/Taipei)
 7. **P2 — Extremely wide directory discovery.** A directory with more than
    10,000 immediate entries is explicitly truncated before sorting, so a later
    ordinary sibling is not guaranteed to enter the bounded snapshot. The real
-   `/Users/liminchen` home currently has 116 immediate entries and is not
+   `~` home currently has 116 immediate entries and is not
    affected; revisit only if broader guarantees are required.
 8. **P3 — Repository formatting/Clippy debt.** Keep as non-blocking hygiene.
    README already tracks PDF/HTML export and additional tree-sitter grammars;

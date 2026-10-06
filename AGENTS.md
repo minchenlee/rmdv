@@ -36,8 +36,8 @@
 ## Global invariants
 
 - Preserve unrelated work in a dirty checkout or sibling worktree.
-- The actual repository is `/Users/liminchen/Documents/GitHub/mdv`;
-  `/Users/liminchen/Documents/GitHub/mdv-main` is a legacy non-repo path.
+- The actual repository is `~/Documents/GitHub/mdv`;
+  `~/Documents/GitHub/mdv-main` is a legacy non-repo path.
 - This is one Cargo package: keep the library/binary split in `src/lib.rs` and
   `src/main.rs` coherent.
 - The `pdf` feature is enabled by default; Windows builds deliberately use
