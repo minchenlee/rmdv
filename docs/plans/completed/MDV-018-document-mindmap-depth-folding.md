@@ -79,13 +79,13 @@ JSON, YAML, and TOML Mindmaps.
 
 ## Final evidence
 
-- `cargo test --lib data_mindmap --target-dir /Users/liminchen/Documents/GitHub/mdv/target -j 2` — 21 passed, including the app-level JSON/YAML/TOML depth regression.
-- `cargo test --lib document_mindmap_fold_levels_use_structural_depth_when_headings_skip_ranks --target-dir /Users/liminchen/Documents/GitHub/mdv/target -j 2` — passed.
-- `cargo test --lib mindmap --target-dir /Users/liminchen/Documents/GitHub/mdv/target -j 2` — 150 passed.
-- `cargo test --lib --target-dir /Users/liminchen/Documents/GitHub/mdv/target -j 2` — 336 passed.
-- `cargo test --lib command_palette_exposes_node_depths_only_in_document_mindmap --target-dir /Users/liminchen/Documents/GitHub/mdv/target -j 2` — passed.
-- `cargo check --target-dir /Users/liminchen/Documents/GitHub/mdv/target -j 2` — passed.
-- `cargo build --release --bin rmdv --target-dir /Users/liminchen/Documents/GitHub/mdv/target -j 2` — passed; reviewed binary SHA-256 `def032b597f5715983b5649b1b757b0b581323afd33d644d484bf665be09441d`.
+- `cargo test --lib data_mindmap --target-dir ~/Documents/GitHub/mdv/target -j 2` — 21 passed, including the app-level JSON/YAML/TOML depth regression.
+- `cargo test --lib document_mindmap_fold_levels_use_structural_depth_when_headings_skip_ranks --target-dir ~/Documents/GitHub/mdv/target -j 2` — passed.
+- `cargo test --lib mindmap --target-dir ~/Documents/GitHub/mdv/target -j 2` — 150 passed.
+- `cargo test --lib --target-dir ~/Documents/GitHub/mdv/target -j 2` — 336 passed.
+- `cargo test --lib command_palette_exposes_node_depths_only_in_document_mindmap --target-dir ~/Documents/GitHub/mdv/target -j 2` — passed.
+- `cargo check --target-dir ~/Documents/GitHub/mdv/target -j 2` — passed.
+- `cargo build --release --bin rmdv --target-dir ~/Documents/GitHub/mdv/target -j 2` — passed; reviewed binary SHA-256 `def032b597f5715983b5649b1b757b0b581323afd33d644d484bf665be09441d`.
 - `rustfmt --edition 2021 --check src/app.rs src/mindmap.rs src/data_mindmap.rs` — passed.
 - `git diff --check` — passed.
 - PR #23 was independently reviewed, merged to `main` as `34ef584`, and Linux
