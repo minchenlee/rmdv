@@ -8524,3 +8524,202 @@ fn window_glass_modes_paint_one_tint_per_panel_and_sync_the_blur_view() {
         theme::palette_for(ThemePreset::OneLight).bg
     );
 }
+
+fn settings_row_index(row: SettingsRow) -> usize {
+    SettingsRow::visible()
+        .iter()
+        .position(|r| *r == row)
+        .expect("row is visible on this platform")
+}
+
+#[test]
+fn settings_page_draws_over_the_current_view_and_closes_back_to_it() {
+    let mut app = App::default();
+    app.view_mode = ViewMode::Mindmap;
+    app.vault_open = true;
+    app.overlay = Overlay::Command;
+
+    let _ = app.update(Message::ToggleSettings);
+    assert!(app.settings_open);
+    assert_eq!(app.overlay, Overlay::None);
+    assert_eq!(app.settings_cursor, 0);
+    let _ = app.view();
+    // The view under the page is untouched.
+    assert_eq!(app.view_mode, ViewMode::Mindmap);
+    assert!(app.vault_open);
+
+    let _ = app.update(Message::ToggleSettings);
+    assert!(!app.settings_open);
+    let _ = app.update(Message::OpenSettings);
+    let _ = app.update(Message::CloseSettings);
+    assert!(!app.settings_open);
+
+    // Opening a file or another view closes the page so the result shows.
+    let _ = app.update(Message::OpenSettings);
+    assert!(Message::FileLoaded(Ok((PathBuf::from("/tmp/a.md"), String::new()))).leaves_settings());
+    let _ = app.update(Message::OpenVaultSearch);
+    assert!(!app.settings_open);
+    assert!(!Message::FileLoaded(Err("x".into())).leaves_settings());
+    assert!(!Message::ToggleFooter.leaves_settings());
+}
+
+#[test]
+fn settings_cursor_moves_within_the_visible_rows() {
+    let mut app = App::default();
+    let _ = app.update(Message::OpenSettings);
+    let last = SettingsRow::visible().len() - 1;
+    let _ = app.update(Message::SettingsMove(-1));
+    assert_eq!(app.settings_cursor, 0);
+    let _ = app.update(Message::SettingsMove(1));
+    assert_eq!(app.settings_cursor, 1);
+    for _ in 0..40 {
+        let _ = app.update(Message::SettingsMove(1));
+    }
+    assert_eq!(app.settings_cursor, last);
+    let _ = app.update(Message::SettingsCursor(999));
+    assert_eq!(app.settings_cursor, last);
+    assert_eq!(app.settings_row(), SettingsRow::PrefsFile);
+    assert_eq!(
+        SettingsRow::visible().contains(&SettingsRow::Glass),
+        cfg!(target_os = "macos")
+    );
+}
+
+#[test]
+fn settings_rows_change_the_same_state_as_their_commands_and_persist() {
+    let mut app = App::default();
+    let isolated = app.quick_slots_persistence_path.clone().unwrap();
+    let _ = app.update(Message::SetTheme(ThemePreset::OneDark));
+    let _ = app.update(Message::OpenSettings);
+    let saved = |path: &Path| crate::prefs::load_from(path);
+
+    let at = |app: &mut App, row: SettingsRow, msg: Message| {
+        let _ = app.update(Message::SettingsCursor(settings_row_index(row)));
+        let _ = app.update(msg);
+    };
+
+    // Switches: Space toggles; → sets on, ← sets off, and a repeat is a no-op.
+    at(&mut app, SettingsRow::SoftSyntax, Message::SettingsActivate);
+    assert!(app.prefs.soft_syntax && saved(&isolated).soft_syntax);
+    at(&mut app, SettingsRow::SoftSyntax, Message::SettingsStep(1));
+    assert!(app.prefs.soft_syntax);
+    at(&mut app, SettingsRow::SoftSyntax, Message::SettingsStep(-1));
+    assert!(!app.prefs.soft_syntax && !saved(&isolated).soft_syntax);
+
+    at(&mut app, SettingsRow::Footer, Message::SettingsActivate);
+    assert!(!app.show_footer && !saved(&isolated).show_footer);
+    at(&mut app, SettingsRow::HiddenFiles, Message::SettingsStep(1));
+    assert!(app.show_hidden && saved(&isolated).show_hidden);
+    at(
+        &mut app,
+        SettingsRow::MindmapAutocenter,
+        Message::SettingsStep(-1),
+    );
+    assert!(!app.mindmap_autocenter && !saved(&isolated).mindmap_autocenter);
+    at(&mut app, SettingsRow::AutoFocus, Message::SettingsActivate);
+    assert!(app.prefs.auto_focus_on_nav && saved(&isolated).auto_focus_on_nav);
+
+    // Font size: → zooms in like ⌘+, Space resets like ⌘0.
+    at(&mut app, SettingsRow::FontSize, Message::SettingsStep(1));
+    assert!((app.font_scale - 1.1).abs() < 1e-6);
+    assert!((saved(&isolated).font_scale - 1.1).abs() < 1e-6);
+    at(&mut app, SettingsRow::FontSize, Message::SettingsActivate);
+    assert_eq!(app.font_scale, 1.0);
+    assert_eq!(saved(&isolated).font_scale, 1.0);
+
+    // Theme: → switches to the next card and saves it; ← stops at the first.
+    let start = app
+        .theme_entries()
+        .iter()
+        .position(|e| e.matches_current(&app.theme_id))
+        .unwrap();
+    at(&mut app, SettingsRow::Theme, Message::SettingsStep(1));
+    assert!(app.theme_entries()[start + 1].matches_current(&app.theme_id));
+    assert_eq!(saved(&isolated).theme, Some(app.theme_id.slug()));
+    for _ in 0..start + 3 {
+        at(&mut app, SettingsRow::Theme, Message::SettingsStep(-1));
+    }
+    assert!(app.theme_entries()[0].matches_current(&app.theme_id));
+
+    // Glass (macOS rows): ← / → walk the modes without wrapping; opacity
+    // steps by 5 % and only while glass is on.
+    let _ = app.update(Message::SetGlass(Glass::Off));
+    let _ = app.update(Message::SetGlassOpacity(0.8));
+    if cfg!(target_os = "macos") {
+        at(
+            &mut app,
+            SettingsRow::GlassOpacity,
+            Message::SettingsStep(-1),
+        );
+        assert_eq!(app.prefs.glass_opacity, 0.8);
+        at(&mut app, SettingsRow::Glass, Message::SettingsStep(1));
+        assert_eq!(saved(&isolated).glass, Glass::Sidebar);
+        at(&mut app, SettingsRow::Glass, Message::SettingsStep(1));
+        at(&mut app, SettingsRow::Glass, Message::SettingsStep(1));
+        assert_eq!(app.prefs.glass, Glass::Window);
+        // This launch was not transparent, so the page offers a restart.
+        assert!(app.glass_needs_restart());
+        at(
+            &mut app,
+            SettingsRow::GlassOpacity,
+            Message::SettingsStep(-1),
+        );
+        assert!((saved(&isolated).glass_opacity - 0.75).abs() < 1e-6);
+        at(&mut app, SettingsRow::Glass, Message::SettingsActivate);
+        assert_eq!(app.prefs.glass, Glass::Off);
+        assert!(!app.glass_needs_restart());
+    }
+    let _ = app.update(Message::SetGlassOpacity(0.2));
+    assert_eq!(app.prefs.glass_opacity, 0.6);
+    let _ = app.view();
+}
+
+#[test]
+fn settings_key_is_command_comma_only() {
+    use iced::keyboard::{Key, Modifiers};
+    let comma = Key::Character(",".into());
+    assert!(is_settings_key(&comma, Modifiers::COMMAND));
+    assert!(is_settings_key(&comma, Modifiers::CTRL));
+    assert!(!is_settings_key(&comma, Modifiers::empty()));
+    assert!(!is_settings_key(
+        &comma,
+        Modifiers::COMMAND | Modifiers::SHIFT
+    ));
+    assert!(!is_settings_key(
+        &Key::Character(".".into()),
+        Modifiers::COMMAND
+    ));
+}
+
+#[test]
+fn restart_relaunches_the_bundle_or_the_executable_with_the_open_path() {
+    use std::ffi::OsString;
+    let file = Path::new("/notes/a.md");
+    let bundled = Path::new("/Applications/rmdv.app/Contents/MacOS/rmdv");
+    let argv = relaunch_argv(bundled, Some(file));
+    if cfg!(target_os = "macos") {
+        assert_eq!(
+            argv,
+            ["open", "/Applications/rmdv.app", "--args", "/notes/a.md"]
+                .map(OsString::from)
+                .to_vec()
+        );
+        assert_eq!(
+            relaunch_argv(bundled, None),
+            ["open", "/Applications/rmdv.app"]
+                .map(OsString::from)
+                .to_vec()
+        );
+    }
+    let bare = Path::new("/usr/local/bin/rmdv");
+    assert_eq!(
+        relaunch_argv(bare, Some(file)),
+        ["/usr/local/bin/rmdv", "/notes/a.md"]
+            .map(OsString::from)
+            .to_vec()
+    );
+    assert_eq!(
+        relaunch_argv(bare, None),
+        vec![OsString::from("/usr/local/bin/rmdv")]
+    );
+}

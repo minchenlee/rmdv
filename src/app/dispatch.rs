@@ -5,6 +5,9 @@ use super::*;
 impl App {
     pub fn update(&mut self, msg: Message) -> Task<Message> {
         let before = (self.workspace_epoch, self.expanded.len());
+        if self.settings_open && msg.leaves_settings() {
+            self.settings_open = false;
+        }
         let mut task = self.dispatch_message(msg);
         if let Some(glass) = self.sync_glass() {
             task = Task::batch([task, glass]);
@@ -264,6 +267,34 @@ impl App {
                 }
                 Task::none()
             }
+            Message::OpenSettings => self.open_settings(),
+            Message::CloseSettings => {
+                self.settings_open = false;
+                Task::none()
+            }
+            Message::ToggleSettings => {
+                if self.settings_open {
+                    self.settings_open = false;
+                    Task::none()
+                } else {
+                    self.open_settings()
+                }
+            }
+            Message::SettingsMove(delta) => self.settings_move(delta),
+            Message::SettingsCursor(index) => {
+                self.settings_cursor = index.min(SettingsRow::visible().len() - 1);
+                Task::none()
+            }
+            Message::SettingsActivate => self.settings_activate(),
+            Message::SettingsStep(dir) => self.settings_step(dir),
+            Message::SettingsScrollTo(y) => iced::widget::operation::scroll_to(
+                Self::settings_scroll_id(),
+                iced::widget::scrollable::AbsoluteOffset { x: 0.0, y },
+            ),
+            Message::SetGlass(glass) => self.set_glass(glass),
+            Message::SetGlassOpacity(opacity) => self.set_glass_opacity(opacity),
+            Message::RestartApp => self.restart_app(),
+            Message::RevealPrefsFile => self.reveal_prefs_file(),
             Message::VaultClose => {
                 self.vault_open = false;
                 Task::none()
@@ -731,6 +762,8 @@ impl App {
             Message::FontSizeReset => {
                 self.font_scale = 1.0;
                 self.typography = self.typography_base;
+                self.prefs.font_scale = self.font_scale;
+                self.save_prefs();
                 self.height_cache.clear();
                 self.rebuild_virt_here();
                 let preview_measure = self.refresh_full_mindmap_preview_heights();
@@ -756,7 +789,7 @@ impl App {
             Message::ToggleFooter => {
                 self.show_footer = !self.show_footer;
                 self.prefs.show_footer = self.show_footer;
-                crate::prefs::save(&self.prefs);
+                self.save_prefs();
                 self.show_toast(
                     if self.show_footer {
                         "Footer shown"
@@ -779,19 +812,7 @@ impl App {
                     .to_string(),
                 )
             }
-            Message::CycleGlass => {
-                self.prefs.glass = self.prefs.glass.next();
-                self.save_prefs();
-                let restart = if self.prefs.glass != Glass::Off && !self.glass_capable {
-                    " — restart rmdv to apply"
-                } else {
-                    ""
-                };
-                self.show_toast(format!(
-                    "Window glass: {}{restart}",
-                    self.prefs.glass.label()
-                ))
-            }
+            Message::CycleGlass => self.set_glass(self.prefs.glass.next()),
             Message::CycleGlassOpacity => {
                 self.prefs.glass_opacity =
                     crate::macos_vibrancy::next_opacity(self.glass_opacity());
@@ -1973,6 +1994,8 @@ impl App {
             }
             Message::ToggleMindmapAutocenter => {
                 self.mindmap_autocenter = !self.mindmap_autocenter;
+                self.prefs.mindmap_autocenter = self.mindmap_autocenter;
+                self.save_prefs();
                 let label = if self.mindmap_autocenter {
                     "Mindmap auto-center: on"
                 } else {
@@ -2705,6 +2728,8 @@ impl App {
                     self.cancel_refresh_tracking();
                 }
                 self.show_hidden = !self.show_hidden;
+                self.prefs.show_hidden = self.show_hidden;
+                self.save_prefs();
                 let workspace = self.workspace.clone();
                 let pending_workspace = self
                     .full_mindmap
@@ -3478,7 +3503,7 @@ impl App {
             Message::Noop => Task::none(),
             Message::ToggleAutoFocusOnNav => {
                 self.prefs.auto_focus_on_nav = !self.prefs.auto_focus_on_nav;
-                crate::prefs::save(&self.prefs);
+                self.save_prefs();
                 let state = if self.prefs.auto_focus_on_nav {
                     "on"
                 } else {

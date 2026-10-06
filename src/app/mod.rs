@@ -99,6 +99,7 @@ mod message;
 mod paths;
 mod preview_worker;
 mod scroll_tasks;
+mod settings;
 mod slots;
 mod types;
 mod view;
@@ -120,6 +121,7 @@ use paths::*;
 pub use paths::{is_external_link, is_remote_url, line_for_fragment, resolve_image_path, slugify};
 use preview_worker::*;
 use scroll_tasks::*;
+use settings::*;
 use types::*;
 pub use types::{
     MindmapDir, Overlay, PendingNav, PendingRefreshFile, PendingRefreshWorkspace,
@@ -212,6 +214,12 @@ pub struct App {
     /// Files whose result group the user has folded.
     pub vault_collapsed: HashSet<PathBuf>,
     pub vault_viewport: Option<iced::widget::scrollable::Viewport>,
+    /// Settings page (⌘,): a full reader-area page like the vault page. It
+    /// draws over the current view without changing it, so closing it shows
+    /// that view again unchanged.
+    pub settings_open: bool,
+    /// Keyboard cursor over `SettingsRow::visible()`.
+    pub settings_cursor: usize,
     pub picker: Option<Picker>,
     /// Opt-in workspace navigator. Kept separate from the document's
     /// `ViewMode::Mindmap` state so entering/exiting it cannot disturb an open
@@ -444,6 +452,8 @@ impl Default for App {
         #[cfg(test)]
         let prefs = crate::prefs::Prefs::default();
         let glass_capable = crate::macos_vibrancy::launch_transparent(prefs.glass);
+        let font_scale = crate::prefs::clamp_font_scale(prefs.font_scale);
+        let (show_hidden, mindmap_autocenter) = (prefs.show_hidden, prefs.mindmap_autocenter);
         Self {
             file: None,
             source: String::new(),
@@ -452,9 +462,9 @@ impl Default for App {
             theme_mode: mode,
             theme_preset: preset,
             palette: theme::palette_for(preset).with_soft_syntax(prefs.soft_syntax),
-            typography: Typography::DEFAULT,
+            typography: Typography::DEFAULT.scaled(font_scale),
             typography_base: Typography::DEFAULT,
-            font_scale: 1.0,
+            font_scale,
             show_footer: prefs.show_footer,
             error: None,
             query: String::new(),
@@ -467,9 +477,9 @@ impl Default for App {
             workspace_files: Vec::new(),
             workspace_sidebar_files: tree::SidebarFileIndex::default(),
             workspace_tree: None,
-            workspace_snapshot_show_hidden: false,
+            workspace_snapshot_show_hidden: show_hidden,
             workspace_truncated: false,
-            show_hidden: false,
+            show_hidden,
             expanded: HashSet::new(),
             sidebar_open: false,
             sidebar_tab: SidebarTab::Files,
@@ -489,6 +499,8 @@ impl Default for App {
             vault_cursor: 0,
             vault_collapsed: HashSet::new(),
             vault_viewport: None,
+            settings_open: false,
+            settings_cursor: 0,
             picker: None,
             full_mindmap: None,
             full_mindmap_request_seq: 0,
@@ -540,7 +552,7 @@ impl Default for App {
             mindmap_panel_width: MIND_PANEL_DEFAULT,
             mindmap_panel_step: 0,
             mindmap_panel_drag: None,
-            mindmap_autocenter: true,
+            mindmap_autocenter,
             mindmap_native_pinch_log: 0.0,
             full_mindmap_native_pinch_log: 0.0,
             mindmap_layout: std::cell::RefCell::new(None),
@@ -674,8 +686,10 @@ impl App {
     /// Adjust the font-zoom factor (clamped) and rebuild `typography` from the
     /// current theme base. Returns the resulting body size for the toast.
     fn adjust_font_scale(&mut self, factor: f32) -> f32 {
-        self.font_scale = (self.font_scale * factor).clamp(0.6, 2.2);
+        self.font_scale = crate::prefs::clamp_font_scale(self.font_scale * factor);
         self.typography = self.typography_base.scaled(self.font_scale);
+        self.prefs.font_scale = self.font_scale;
+        self.save_prefs();
         self.typography.body_size
     }
 
@@ -2458,6 +2472,7 @@ impl App {
             Message::MindmapCyclePanelWidth
         };
         let mut items = vec![
+            ("Open Settings  ⌘,", Message::OpenSettings),
             ("Open Folder…  ⌘O", Message::OpenFolderPicker),
             ("Refresh File / Folder  ⌘R", Message::Refresh),
             ("Reveal File in Finder  ⌘⌥R", Message::RevealFileInFinder),
@@ -2673,6 +2688,7 @@ impl App {
         let fold_chord = self.fold_chord_pending && !full_mindmap;
         let mindmap = self.view_mode == ViewMode::Mindmap && !full_mindmap;
         let vault_open = self.vault_open && !full_mindmap;
+        let settings_open = self.settings_open;
         let quick_slots_allowed =
             quick_slots_shortcuts_enabled(overlay_open, vault_open, focused, editing, self.dirty);
         let keys = iced::event::listen_with(|ev, status, _id| {
@@ -2706,6 +2722,7 @@ impl App {
             vault_open,
             full_mindmap,
             quick_slots_allowed,
+            settings_open,
         ))
         .map(
             |(
@@ -2721,6 +2738,7 @@ impl App {
                     vault_open,
                     full_mindmap,
                     quick_slots_allowed,
+                    settings_open,
                 ),
                 ev,
             )| {
@@ -2755,7 +2773,8 @@ impl App {
                 if !released {
                     // A pending ⌘K fold chord owns the next key, so ⌘K then
                     // ⌘1 still folds instead of activating slot 1.
-                    let surface_allowed = !overlay_open && !vault_open && !focused && !fold_chord;
+                    let surface_allowed =
+                        !overlay_open && !vault_open && !settings_open && !focused && !fold_chord;
                     if let Some(message) = quick_slot_physical_message(
                         physical,
                         mods,
@@ -2768,6 +2787,37 @@ impl App {
                 }
                 if released {
                     return Message::Noop;
+                }
+                if is_settings_key(&key, mods) && !overlay_open {
+                    return Message::ToggleSettings;
+                }
+                // The Settings page owns the keyboard like the vault page. A
+                // few global commands still pass; they change state the page
+                // shows, so it stays current.
+                if settings_open && !overlay_open {
+                    if let Key::Character(c) = &key {
+                        return match c.as_str() {
+                            "p" if cmd && mods.shift() => Message::OpenCommandPalette,
+                            "P" if cmd => Message::OpenCommandPalette,
+                            "b" if cmd => Message::ToggleSidebar,
+                            "t" if cmd => Message::ToggleTheme,
+                            "." if cmd && mods.shift() => Message::ToggleHidden,
+                            ">" if cmd => Message::ToggleHidden,
+                            _ => reader_font_size_shortcut(&modified_key, mods)
+                                .unwrap_or(Message::Noop),
+                        };
+                    }
+                    return match key {
+                        Key::Named(Named::Escape) => Message::CloseSettings,
+                        Key::Named(Named::ArrowDown) => Message::SettingsMove(1),
+                        Key::Named(Named::ArrowUp) => Message::SettingsMove(-1),
+                        Key::Named(Named::ArrowLeft) => Message::SettingsStep(-1),
+                        Key::Named(Named::ArrowRight) => Message::SettingsStep(1),
+                        Key::Named(Named::Space) | Key::Named(Named::Enter) => {
+                            Message::SettingsActivate
+                        }
+                        _ => Message::Noop,
+                    };
                 }
                 if reader_font_shortcuts_enabled(
                     full_mindmap,
@@ -3126,11 +3176,15 @@ impl App {
             .is_some_and(|t| t.elapsed() < std::time::Duration::from_millis(SCROLLER_FADE_MS));
         let full_mindmap = self.full_mindmap.is_some();
         let footer_visible = !full_mindmap
+            && !self.settings_open
             && self.show_footer
             && self.file.is_some()
             && self.view_mode != ViewMode::Mindmap;
 
-        let reader: Element<'_, Message> = if full_mindmap {
+        let reader: Element<'_, Message> = if self.settings_open {
+            // Drawn over whatever view is open, which stays untouched below.
+            settings_page(self, pal, reader_fill)
+        } else if full_mindmap {
             self.full_mindmap_view(pal, recently_scrolled)
         } else if self.vault_open {
             // Workspace-level page — renders before the file/welcome checks so

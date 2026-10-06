@@ -1,6 +1,6 @@
 # MDV-019 — Settings page
 
-State: design (awaiting owner approval)
+State: implementing
 Owner / accountable lead: owner (minchenlee); implementation by Claude
 Active writer: Claude
 Created: 2026-10-06
@@ -156,18 +156,19 @@ The page follows the vault-search page model, so it is usable without a mouse:
 Custom-theme editing on the Theme row, `Import Theme…`, and the website theme
 gallery and composer from the earlier candidate. Planned after this page lands.
 
-## Open questions for the owner
+## Owner decisions (2026-10-06)
 
-1. Theme: switch-and-save on click (recommended, matches `⌘T`), or a preview
-   with Apply/Cancel as in the old candidate?
-2. Is the **Restart rmdv** button wanted, or is the note enough?
-3. Gear button in the sidebar header: yes, or keep the page reachable only by
-   `⌘,` and the palette?
+The owner approved the design (PR #52) and the interactive mockup, and said to
+start implementation. The three open questions take the recommended answers:
+
+1. Theme cards switch and save on click; there is no Apply/Cancel step.
+2. A **Restart rmdv** button appears when a saved glass mode needs a restart.
+3. The sidebar header has a gear button next to the `⌘` button.
 
 ## Progress
 
 - [x] Owner approved the direction (2026-10-06).
-- [ ] Owner answers the open questions and approves this design.
+- [x] Owner approved this design and the interactive mockup (2026-10-06).
 - [ ] Implementation, tests, screenshots, PR.
 - [ ] Owner native acceptance.
 
@@ -177,3 +178,5 @@ gallery and composer from the earlier candidate. Planned after this page lands.
 | --- | --- | --- |
 | 2026-10-06 | MDV-019 becomes a general Settings page; Theme Studio becomes phase 2 (MDV-019b). | Owner: rmdv has no settings page; theme settings belong on it. |
 | 2026-10-06 | One column with section headers, no navigation rail in v1. | About 14 rows; a rail adds navigation without saving scrolling. |
+| 2026-10-06 | Recommended answers to the three open questions. | Owner approved the design and mockup and asked to start. |
+| 2026-10-06 | Restart waits for this process to exit, then reopens the current file or folder. | The new instance must not meet the old one's IPC socket. |

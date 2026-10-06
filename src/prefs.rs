@@ -22,6 +22,18 @@ pub struct Prefs {
     /// Theme tint over the glass, kept within `macos_vibrancy::OPACITY_LEVELS`.
     #[serde(default = "default_glass_opacity")]
     pub glass_opacity: f32,
+    /// Reader font-zoom factor (⌘+ / ⌘−), restored on launch.
+    #[serde(
+        default = "default_font_scale",
+        deserialize_with = "lenient_font_scale"
+    )]
+    pub font_scale: f32,
+    /// Show dot files and folders in the sidebar (⌘⇧.).
+    #[serde(default)]
+    pub show_hidden: bool,
+    /// Document Mindmap keeps the selected node in view while it moves.
+    #[serde(default = "default_true")]
+    pub mindmap_autocenter: bool,
     /// Workspace-scoped Quick Slot banks live alongside the existing user
     /// preferences, never inside a workspace tree.
     #[serde(default, deserialize_with = "lenient_quick_slots")]
@@ -34,6 +46,35 @@ fn default_true() -> bool {
 
 fn default_glass_opacity() -> f32 {
     crate::macos_vibrancy::DEFAULT_OPACITY
+}
+
+/// Font-zoom limits, shared with the app's ⌘+ / ⌘− handling.
+pub const FONT_SCALE_MIN: f32 = 0.6;
+pub const FONT_SCALE_MAX: f32 = 2.2;
+
+fn default_font_scale() -> f32 {
+    1.0
+}
+
+/// A missing, malformed, or out-of-range font scale falls back into range
+/// instead of failing the whole file.
+fn lenient_font_scale<'de, D>(deserializer: D) -> Result<f32, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    Ok(clamp_font_scale(
+        value.as_f64().map_or(default_font_scale(), |v| v as f32),
+    ))
+}
+
+/// Keeps a font scale finite and inside the supported range.
+pub fn clamp_font_scale(scale: f32) -> f32 {
+    if scale.is_finite() {
+        scale.clamp(FONT_SCALE_MIN, FONT_SCALE_MAX)
+    } else {
+        default_font_scale()
+    }
 }
 
 /// An unknown glass mode (e.g. from a newer build) turns glass off instead of
@@ -68,12 +109,15 @@ impl Default for Prefs {
             soft_syntax: false,
             glass: crate::macos_vibrancy::Glass::Off,
             glass_opacity: crate::macos_vibrancy::DEFAULT_OPACITY,
+            font_scale: default_font_scale(),
+            show_hidden: false,
+            mindmap_autocenter: true,
             quick_slots: crate::quick_slots::QuickSlotsStore::default(),
         }
     }
 }
 
-fn store_path() -> Option<PathBuf> {
+pub fn store_path() -> Option<PathBuf> {
     dirs::config_dir().map(|d| d.join("rmdv").join(FILE_NAME))
 }
 
@@ -153,6 +197,28 @@ mod tests {
         assert_eq!(prefs.glass, Glass::Off);
         assert!(!prefs.show_footer);
     }
+
+    #[test]
+    fn reading_preferences_default_and_survive_bad_values() {
+        let prefs: Prefs = serde_json::from_str(r#"{"show_footer":false}"#).unwrap();
+        assert_eq!(prefs.font_scale, 1.0);
+        assert!(!prefs.show_hidden);
+        assert!(prefs.mindmap_autocenter);
+        let prefs: Prefs = serde_json::from_str(
+            r#"{"font_scale":1.21,"show_hidden":true,"mindmap_autocenter":false}"#,
+        )
+        .unwrap();
+        assert_eq!(prefs.font_scale, 1.21);
+        assert!(prefs.show_hidden);
+        assert!(!prefs.mindmap_autocenter);
+        let prefs: Prefs =
+            serde_json::from_str(r#"{"font_scale":"big","show_footer":false}"#).unwrap();
+        assert_eq!(prefs.font_scale, 1.0);
+        assert!(!prefs.show_footer);
+        let prefs: Prefs = serde_json::from_str(r#"{"font_scale":9.0}"#).unwrap();
+        assert_eq!(prefs.font_scale, FONT_SCALE_MAX);
+    }
+
     use crate::quick_slots::{QuickSlot, SlotContext, WorkspaceSlots};
     use std::sync::atomic::{AtomicU64, Ordering};
 

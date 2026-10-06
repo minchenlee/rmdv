@@ -274,16 +274,31 @@ pub(super) fn measure_full_mindmap_preview_block_heights(
 /// fully into view, measuring its real bounds (blocks have variable height).
 /// Only moves when the block is off-screen, like a code editor's cursor follow.
 pub(super) fn scroll_vault_to_match(vis_idx: usize) -> Task<Message> {
-    struct ScrollVaultToMatch {
+    scroll_anchor_into_view(
+        App::vault_scroll_id(),
+        App::vault_match_anchor_id(vis_idx),
+        Message::VaultScrollTo,
+    )
+}
+
+/// Scroll `scroll_id` just enough to bring the container `target_id` fully
+/// into view, measuring its real bounds. Does nothing when it is visible.
+pub(super) fn scroll_anchor_into_view(
+    scroll_id: iced::widget::Id,
+    target_id: iced::widget::Id,
+    scroll_to: fn(f32) -> Message,
+) -> Task<Message> {
+    struct ScrollAnchorIntoView {
         scroll_id: iced::widget::Id,
         target_id: iced::widget::Id,
+        scroll_to: fn(f32) -> Message,
         content_top: Option<f32>,
         view_top: f32,
         view_h: f32,
         target_y: Option<f32>,
     }
 
-    impl iced::advanced::widget::Operation<Message> for ScrollVaultToMatch {
+    impl iced::advanced::widget::Operation<Message> for ScrollAnchorIntoView {
         fn traverse(
             &mut self,
             operate: &mut dyn FnMut(&mut dyn iced::advanced::widget::Operation<Message>),
@@ -332,14 +347,15 @@ pub(super) fn scroll_vault_to_match(vis_idx: usize) -> Task<Message> {
         fn finish(&self) -> iced::advanced::widget::operation::Outcome<Message> {
             self.target_y
                 .map_or(iced::advanced::widget::operation::Outcome::None, |y| {
-                    iced::advanced::widget::operation::Outcome::Some(Message::VaultScrollTo(y))
+                    iced::advanced::widget::operation::Outcome::Some((self.scroll_to)(y))
                 })
         }
     }
 
-    iced::advanced::widget::operate(ScrollVaultToMatch {
-        scroll_id: App::vault_scroll_id(),
-        target_id: App::vault_match_anchor_id(vis_idx),
+    iced::advanced::widget::operate(ScrollAnchorIntoView {
+        scroll_id,
+        target_id,
+        scroll_to,
         content_top: None,
         view_top: 0.0,
         view_h: 0.0,

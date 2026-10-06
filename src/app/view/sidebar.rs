@@ -72,6 +72,11 @@ pub(in crate::app) fn sidebar_view<'a>(app: &'a App, pal: Palette) -> Element<'a
             iced::widget::tooltip::Position::Bottom,
         ),
         iced::widget::tooltip(
+            ghost_lu(ic::SETTINGS, pal).on_press(Message::ToggleSettings),
+            kbd_pill("⌘,", pal),
+            iced::widget::tooltip::Position::Bottom,
+        ),
+        iced::widget::tooltip(
             ghost_lu(ic::PANEL_LEFT_CLOSE, pal).on_press(Message::ToggleSidebar),
             kbd_pill("⌘B", pal),
             iced::widget::tooltip::Position::Bottom,
