@@ -135,3 +135,60 @@ pub(crate) fn sleek_scrollable_style(
         },
     }
 }
+
+/// Fills the pixels outside a panel's rounded top-left corner, so the corner
+/// reads as part of the panel next to it instead of a gap. Stack it under the
+/// panel. Used under
+/// whole-window glass, where the reader's corner would otherwise show the
+/// untinted material.
+pub(in crate::app) fn corner_fill<'a>(color: Color, radius: f32) -> Element<'a, Message> {
+    iced::widget::canvas(CornerFill { color, radius })
+        .width(Length::Fixed(radius))
+        .height(Length::Fixed(radius))
+        .into()
+}
+
+/// How far the corner fill reaches under the panel's curve, in points.
+const CORNER_OVERLAP: f32 = 0.25;
+
+struct CornerFill {
+    color: Color,
+    radius: f32,
+}
+
+impl<Message> iced::widget::canvas::Program<Message> for CornerFill {
+    type State = ();
+
+    fn draw(
+        &self,
+        _state: &(),
+        renderer: &iced::Renderer,
+        _theme: &Theme,
+        bounds: iced::Rectangle,
+        _cursor: iced::mouse::Cursor,
+    ) -> Vec<iced::widget::canvas::Geometry> {
+        use iced::widget::canvas::{path::Arc, Frame, Path};
+        use iced::{Point, Radians};
+        use std::f32::consts::{FRAC_PI_2, PI};
+        let r = self.radius;
+        let mut frame = Frame::new(renderer, bounds.size());
+        // The square minus the quarter circle the panel's corner keeps. The
+        // fill sits under the panel and reaches half a pixel inside its curve,
+        // so the panel's anti-aliased edge lands on tint instead of letting
+        // the untinted glass through as a light seam.
+        let shape = Path::new(|p| {
+            p.arc(Arc {
+                center: Point::new(r, r),
+                radius: r - CORNER_OVERLAP,
+                start_angle: Radians(-FRAC_PI_2),
+                end_angle: Radians(-PI),
+            });
+            p.line_to(Point::new(0.0, r));
+            p.line_to(Point::ORIGIN);
+            p.line_to(Point::new(r, 0.0));
+            p.close();
+        });
+        frame.fill(&shape, self.color);
+        vec![frame.into_geometry()]
+    }
+}

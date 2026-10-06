@@ -362,7 +362,7 @@ pub(in crate::app) fn outline_row<'a>(
         .into()
 }
 
-pub(in crate::app) fn mindmap_panel_resize_handle<'a>(pal: Palette) -> Element<'a, Message> {
+pub(in crate::app) fn mindmap_panel_resize_handle<'a>(fill: Color) -> Element<'a, Message> {
     mouse_area(
         container(
             Space::new()
@@ -370,7 +370,7 @@ pub(in crate::app) fn mindmap_panel_resize_handle<'a>(pal: Palette) -> Element<'
                 .height(Length::Fill),
         )
         .style(move |_| container::Style {
-            background: Some(pal.bg.into()),
+            background: Some(fill.into()),
             ..Default::default()
         })
         .height(Length::Fill),
@@ -381,7 +381,7 @@ pub(in crate::app) fn mindmap_panel_resize_handle<'a>(pal: Palette) -> Element<'
     .into()
 }
 
-pub(in crate::app) fn full_mindmap_panel_resize_handle<'a>(pal: Palette) -> Element<'a, Message> {
+pub(in crate::app) fn full_mindmap_panel_resize_handle<'a>(fill: Color) -> Element<'a, Message> {
     mouse_area(
         container(
             Space::new()
@@ -389,7 +389,7 @@ pub(in crate::app) fn full_mindmap_panel_resize_handle<'a>(pal: Palette) -> Elem
                 .height(Length::Fill),
         )
         .style(move |_| container::Style {
-            background: Some(pal.bg.into()),
+            background: Some(fill.into()),
             ..Default::default()
         })
         .height(Length::Fill),

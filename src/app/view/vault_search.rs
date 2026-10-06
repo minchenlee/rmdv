@@ -23,6 +23,8 @@ pub(in crate::app) fn vault_search_page<'a>(
     workspace: Option<&std::path::Path>,
     viewport: Option<&iced::widget::scrollable::Viewport>,
     pal: Palette,
+    // Page fill; clear when the window glass shows through the reader.
+    fill: Color,
 ) -> Element<'a, Message> {
     // The displayed results reflect `searched_query`; if the live `query` has
     // since been edited, prompt for Enter rather than showing a stale count.
@@ -326,7 +328,7 @@ pub(in crate::app) fn vault_search_page<'a>(
         .width(Length::Fill)
         .height(Length::Fill)
         .style(move |_| container::Style {
-            background: Some(pal.bg.into()),
+            background: Some(fill.into()),
             ..Default::default()
         })
         .into()

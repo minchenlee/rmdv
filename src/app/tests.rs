@@ -8465,3 +8465,62 @@ fn soft_syntax_option_follows_theme_changes_and_turns_off_cleanly() {
     let _ = app.update(Message::ToggleSoftSyntax);
     assert_eq!(app.palette, one_light);
 }
+
+#[test]
+fn window_glass_modes_paint_one_tint_per_panel_and_sync_the_blur_view() {
+    let mut app = App::default();
+    let isolated = app.quick_slots_persistence_path.clone().unwrap();
+    let _ = app.update(Message::SetTheme(ThemePreset::OneDark));
+    let pal = theme::palette_for(ThemePreset::OneDark);
+
+    // Off (the default): everything opaque, nothing to sync.
+    assert_eq!(app.glass(), Glass::Off);
+    assert_eq!(app.chrome_ground(), pal.sidebar);
+    assert_eq!(app.reader_ground(), pal.bg);
+    assert_eq!(app.reader_fill(), pal.bg);
+
+    // A saved mode stays off when the window was not created transparent.
+    let _ = app.update(Message::CycleGlass);
+    assert_eq!(crate::prefs::load_from(&isolated).glass, Glass::Sidebar);
+    assert_eq!(app.glass(), Glass::Off);
+
+    app.glass_capable = true;
+    app.glass_window = Some(iced::window::Id::unique());
+
+    // Sidebar: the ground carries the tint, the sidebar paints none, the
+    // reader stays opaque.
+    let _ = app.update(Message::Noop);
+    assert_eq!(app.glass_applied, Some((true, true)));
+    assert_eq!(app.chrome_palette().sidebar, Color::TRANSPARENT);
+    assert_eq!(app.chrome_ground().a, 0.8);
+    assert_eq!(app.reader_ground(), pal.bg);
+    assert_eq!(app.view_palette(), pal);
+
+    // Whole window: each panel paints its own tint over a clear ground, and
+    // nested reader views paint nothing.
+    let _ = app.update(Message::CycleGlass);
+    assert_eq!(app.glass(), Glass::Window);
+    assert_eq!(app.chrome_ground(), Color::TRANSPARENT);
+    assert_eq!(app.chrome_palette().sidebar.a, 0.8);
+    assert_eq!(app.reader_ground().a, 0.8);
+    assert_eq!(app.reader_fill(), Color::TRANSPARENT);
+    // Dim text moves toward the body color as the tint thins.
+    let _ = app.update(Message::CycleGlassOpacity);
+    let _ = app.update(Message::CycleGlassOpacity);
+    assert_eq!(crate::prefs::load_from(&isolated).glass_opacity, 0.6);
+    let view = app.view_palette();
+    assert!(theme::contrast_ratio(view.muted, pal.bg) > theme::contrast_ratio(pal.muted, pal.bg));
+
+    // A light theme switches the blur view to the light material.
+    let _ = app.update(Message::SetTheme(ThemePreset::OneLight));
+    assert_eq!(app.glass_applied, Some((true, false)));
+
+    // Off hides the blur view and restores opaque fills.
+    let _ = app.update(Message::CycleGlass);
+    assert_eq!(app.glass(), Glass::Off);
+    assert_eq!(app.glass_applied, Some((false, false)));
+    assert_eq!(
+        app.reader_fill(),
+        theme::palette_for(ThemePreset::OneLight).bg
+    );
+}

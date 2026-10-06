@@ -107,6 +107,7 @@ fn launch_instance(initial: Option<ipc::Request>) -> iced::Result {
     let platform_specific = iced::window::settings::PlatformSpecific::default();
     let window = iced::window::Settings {
         platform_specific,
+        transparent: rmdv::macos_vibrancy::launch_transparent(rmdv::prefs::load().glass),
         ..Default::default()
     };
 
@@ -121,6 +122,7 @@ fn launch_instance(initial: Option<ipc::Request>) -> iced::Result {
     )
     .title(App::title)
     .theme(App::theme)
+    .style(App::app_style)
     .subscription(App::subscription)
     .window(window)
     .font(include_bytes!("assets/fonts/Inter-Variable.ttf").as_slice())
