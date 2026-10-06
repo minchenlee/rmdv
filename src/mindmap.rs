@@ -1601,9 +1601,9 @@ mod tests {
         if shell {
             nodes[1].children.push(2);
             nodes.push(MNode {
-                id: Some(PathId("/Users/me/Documents/Shopee".into())),
-                label: "Shopee".into(),
-                full_label: "Shopee".into(),
+                id: Some(PathId("/Users/me/Documents/Archive".into())),
+                label: "Archive".into(),
+                full_label: "Archive".into(),
                 truncated: false,
                 level: 2,
                 children: Vec::new(),
@@ -2007,7 +2007,7 @@ mod tests {
     fn full_mindmap_exact_empty_shell_relayout_focuses_nearest_ancestor() {
         let root = PathId("/Users/me".into());
         let documents = PathId("/Users/me/Documents".into());
-        let shell = PathId("/Users/me/Documents/Shopee".into());
+        let shell = PathId("/Users/me/Documents/Archive".into());
         let bounds = Rectangle::new(Point::ORIGIN, Size::new(1000.0, 800.0));
         let initial = canvas_program(nested_shell_graph(true), shell, 1);
         let mut state = MindmapState::default();

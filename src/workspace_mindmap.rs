@@ -988,7 +988,7 @@ mod tests {
 
     #[test]
     fn removed_shell_uses_nearest_visible_ancestor_before_root_fallback() {
-        let shell_path = PathBuf::from("/vault/Documents/Shopee");
+        let shell_path = PathBuf::from("/vault/Documents/Archive");
         let documents_path = PathBuf::from("/vault/Documents");
         let mut shell = node(shell_path.to_str().unwrap(), true, vec![]);
         shell.recursive_supported_file_count = Some(RecursiveFileCount::LowerBound(0));
@@ -1013,7 +1013,7 @@ mod tests {
             true,
         );
         assert_eq!(
-            graph.nearest_visible_ancestor(PathBuf::from("/vault/Documents/Shopee").as_path()),
+            graph.nearest_visible_ancestor(PathBuf::from("/vault/Documents/Archive").as_path()),
             Some(WorkspaceNodeId::Folder(documents_path.clone()))
         );
 
