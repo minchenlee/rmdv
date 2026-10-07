@@ -75,7 +75,28 @@ jobs:
           # subsequent codesign --deep --options runtime step seals + hardens it.
           DYLIB=$(find "target/${{ matrix.target }}/release" -name libpdfium.dylib | head -1)
           if [ -z "$DYLIB" ]; then DYLIB=$(find target -name libpdfium.dylib | head -1); fi
-          if [ -z "$DYLIB" ]; then echo "libpdfium.dylib not found"; exit 1; fi
+          if [ -z "$DYLIB" ]; then
+            # A warm rust-cache skips the build script, so neither the download
+            # nor the copy into target/ happens. Fetch the same pinned pdfium
+            # release the build script uses, with the same install-name fix.
+            SYS=$(ls -d "$HOME"/.cargo/registry/src/*/liteparse-pdfium-sys-* | sort -V | tail -1)
+            PDFIUM_TAG=$(sed -n 's/^const PDFIUM_RELEASE_TAG: &str = "\(.*\)";$/\1/p' "$SYS/build.rs")
+            case "${{ matrix.arch }}" in
+              aarch64) ASSET=pdfium-mac-arm64 ;;
+              x86_64) ASSET=pdfium-mac-x64 ;;
+            esac
+            if [ -z "$PDFIUM_TAG" ] || [ -z "${ASSET:-}" ]; then
+              echo "libpdfium.dylib not found and pdfium release unknown"; exit 1
+            fi
+            PDFIUM_DIR="$RUNNER_TEMP/pdfium"
+            mkdir -p "$PDFIUM_DIR"
+            curl -fsSL "https://github.com/run-llama/pdfium-binaries/releases/download/${PDFIUM_TAG//\//%2F}/$ASSET.tgz" \
+              | tar -xz -C "$PDFIUM_DIR"
+            DYLIB="$PDFIUM_DIR/lib/libpdfium.dylib"
+            install_name_tool -id @rpath/libpdfium.dylib "$DYLIB"
+            echo "Fetched pdfium $PDFIUM_TAG ($ASSET) because the build tree had no copy"
+          fi
+          if [ ! -s "$DYLIB" ]; then echo "libpdfium.dylib not found"; exit 1; fi
           cp "$DYLIB" "$APP/Contents/MacOS/libpdfium.dylib"
           echo "Embedded $DYLIB -> $APP/Contents/MacOS/"
 
