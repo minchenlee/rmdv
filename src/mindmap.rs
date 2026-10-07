@@ -128,6 +128,12 @@ fn fit_label_at(s: &str, max_width: f32, size: f32) -> (String, bool) {
     (acc, true)
 }
 
+/// Screen font size for node labels at zoom `z` (currently fixed).
+#[cfg(test)]
+fn label_font_size(_z: f32) -> Option<f32> {
+    Some(FONT_SIZE)
+}
+
 /// Fit `s` into a node's inner width at the unified `FONT_SIZE`. Truncates
 /// with `…` if it overflows.
 pub(crate) fn fit_label_for_node(s: &str) -> (String, bool) {
@@ -1388,6 +1394,28 @@ fn append_rounded_rect(b: &mut path::Builder, x: f32, y: f32, w: f32, h: f32, r:
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn label_font_scales_with_zoom_and_fits_the_node() {
+        assert_eq!(label_font_size(1.0), Some(FONT_SIZE));
+        // Too small to read: no text instead of glyphs spilling past the node.
+        assert_eq!(label_font_size(0.5), None);
+        assert_eq!(label_font_size(ZOOM_MIN), None);
+
+        let label_w = NODE_W - TEXT_INSET_X * 2.0;
+        let mut z = ZOOM_MIN;
+        while z <= ZOOM_MAX {
+            if let Some(size) = label_font_size(z) {
+                // A label fitted at FONT_SIZE still fits the scaled node.
+                assert!(label_w * size / FONT_SIZE <= label_w * z + 0.01, "z={z}");
+                assert!(size <= NODE_H * z, "z={z}");
+                // And it keeps tracking the zoom instead of staying fixed.
+                assert!(size >= FONT_SIZE * z * 0.85, "z={z} size={size}");
+            }
+            z += 0.01;
+        }
+        assert!(label_font_size(ZOOM_MAX).unwrap() >= FONT_SIZE * 3.0);
+    }
 
     fn heading(id: u64, level: u8, label: &str) -> (BlockId, Block) {
         (
