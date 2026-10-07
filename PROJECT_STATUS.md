@@ -1,10 +1,10 @@
 # rmdv — project status
 
-Last verified: 2026-10-07 (Asia/Taipei)
+Last verified: 2026-10-08 (Asia/Taipei)
 Stale after: 7 days
 Canonical repository: `~/Documents/GitHub/mdv`
 Expected branch / HEAD / PR: start new work from the live `origin/main`
-(`4204211` when verified). Latest release: `v0.7.0` → `9dd7217`; `v0.8.0` is
+(`c6087d0` when verified). Latest release: `v0.7.0` → `9dd7217`; `v0.8.0` is
 being prepared (`MDV-039`).
 Authority: This is a routing snapshot. Verify Git, GitHub, runtime identity, and
 manual evidence before mutation.
@@ -25,6 +25,8 @@ The refactor roadmap through phase 2 has landed:
 - `MDV-037`: optional macOS window glass (PR #51).
 - `MDV-019`: the Settings page (PR #54).
 - `MDV-021`: fail-closed release gates (PR #55, `57badd8`); dry run green.
+- Mind map labels scale with zoom (PR #58, `c6087d0`); release re-runs keep
+  the pdfium dylib (PR #59, `6e45c71`). Both owner-approved.
 - Site copy fixes deployed 2026-10-07 (PR #49; Worker version `b9383cc5`).
 
 The owner approved each merge. Next is the v0.8.0 release (`MDV-039`).

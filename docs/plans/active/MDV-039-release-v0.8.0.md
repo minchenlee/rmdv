@@ -31,8 +31,8 @@ See the checklist in
 
 - [x] Scope, version bump, release notes, content pack, site metadata.
 - [x] MDV-021 merged with a green dry run (PR #55, `57badd8`; run 37559928672).
-- [ ] Local release checks (heavy slot).
-- [ ] Owner native smoke and authority.
+- [x] Release checks in CI (local disk too low; see the content pack).
+- [x] Owner native smoke on rc2 and merge authority (2026-10-08).
 - [ ] Tag, artifact verification, site deployment.
 
 ## Decision log

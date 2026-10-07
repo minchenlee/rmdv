@@ -14,7 +14,7 @@ contract passed; code or prose merely existing is not sufficient.
 Roadmap order (owner-approved 2026-10-04, re-confirmed 2026-10-05): phases 0–2,
 MDV-023, MDV-029, MDV-024 to MDV-028, MDV-036, and the phase-3 visual pass
 MDV-031, window glass (MDV-037), and the Settings page (MDV-019) have landed
-(PRs #28–#54). Next is the v0.8.0 release (MDV-039; MDV-021 landed), with the
+(PRs #28–#59). Next is the v0.8.0 release (MDV-039; MDV-021 landed), with the
 remaining phase-4 items (MDV-008, MDV-030) alongside. Phase 5 tasks (MDV-032 to MDV-035) start with a
 design for the owner, not code. Sources:
 [`MDV-022`](plans/completed/MDV-022-refactor-phases-0-2.md) and
