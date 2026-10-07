@@ -128,10 +128,23 @@ fn fit_label_at(s: &str, max_width: f32, size: f32) -> (String, bool) {
     (acc, true)
 }
 
-/// Screen font size for node labels at zoom `z` (currently fixed).
-#[cfg(test)]
-fn label_font_size(_z: f32) -> Option<f32> {
-    Some(FONT_SIZE)
+/// Font sizes node labels snap to. A short fixed ladder keeps the glyph
+/// atlas to a handful of sizes while zooming.
+const LABEL_FONT_LADDER: [f32; 17] = [
+    8.0, 9.0, 10.0, 11.0, 12.0, 13.0, 14.0, 16.0, 18.0, 20.0, 23.0, 26.0, 30.0, 34.0, 40.0, 48.0,
+    56.0,
+];
+
+/// Screen font size for node labels at zoom `z`: `FONT_SIZE * z` snapped down
+/// to the ladder, so a label fitted at `FONT_SIZE` still fits its scaled node.
+/// `None` when the text would be too small to read.
+fn label_font_size(z: f32) -> Option<f32> {
+    let ideal = FONT_SIZE * z + 0.001;
+    LABEL_FONT_LADDER
+        .iter()
+        .rev()
+        .copied()
+        .find(|&s| s <= ideal)
 }
 
 /// Fit `s` into a node's inner width at the unified `FONT_SIZE`. Truncates
@@ -1279,10 +1292,9 @@ where
             }
         }
 
-        // Text: only draw when the rect is large enough to contain it.
-        // Uniform font size keeps the glyph atlas warm across zoom levels.
-        let min_visible_height = FONT_SIZE * 1.1;
-        if s_h >= min_visible_height {
+        // Text scales with the nodes, snapped to a short size ladder so the
+        // glyph atlas stays warm; it is hidden once it would be unreadable.
+        if let Some(label_size) = label_font_size(z) {
             for (i, n) in self.nodes.iter().enumerate() {
                 let (nx, ny) = positions[i];
                 let sx = proj_x(nx);
@@ -1299,7 +1311,7 @@ where
                     content: n.label.clone(),
                     position: Point::new(sx + s_w / 2.0, sy + s_h / 2.0),
                     color: text_color,
-                    size: iced::Pixels(FONT_SIZE),
+                    size: iced::Pixels(label_size),
                     align_x: iced::alignment::Horizontal::Center.into(),
                     align_y: iced::alignment::Vertical::Center.into(),
                     ..Text::default()
