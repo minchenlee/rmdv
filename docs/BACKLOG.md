@@ -22,6 +22,7 @@ design for the owner, not code. Sources:
 
 | ID | Priority | State | Outcome | Acceptance | Plan | Blocked by |
 | --- | --- | --- | --- | --- | --- | --- |
+| MDV-021 | P1 | submitted | Release workflow fails closed: the macOS DMG containers are Developer ID signed, notarized, stapled, and Gatekeeper-checked; app bundles are verified after stapling; the publish job requires every macOS/Linux artifact non-empty, requires both Windows executables when any is uploaded, checks `SHA256SUMS`, and verifies `latest.json`. A `dry_run` dispatch input exercises everything without publishing. | A dry-run `workflow_dispatch` on the PR head passes every job, and the gate script rejects missing, empty, and partial artifact sets. | — | — |
 | MDV-037 | P2 | in_progress | Spike: optional macOS window vibrancy. A transparent window with an AppKit blur behind a translucent sidebar, behind `RMDV_VIBRANCY=1`. Decide keep, tune, or drop. | Verify app shows the blur behind the sidebar in dark and light themes without text-contrast loss or idle CPU/memory regression; owner decision. | — | Owner time. |
 | MDV-019 | P1 | design | Settings page (`⌘,`): every preference with its current value, changed in place and kept across launches (Appearance, Reading, Agent & CLI, Advanced). Built on the MDV-031 tokens; supersedes the old Theme Settings scope. | Owner approves the design, then owner native acceptance. | [`MDV-019`](plans/active/MDV-019-settings-page.md) | Owner design approval. |
 | MDV-019b | P2 | proposed | Theme Studio on the Settings page: custom-theme editing, `Import Theme…`, and the website theme gallery/composer (the pre-split candidate is reference only). | Design after MDV-019 lands. | — | — |
@@ -43,7 +44,6 @@ design for the owner, not code. Sources:
 
 | ID | Priority | Reason | Revisit trigger |
 | --- | --- | --- | --- |
-| MDV-021 | P1 | The v0.7.0 app payloads are signed, notarized, and Gatekeeper-accepted, but the release workflow does not independently sign the DMG containers, treats DMG stapling as best-effort, or fail closed on non-empty Windows app/setup files and their hashes before upload. | Before the next release candidate, add and exercise explicit artifact-integrity gates without changing Windows best-effort release policy. |
 | MDV-007 | P2 | One directory with more than 10,000 immediate entries is still truncated inside that directory. Budget exhaustion across siblings, the case the owner actually hit in `~/Documents`, was fixed in PR #43: a folder the budget skipped is scanned on its own when expanded. | A real directory with >10k immediate entries that hides needed files, or a bounded paging proposal with measurements. |
 
 ## Recently completed

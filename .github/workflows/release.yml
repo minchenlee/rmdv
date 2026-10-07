@@ -10,6 +10,11 @@ on:
         description: 'Release tag (e.g. v0.1.0)'
         required: true
         type: string
+      dry_run:
+        description: 'Build, sign, notarize, and verify every artifact, but do not publish a release'
+        required: false
+        default: true
+        type: boolean
 
 # Build jobs only need to read the repo; only the publish job writes releases.
 permissions:
@@ -102,12 +107,20 @@ jobs:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
           ARCH: ${{ matrix.arch }}
+          DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}
         shell: bash
         run: |
           set -euo pipefail
           OUT="target/${{ matrix.target }}/release"
           APP="$OUT/rmdv.app"
           mkdir -p dist
+
+          # A published release must be Developer ID signed. Only a dry run may
+          # fall back to an ad-hoc signature.
+          if [ -z "${APPLE_SIGNING_IDENTITY:-}" ] && [ "$DRY_RUN" != "true" ]; then
+            echo "::error::APPLE_SIGNING_IDENTITY is not set; refusing to publish unsigned macOS artifacts"
+            exit 1
+          fi
 
           # cargo-packager produces an ad-hoc signed .app. Re-sign with the
           # Developer ID, notarize, and staple the bundle. (Packager's own dmg
@@ -132,6 +145,9 @@ jobs:
               --team-id "$APPLE_TEAM_ID" \
               --wait
             xcrun stapler staple "$APP"
+            codesign --verify --deep --strict --verbose=2 "$APP"
+            xcrun stapler validate "$APP"
+            spctl --assess --type execute --verbose=2 "$APP"
           else
             # No cert configured: ad-hoc sign so the bundle is at least sealed.
             codesign --force --deep --options runtime --sign - "$APP" || true
@@ -147,15 +163,24 @@ jobs:
             "$APP" \
             "dist/rmdv_${TAG}_${ARCH}.dmg" \
             "assets/dmg-background-terminal.png"
-          # Notarize + staple the dmg too, so the downloaded installer is clean.
+          # Sign, notarize, and staple the dmg container too, so the
+          # downloaded installer is clean. Every step fails the job.
+          DMG="dist/rmdv_${TAG}_${ARCH}.dmg"
           if [ -n "${APPLE_SIGNING_IDENTITY:-}" ]; then
-            xcrun notarytool submit "dist/rmdv_${TAG}_${ARCH}.dmg" \
+            codesign --force --timestamp --sign "$APPLE_SIGNING_IDENTITY" "$DMG"
+            xcrun notarytool submit "$DMG" \
               --apple-id "$APPLE_ID" \
               --password "$APPLE_PASSWORD" \
               --team-id "$APPLE_TEAM_ID" \
               --wait
-            xcrun stapler staple "dist/rmdv_${TAG}_${ARCH}.dmg" || true
+            xcrun stapler staple "$DMG"
+            codesign --verify --strict --verbose=2 "$DMG"
+            xcrun stapler validate "$DMG"
+            spctl --assess --type open --context context:primary-signature --verbose=2 "$DMG"
           fi
+          for f in "$DMG" "dist/rmdv_${TAG}_${ARCH}.app.tar.gz"; do
+            [ -s "$f" ] || { echo "::error::missing or empty artifact: $f"; exit 1; }
+          done
 
       - name: Upload macOS artifacts
         uses: actions/upload-artifact@v4
@@ -328,8 +353,33 @@ jobs:
                -o -name '*.exe' \) -exec cp {} out/ \;
 
           cd out
+          # Fail closed: every required macOS and Linux artifact exists and is
+          # non-empty. Windows stays best-effort: it may be absent, but when any
+          # Windows executable was uploaded, both the app and the setup
+          # executable must be present and non-empty.
+          require() {
+            [ -s "$1" ] || { echo "::error::missing or empty artifact: $1"; exit 1; }
+          }
+          for arch in aarch64 x86_64; do
+            require "rmdv_${TAG}_${arch}.dmg"
+            require "rmdv_${TAG}_${arch}.app.tar.gz"
+          done
+          require "rmdv-${TAG}-x86_64.AppImage"
+          shopt -s nullglob
+          exes=(*.exe)
+          setups=(*-setup.exe)
+          if [ "${#exes[@]}" -gt 0 ]; then
+            for f in "${exes[@]}"; do require "$f"; done
+            [ "${#setups[@]}" -gt 0 ] || { echo "::error::Windows app executable without a setup executable"; exit 1; }
+            [ "${#exes[@]}" -gt "${#setups[@]}" ] || { echo "::error::Windows setup executable without an app executable"; exit 1; }
+          else
+            echo "::warning::No Windows executables (best-effort job); publishing macOS and Linux only"
+          fi
+          shopt -u nullglob
+
           # SHA256SUMS over every published artifact.
           sha256sum * > SHA256SUMS
+          sha256sum -c SHA256SUMS
 
           # Per-platform sha for the updater manifest.
           sha_of() { sha256sum "$1" | cut -d' ' -f1; }
@@ -351,8 +401,27 @@ jobs:
           }
           MANIFEST
           cat latest.json
+          # The manifest must parse and point at the artifacts above.
+          python3 - "$AARCH64" "$X86_64" "$LINUX" <<'PY'
+          import hashlib, json, sys
+          m = json.load(open("latest.json"))
+          for (key, name) in zip(("darwin-aarch64", "darwin-x86_64", "linux-x86_64"), sys.argv[1:]):
+              entry = m["platforms"][key]
+              digest = hashlib.sha256(open(name, "rb").read()).hexdigest()
+              assert entry["url"].endswith("/" + name), (key, entry["url"])
+              assert entry["sha256"] == digest, (key, entry["sha256"], digest)
+          print("latest.json verified")
+          PY
+
+      - name: Dry run summary
+        if: github.event_name == 'workflow_dispatch' && inputs.dry_run
+        shell: bash
+        run: |
+          echo "Dry run: every artifact verified; no release published."
+          ls -la out
 
       - name: Create release
+        if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.dry_run) }}
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.tag.outputs.tag }}
