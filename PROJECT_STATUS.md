@@ -1,11 +1,11 @@
 # rmdv — project status
 
-Last verified: 2026-10-05 (Asia/Taipei)
+Last verified: 2026-10-08 (Asia/Taipei)
 Stale after: 7 days
 Canonical repository: `~/Documents/GitHub/mdv`
 Expected branch / HEAD / PR: start new work from the live `origin/main`
-(`20838b1` when verified). Latest release: `v0.7.0` → `9dd7217`; `main` is
-unreleased since then.
+(`c6087d0` when verified). Latest release: `v0.7.0` → `9dd7217`; `v0.8.0` is
+being prepared (`MDV-039`).
 Authority: This is a routing snapshot. Verify Git, GitHub, runtime identity, and
 manual evidence before mutation.
 
@@ -22,16 +22,20 @@ The refactor roadmap through phase 2 has landed:
 - `MDV-036`: bare-directory launch fix (PR #45).
 - `MDV-031`: phase-3 visual refinement with the opt-in Soft syntax option
   (PR #47).
+- `MDV-037`: optional macOS window glass (PR #51).
+- `MDV-019`: the Settings page (PR #54).
+- `MDV-021`: fail-closed release gates (PR #55, `57badd8`); dry run green.
+- Mind map labels scale with zoom (PR #58, `c6087d0`); release re-runs keep
+  the pdfium dylib (PR #59, `6e45c71`). Both owner-approved.
+- Site copy fixes deployed 2026-10-07 (PR #49; Worker version `b9383cc5`).
 
-The owner approved each merge. Next is the `MDV-037` vibrancy spike, then
-`MDV-019`.
+The owner approved each merge. Next is the v0.8.0 release (`MDV-039`).
 
 ## Live workstreams
 
 | ID | State | Owner | Outcome | Acceptance | Plan |
 | --- | --- | --- | --- | --- | --- |
-| MDV-037 | in_progress | Claude | Spike: optional macOS window vibrancy behind `RMDV_VIBRANCY=1`. | Verify-app screenshots in dark and light themes; idle CPU/memory check; owner keep/tune/drop decision. | Branch `spike/macos-vibrancy`; see [`docs/BACKLOG.md`](docs/BACKLOG.md). |
-| MDV-019 | ready | Claude (next) | Theme Settings and Theme Studio on the MDV-031 tokens. | Owner-approved design, then native acceptance. | Plan to be written. |
+| MDV-039 | in_progress | Claude | Release v0.8.0. | Content-pack checklist. | [`MDV-039`](docs/plans/active/MDV-039-release-v0.8.0.md) |
 
 The roadmap order and every other task are in [`docs/BACKLOG.md`](docs/BACKLOG.md).
 
@@ -40,20 +44,19 @@ The roadmap order and every other task are in [`docs/BACKLOG.md`](docs/BACKLOG.m
 - Merges, tags, releases, and deployments need explicit owner authority per
   action. Pushing branches and opening PRs after verification is authorized for
   roadmap work.
-- Visual work (`MDV-037`, `MDV-019`) needs owner acceptance on device; batch
-  it into one verify build per round.
+- Visual work needs owner acceptance on device; batch it into one verify
+  build per round.
 - Phase-5 tasks (`MDV-032`–`MDV-035`) start with a design for the owner.
 - GitHub Actions: the repo is public and uses standard runners only, which do
   not consume the owner's (exhausted) private-repo minutes. Keep it that way.
-- `MDV-021` (fail-closed release artifact gates) must land before the next
-  release candidate.
+- Release dispatches default to `dry_run: true`; a real release needs
+  `dry_run: false` and owner authority.
 
 ## Next safe actions
 
-1. Build and screenshot the `MDV-037` vibrancy spike; report to the owner for
-   a keep/tune/drop decision.
-2. Write the `MDV-019` plan and design for owner approval.
-3. Record the `MDV-008` clippy baseline (report-only).
+1. Run the v0.8.0 release checks (CI, plus local checks when disk allows), then
+   the native smoke.
+2. Record the `MDV-008` clippy baseline (report-only).
 
 ## Verification state
 

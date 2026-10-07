@@ -11,7 +11,7 @@ rmdv (Rust Markdown Viewer) is a read-focused desktop app for macOS, Windows, an
 ## Source and releases
 
 - [GitHub repository](https://github.com/minchenlee/rmdv): Source code, issue tracker, pull requests. MIT license.
-- [Releases](https://github.com/minchenlee/rmdv/releases): Pre-built binaries for macOS, Linux, and Windows with published SHA-256 checksums. Latest: v0.7.0 (2026-08-14).
+- [Releases](https://github.com/minchenlee/rmdv/releases): Pre-built binaries for macOS, Linux, and Windows with published SHA-256 checksums. Latest: v0.8.0 (2026-10-07).
 
 ## Key facts
 
@@ -36,6 +36,9 @@ rmdv has an agent-controllable IPC socket. Historical v0.2.0 benchmarks were mea
 - Live reload on file save
 - Manual refresh (⌘R), Finder reveal (⌘⌥R), and focused-path copy (⌘⌥C)
 - Auto-update: checks GitHub releases and verifies SHA-256
+- Settings page (⌘,): every preference on one keyboard-driven page — theme cards, Soft syntax colors, window glass, font size, footer, hidden files, Mindmap auto-center, CLI install
+- Window glass (macOS): optional blur behind the sidebar or the whole window, opacity 60–90%
+- Quick Slots: nine per-workspace slots (⌘N adds the current file, ⌘1–9 jump)
 - Themes: 10 built-in presets — One Light/Dark, GitHub Light/Dark, Solarized Light/Dark, Gruvbox, Nord, Dracula, Tokyo Night
 - Keyboard-first navigation: j/k/g/G and Home/End for reader top/bottom; ⌘N
   adds the current file to the next empty Quick Slot; outside Zen, ⌘↑/⌘↓ cycle

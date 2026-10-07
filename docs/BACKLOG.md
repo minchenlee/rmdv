@@ -1,6 +1,6 @@
 # rmdv project backlog
 
-Last triaged: 2026-10-05
+Last triaged: 2026-10-07
 
 ## State model
 
@@ -13,18 +13,16 @@ contract passed; code or prose merely existing is not sufficient.
 
 Roadmap order (owner-approved 2026-10-04, re-confirmed 2026-10-05): phases 0–2,
 MDV-023, MDV-029, MDV-024 to MDV-028, MDV-036, and the phase-3 visual pass
-MDV-031 have landed (PRs #28–#47). Next is the vibrancy spike (MDV-037) and
-MDV-019, with the remaining phase-4 items
-(MDV-008, MDV-030) alongside. Phase 5 tasks (MDV-032 to MDV-035) start with a
+MDV-031, window glass (MDV-037), and the Settings page (MDV-019) have landed
+(PRs #28–#59). Next is the v0.8.0 release (MDV-039; MDV-021 landed), with the
+remaining phase-4 items (MDV-008, MDV-030) alongside. Phase 5 tasks (MDV-032 to MDV-035) start with a
 design for the owner, not code. Sources:
 [`MDV-022`](plans/completed/MDV-022-refactor-phases-0-2.md) and
 [`MDV-024–028`](plans/completed/MDV-024-028-phase-2-performance.md).
 
 | ID | Priority | State | Outcome | Acceptance | Plan | Blocked by |
 | --- | --- | --- | --- | --- | --- | --- |
-| MDV-021 | P1 | submitted | Release workflow fails closed: the macOS DMG containers are Developer ID signed, notarized, stapled, and Gatekeeper-checked; app bundles are verified after stapling; the publish job requires every macOS/Linux artifact non-empty, requires both Windows executables when any is uploaded, checks `SHA256SUMS`, and verifies `latest.json`. A `dry_run` dispatch input exercises everything without publishing. | A dry-run `workflow_dispatch` on the PR head passes every job, and the gate script rejects missing, empty, and partial artifact sets. | — | — |
-| MDV-037 | P2 | in_progress | Spike: optional macOS window vibrancy. A transparent window with an AppKit blur behind a translucent sidebar, behind `RMDV_VIBRANCY=1`. Decide keep, tune, or drop. | Verify app shows the blur behind the sidebar in dark and light themes without text-contrast loss or idle CPU/memory regression; owner decision. | — | Owner time. |
-| MDV-019 | P1 | design | Settings page (`⌘,`): every preference with its current value, changed in place and kept across launches (Appearance, Reading, Agent & CLI, Advanced). Built on the MDV-031 tokens; supersedes the old Theme Settings scope. | Owner approves the design, then owner native acceptance. | [`MDV-019`](plans/active/MDV-019-settings-page.md) | Owner design approval. |
+| MDV-039 | P1 | in_progress | Release v0.8.0 (Settings page, window glass, Quick Slots, visual refresh, phase-2 performance). | Content-pack checklist complete: local release checks, native smoke, verified signed artifacts, live site. | [`MDV-039`](plans/active/MDV-039-release-v0.8.0.md) | Owner authority for tag and deploy. |
 | MDV-019b | P2 | proposed | Theme Studio on the Settings page: custom-theme editing, `Import Theme…`, and the website theme gallery/composer (the pre-split candidate is reference only). | Design after MDV-019 lands. | — | — |
 | MDV-038 | P3 | proposed | After `goto`, a table row clipped at the viewport top sometimes renders without text (seen in screenshots on both pre- and post-MDV-031 builds). | Reproduce with the IPC harness, find the cause, and fix or record a bounded limitation. | — | — |
 | MDV-008 | P2 | ready | Clippy baseline: report-only in CI first, then tighten lint by lint. (The rustfmt half landed in PR #28; include the existing unused `Section` import warning in `tests/ipc_protocol.rs`.) | Recorded warning count; each tightening PR is lint-only with no behavior diff. | — | — |
@@ -50,6 +48,9 @@ design for the owner, not code. Sources:
 
 | ID | Outcome | Evidence route |
 | --- | --- | --- |
+| MDV-021 | Release workflow fails closed: DMG containers signed, notarized, stapled, and Gatekeeper-checked; every artifact required and checksummed; `dry_run` dispatch mode. | PR #55 (`57badd8`); dry run 37559928672 green (app and DMG `accepted source=Notarized Developer ID`, no release created). |
+| MDV-019 | Settings page (`⌘,`): every preference on one keyboard-driven page, with restart for glass; owner-accepted. | PR #54 (`4204211`) and [`docs/plans/completed/MDV-019-settings-page.md`](plans/completed/MDV-019-settings-page.md). |
+| MDV-037 | Optional macOS window glass (Off / Sidebar / Window, opacity 60–90%); owner-accepted. | PR #51 (`f522cf1`). |
 | MDV-031 | Visual refinement: derived overlay tokens, a 6/10/16 radius ladder with elevation, light-theme contrast fixes, a code-block recipe, and an opt-in Soft syntax option; owner-approved. | PR #47 and [`docs/plans/completed/MDV-031-visual-refinement.md`](plans/completed/MDV-031-visual-refinement.md). |
 | MDV-036 | A bare directory launch argument opens the workspace without a "Couldn't open file" card. | [PR #45](https://github.com/minchenlee/rmdv/pull/45), squash `3909cfa`. |
 | MDV-024–028 | Phase-2 performance round (sidebar rows, editor keystroke, local images, window events, mindmap animation) plus two acceptance fixes (⌘Z undo/scroll, lazy scan of budget-skipped folders); owner-accepted on device. | PRs #37–#43 and [`docs/plans/completed/MDV-024-028-phase-2-performance.md`](plans/completed/MDV-024-028-phase-2-performance.md). |
