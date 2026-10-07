@@ -82,10 +82,10 @@
           const hit = rel.assets.find((as) => as.name.endsWith(suffix));
           if (hit) a.href = hit.browser_download_url;
         });
-        // Primary button stays OS-agnostic: it just scrolls to the Install
-        // section (href="#install"). Only stamp the version into its label.
-        const primary = $('#dl-primary');
-        if (rel.tag_name) primary.textContent = 'Download ' + rel.tag_name;
+        // The primary button keeps href="#install" (Apple Silicon and Intel
+        // builds live there). Only refresh the static version next to it.
+        const version = $('#dl-version');
+        if (version && rel.tag_name) version.textContent = rel.tag_name;
       })
       .catch(() => {});
   }

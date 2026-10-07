@@ -262,9 +262,9 @@
       <span>rmdv</span>
     </a>
     <nav class="top-nav">
+      <a href="#agents">Agents</a>
       <a href="#workspace">Workspace</a>
       <a href="#controls">Controls</a>
-      <a href="#agents">Agents</a>
       <a href="#install">Install</a>
       <a href="https://github.com/minchenlee/rmdv" class="gh">GitHub</a>
     </nav>
@@ -277,10 +277,10 @@
       <div class="rail-path"><span>~/projects</span><strong>/rmdv</strong></div>
       <nav class="rail-tree" aria-label="Page outline">
         <a class="current" href="#top"><span>▾</span> README.md</a>
+        <a href="#agents"><span>├</span> cli</a>
         <a href="#workspace"><span>├</span> workspace</a>
         <a href="#rendering"><span>├</span> rendering</a>
-        <a href="#controls"><span>├</span> controls</a>
-        <a href="#agents"><span>└</span> ipc</a>
+        <a href="#controls"><span>└</span> controls</a>
       </nav>
       <dl class="rail-facts">
         <div><dt>runtime</dt><dd>native Rust</dd></div>
@@ -295,17 +295,26 @@
     <div class="reader-hero">
       <div class="document-path"><span>README.md</span><span>preview</span></div>
       <div class="hero-copy">
+        <!-- AI disclosure, chosen copy. Alternatives for the owner to pick:
+             A: <span class="ai-badge-text">Made with AI. Reviewed by a human. Proudly.</span>
+             B: <span class="ai-badge-text">Built with AI, every release tested: 470+ library tests</span>
+             (B: keep "470+" as a floor; it is from the v0.8.0 release notes, 472 library tests as of PR #54.) -->
+        <a class="ai-badge" href="#made-with-ai">
+          <span class="ai-badge-mark" aria-hidden="true">✦</span>
+          <span class="ai-badge-text">100% made with AI, human-directed, and proud of it</span>
+        </a>
         <h1 id="hero-title">Read the whole Markdown workspace.</h1>
-        <p>
-          rmdv opens a folder as a fast, native reading surface: file tree,
-          rendered documents, mindmaps, diagrams, search, and a command line
-          that can keep the right section in view.
+        <p class="hero-lead">
+          Native Mermaid, LaTeX math, and mind maps in a Rust app with no
+          Electron and a ~150&nbsp;ms cold start (<a href="#evidence">historical benchmark</a>).
+          An agent-drivable CLI keeps the right section in view.
         </p>
         <div class="cta">
-          <a class="btn primary" id="dl-primary" href="#install">Download</a>
-          <a class="btn" href="https://github.com/minchenlee/rmdv">Browse the source</a>
+          <a class="btn primary" id="dl-primary" href="#install">Download for macOS <span class="btn-version" id="dl-version">v0.8.0</span></a>
+          <a class="btn quiet" href="https://github.com/minchenlee/rmdv">Browse the source</a>
         </div>
-        <p class="runtime-note">No Electron · no webview · no JavaScript runtime in the app · 100% made with AI</p>
+        <!-- Reserved for a future Homebrew line once the tap exists. -->
+        <p class="trust-line">MIT license · macOS builds signed and notarized · by the author of <a href="https://github.com/minchenlee/c9watch">c9watch</a> · <a href="#evidence">benchmarks</a> · also on <a href="#install">Linux</a></p>
       </div>
       <figure class="hero-capture">
         <button class="shot-trigger" type="button" aria-label="View full-size rmdv workspace screenshot">
@@ -314,9 +323,39 @@
                sizes="(max-width: 800px) 100vw, 980px"
                alt="rmdv showing a project file tree beside its rendered README" width="1920" height="1149">
         </button>
-        <img class="ai-sticker" src="assets/ai-sticker.webp" width="640" height="424" alt="100% AI">
         <figcaption><span>README.md</span><span>One Dark · 100%</span></figcaption>
       </figure>
+    </div>
+  </section>
+
+  <section class="chapter" id="agents">
+    <header class="chapter-heading">
+      <h2>The reader has a command line.</h2>
+      <p>Shell scripts, editor extensions, and coding agents can keep the running window on the file and heading a person needs. Each command returns one line of JSON.</p>
+    </header>
+    <div class="agent-layout">
+      <figure class="agent-session">
+        <pre class="code" data-lang="bash"><code><span class="c"># open a spec at the section under discussion</span>
+<span class="p">$</span> rmdv open docs/spec.md --section <span class="s">"API/Authentication"</span>
+<span class="o">{"id":1,"ok":true}</span>
+
+<span class="c"># ask the window where the reader is</span>
+<span class="p">$</span> rmdv current
+<span class="o">{"id":1,"ok":true,"result":{"file":"/repo/docs/spec.md",</span>
+<span class="o"> "line":42,"mode":"view","folder":"/repo"}}</span>
+
+<span class="c"># outline a file; no window needed</span>
+<span class="p">$</span> rmdv list-sections docs/spec.md | jq -r <span class="s">'.[].path'</span>
+<span class="o">API</span>
+<span class="o">API/Authentication</span>
+<span class="o">API/Rate limits</span></code></pre>
+        <figcaption>Example session. Commands and response fields are the real CLI; the file, paths, and line number are illustrative. <code>rmdv current</code> prints one line, wrapped here to fit.</figcaption>
+      </figure>
+      <div class="agent-notes">
+        <p><strong>One native instance.</strong> Commands talk to the running app over a local socket.</p>
+        <p><strong>Useful state, not prose.</strong> Machine-readable responses make the interface dependable in scripts.</p>
+        <p><strong>Human stays oriented.</strong> An agent can reveal its source material at the exact section being discussed.</p>
+      </div>
     </div>
   </section>
 
@@ -387,30 +426,6 @@
     <p class="shortcut-note">On Windows and Linux, rmdv uses Ctrl instead of <kbd data-mod>⌘</kbd>. The seven app shortcuts above are shown for reference and are not captured by this website.</p>
   </section>
 
-  <section class="chapter" id="agents">
-    <header class="chapter-heading">
-      <h2>The reader has a command line.</h2>
-      <p>Shell scripts, editor extensions, and coding agents can keep the running window on the file and heading a person needs. Each command returns one line of JSON.</p>
-    </header>
-    <div class="agent-layout">
-      <pre class="code" data-lang="bash"><code><span class="c"># open a spec at the relevant line</span>
-rmdv path/to/spec.md --line 42
-
-<span class="c"># move the existing window</span>
-rmdv goto --section <span class="s">"API/Authentication"</span>
-rmdv mode mindmap
-rmdv current
-
-<span class="c"># inspect a file without opening a window</span>
-rmdv list-sections spec.md | jq -r <span class="s">'.[].path'</span></code></pre>
-      <div class="agent-notes">
-        <p><strong>One native instance.</strong> Commands talk to the running app over a local socket.</p>
-        <p><strong>Useful state, not prose.</strong> Machine-readable responses make the interface dependable in scripts.</p>
-        <p><strong>Human stays oriented.</strong> An agent can reveal its source material at the exact section being discussed.</p>
-      </div>
-    </div>
-  </section>
-
   <section class="chapter" id="evidence">
     <header class="chapter-heading">
       <h2>Small enough to feel immediate.</h2>
@@ -473,7 +488,7 @@ cd rmdv &amp;&amp; cargo build --release</code></pre>
     <div class="footer-meta">
       <div class="footer-identity"><strong>rmdv</strong><span>Open the folder. Start reading.</span></div>
       <p class="footer-links">MIT licensed · <a href="https://github.com/minchenlee/rmdv">source</a> · <a href="https://github.com/minchenlee/rmdv/releases">changelog</a> · built with <a href="https://iced.rs">Iced</a></p>
-      <p class="fine footer-note">Plain HTML, CSS, and a few KB of JS. rmdv is 100% made with AI, with human taste checks and final decisions by Min-Chen Lee, using <a href="https://claude.com/claude-code">Claude Code</a>. The <a href="https://github.com/minchenlee/rmdv">source is open</a>; judge it on its merits.</p>
+      <p class="fine footer-note" id="made-with-ai">rmdv is 100% made with AI, using <a href="https://claude.com/claude-code">Claude Code</a>, with taste checks and final decisions by Min-Chen Lee. That is how it is built, and it is a point of pride, not a caveat. The <a href="https://github.com/minchenlee/rmdv">source is open</a>; judge it on its merits. This page is plain HTML, CSS, and a few KB of JS.</p>
     </div>
   </footer>
 
