@@ -1423,8 +1423,9 @@ mod tests {
                 // A label fitted at FONT_SIZE still fits the scaled node.
                 assert!(label_w * size / FONT_SIZE <= label_w * z + 0.01, "z={z}");
                 assert!(size <= NODE_H * z, "z={z}");
-                // And it keeps tracking the zoom instead of staying fixed.
-                assert!(size >= FONT_SIZE * z * 0.85, "z={z} size={size}");
+                // And it tracks the zoom within one pixel, so zooming feels
+                // continuous instead of stepping between coarse sizes.
+                assert!(size > FONT_SIZE * z - 1.0, "z={z} size={size}");
             }
             z += 0.01;
         }
