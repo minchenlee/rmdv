@@ -130,9 +130,11 @@ fn fit_label_at(s: &str, max_width: f32, size: f32) -> (String, bool) {
 
 /// Font sizes node labels snap to. A short fixed ladder keeps the glyph
 /// atlas to a handful of sizes while zooming.
-const LABEL_FONT_LADDER: [f32; 17] = [
-    8.0, 9.0, 10.0, 11.0, 12.0, 13.0, 14.0, 16.0, 18.0, 20.0, 23.0, 26.0, 30.0, 34.0, 40.0, 48.0,
-    56.0,
+/// Adjacent steps differ by at most ~14%, so snapping down never shrinks a
+/// label more than that.
+const LABEL_FONT_LADDER: [f32; 19] = [
+    8.0, 9.0, 10.0, 11.0, 12.0, 13.0, 14.0, 16.0, 18.0, 20.0, 22.0, 25.0, 28.0, 31.0, 35.0, 39.0,
+    44.0, 49.0, 56.0,
 ];
 
 /// Screen font size for node labels at zoom `z`: `FONT_SIZE * z` snapped down
