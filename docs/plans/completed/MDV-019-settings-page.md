@@ -1,10 +1,10 @@
 # MDV-019 — Settings page
 
-State: implementing
+State: done
 Owner / accountable lead: owner (minchenlee); implementation by Claude
-Active writer: Claude
+Active writer: none
 Created: 2026-10-06
-Updated: 2026-10-06
+Updated: 2026-10-07
 
 ## Outcome
 
@@ -169,8 +169,8 @@ start implementation. The three open questions take the recommended answers:
 
 - [x] Owner approved the direction (2026-10-06).
 - [x] Owner approved this design and the interactive mockup (2026-10-06).
-- [ ] Implementation, tests, screenshots, PR.
-- [ ] Owner native acceptance.
+- [x] Implementation and tests: PR #54, CI green on Linux, macOS, Windows, and audit. Screenshots were not taken: IPC cannot open the page and keystroke injection is blocked.
+- [x] Owner native acceptance on the Verify app (2026-10-06); squash-merged as `4204211`.
 
 ## Decision log
 
@@ -180,3 +180,4 @@ start implementation. The three open questions take the recommended answers:
 | 2026-10-06 | One column with section headers, no navigation rail in v1. | About 14 rows; a rail adds navigation without saving scrolling. |
 | 2026-10-06 | Recommended answers to the three open questions. | Owner approved the design and mockup and asked to start. |
 | 2026-10-06 | Restart waits for this process to exit, then reopens the current file or folder. | The new instance must not meet the old one's IPC socket. |
+| 2026-10-06 | Keep font size as a percentage; Full Mindmap keeps always-on auto-center. | Owner acceptance: auto-center works in Document Mindmap; no px change wanted. |
