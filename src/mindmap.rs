@@ -128,25 +128,17 @@ fn fit_label_at(s: &str, max_width: f32, size: f32) -> (String, bool) {
     (acc, true)
 }
 
-/// Font sizes node labels snap to. A short fixed ladder keeps the glyph
-/// atlas to a handful of sizes while zooming.
-/// Adjacent steps differ by at most ~14%, so snapping down never shrinks a
-/// label more than that.
-const LABEL_FONT_LADDER: [f32; 19] = [
-    8.0, 9.0, 10.0, 11.0, 12.0, 13.0, 14.0, 16.0, 18.0, 20.0, 22.0, 25.0, 28.0, 31.0, 35.0, 39.0,
-    44.0, 49.0, 56.0,
-];
+/// Smallest label size worth drawing; below it the text is hidden.
+const LABEL_FONT_MIN: f32 = 8.0;
 
-/// Screen font size for node labels at zoom `z`: `FONT_SIZE * z` snapped down
-/// to the ladder, so a label fitted at `FONT_SIZE` still fits its scaled node.
-/// `None` when the text would be too small to read.
+/// Screen font size for node labels at zoom `z`: `FONT_SIZE * z` rounded down
+/// to a whole pixel, so a label fitted at `FONT_SIZE` still fits its scaled
+/// node and the glyph atlas only sees whole-pixel sizes (sub-pixel sizes
+/// re-rasterize glyphs on every zoom event). `None` when the text would be
+/// too small to read.
 fn label_font_size(z: f32) -> Option<f32> {
-    let ideal = FONT_SIZE * z + 0.001;
-    LABEL_FONT_LADDER
-        .iter()
-        .rev()
-        .copied()
-        .find(|&s| s <= ideal)
+    let size = (FONT_SIZE * z + 0.001).floor();
+    (size >= LABEL_FONT_MIN).then_some(size)
 }
 
 /// Fit `s` into a node's inner width at the unified `FONT_SIZE`. Truncates
