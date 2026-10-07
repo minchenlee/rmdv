@@ -128,6 +128,19 @@ fn fit_label_at(s: &str, max_width: f32, size: f32) -> (String, bool) {
     (acc, true)
 }
 
+/// Smallest label size worth drawing; below it the text is hidden.
+const LABEL_FONT_MIN: f32 = 8.0;
+
+/// Screen font size for node labels at zoom `z`: `FONT_SIZE * z` rounded down
+/// to a whole pixel, so a label fitted at `FONT_SIZE` still fits its scaled
+/// node and the glyph atlas only sees whole-pixel sizes (sub-pixel sizes
+/// re-rasterize glyphs on every zoom event). `None` when the text would be
+/// too small to read.
+fn label_font_size(z: f32) -> Option<f32> {
+    let size = (FONT_SIZE * z + 0.001).floor();
+    (size >= LABEL_FONT_MIN).then_some(size)
+}
+
 /// Fit `s` into a node's inner width at the unified `FONT_SIZE`. Truncates
 /// with `…` if it overflows.
 pub(crate) fn fit_label_for_node(s: &str) -> (String, bool) {
@@ -1273,10 +1286,9 @@ where
             }
         }
 
-        // Text: only draw when the rect is large enough to contain it.
-        // Uniform font size keeps the glyph atlas warm across zoom levels.
-        let min_visible_height = FONT_SIZE * 1.1;
-        if s_h >= min_visible_height {
+        // Text scales with the nodes, snapped to a short size ladder so the
+        // glyph atlas stays warm; it is hidden once it would be unreadable.
+        if let Some(label_size) = label_font_size(z) {
             for (i, n) in self.nodes.iter().enumerate() {
                 let (nx, ny) = positions[i];
                 let sx = proj_x(nx);
@@ -1293,7 +1305,7 @@ where
                     content: n.label.clone(),
                     position: Point::new(sx + s_w / 2.0, sy + s_h / 2.0),
                     color: text_color,
-                    size: iced::Pixels(FONT_SIZE),
+                    size: iced::Pixels(label_size),
                     align_x: iced::alignment::Horizontal::Center.into(),
                     align_y: iced::alignment::Vertical::Center.into(),
                     ..Text::default()
@@ -1388,6 +1400,29 @@ fn append_rounded_rect(b: &mut path::Builder, x: f32, y: f32, w: f32, h: f32, r:
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn label_font_scales_with_zoom_and_fits_the_node() {
+        assert_eq!(label_font_size(1.0), Some(FONT_SIZE));
+        // Too small to read: no text instead of glyphs spilling past the node.
+        assert_eq!(label_font_size(0.5), None);
+        assert_eq!(label_font_size(ZOOM_MIN), None);
+
+        let label_w = NODE_W - TEXT_INSET_X * 2.0;
+        let mut z = ZOOM_MIN;
+        while z <= ZOOM_MAX {
+            if let Some(size) = label_font_size(z) {
+                // A label fitted at FONT_SIZE still fits the scaled node.
+                assert!(label_w * size / FONT_SIZE <= label_w * z + 0.01, "z={z}");
+                assert!(size <= NODE_H * z, "z={z}");
+                // And it tracks the zoom within one pixel, so zooming feels
+                // continuous instead of stepping between coarse sizes.
+                assert!(size > FONT_SIZE * z - 1.0, "z={z} size={size}");
+            }
+            z += 0.01;
+        }
+        assert!(label_font_size(ZOOM_MAX).unwrap() >= FONT_SIZE * 3.0);
+    }
 
     fn heading(id: u64, level: u8, label: &str) -> (BlockId, Block) {
         (
