@@ -131,79 +131,47 @@
       "@type": "FAQPage",
       "@id": "https://rmdv.mclee.dev/#faq",
       "mainEntity": [
-        {
-          "@type": "Question",
-          "name": "Is rmdv free and open source?",
-          "acceptedAnswer": {
-            "@type": "Answer",
-            "text": "Yes. rmdv is MIT-licensed and free to use, modify, and distribute. Source code is at github.com/minchenlee/rmdv."
+          {
+            "@type": "Question",
+            "name": "Is rmdv free and open source?",
+            "acceptedAnswer": {
+              "@type": "Answer",
+              "text": "Yes. rmdv is MIT-licensed and free to use, modify, and distribute. Source code is at github.com/minchenlee/rmdv."
+            }
+          },
+          {
+            "@type": "Question",
+            "name": "How is rmdv different from Obsidian?",
+            "acceptedAnswer": {
+              "@type": "Answer",
+              "text": "rmdv is a read-focused viewer, not a note-linking knowledge base. It opens folders without vault setup and has no plugin ecosystem. Mermaid diagrams and LaTeX math render natively."
+            }
+          },
+          {
+            "@type": "Question",
+            "name": "What is the difference between document Mindmap and Full Mindmap?",
+            "acceptedAnswer": {
+              "@type": "Answer",
+              "text": "Document Mindmap (Cmd+M) turns the current Markdown, JSON, YAML, or TOML document into a tree. Full Mindmap (Cmd+Shift+M) is an app-level workspace navigator: it shows the folders and files in a workspace and lets you preview or open a selected file. The two surfaces are separate, so entering one does not overwrite the other."
+            }
+          },
+          {
+            "@type": "Question",
+            "name": "Does rmdv process Markdown locally?",
+            "acceptedAnswer": {
+              "@type": "Answer",
+              "text": "rmdv renders Markdown and diagrams locally. The app may make network requests for update checks and remote images referenced by a document."
+            }
+          },
+          {
+            "@type": "Question",
+            "name": "How do I install rmdv?",
+            "acceptedAnswer": {
+              "@type": "Answer",
+              "text": "On macOS, download the .dmg from github.com/minchenlee/rmdv/releases and drag rmdv to Applications. After opening the app, use Install CLI from the command palette to expose rmdv in /usr/local/bin. On Linux, download the x86_64 AppImage, launch it once, and use Install CLI from the command palette to create ~/.local/bin/rmdv; add ~/.local/bin to PATH if needed. To build from source, install Rust 1.80 or newer, then run: git clone https://github.com/minchenlee/rmdv && cd rmdv && cargo build --release. Windows builds use cargo build --release --no-default-features because PDF extraction is macOS/Linux only."
+            }
           }
-        },
-        {
-          "@type": "Question",
-          "name": "How is rmdv different from Obsidian?",
-          "acceptedAnswer": {
-            "@type": "Answer",
-            "text": "rmdv is a read-focused viewer, not a note-linking knowledge base. It opens folders without vault setup and has no plugin ecosystem. Mermaid diagrams and LaTeX math render natively."
-          }
-        },
-        {
-          "@type": "Question",
-          "name": "What is the difference between document Mindmap and Full Mindmap?",
-          "acceptedAnswer": {
-            "@type": "Answer",
-            "text": "Document Mindmap (Cmd+M) turns the current Markdown, JSON, YAML, or TOML document into a tree. Full Mindmap (Cmd+Shift+M) is an app-level workspace navigator: it shows the folders and files in a workspace and lets you preview or open a selected file. The two surfaces are separate, so entering one does not overwrite the other."
-          }
-        },
-        {
-          "@type": "Question",
-          "name": "How is rmdv different from Typora?",
-          "acceptedAnswer": {
-            "@type": "Answer",
-            "text": "Typora is a paid editor-first app for macOS and Windows. rmdv is free, open source, read-focused, and also runs on Linux. It renders Mermaid diagrams and LaTeX math without a webview; Typora uses an embedded browser for rendering."
-          }
-        },
-        {
-          "@type": "Question",
-          "name": "Does rmdv process Markdown locally?",
-          "acceptedAnswer": {
-            "@type": "Answer",
-            "text": "rmdv renders Markdown and diagrams locally. The app may make network requests for update checks and remote images referenced by a document."
-          }
-        },
-        {
-          "@type": "Question",
-          "name": "What diagram and math formats does rmdv support?",
-          "acceptedAnswer": {
-            "@type": "Answer",
-            "text": "rmdv renders Mermaid diagrams (all major diagram types) and Graphviz DOT graphs natively in Rust. Block LaTeX math ($$...$$) uses a pure-Rust layout engine with no JavaScript and no KaTeX."
-          }
-        },
-        {
-          "@type": "Question",
-          "name": "How does rmdv work with Claude Code or other AI coding agents?",
-          "acceptedAnswer": {
-            "@type": "Answer",
-            "text": "rmdv runs as a single instance with a Unix socket IPC interface. An agent uses the rmdv CLI to open files, jump to specific headings, or switch view modes programmatically. Every command returns one line of JSON. The agent can keep a spec file open in rmdv at the exact section the human needs while continuing its own work."
-          }
-        },
-        {
-          "@type": "Question",
-          "name": "How do I install rmdv?",
-          "acceptedAnswer": {
-            "@type": "Answer",
-            "text": "On macOS, download the .dmg from github.com/minchenlee/rmdv/releases and drag rmdv to Applications. After opening the app, use Install CLI from the command palette to expose rmdv in /usr/local/bin. On Linux, download the x86_64 AppImage, launch it once, and use Install CLI from the command palette to create ~/.local/bin/rmdv; add ~/.local/bin to PATH if needed. To build from source, install Rust 1.80 or newer, then run: git clone https://github.com/minchenlee/rmdv && cd rmdv && cargo build --release. Windows builds use cargo build --release --no-default-features because PDF extraction is macOS/Linux only."
-          }
-        },
-        {
-          "@type": "Question",
-          "name": "Is rmdv faster than Electron-based markdown viewers?",
-          "acceptedAnswer": {
-            "@type": "Answer",
-            "text": "rmdv is a native Rust application with no Electron, embedded webview, or JavaScript runtime. Historical v0.2.0 benchmarks on an Apple M2 MacBook Pro measured first view at about 150 ms and parsing a 10,000-line document at 8.1 ms; current builds may differ."
-          }
-        }
-      ]
+        ]
     },
     {
       "@type": "HowTo",
@@ -324,7 +292,7 @@
 
   <section class="chapter" id="agents">
     <header class="chapter-heading">
-      <h2>The reader has a command line.</h2>
+      <h2>Drive the window from a shell script.</h2>
       <p>Shell scripts, editor extensions, and coding agents can keep the running window on the file and heading a person needs. Each command returns one line of JSON.</p>
     </header>
     <div class="agent-layout">
@@ -355,7 +323,7 @@
 
   <section class="chapter" id="workspace">
     <header class="chapter-heading">
-      <h2>A folder becomes a workspace.</h2>
+      <h2>Open any folder as a workspace.</h2>
       <p>Open existing files where they already live. There is no import step, vault format, or hidden copy.</p>
     </header>
     <div class="chapter-body">
@@ -374,9 +342,9 @@
     </div>
   </section>
 
-  <section class="chapter" id="rendering">
+  <section class="chapter chapter-stacked" id="rendering">
     <header class="chapter-heading">
-      <h2>The document stays the visual focus.</h2>
+      <h2>Markdown, code, diagrams, math, and data files.</h2>
       <p>Markdown, code, diagrams, math, JSON, YAML, TOML, and text PDFs are rendered locally with the same restrained interface around them.</p>
     </header>
     <div class="capture-sequence">
@@ -405,7 +373,7 @@
 
   <section class="chapter" id="controls">
     <header class="chapter-heading">
-      <h2>Built around the keys you already use.</h2>
+      <h2>Seven shortcuts cover the reader.</h2>
       <p>The table uses the reader's native app bindings and names. Try <kbd data-key="j">j</kbd> and <kbd data-key="k">k</kbd> on this page, or press <kbd data-mod>⌘</kbd><kbd data-key="/">/</kbd> for website shortcuts.</p>
     </header>
     <div class="command-table" role="list" aria-label="rmdv reader keyboard shortcuts">
@@ -420,39 +388,35 @@
     <p class="shortcut-note">On Windows and Linux, rmdv uses Ctrl instead of <kbd data-mod>⌘</kbd>. The seven app shortcuts above are shown for reference and are not captured by this website.</p>
   </section>
 
-  <section class="chapter" id="evidence">
+  <section class="chapter chapter-stacked chapter-stats" id="evidence">
     <header class="chapter-heading">
-      <h2>Small enough to feel immediate.</h2>
+      <h2>About 150 ms to first paint.</h2>
       <p>The renderer is viewport-aware: only visible blocks become widgets. These historical measurements are evidence, not current guarantees.</p>
     </header>
     <div class="measurement-table">
-      <div><span>Cold start to first paint</span><strong>~150 ms</strong></div>
-      <div><span>Parse a 10,000-line document</span><strong>8.1 ms</strong></div>
+      <div><strong>~150 ms</strong><span>Cold start to first paint</span></div>
+      <div><strong>8.1 ms</strong><span>Parse a 10,000-line document</span></div>
     </div>
     <p class="fine">v0.2.0 on an Apple M2 MacBook Pro, median of five runs; current builds may differ. <a href="https://github.com/minchenlee/rmdv/blob/main/docs/benchmarks.md">Read the methodology.</a></p>
   </section>
 
   <section class="chapter" id="faq">
     <header class="chapter-heading">
-      <h2>Before you install.</h2>
-      <p>The important boundaries, stated plainly.</p>
+      <h2>Five questions before you install.</h2>
+      <p>The answers a first-time visitor usually needs.</p>
     </header>
     <dl class="answer-list">
       <div><dt>Is rmdv free and open source?</dt><dd>Yes. rmdv is MIT-licensed and free to use, modify, and distribute. The <a href="https://github.com/minchenlee/rmdv">source is public on GitHub</a>.</dd></div>
-      <div><dt>What is the difference between document Mindmap and Full Mindmap?</dt><dd>Document Mindmap turns the current Markdown, JSON, YAML, or TOML file into a tree. Full Mindmap is a separate workspace navigator for folders and files, with a read-only preview.</dd></div>
       <div><dt>How is rmdv different from Obsidian?</dt><dd>rmdv is a read-focused viewer, not a note-linking knowledge base. It opens folders without vault setup and has no plugin ecosystem.</dd></div>
-      <div><dt>How is rmdv different from Typora?</dt><dd>Typora is a paid editor-first app. rmdv is free, open source, read-focused, and runs on macOS, Linux, and Windows.</dd></div>
       <div><dt>Does rmdv process Markdown locally?</dt><dd>rmdv renders Markdown and diagrams locally. The app may make network requests for update checks and remote images referenced by a document.</dd></div>
-      <div><dt>What diagram and math formats are supported?</dt><dd>Mermaid, Graphviz DOT, and block LaTeX are rendered natively, without JavaScript or KaTeX.</dd></div>
-      <div><dt>How does rmdv work with coding agents?</dt><dd>The <code>rmdv</code> CLI can open files, jump to headings, change view modes, and return current state as JSON over local IPC.</dd></div>
+      <div><dt>What is the difference between document Mindmap and Full Mindmap?</dt><dd>Document Mindmap turns the current Markdown, JSON, YAML, or TOML file into a tree. Full Mindmap is a separate workspace navigator for folders and files, with a read-only preview.</dd></div>
       <div><dt>How do I install it?</dt><dd>Use the macOS disk image, the Linux AppImage, or build from source with Rust 1.80 or newer. After opening a packaged app, use Install CLI from the command palette to expose the rmdv command. Windows builds disable the PDF feature.</dd></div>
-      <div><dt>Is it faster than Electron-based viewers?</dt><dd>rmdv has no Electron, webview, or JavaScript runtime. Historical v0.2.0 measurements found about 150 ms to first view; current builds may differ.</dd></div>
     </dl>
   </section>
 
   <section class="install-chapter" id="install">
     <div class="install-intro">
-      <h2>Open the folder. Start reading.</h2>
+      <h2>Install rmdv on macOS or Linux, or build it.</h2>
       <p>Free, open source, and available as a native desktop app.</p>
     </div>
     <div class="install-options">

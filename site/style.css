@@ -571,14 +571,36 @@ pre.code code { padding: 0; background: transparent; font-size: inherit; }
 .measurement-table span { color: var(--muted); }
 .measurement-table strong { color: var(--fg); font-weight: 400; font-variant-numeric: tabular-nums; }
 
+/* Measurements as two large figures instead of a ruled table. */
+.chapter-stats .measurement-table {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0;
+  border-top: 1px solid var(--rule-strong);
+}
+.chapter-stats .measurement-table > div {
+  min-height: 0;
+  padding: 28px 0 24px;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: flex-start;
+  gap: 8px;
+}
+.chapter-stats .measurement-table > div + div { padding-left: 32px; border-left: 1px solid var(--rule); }
+.chapter-stats .measurement-table strong { font-family: inherit; font-size: 64px; font-weight: 650; line-height: 1; letter-spacing: -.035em; }
+
 .fine { color: var(--subtle); font-size: 12.5px; }
 .chapter > .fine { grid-column: 2; margin: -42px 0 0; }
+/* Stacked chapters: heading above a full-width body, so the product leads. */
+.chapter-stacked { grid-template-columns: minmax(0, 1fr); gap: 40px; }
+.chapter-stacked .chapter-heading h2 { max-width: 22ch; font-size: 44px; }
+.chapter-stacked .chapter-heading p { max-width: 62ch; }
+.chapter-stacked > .fine { grid-column: 1; margin: -12px 0 0; }
 .fine a { color: inherit; }
 
-.answer-list { margin: 0; }
+.answer-list { margin: 0; padding-bottom: 0; border-bottom: 1px solid var(--rule); display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); column-gap: 48px; }
 .answer-list > div { padding: 20px 0; border-top: 1px solid var(--rule); }
-.answer-list > div:first-child { border-top-color: var(--rule-strong); }
-.answer-list > div:last-child { border-bottom: 1px solid var(--rule); }
+.answer-list > div:nth-child(-n+2) { border-top-color: var(--rule-strong); }
 .answer-list dt { color: var(--fg); font-weight: 650; }
 .answer-list dd { max-width: 72ch; margin: 7px 0 0; color: var(--muted); font-size: 14px; }
 .answer-list dd a { color: var(--muted); }
@@ -805,6 +827,9 @@ pre.code code { padding: 0; background: transparent; font-size: inherit; }
   .chapter-heading p,
   .install-intro p { max-width: 58ch; }
   .chapter > .fine { grid-column: 1; margin: -18px 0 0; }
+  .chapter-stacked .chapter-heading h2 { font-size: 36px; }
+  .answer-list { grid-template-columns: 1fr; }
+  .answer-list > div:nth-child(2) { border-top-color: var(--rule); }
   .install-source { grid-template-columns: 1fr; }
 }
 
@@ -818,6 +843,10 @@ pre.code code { padding: 0; background: transparent; font-size: inherit; }
   .chapter-heading h2,
   .install-intro h2 { font-size: 30px; }
   .capture-pair { grid-template-columns: 1fr; }
+  .chapter-stacked .chapter-heading h2 { font-size: 30px; }
+  .chapter-stats .measurement-table { grid-template-columns: 1fr; }
+  .chapter-stats .measurement-table > div + div { padding-left: 0; border-left: 0; border-top: 1px solid var(--rule); }
+  .chapter-stats .measurement-table strong { font-size: 48px; }
   .capability-list > div { grid-template-columns: 74px minmax(0, 1fr); gap: 8px 14px; }
   .capability-list dd:last-child { grid-column: 2; }
   .command-row { grid-template-columns: minmax(0, 1fr) auto; gap: 5px 12px; padding: 12px 0; }
