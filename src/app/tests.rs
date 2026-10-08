@@ -8723,3 +8723,47 @@ fn restart_relaunches_the_bundle_or_the_executable_with_the_open_path() {
         vec![OsString::from("/usr/local/bin/rmdv")]
     );
 }
+
+#[test]
+fn non_latin_input_source_shortcuts_resolve_to_physical_latin_key() {
+    use iced::keyboard::key::{Code, Physical};
+    use iced::keyboard::{Key, Modifiers};
+
+    let cases: [(&str, Code, Modifiers, &str); 7] = [
+        ("ㄖ", Code::KeyB, Modifiers::COMMAND, "b"),
+        ("ㄎ", Code::KeyF, Modifiers::COMMAND | Modifiers::SHIFT, "F"),
+        ("ㄩ", Code::KeyM, Modifiers::COMMAND, "m"),
+        ("，", Code::Comma, Modifiers::COMMAND, ","),
+        (
+            "。",
+            Code::Period,
+            Modifiers::COMMAND | Modifiers::SHIFT,
+            ".",
+        ),
+        ("ㄨ", Code::KeyJ, Modifiers::NONE, "j"),
+        ("ж", Code::KeyG, Modifiers::NONE, "g"),
+    ];
+    for (logical, code, mods, expected) in cases {
+        let key = latin_shortcut_key(Key::Character(logical.into()), Physical::Code(code), mods);
+        assert_eq!(key, Key::Character(expected.into()), "{logical} {code:?}");
+    }
+    assert!(is_settings_key(
+        &latin_shortcut_key(
+            Key::Character("，".into()),
+            Physical::Code(Code::Comma),
+            Modifiers::COMMAND
+        ),
+        Modifiers::COMMAND
+    ));
+    // Latin keys (Dvorak, AZERTY accents) are untouched.
+    let e = Key::Character("é".into());
+    assert_eq!(
+        latin_shortcut_key(e.clone(), Physical::Code(Code::Digit2), Modifiers::COMMAND),
+        e
+    );
+    let d = Key::Character("j".into());
+    assert_eq!(
+        latin_shortcut_key(d.clone(), Physical::Code(Code::KeyC), Modifiers::NONE),
+        d
+    );
+}
