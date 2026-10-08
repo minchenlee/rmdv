@@ -680,10 +680,13 @@ pub(in crate::app) fn overlay_frame<'a>(
     )
     .on_press(Message::CloseOverlay);
 
+    // The panel is `Fill` tall up to `max_h`, so its box has a fixed height
+    // and a fixed top while the result list filters. Centering that box (not
+    // the content) keeps the input row still.
     let centered = container(panel)
-        .padding(Padding::from([80, 40]))
+        .padding(Padding::from([40, 40]))
         .center_x(Length::Fill)
-        .align_y(iced::alignment::Vertical::Top);
+        .center_y(Length::Fill);
 
     iced::widget::stack![scrim, centered].into()
 }

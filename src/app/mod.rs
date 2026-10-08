@@ -2767,6 +2767,10 @@ impl App {
                 if is_primary_modifier_key(&key) {
                     return Message::QuickSlotsModifier(!released);
                 }
+                // A non-Latin input source reports e.g. "ㄖ" for the B key;
+                // match shortcuts on the physical key's Latin character.
+                let key = latin_shortcut_key(key, physical, mods);
+                let modified_key = latin_shortcut_key(modified_key, physical, mods);
                 let cmd = mods.command() || mods.control();
                 // Quick Slot chords are physical-key based so alternate
                 // layouts cannot turn a digit/arrow into a different action.

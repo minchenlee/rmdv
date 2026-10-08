@@ -306,3 +306,48 @@ pub(super) fn fold_level_shortcut(key: &iced::keyboard::Key) -> Option<Message> 
     let depth = value.chars().next()?.to_digit(10)?;
     (depth <= 6).then_some(Message::FoldToLevel(depth as u8))
 }
+
+/// Map a physical key to the ASCII character a US layout would produce.
+fn physical_latin(code: iced::keyboard::key::Code) -> Option<char> {
+    use iced::keyboard::key::Code;
+    Some(match code {
+        Code::Comma => ',',
+        Code::Period => '.',
+        Code::Slash => '/',
+        Code::Minus => '-',
+        Code::Equal => '=',
+        _ => return None,
+    })
+}
+
+/// Under a non-Latin input source (Zhuyin, Pinyin, Japanese, Cyrillic…) the
+/// logical key is a non-Latin character such as "ㄖ", so shortcut matching on
+/// `Key::Character("b")` never fires. Replace such a key with the Latin
+/// character of the physical key. Latin keys pass through unchanged, so
+/// Dvorak/AZERTY layouts keep their own letters.
+pub(super) fn latin_shortcut_key(
+    key: iced::keyboard::Key,
+    physical: iced::keyboard::key::Physical,
+    modifiers: iced::keyboard::Modifiers,
+) -> iced::keyboard::Key {
+    let iced::keyboard::Key::Character(value) = &key else {
+        return key;
+    };
+    if !value.chars().next().is_some_and(|c| c >= '\u{370}') {
+        return key;
+    }
+    let iced::keyboard::key::Physical::Code(code) = physical else {
+        return key;
+    };
+    let latin = key
+        .to_latin(physical)
+        .filter(|c| c.is_ascii())
+        .or_else(|| physical_latin(code));
+    match latin {
+        Some(c) if modifiers.shift() && c.is_ascii_alphabetic() => {
+            iced::keyboard::Key::Character(c.to_ascii_uppercase().to_string().into())
+        }
+        Some(c) => iced::keyboard::Key::Character(c.to_string().into()),
+        None => key,
+    }
+}
