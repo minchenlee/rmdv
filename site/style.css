@@ -371,39 +371,10 @@ main {
 .trust-line a { color: var(--muted); }
 .trust-line a:hover { color: var(--fg); }
 
-/* AI disclosure: a stated fact in the hero meta line, never over a screenshot. */
-.ai-badge {
-  max-width: 100%;
-  margin: 0 0 22px;
-  padding: 5px 12px 5px 8px;
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  border: 1px solid color-mix(in srgb, var(--accent) 55%, transparent);
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--accent) 10%, var(--surface));
-  color: var(--fg);
-  font: 12px/1.4 var(--mono);
-  text-decoration: none;
-  transition: border-color var(--t-fast) var(--ease), background var(--t-fast) var(--ease);
-}
-.ai-badge:hover {
-  border-color: var(--accent);
-  background: color-mix(in srgb, var(--accent) 18%, var(--surface));
-}
-.ai-badge-mark {
-  width: 20px;
-  height: 20px;
-  display: inline-flex;
-  flex: none;
-  align-items: center;
-  justify-content: center;
-  border-radius: 50%;
-  background: var(--accent);
-  color: var(--accent-fg);
-  font-size: 11px;
-  line-height: 1;
-}
+/* AI disclosure: plain text directly under the credibility line. */
+.trust-line.ai-note { margin-top: 4px; }
+.trust-line.ai-note a { color: var(--fg); text-decoration: underline; text-underline-offset: 3px; text-decoration-color: var(--rule); }
+.trust-line.ai-note a:hover { text-decoration-color: var(--accent); }
 .footer-note { scroll-margin-top: 72px; }
 
 .hero-capture {
@@ -844,7 +815,6 @@ pre.code code { padding: 0; background: transparent; font-size: inherit; }
   .hero-copy > p:not(.runtime-note):not(.trust-line) { margin-top: 18px; font-size: 16px; }
   .runtime-note { font-size: 10px; }
   .trust-line { font-size: 10.5px; }
-  .ai-badge { margin-bottom: 18px; font-size: 11px; }
   .chapter-heading h2,
   .install-intro h2 { font-size: 30px; }
   .capture-pair { grid-template-columns: 1fr; }
