@@ -25,6 +25,24 @@ pub struct Highlight {
     pub current_in_block: usize,
 }
 
+/// How wide `render` lets its content column grow.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReadingWidth {
+    /// Main reading area: capped at the 780 px reading column.
+    Capped,
+    /// Side panels: fill whatever width the panel gives.
+    Fill,
+}
+
+const READING_MAX: f32 = 780.0;
+
+fn reading_max_width(width: ReadingWidth) -> f32 {
+    match width {
+        ReadingWidth::Capped => READING_MAX,
+        ReadingWidth::Fill => f32::INFINITY,
+    }
+}
+
 pub fn render<'a>(
     blocks: &'a [(BlockId, Block)],
     pal: &Palette,
@@ -40,6 +58,7 @@ pub fn render<'a>(
     keyed_widget_reuse: bool,
     keyed_widget_generation: (u64, u64),
     recently_scrolled: bool,
+    reading_width: ReadingWidth,
 ) -> Element<'a, Message> {
     let img_ctx = ImgCtx {
         cache: image_cache,
@@ -103,7 +122,9 @@ pub fn render<'a>(
     } else {
         KeyedBody::new_fresh(keys, col, keyed_widget_generation).into()
     };
-    container(body).max_width(780.0).into()
+    container(body)
+        .max_width(reading_max_width(reading_width))
+        .into()
 }
 
 fn render_heading_with_chevron<'a>(
@@ -2165,6 +2186,7 @@ pub fn style_color(s: crate::ast::HlStyle, pal: &Palette) -> iced::Color {
 mod tests {
     use super::{
         adaptive_table_cell_width, fit_table_columns, for_text_runs, is_cjk_fallback_char,
+        reading_max_width, ReadingWidth,
     };
     use iced::advanced::layout;
     use iced::{Length, Size};
@@ -2217,6 +2239,12 @@ mod tests {
             fit_table_columns(&natural, 0.0, 1.0, 128.0),
             natural.to_vec()
         );
+    }
+
+    #[test]
+    fn reading_width_caps_main_area_and_fills_panels() {
+        assert_eq!(reading_max_width(ReadingWidth::Capped), 780.0);
+        assert!(reading_max_width(ReadingWidth::Fill) > 10_000.0);
     }
 
     #[test]

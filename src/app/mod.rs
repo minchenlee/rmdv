@@ -2413,6 +2413,7 @@ impl App {
                         true,
                         (0, 0),
                         recently_scrolled,
+                        crate::render::ReadingWidth::Fill,
                     ));
                     if truncated {
                         col = col.push(
@@ -3364,6 +3365,7 @@ impl App {
                         true,
                         (0, 0),
                         recently_scrolled,
+                        crate::render::ReadingWidth::Capped,
                     )
                 }
             } else {
@@ -3382,6 +3384,7 @@ impl App {
                     true,
                     (0, 0),
                     recently_scrolled,
+                    crate::render::ReadingWidth::Capped,
                 )
             };
             if self.view_mode == ViewMode::Raw || self.view_mode == ViewMode::Mindmap {
