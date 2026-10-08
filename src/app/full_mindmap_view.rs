@@ -184,6 +184,7 @@ impl App {
                             false,
                             preview_widget_generation,
                             recently_scrolled,
+                            crate::render::ReadingWidth::Fill,
                         )
                         .map(|message| match message {
                             Message::TableScrolled => Message::TableScrolled,

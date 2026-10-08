@@ -10,7 +10,9 @@ use iced::widget::{
     svg as svg_widget, text, tooltip, Column, Space,
 };
 use iced::{Background, Element, Event, Length, Padding, Rectangle, Size, Vector};
+use std::cell::Cell;
 use std::path::Path;
+use std::rc::Rc;
 
 pub fn block_anchor_id(id: BlockId) -> iced::widget::Id {
     iced::widget::Id::from(format!("block-anchor-{}", id.0))
@@ -21,6 +23,24 @@ pub struct Highlight {
     pub query: String,
     pub current_block: Option<usize>,
     pub current_in_block: usize,
+}
+
+/// How wide `render` lets its content column grow.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReadingWidth {
+    /// Main reading area: capped at the 780 px reading column.
+    Capped,
+    /// Side panels: fill whatever width the panel gives.
+    Fill,
+}
+
+const READING_MAX: f32 = 780.0;
+
+fn reading_max_width(width: ReadingWidth) -> f32 {
+    match width {
+        ReadingWidth::Capped => READING_MAX,
+        ReadingWidth::Fill => f32::INFINITY,
+    }
 }
 
 pub fn render<'a>(
@@ -38,6 +58,7 @@ pub fn render<'a>(
     keyed_widget_reuse: bool,
     keyed_widget_generation: (u64, u64),
     recently_scrolled: bool,
+    reading_width: ReadingWidth,
 ) -> Element<'a, Message> {
     let img_ctx = ImgCtx {
         cache: image_cache,
@@ -101,7 +122,9 @@ pub fn render<'a>(
     } else {
         KeyedBody::new_fresh(keys, col, keyed_widget_generation).into()
     };
-    container(body).max_width(780.0).into()
+    container(body)
+        .max_width(reading_max_width(reading_width))
+        .into()
 }
 
 fn render_heading_with_chevron<'a>(
@@ -1387,10 +1410,11 @@ fn render_table<'a>(
         }
     }
 
-    let table = AdaptiveTable::new(cols, cells, pal_t).width(Length::Shrink);
+    let viewport = Rc::new(Cell::new(0.0_f32));
+    let table = AdaptiveTable::new(cols, cells, pal_t, viewport.clone()).width(Length::Shrink);
     let recently_scrolled = ctx.recently_scrolled;
 
-    scrollable(table)
+    let scroller = scrollable(table)
         .width(Length::Fill)
         .height(Length::Shrink)
         .on_scroll(|_| Message::TableScrolled)
@@ -1402,8 +1426,137 @@ fn render_table<'a>(
                 .width(6.0)
                 .scroller_width(6.0)
                 .margin(2.0),
-        ))
-        .into()
+        ));
+
+    TableViewport {
+        content: scroller.into(),
+        viewport,
+    }
+    .into()
+}
+
+/// Wraps the table's horizontal scrollable and publishes the width it is
+/// offered, because `scrollable` hides that width from its child.
+struct TableViewport<'a, Message, Theme, Renderer> {
+    content: Element<'a, Message, Theme, Renderer>,
+    viewport: Rc<Cell<f32>>,
+}
+
+impl<Message, Theme, Renderer> Widget<Message, Theme, Renderer>
+    for TableViewport<'_, Message, Theme, Renderer>
+where
+    Renderer: renderer::Renderer,
+{
+    fn tag(&self) -> tree::Tag {
+        self.content.as_widget().tag()
+    }
+
+    fn state(&self) -> tree::State {
+        self.content.as_widget().state()
+    }
+
+    fn children(&self) -> Vec<Tree> {
+        self.content.as_widget().children()
+    }
+
+    fn diff(&self, tree: &mut Tree) {
+        self.content.as_widget().diff(tree);
+    }
+
+    fn size(&self) -> Size<Length> {
+        self.content.as_widget().size()
+    }
+
+    fn layout(
+        &mut self,
+        tree: &mut Tree,
+        renderer: &Renderer,
+        limits: &layout::Limits,
+    ) -> layout::Node {
+        self.viewport.set(limits.max().width);
+        self.content.as_widget_mut().layout(tree, renderer, limits)
+    }
+
+    fn draw(
+        &self,
+        tree: &Tree,
+        renderer: &mut Renderer,
+        theme: &Theme,
+        style: &renderer::Style,
+        layout: Layout<'_>,
+        cursor: mouse::Cursor,
+        viewport: &Rectangle,
+    ) {
+        self.content
+            .as_widget()
+            .draw(tree, renderer, theme, style, layout, cursor, viewport);
+    }
+
+    fn update(
+        &mut self,
+        tree: &mut Tree,
+        event: &Event,
+        layout: Layout<'_>,
+        cursor: mouse::Cursor,
+        renderer: &Renderer,
+        clipboard: &mut dyn Clipboard,
+        shell: &mut Shell<'_, Message>,
+        viewport: &Rectangle,
+    ) {
+        self.content.as_widget_mut().update(
+            tree, event, layout, cursor, renderer, clipboard, shell, viewport,
+        );
+    }
+
+    fn mouse_interaction(
+        &self,
+        tree: &Tree,
+        layout: Layout<'_>,
+        cursor: mouse::Cursor,
+        viewport: &Rectangle,
+        renderer: &Renderer,
+    ) -> mouse::Interaction {
+        self.content
+            .as_widget()
+            .mouse_interaction(tree, layout, cursor, viewport, renderer)
+    }
+
+    fn operate(
+        &mut self,
+        tree: &mut Tree,
+        layout: Layout<'_>,
+        renderer: &Renderer,
+        operation: &mut dyn Operation,
+    ) {
+        self.content
+            .as_widget_mut()
+            .operate(tree, layout, renderer, operation);
+    }
+
+    fn overlay<'b>(
+        &'b mut self,
+        tree: &'b mut Tree,
+        layout: Layout<'b>,
+        renderer: &Renderer,
+        viewport: &Rectangle,
+        translation: Vector,
+    ) -> Option<overlay::Element<'b, Message, Theme, Renderer>> {
+        self.content
+            .as_widget_mut()
+            .overlay(tree, layout, renderer, viewport, translation)
+    }
+}
+
+impl<'a, Message, Theme, Renderer> From<TableViewport<'a, Message, Theme, Renderer>>
+    for Element<'a, Message, Theme, Renderer>
+where
+    Message: 'a,
+    Theme: 'a,
+    Renderer: 'a + renderer::Renderer,
+{
+    fn from(w: TableViewport<'a, Message, Theme, Renderer>) -> Self {
+        Element::new(w)
+    }
 }
 
 /// A table cell that switches between intrinsic measurement and the shared
@@ -1602,6 +1755,47 @@ where
     }
 }
 
+/// Final column widths for a table whose columns measured `natural` wide.
+///
+/// `viewport` is the text-column width the table may occupy. Short tables grow
+/// to fill it, wide tables shrink (widest columns first, never below
+/// `min_column`), and a table whose columns cannot fit at `min_column` keeps
+/// its natural widths so the horizontal scroll takes over.
+fn fit_table_columns(natural: &[f32], viewport: f32, separators: f32, min_column: f32) -> Vec<f32> {
+    let columns = natural.len();
+    let available = viewport - separators;
+    if columns == 0
+        || !available.is_finite()
+        || available <= 0.0
+        || columns as f32 * min_column > available
+    {
+        return natural.to_vec();
+    }
+
+    let sum = natural.iter().sum::<f32>();
+    if sum <= available {
+        let extra = (available - sum) / columns as f32;
+        return natural.iter().map(|w| w + extra).collect();
+    }
+
+    // Water-fill: find the cap `c` where sum(min(w, c)) == available, so the
+    // widest columns give up width first.
+    let mut sorted = natural.to_vec();
+    sorted.sort_by(|a, b| a.total_cmp(b));
+    let mut remaining = available;
+    let mut cap = available / columns as f32;
+    for (i, w) in sorted.iter().enumerate() {
+        let left = (columns - i) as f32;
+        let share = remaining / left;
+        if *w >= share {
+            cap = share;
+            break;
+        }
+        remaining -= w;
+    }
+    natural.iter().map(|w| w.min(cap).max(min_column)).collect()
+}
+
 /// A content-driven table layout with a responsive minimum width.
 ///
 /// Iced's stock table makes its first shrink column fluid. That is useful for
@@ -1617,6 +1811,7 @@ struct AdaptiveTable<'a, Message, Theme, Renderer> {
     separator_x: f32,
     separator_y: f32,
     palette: Palette,
+    viewport: Rc<Cell<f32>>,
 }
 
 struct AdaptiveTableMetrics {
@@ -1632,6 +1827,7 @@ impl<'a, Message, Theme, Renderer> AdaptiveTable<'a, Message, Theme, Renderer> {
         columns: usize,
         cells: Vec<Element<'a, Message, Theme, Renderer>>,
         palette: Palette,
+        viewport: Rc<Cell<f32>>,
     ) -> Self {
         Self {
             columns: columns.max(1),
@@ -1641,6 +1837,7 @@ impl<'a, Message, Theme, Renderer> AdaptiveTable<'a, Message, Theme, Renderer> {
             separator_x: 1.0,
             separator_y: 1.0,
             palette,
+            viewport,
         }
     }
 
@@ -1720,19 +1917,18 @@ where
         }
 
         let separators_width = self.separator_x * columns.saturating_sub(1) as f32;
-        let natural_width = column_widths.iter().sum::<f32>() + separators_width;
-        let viewport_width = table_limits.min().width;
+        let viewport_width = self.viewport.get();
 
-        // Horizontal scrollables give their child an infinite maximum width
-        // but preserve the viewport as the minimum. This makes short tables
-        // fill the document column while long tables keep their intrinsic
-        // width and become horizontally scrollable.
-        if natural_width < viewport_width {
-            let extra = (viewport_width - natural_width) / columns as f32;
-            for width in &mut column_widths {
-                *width += extra;
-            }
-        }
+        // Horizontal scrollables hide the real viewport from their child, so
+        // `TableViewport` publishes it. Tables fill the text column, shrink
+        // by wrapping wide columns, and scroll only when columns cannot fit
+        // at `MIN_COLUMN_WIDTH`.
+        column_widths = fit_table_columns(
+            &column_widths,
+            viewport_width,
+            separators_width,
+            Self::MIN_COLUMN_WIDTH,
+        );
 
         // Second pass: lay out every cell against its shared column width.
         // This is what keeps all rows aligned and lets rich text wrap inside
@@ -1988,7 +2184,10 @@ pub fn style_color(s: crate::ast::HlStyle, pal: &Palette) -> iced::Color {
 
 #[cfg(test)]
 mod tests {
-    use super::{adaptive_table_cell_width, for_text_runs, is_cjk_fallback_char};
+    use super::{
+        adaptive_table_cell_width, fit_table_columns, for_text_runs, is_cjk_fallback_char,
+        reading_max_width, ReadingWidth,
+    };
     use iced::advanced::layout;
     use iced::{Length, Size};
 
@@ -2000,6 +2199,52 @@ mod tests {
         let fixed_limits = layout::Limits::new(Size::ZERO, Size::new(256.0, f32::INFINITY))
             .width(Length::Fixed(256.0));
         assert_eq!(adaptive_table_cell_width(&fixed_limits), Length::Fill);
+    }
+
+    #[test]
+    fn table_columns_grow_to_fill_a_wide_viewport() {
+        let widths = fit_table_columns(&[128.0, 200.0, 128.0], 800.0, 2.0, 128.0);
+        assert_eq!(widths.len(), 3);
+        assert!((widths.iter().sum::<f32>() + 2.0 - 800.0).abs() < 0.01);
+        assert!(widths
+            .iter()
+            .zip([128.0, 200.0, 128.0])
+            .all(|(w, n)| *w >= n));
+    }
+
+    #[test]
+    fn table_columns_shrink_widest_first_to_fit_a_narrow_viewport() {
+        let widths = fit_table_columns(&[128.0, 320.0, 320.0], 600.0, 2.0, 128.0);
+        assert!((widths.iter().sum::<f32>() + 2.0 - 600.0).abs() < 0.01);
+        assert_eq!(widths[0], 128.0);
+        assert!((widths[1] - widths[2]).abs() < 0.01);
+        assert!(widths[1] < 320.0 && widths[1] >= 128.0);
+    }
+
+    #[test]
+    fn table_columns_keep_natural_width_when_minimums_do_not_fit() {
+        let natural = [200.0, 300.0, 250.0, 128.0];
+        let widths = fit_table_columns(&natural, 400.0, 3.0, 128.0);
+        assert_eq!(widths, natural.to_vec());
+    }
+
+    #[test]
+    fn table_columns_ignore_unbounded_or_zero_viewport() {
+        let natural = [150.0, 220.0];
+        assert_eq!(
+            fit_table_columns(&natural, f32::INFINITY, 1.0, 128.0),
+            natural.to_vec()
+        );
+        assert_eq!(
+            fit_table_columns(&natural, 0.0, 1.0, 128.0),
+            natural.to_vec()
+        );
+    }
+
+    #[test]
+    fn reading_width_caps_main_area_and_fills_panels() {
+        assert_eq!(reading_max_width(ReadingWidth::Capped), 780.0);
+        assert!(reading_max_width(ReadingWidth::Fill) > 10_000.0);
     }
 
     #[test]
