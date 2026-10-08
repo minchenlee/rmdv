@@ -20,9 +20,12 @@ pub fn parse(src: &str) -> (Vec<(BlockId, Block)>, Vec<u32>) {
     opts.insert(Options::ENABLE_TASKLISTS);
     opts.insert(Options::ENABLE_SMART_PUNCTUATION);
     opts.insert(Options::ENABLE_MATH);
+    // Same-length rewrite, so no offset mapping is needed (see the function).
+    let (cooked, dollar_marker) = mask_currency_dollars(cooked, opts);
     let parser = Parser::new_ext(&cooked, opts).into_offset_iter();
     let mut state = ParseState {
         synthetic_marker,
+        dollar_marker,
         ..ParseState::default()
     };
     let mut pending_offset: Option<u32> = None;
@@ -67,6 +70,65 @@ const PUA_COUNT: usize = (PUA_END - PUA_START + 1) as usize;
 const PUA_WORDS: usize = PUA_COUNT / u64::BITS as usize;
 #[cfg(test)]
 const ZWSP: char = '\u{200b}';
+
+/// Placeholder for a `$` that opens a span which is not math (see
+/// `mask_currency_dollars`). ASCII and one byte like `$`, so offsets stay valid.
+const DOLLAR_MARKER: char = '\u{1}';
+
+/// Pandoc's `tex_math_dollars` rule: the opening `$` must be followed by a
+/// non-space, the closing `$` must follow a non-space and must not be followed
+/// by a digit. pulldown-cmark does not enforce it, so `$3.3 billion **a**, $5`
+/// becomes one math span and swallows the bold. Find each violating
+/// `InlineMath` span with a probe parse and swap its opening `$` for
+/// `DOLLAR_MARKER`; the real parse then reads it as plain text, and `handle`
+/// restores the `$`. Replacing one byte with one byte keeps every source
+/// offset (goto, search, edit-mode sync) identical, unlike inserting `\`.
+/// Each pass masks at least one `$`, so the loop ends; it is capped anyway.
+fn mask_currency_dollars<'a>(
+    cooked: std::borrow::Cow<'a, str>,
+    opts: Options,
+) -> (std::borrow::Cow<'a, str>, Option<char>) {
+    if !cooked.contains('$') || cooked.contains(DOLLAR_MARKER) {
+        return (cooked, None);
+    }
+    let mut text = cooked.into_owned();
+    let mut masked = false;
+    for _ in 0..16 {
+        let bad: Vec<usize> = Parser::new_ext(&text, opts)
+            .into_offset_iter()
+            .filter_map(|(ev, range)| match ev {
+                Event::InlineMath(body) if !is_tex_inline_math(&body, &text[range.end..]) => {
+                    Some(range.start)
+                }
+                _ => None,
+            })
+            .collect();
+        if bad.is_empty() {
+            break;
+        }
+        let mut bytes = text.into_bytes();
+        for at in bad {
+            if bytes[at] == b'$' {
+                bytes[at] = DOLLAR_MARKER as u8;
+            }
+        }
+        text = String::from_utf8(bytes).expect("ASCII-for-ASCII replacement");
+        masked = true;
+    }
+    (
+        std::borrow::Cow::Owned(text),
+        masked.then_some(DOLLAR_MARKER),
+    )
+}
+
+fn is_tex_inline_math(body: &str, after: &str) -> bool {
+    let (Some(first), Some(last)) = (body.chars().next(), body.chars().next_back()) else {
+        return false;
+    };
+    !first.is_whitespace()
+        && !last.is_whitespace()
+        && !after.chars().next().is_some_and(|c| c.is_ascii_digit())
+}
 
 /// Translate a byte offset in the marker-injected string back to the
 /// equivalent offset in the original source: subtract `SYNTHETIC_MARKER_LEN`
@@ -464,6 +526,9 @@ struct ParseState {
     /// Marker selected for this parse's CJK-emphasis rewrite. It is absent from
     /// the original source, so removing it cannot remove authored content.
     synthetic_marker: Option<char>,
+    /// Set when `mask_currency_dollars` replaced non-math `$` signs; `handle`
+    /// turns them back into `$`.
+    dollar_marker: Option<char>,
 }
 
 enum Frame {
@@ -512,6 +577,11 @@ impl ParseState {
     /// keeps the marker out of rendered text, URLs, search, copy, and hashes.
     /// No-op (and allocation-free) when no rewrite happened.
     fn clean_synthetic_marker(&self, s: String) -> String {
+        let s = if self.dollar_marker.is_some() && s.contains(DOLLAR_MARKER) {
+            s.replace(DOLLAR_MARKER, "$")
+        } else {
+            s
+        };
         if let Some(marker) = self.synthetic_marker.filter(|&marker| s.contains(marker)) {
             let mut s = s;
             s.retain(|c| c != marker);
@@ -1403,5 +1473,65 @@ mod tests {
         assert_eq!(blocks.len(), offsets.len());
         assert!(offsets.iter().all(|&o| (o as usize) <= src.len()));
         assert_eq!(strong_texts(src), vec!["內容（X）".to_string()]);
+    }
+
+    fn plain_text(src: &str) -> String {
+        let (blocks, _) = parse(src);
+        let mut out = String::new();
+        for (_, b) in &blocks {
+            if let Block::Paragraph(inlines) = b {
+                out.push_str(&inline_to_string(inlines));
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn currency_amounts_do_not_open_inline_math() {
+        let src = "For Q3 2026, management guided to approximately **$3.3 billion revenue**, **48–49% non-GAAP operating margin**, and **$1.06–$1.08 non-GAAP diluted EPS.** These are forward-looking.";
+        assert_eq!(
+            strong_texts(src),
+            vec![
+                "$3.3 billion revenue".to_string(),
+                "48–49% non-GAAP operating margin".to_string(),
+                "$1.06–$1.08 non-GAAP diluted EPS.".to_string(),
+            ]
+        );
+        let text = plain_text(src);
+        assert!(!text.contains('\u{1}'));
+        assert!(text.contains("$3.3 billion revenue"));
+    }
+
+    #[test]
+    fn currency_plain_text_keeps_dollar_signs() {
+        assert_eq!(
+            plain_text("costs $5 and $10 today"),
+            "costs $5 and $10 today"
+        );
+        assert_eq!(plain_text("a $ b and $ c"), "a $ b and $ c");
+    }
+
+    #[test]
+    fn real_inline_math_still_parses_as_math() {
+        for (src, want) in [
+            ("$x^2$", "$x^2$"),
+            ("$a$ and $b$", "$a$ and $b$"),
+            ("$\\alpha$,", "$\\alpha$,"),
+            ("($n$)", "($n$)"),
+            ("$a+b$.", "$a+b$."),
+        ] {
+            assert_eq!(plain_text(src), want, "{src}");
+        }
+        // Math inside bold stays one bold span with the math source inside.
+        assert_eq!(strong_texts("**$x^2$**"), vec!["$x^2$".to_string()]);
+    }
+
+    #[test]
+    fn currency_masking_keeps_offsets() {
+        let src = "intro\n\ncosts $5 and $10 today\n\nafter **bold** $x$\n";
+        let (blocks, offsets) = parse(src);
+        assert_eq!(blocks.len(), offsets.len());
+        assert_eq!(offsets[1] as usize, src.find("costs").unwrap());
+        assert_eq!(offsets[2] as usize, src.find("after").unwrap());
     }
 }
