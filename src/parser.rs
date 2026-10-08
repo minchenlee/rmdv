@@ -71,10 +71,6 @@ const PUA_WORDS: usize = PUA_COUNT / u64::BITS as usize;
 #[cfg(test)]
 const ZWSP: char = '\u{200b}';
 
-/// Translate a byte offset in the marker-injected string back to the
-/// equivalent offset in the original source: subtract `SYNTHETIC_MARKER_LEN`
-/// for every
-/// insertion that occurred strictly before `off`. `inserts` is sorted ascending.
 /// Placeholder for a `$` that opens a span which is not math (see
 /// `mask_currency_dollars`). ASCII and one byte like `$`, so offsets stay valid.
 const DOLLAR_MARKER: char = '\u{1}';
@@ -134,6 +130,10 @@ fn is_tex_inline_math(body: &str, after: &str) -> bool {
         && !after.chars().next().is_some_and(|c| c.is_ascii_digit())
 }
 
+/// Translate a byte offset in the marker-injected string back to the
+/// equivalent offset in the original source: subtract `SYNTHETIC_MARKER_LEN`
+/// for every
+/// insertion that occurred strictly before `off`. `inserts` is sorted ascending.
 fn map_offset_back(off: u32, inserts: &[u32]) -> u32 {
     let before = inserts.partition_point(|&p| p < off);
     off - before as u32 * SYNTHETIC_MARKER_LEN
