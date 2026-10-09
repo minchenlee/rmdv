@@ -107,7 +107,7 @@ impl Default for Prefs {
             show_footer: true,
             theme: None,
             soft_syntax: false,
-            glass: crate::macos_vibrancy::Glass::Off,
+            glass: crate::macos_vibrancy::Glass::Window,
             glass_opacity: crate::macos_vibrancy::DEFAULT_OPACITY,
             font_scale: default_font_scale(),
             show_hidden: false,
@@ -183,18 +183,25 @@ mod tests {
     }
 
     #[test]
-    fn glass_preferences_default_off_and_tolerate_unknown_modes() {
-        use crate::macos_vibrancy::{Glass, DEFAULT_OPACITY};
+    fn glass_preferences_default_to_window_at_60_percent_and_tolerate_unknown_modes() {
+        use crate::macos_vibrancy::Glass;
+        // A fresh install (or a prefs file from before glass existed) gets the
+        // whole-window glass at the lightest tint.
         let prefs: Prefs = serde_json::from_str("{}").unwrap();
+        assert_eq!(prefs.glass, Glass::Window);
+        assert_eq!(prefs.glass_opacity, 0.6);
+        assert_eq!(Prefs::default().glass, Glass::Window);
+        assert_eq!(Prefs::default().glass_opacity, 0.6);
+        // A saved "off" stays off.
+        let prefs: Prefs = serde_json::from_str(r#"{"glass":"off"}"#).unwrap();
         assert_eq!(prefs.glass, Glass::Off);
-        assert_eq!(prefs.glass_opacity, DEFAULT_OPACITY);
         let prefs: Prefs =
             serde_json::from_str(r#"{"glass":"window","glass_opacity":0.6}"#).unwrap();
         assert_eq!(prefs.glass, Glass::Window);
         assert_eq!(prefs.glass_opacity, 0.6);
         let prefs: Prefs = serde_json::from_str(r#"{"glass":"frosted","show_footer":false}"#)
             .expect("an unknown glass mode must not reset other preferences");
-        assert_eq!(prefs.glass, Glass::Off);
+        assert_eq!(prefs.glass, Glass::Window);
         assert!(!prefs.show_footer);
     }
 

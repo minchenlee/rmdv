@@ -12,12 +12,12 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Glass {
-    /// Opaque window (the default).
-    #[default]
+    /// Opaque window.
     Off,
     /// Translucent sidebar; the reader stays opaque.
     Sidebar,
-    /// Translucent sidebar and reader.
+    /// Translucent sidebar and reader (the default).
+    #[default]
     Window,
 }
 
@@ -42,7 +42,7 @@ impl Glass {
 /// Tint opacity steps over the glass. Below 0.6 body text loses contrast on
 /// busy wallpapers.
 pub const OPACITY_LEVELS: [f32; 4] = [0.6, 0.7, 0.8, 0.9];
-pub const DEFAULT_OPACITY: f32 = 0.8;
+pub const DEFAULT_OPACITY: f32 = 0.6;
 
 /// A stored opacity, kept inside the supported range.
 pub fn clamp_opacity(opacity: f32) -> f32 {
