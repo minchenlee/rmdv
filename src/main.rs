@@ -111,7 +111,7 @@ fn launch_instance(initial: Option<ipc::Request>) -> iced::Result {
         ..Default::default()
     };
 
-    iced::application(
+    let mut app = iced::application(
         move || {
             let (mut app, task) = App::new(initial_path.clone());
             app.pending_nav = pending_nav.clone();
@@ -125,11 +125,11 @@ fn launch_instance(initial: Option<ipc::Request>) -> iced::Result {
     .style(App::app_style)
     .subscription(App::subscription)
     .window(window)
-    .font(include_bytes!("assets/fonts/Inter-Variable.ttf").as_slice())
-    .font(include_bytes!("assets/fonts/JetBrainsMono-Regular.otf").as_slice())
-    .font(include_bytes!("assets/fonts/lucide.ttf").as_slice())
-    .default_font(iced::Font::with_name("Inter"))
-    .run()
+    .default_font(iced::Font::with_name("Inter"));
+    for font in rmdv::fonts::BUNDLED {
+        app = app.font(font);
+    }
+    app.run()
 }
 
 fn run_list_sections(file: &std::path::Path, pretty: bool) -> i32 {
