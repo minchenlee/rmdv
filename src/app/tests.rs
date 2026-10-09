@@ -8255,6 +8255,8 @@ fn local_images_load_through_a_task_into_the_budgeted_cache() {
 #[test]
 fn window_event_burst_shares_one_mode_refresh() {
     let mut app = App::default();
+    // An opaque launch: no blur view to sync.
+    app.glass_capable = false;
     let id = iced::window::Id::unique();
     // Before: every Moved/Resized/Focused event queued an immediate mode query
     // plus two settle timers (3 tasks). Now one burst queues the immediate
@@ -8472,8 +8474,12 @@ fn window_glass_modes_paint_one_tint_per_panel_and_sync_the_blur_view() {
     let isolated = app.quick_slots_persistence_path.clone().unwrap();
     let _ = app.update(Message::SetTheme(ThemePreset::OneDark));
     let pal = theme::palette_for(ThemePreset::OneDark);
+    // Start from an opaque launch with glass off.
+    app.glass_capable = false;
+    let _ = app.update(Message::SetGlass(Glass::Off));
+    let _ = app.update(Message::SetGlassOpacity(0.8));
 
-    // Off (the default): everything opaque, nothing to sync.
+    // Off: everything opaque, nothing to sync.
     assert_eq!(app.glass(), Glass::Off);
     assert_eq!(app.chrome_ground(), pal.sidebar);
     assert_eq!(app.reader_ground(), pal.bg);
@@ -8643,6 +8649,7 @@ fn settings_rows_change_the_same_state_as_their_commands_and_persist() {
 
     // Glass (macOS rows): ← / → walk the modes without wrapping; opacity
     // steps by 5 % and only while glass is on.
+    app.glass_capable = false;
     let _ = app.update(Message::SetGlass(Glass::Off));
     let _ = app.update(Message::SetGlassOpacity(0.8));
     if cfg!(target_os = "macos") {
