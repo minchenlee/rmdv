@@ -6,6 +6,7 @@ pub mod cli_install;
 pub mod config_migrate;
 pub mod data_mindmap;
 pub mod diagram;
+pub mod fonts;
 pub mod fs_atomic;
 pub mod highlight;
 pub mod history;
