@@ -4511,6 +4511,7 @@ dependencies = [
  "futures",
  "iced",
  "iced_math",
+ "iced_runtime",
  "iced_test",
  "image",
  "insta",
