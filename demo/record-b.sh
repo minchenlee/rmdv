@@ -15,10 +15,12 @@ SCENE="$WORK/scene"
 mkdir -p "$SCENE"
 cp "$REPO/demo/showcase/ingest-pipeline.md" "$SCENE/ingest-pipeline.md"
 
+printf "The next step opens an rmdv window. Press Enter when you are ready. "; read -r _
 "$RMDV" "$SCENE" >/dev/null 2>&1 &
 for _ in $(seq 1 50); do [[ -S "$RMDV_SOCKET" ]] && break; sleep 0.2; done
 sleep 1.5
 "$RMDV" resize 1280 800 >/dev/null
+# --focus on purpose: the recording needs rmdv in front; you are present.
 "$RMDV" open "$SCENE/ingest-pipeline.md" --focus >/dev/null
 
 cat <<MSG

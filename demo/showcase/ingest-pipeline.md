@@ -5,33 +5,25 @@ rmdv renders a dense diagram, a display equation, and a deep heading tree.
 
 ## Overview
 
-Events arrive from three sources, pass through validation and enrichment, and
+Events arrive from two sources, pass through validation and enrichment, and
 land in either the hot store or the archive. The diagram below shows every
 stage and the retry paths between them.
 
 ## Architecture
 
 ```mermaid
-flowchart TB
-    SDK[Web and Mobile SDK] --> LB[Load balancer]
+flowchart LR
+    SDK[SDK events] --> AUTH[Auth gateway]
     BATCH[Batch import] --> AUTH
-    LB --> AUTH[Auth gateway]
-    AUTH --> RATE{Under rate limit?}
-    RATE -- no --> REJ[Reject 429]
-    RATE -- yes --> VAL[Validator]
-    VAL --> SCHEMA{Schema ok?}
-    SCHEMA -- no --> DLQ[(Dead letter queue)]
-    SCHEMA -- yes --> ENR[Enricher]
-    ENR --> DEDUP{Duplicate?}
-    DEDUP -- yes --> MET[Metrics]
-    DEDUP -- no --> ROUTE[Router]
-    ROUTE -- recent --> HOT[(Hot store)]
-    ROUTE -- old --> ARC[(Archive)]
-    DLQ --> REPLAY[Replay tool]
-    REPLAY --> VAL
-    HOT --> MET
-    ARC --> MET
-    MET --> ALERT[Alerting]
+    AUTH --> VAL[Validator]
+    VAL --> OK{Schema ok?}
+    OK -- no --> DLQ[(Dead letters)]
+    OK -- yes --> ENR[Enricher]
+    ENR --> ROUTE{Recent?}
+    ROUTE -- yes --> HOT[(Hot store)]
+    ROUTE -- no --> ARC[(Archive)]
+    DLQ -.-> REPLAY[Replay tool]
+    REPLAY -.-> VAL
 ```
 
 ## Capacity Model
