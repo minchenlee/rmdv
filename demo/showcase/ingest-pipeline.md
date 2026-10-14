@@ -42,7 +42,11 @@ ratio ρ, and arrival rate λ, the required capacity C is:
 
 $$
 C = \frac{1}{\rho}\sum_{i=1}^{n} s_i \left(1 + \frac{\sigma_i^2}{\mu_i^2}\right)
-\qquad \text{with} \qquad
+$$
+
+The fill ratio is the arrival rate divided by the service rate:
+
+$$
 \rho = \frac{\lambda}{\mu}
 $$
 

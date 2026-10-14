@@ -84,6 +84,8 @@ fn capture() {
             ],
             "fullmindmap" => vec![Message::ToggleFullMindmap],
             "panel" => vec![Message::FullMindmapTogglePanel],
+            "mindmap" => vec![Message::ToggleMindmap],
+            "nosidebar" => vec![Message::ToggleSidebar],
             "goto" => {
                 let want = std::env::var("RMDV_SHOT_SECTION").expect("RMDV_SHOT_SECTION");
                 let src = std::fs::read_to_string(&doc).expect("read doc");
@@ -102,9 +104,36 @@ fn capture() {
         }
     }
 
+    // Let widgets publish layout-driven messages (viewport size, fit) and
+    // feed them back for a few passes before the final frame.
     let theme = app.theme();
-    let mut sim = Simulator::with_size(settings(), iced::Size::new(1280.0, 800.0), app.view());
-    let snap = sim.snapshot(&theme).expect("snapshot");
+    let mut snap = None;
+    for pass in 0..4 {
+        let (s, msgs) = {
+            let mut sim =
+                Simulator::with_size(settings(), iced::Size::new(1280.0, 800.0), app.view());
+            if let Ok(n) = std::env::var("RMDV_SHOT_WHEEL") {
+                // Scroll the reader under the cursor by N logical pixels (negative = down).
+                let n: f32 = n.parse().expect("RMDV_SHOT_WHEEL number");
+                sim.point_at(iced::Point::new(700.0, 400.0));
+                let wheel = iced::Event::Mouse(iced::mouse::Event::WheelScrolled {
+                    delta: iced::mouse::ScrollDelta::Pixels { x: 0.0, y: n },
+                });
+                sim.simulate(std::iter::once(wheel));
+            }
+            let s = sim.snapshot(&theme).expect("snapshot");
+            (s, sim.into_messages().collect::<Vec<_>>())
+        };
+        if pass == 3 || msgs.is_empty() {
+            snap = Some(s);
+            break;
+        }
+        for m in msgs {
+            let t = app.update(m);
+            drain(&mut app, &rt, t, budget);
+        }
+    }
+    let snap = snap.expect("snapshot");
     let _ = std::fs::remove_file(&out);
     assert!(snap.matches_image(&out).expect("write png"));
     println!("scene={scene} out={}", out.display());
