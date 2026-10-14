@@ -79,6 +79,7 @@ name = "rmdv"
 path = "src/main.rs"
 
 [dev-dependencies]
+iced_test = "0.14"
 insta = { version = "1", features = ["yaml"] }
 criterion = { version = "0.5", default-features = false, features = ["rayon"] }
 
