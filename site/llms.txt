@@ -4,6 +4,10 @@
 
 rmdv (Rust Markdown Viewer) is a read-focused desktop app for macOS, Windows, and Linux. It renders Markdown files, Mermaid and Graphviz DOT diagrams, block LaTeX math, and JSON/YAML/TOML mind maps using a pure-Rust GUI stack (Iced 0.14). On macOS and Linux, text PDFs can be extracted locally to Markdown via PDFium. Its scriptable IPC socket lets programs and AI agents (Claude Code, Codex, Cursor, shell scripts) drive the running window — open files, scroll to sections, switch view modes, take screenshots — through the `rmdv` CLI returning one-line JSON.
 
+## How it is built
+
+rmdv is built with AI (Claude Code and Codex). A human sets direction, tests, reviews, and takes the measurements.
+
 ## Product
 
 - [Home page](https://rmdv.mclee.dev/): Feature overview, screenshots, install instructions, comparison table, FAQ.

@@ -2,6 +2,8 @@
 
 A native Rust markdown viewer, scriptable over an IPC socket.
 
+**Built with AI (Claude Code and Codex). A human sets direction, tests, and reviews.** [How this was built](#how-this-was-built).
+
 [rmdv.mclee.dev](https://rmdv.mclee.dev) · [Download](https://github.com/minchenlee/rmdv/releases) · MIT
 
 rmdv (Rust Markdown Viewer) is a fast, read-focused desktop app for browsing folders of `.md` files. It renders Markdown, [Mermaid](https://mermaid.js.org/) diagrams, Graphviz DOT graphs, block LaTeX math, and JSON/YAML mind maps without Electron, an embedded browser, or a JavaScript runtime. On macOS and Linux, it can also open text PDFs as locally extracted Markdown via PDFium.
@@ -157,9 +159,10 @@ The [`demo/`](demo) folder is a sample vault exercising every feature: Mermaid, 
 
 ## How this was built
 
-rmdv was developed with extensive assistance from Claude (Anthropic) via
-[Claude Code](https://claude.com/claude-code). The repository is open; read the
-code and judge it on its merits.
+rmdv is written by AI: Claude (Anthropic) via
+[Claude Code](https://claude.com/claude-code), with OpenAI
+[Codex](https://openai.com/codex/) for some changes and for code review. The
+repository is open; read the code and judge it on its merits.
 
 <details>
 <summary>About the process</summary>
