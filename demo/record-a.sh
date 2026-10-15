@@ -16,19 +16,20 @@ export RMDV_SOCKET="$WORK/a.sock"
 VAULT="$WORK/demo"
 mkdir -p "$VAULT"
 rsync -a --exclude AGENTS.md --exclude '*.sh' --exclude storyboard "$REPO/demo/" "$VAULT/"
+source "$REPO/demo/demo-app.sh"
 DOC="$VAULT/showcase/ingest-pipeline.md"
 
 r() { "$RMDV" "$@" >/dev/null; }
-pause() { printf '\n>>> %s\n    Press Enter when done. ' "$1"; read -r _; }
+# After each Enter the terminal is in front, so bring rmdv back.
+pause() { printf '\n>>> %s\n    Press Enter when done. ' "$1"; read -r _; front_app; }
 trap '"$RMDV" close >/dev/null 2>&1 || true' EXIT
 
 echo "Start your screen recording now. The first step opens the window."
-pause "Ready to record?"
+printf "Ready to record? Press Enter. "; read -r _
 
-# 0-2 s: open the folder from the CLI; the window appears at once
-"$RMDV" "$VAULT" >/dev/null 2>&1 &
-for _ in $(seq 1 50); do [[ -S "$RMDV_SOCKET" ]] && break; sleep 0.2; done
-sleep 1.5; r resize 1280 800
+# 0-2 s: open the folder; the window appears at once
+launch_app "$VAULT"
+sleep 1.5; r resize 1280 800; front_app
 r open "$VAULT/README.md" --focus
 sleep 2
 # 2-6 s: the document with the Mermaid diagram and the equation
