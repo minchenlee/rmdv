@@ -28,6 +28,10 @@ pub struct Prefs {
         deserialize_with = "lenient_font_scale"
     )]
     pub font_scale: f32,
+    /// Body line spacing (Settings → Line spacing), a multiplier on the
+    /// theme's line height.
+    #[serde(default, deserialize_with = "lenient_line_spacing")]
+    pub line_spacing: crate::theme::LineSpacing,
     /// Show dot files and folders in the sidebar (⌘⇧.).
     #[serde(default)]
     pub show_hidden: bool,
@@ -77,6 +81,16 @@ pub fn clamp_font_scale(scale: f32) -> f32 {
     }
 }
 
+/// An unknown or malformed line spacing falls back to Default instead of
+/// failing the whole file.
+fn lenient_line_spacing<'de, D>(deserializer: D) -> Result<crate::theme::LineSpacing, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    Ok(serde_json::from_value(value).unwrap_or_default())
+}
+
 /// An unknown glass mode (e.g. from a newer build) turns glass off instead of
 /// failing the whole file.
 fn lenient_glass<'de, D>(deserializer: D) -> Result<crate::macos_vibrancy::Glass, D::Error>
@@ -110,6 +124,7 @@ impl Default for Prefs {
             glass: crate::macos_vibrancy::Glass::Window,
             glass_opacity: crate::macos_vibrancy::DEFAULT_OPACITY,
             font_scale: default_font_scale(),
+            line_spacing: crate::theme::LineSpacing::Default,
             show_hidden: false,
             mindmap_autocenter: true,
             quick_slots: crate::quick_slots::QuickSlotsStore::default(),
@@ -224,6 +239,34 @@ mod tests {
         assert!(!prefs.show_footer);
         let prefs: Prefs = serde_json::from_str(r#"{"font_scale":9.0}"#).unwrap();
         assert_eq!(prefs.font_scale, FONT_SCALE_MAX);
+    }
+
+    #[test]
+    fn line_spacing_defaults_when_missing_or_unknown() {
+        use crate::theme::LineSpacing;
+        // A prefs file from before the setting existed.
+        let prefs: Prefs = serde_json::from_str(r#"{"show_footer":false}"#).unwrap();
+        assert_eq!(prefs.line_spacing, LineSpacing::Default);
+        assert!(!prefs.show_footer);
+        assert_eq!(Prefs::default().line_spacing, LineSpacing::Default);
+        let prefs: Prefs = serde_json::from_str(r#"{"line_spacing":"relaxed"}"#).unwrap();
+        assert_eq!(prefs.line_spacing, LineSpacing::Relaxed);
+        let prefs: Prefs = serde_json::from_str(r#"{"line_spacing":"compact"}"#).unwrap();
+        assert_eq!(prefs.line_spacing, LineSpacing::Compact);
+        // An unknown or malformed value must not reset other preferences.
+        let prefs: Prefs =
+            serde_json::from_str(r#"{"line_spacing":"airy","show_footer":false}"#).unwrap();
+        assert_eq!(prefs.line_spacing, LineSpacing::Default);
+        assert!(!prefs.show_footer);
+        let prefs: Prefs = serde_json::from_str(r#"{"line_spacing":3}"#).unwrap();
+        assert_eq!(prefs.line_spacing, LineSpacing::Default);
+        // Saved as a lowercase word.
+        let json = serde_json::to_string(&Prefs {
+            line_spacing: LineSpacing::Compact,
+            ..Prefs::default()
+        })
+        .unwrap();
+        assert!(json.contains(r#""line_spacing":"compact""#), "{json}");
     }
 
     use crate::quick_slots::{QuickSlot, SlotContext, WorkspaceSlots};

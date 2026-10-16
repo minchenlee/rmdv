@@ -1,4 +1,5 @@
 use iced::Color;
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ThemeMode {
@@ -676,9 +677,16 @@ pub fn contrast_ratio(a: Color, b: Color) -> f32 {
     (la.max(lb) + 0.05) / (la.min(lb) + 0.05)
 }
 
+/// Reading column cap for the main document area: Notion's 720 px page width.
+pub const READING_MAX_PX: f32 = 720.0;
+
+/// Heading line height. Fixed: the Line spacing setting changes body text only.
+pub const HEADING_LINE_HEIGHT: f32 = 1.3;
+
 #[derive(Debug, Clone, Copy)]
 pub struct Typography {
     pub body_size: f32,
+    /// Body line height, relative to the font size.
     pub line_height: f32,
     pub measure_ch: u32,
     pub h1_size: f32,
@@ -691,17 +699,19 @@ pub struct Typography {
 }
 
 impl Typography {
+    /// Notion-like reading defaults: 16 px body at line height 1.5, headings
+    /// at 1.875 / 1.5 / 1.25 / 1.15 em, inline code at 85 %.
     pub const DEFAULT: Typography = Typography {
-        body_size: 15.5,
-        line_height: 1.65,
+        body_size: 16.0,
+        line_height: 1.5,
         measure_ch: 74,
         h1_size: 30.0,
         h2_size: 24.0,
         h3_size: 20.0,
-        h4_size: 17.0,
-        h5_size: 15.5,
-        h6_size: 14.5,
-        code_size: 13.5,
+        h4_size: 18.4,
+        h5_size: 16.0,
+        h6_size: 15.0,
+        code_size: 13.6,
     };
 
     /// All font sizes multiplied by `factor`. line_height and measure_ch
@@ -718,6 +728,76 @@ impl Typography {
             code_size: self.code_size * factor,
             ..self
         }
+    }
+
+    /// The body line height multiplied by the user's Line spacing setting.
+    pub fn with_line_spacing(self, spacing: LineSpacing) -> Typography {
+        Typography {
+            line_height: self.line_height * spacing.multiplier(),
+            ..self
+        }
+    }
+
+    pub fn heading_size(&self, level: u8) -> f32 {
+        match level {
+            1 => self.h1_size,
+            2 => self.h2_size,
+            3 => self.h3_size,
+            4 => self.h4_size,
+            5 => self.h5_size,
+            _ => self.h6_size,
+        }
+    }
+
+    /// Extra space above a heading, in the heading's own em (Notion: H1
+    /// 1.08 em, H2 1.1 em, smaller headings 1 em).
+    pub fn heading_space_above(&self, level: u8) -> f32 {
+        let em = match level {
+            1 => 1.08,
+            2 => 1.1,
+            _ => 1.0,
+        };
+        self.heading_size(level) * em
+    }
+}
+
+/// The Line spacing setting: a multiplier on the theme's body line height.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum LineSpacing {
+    Compact,
+    #[default]
+    Default,
+    Relaxed,
+}
+
+impl LineSpacing {
+    pub const ALL: [LineSpacing; 3] = [
+        LineSpacing::Compact,
+        LineSpacing::Default,
+        LineSpacing::Relaxed,
+    ];
+
+    pub fn multiplier(self) -> f32 {
+        match self {
+            LineSpacing::Compact => 0.9,
+            LineSpacing::Default => 1.0,
+            LineSpacing::Relaxed => 1.15,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            LineSpacing::Compact => "Compact",
+            LineSpacing::Default => "Default",
+            LineSpacing::Relaxed => "Relaxed",
+        }
+    }
+
+    /// One step toward Relaxed (`dir` > 0) or Compact, without wrapping.
+    pub fn step(self, dir: i32) -> LineSpacing {
+        let i = Self::ALL.iter().position(|s| *s == self).unwrap_or(1) as i32;
+        Self::ALL[(i + dir.signum()).clamp(0, 2) as usize]
     }
 }
 
@@ -935,5 +1015,56 @@ mod tests {
     fn contrast_ratio_matches_wcag_reference_values() {
         assert!((contrast_ratio(Color::BLACK, Color::WHITE) - 21.0).abs() < 1e-3);
         assert!((contrast_ratio(Color::WHITE, Color::WHITE) - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn default_typography_follows_notion_reading_values() {
+        let t = Typography::DEFAULT;
+        assert_eq!(t.body_size, 16.0);
+        assert_eq!(t.line_height, 1.5);
+        assert_eq!(t.h1_size, 30.0);
+        assert_eq!(t.h2_size, 24.0);
+        assert_eq!(t.h3_size, 20.0);
+        assert!((t.h4_size - 18.4).abs() < 1e-4);
+        assert!((t.code_size - 13.6).abs() < 1e-4);
+        assert_eq!(READING_MAX_PX, 720.0);
+        assert_eq!(HEADING_LINE_HEIGHT, 1.3);
+    }
+
+    #[test]
+    fn headings_get_notion_space_above_in_their_own_em() {
+        let t = Typography::DEFAULT;
+        assert!((t.heading_space_above(1) - 30.0 * 1.08).abs() < 1e-4);
+        assert!((t.heading_space_above(2) - 24.0 * 1.1).abs() < 1e-4);
+        assert!((t.heading_space_above(3) - 20.0).abs() < 1e-4);
+        assert!((t.heading_space_above(4) - 18.4).abs() < 1e-4);
+        // Font zoom scales the space with the heading.
+        let big = t.scaled(2.0);
+        assert!((big.heading_space_above(1) - 60.0 * 1.08).abs() < 1e-3);
+    }
+
+    #[test]
+    fn line_spacing_multiplies_the_theme_line_height() {
+        assert_eq!(LineSpacing::default(), LineSpacing::Default);
+        assert_eq!(LineSpacing::Compact.multiplier(), 0.9);
+        assert_eq!(LineSpacing::Default.multiplier(), 1.0);
+        assert_eq!(LineSpacing::Relaxed.multiplier(), 1.15);
+        let t = Typography::DEFAULT;
+        assert!((t.with_line_spacing(LineSpacing::Compact).line_height - 1.35).abs() < 1e-5);
+        assert_eq!(t.with_line_spacing(LineSpacing::Default).line_height, 1.5);
+        assert!((t.with_line_spacing(LineSpacing::Relaxed).line_height - 1.725).abs() < 1e-5);
+        // A custom theme's own line height is the base the setting multiplies.
+        let custom = Typography {
+            line_height: 1.8,
+            ..Typography::DEFAULT
+        };
+        assert!((custom.with_line_spacing(LineSpacing::Relaxed).line_height - 2.07).abs() < 1e-5);
+        // Sizes are untouched.
+        assert_eq!(t.with_line_spacing(LineSpacing::Relaxed).body_size, 16.0);
+        // ← / → walk the three steps without wrapping.
+        assert_eq!(LineSpacing::Default.step(1), LineSpacing::Relaxed);
+        assert_eq!(LineSpacing::Relaxed.step(1), LineSpacing::Relaxed);
+        assert_eq!(LineSpacing::Default.step(-1), LineSpacing::Compact);
+        assert_eq!(LineSpacing::Compact.step(-1), LineSpacing::Compact);
     }
 }

@@ -761,7 +761,7 @@ impl App {
             }
             Message::FontSizeReset => {
                 self.font_scale = 1.0;
-                self.typography = self.typography_base;
+                self.rebuild_typography();
                 self.prefs.font_scale = self.font_scale;
                 self.save_prefs();
                 self.height_cache.clear();
@@ -773,6 +773,7 @@ impl App {
                     self.show_toast("Font reset".to_string()),
                 ])
             }
+            Message::SetLineSpacing(spacing) => self.set_line_spacing(spacing),
             Message::MindmapNativePinch(delta) => {
                 // The native monitor runs for the whole app. Only forward a
                 // finite magnification delta while a graph owns the visible

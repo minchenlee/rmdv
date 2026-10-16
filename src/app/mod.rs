@@ -31,7 +31,7 @@ const QUICK_SLOTS_RAIL_REVEAL_DELAY_MS: u64 = 500;
 /// debounced above it, where one search no longer fits inside a frame.
 const SEARCH_DEBOUNCE_MIN_BYTES: usize = 1024 * 1024;
 const SEARCH_DEBOUNCE_MS: u64 = 80;
-const READING_MAX: f32 = 780.0;
+const READING_MAX: f32 = theme::READING_MAX_PX;
 /// Radius of the reader panel's top-left corner next to the sidebar.
 const READER_CORNER_RADIUS: f32 = 24.0;
 const KEYBOARD_BUTTON_HEIGHT: f32 = 26.0; // 14px text at 1.3 line-height + 4px vertical padding on each side.
@@ -150,9 +150,11 @@ pub struct App {
     pub palette: Palette,
     pub typography: Typography,
     /// Theme-provided typography before the user's font-zoom factor is applied.
-    /// `typography` = `typography_base.scaled(font_scale)`.
+    /// `typography` = `typography_base.scaled(font_scale)
+    /// .with_line_spacing(line_spacing)`.
     pub typography_base: Typography,
     pub font_scale: f32,
+    pub line_spacing: theme::LineSpacing,
     pub show_footer: bool,
     pub error: Option<String>,
     pub query: String,
@@ -462,9 +464,12 @@ impl Default for App {
             theme_mode: mode,
             theme_preset: preset,
             palette: theme::palette_for(preset).with_soft_syntax(prefs.soft_syntax),
-            typography: Typography::DEFAULT.scaled(font_scale),
+            typography: Typography::DEFAULT
+                .scaled(font_scale)
+                .with_line_spacing(prefs.line_spacing),
             typography_base: Typography::DEFAULT,
             font_scale,
+            line_spacing: prefs.line_spacing,
             show_footer: prefs.show_footer,
             error: None,
             query: String::new(),
@@ -680,14 +685,22 @@ impl App {
     /// font-zoom factor on top of it.
     fn set_typography_base(&mut self, base: Typography) {
         self.typography_base = base;
-        self.typography = base.scaled(self.font_scale);
+        self.rebuild_typography();
+    }
+
+    /// Rebuild `typography` from the theme base, font zoom, and line spacing.
+    fn rebuild_typography(&mut self) {
+        self.typography = self
+            .typography_base
+            .scaled(self.font_scale)
+            .with_line_spacing(self.line_spacing);
     }
 
     /// Adjust the font-zoom factor (clamped) and rebuild `typography` from the
     /// current theme base. Returns the resulting body size for the toast.
     fn adjust_font_scale(&mut self, factor: f32) -> f32 {
         self.font_scale = crate::prefs::clamp_font_scale(self.font_scale * factor);
-        self.typography = self.typography_base.scaled(self.font_scale);
+        self.rebuild_typography();
         self.prefs.font_scale = self.font_scale;
         self.save_prefs();
         self.typography.body_size

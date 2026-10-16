@@ -13,8 +13,9 @@ use crate::ast::{Block, BlockId, Inline, ListItem};
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 const LINE_PX: f32 = 24.0;
-const HEADING_PX: [f32; 6] = [44.0, 36.0, 30.0, 26.0, 24.0, 22.0];
-pub const BLOCK_GAP_PX: f32 = 14.0;
+/// Heading line (size x 1.3) plus the Notion space above it.
+const HEADING_PX: [f32; 6] = [71.0, 58.0, 46.0, 42.0, 37.0, 35.0];
+pub const BLOCK_GAP_PX: f32 = 8.0;
 const CODE_LINE_PX: f32 = 20.0;
 const TABLE_ROW_PX: f32 = 28.0;
 const PARAGRAPH_CHARS_PER_LINE: f32 = 80.0;
@@ -560,5 +561,13 @@ mod tests {
         assert_eq!(h, HEADING_PX[0]);
         assert_eq!(estimate_height(&para(160)), 2.0 * LINE_PX);
         assert_eq!(estimate_height(&Block::Rule), 12.0);
+    }
+
+    #[test]
+    fn block_gap_and_line_estimate_follow_notion_rhythm() {
+        // Notion text blocks: 3 px padding + 1 px margin on each side.
+        assert_eq!(BLOCK_GAP_PX, 8.0);
+        // 16 px body at line height 1.5.
+        assert_eq!(LINE_PX, 24.0);
     }
 }

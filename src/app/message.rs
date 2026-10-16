@@ -170,6 +170,8 @@ pub enum Message {
     FontSizeUp,
     FontSizeDown,
     FontSizeReset,
+    /// Settings → Line spacing.
+    SetLineSpacing(crate::theme::LineSpacing),
     ToggleFooter,
     ToggleSoftSyntax,
     /// Window glass: off → sidebar → whole window (macOS).

@@ -28,13 +28,13 @@ pub struct Highlight {
 /// How wide `render` lets its content column grow.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ReadingWidth {
-    /// Main reading area: capped at the 780 px reading column.
+    /// Main reading area: capped at the reading column (`READING_MAX_PX`).
     Capped,
     /// Side panels: fill whatever width the panel gives.
     Fill,
 }
 
-const READING_MAX: f32 = 780.0;
+const READING_MAX: f32 = crate::theme::READING_MAX_PX;
 
 fn reading_max_width(width: ReadingWidth) -> f32 {
     match width {
@@ -91,17 +91,34 @@ pub fn render<'a>(
         keys.push(RowKey::TopSpacer);
         col = col.push(Space::new().height(h));
     }
-    for &idx in &display[start.min(display.len())..end.min(display.len())] {
+    let first = start.min(display.len());
+    for (dpos, &idx) in (first..).zip(&display[first..end.min(display.len())]) {
         let (id, b) = &blocks[idx];
         let local = if hl.current_block == Some(idx) {
             Some(hl.current_in_block)
         } else {
             None
         };
-        let el: Element<'a, Message> = if let Block::Heading { .. } = b {
+        let el: Element<'a, Message> = if let Block::Heading { level, .. } = b {
             let is_folded = folded.contains(id);
             let show_chev = is_folded || hovered_heading == Some(*id);
-            render_heading_with_chevron(*id, b, pal, typ, &hl.query, local, is_folded, show_chev)
+            // Like Notion, the document's first block gets no space above.
+            let space_above = if dpos == 0 {
+                0.0
+            } else {
+                typ.heading_space_above(*level)
+            };
+            render_heading_with_chevron(
+                *id,
+                b,
+                pal,
+                typ,
+                &hl.query,
+                local,
+                is_folded,
+                show_chev,
+                space_above,
+            )
         } else {
             container(render_block(b, pal, typ, &hl.query, local, &img_ctx))
                 .id(block_anchor_id(*id))
@@ -115,7 +132,7 @@ pub fn render<'a>(
         col = col.push(Space::new().height(h));
     }
 
-    // Reading column cap: 780px (rmdv design system READING_MAX, render.rs).
+    // Reading column cap: READING_MAX_PX (theme.rs).
     let _ = typ.measure_ch;
     let body: Element<'a, Message> = if keyed_widget_reuse {
         KeyedBody::new(keys, col).into()
@@ -136,6 +153,7 @@ fn render_heading_with_chevron<'a>(
     current_in_block: Option<usize>,
     folded: bool,
     visible: bool,
+    space_above: f32,
 ) -> Element<'a, Message> {
     let cache = EMPTY_IMG_CACHE.get_or_init(ImageCache::default);
     let dcache = EMPTY_DIAGRAM_CACHE.get_or_init(|| DiagramCache::new(1));
@@ -176,6 +194,11 @@ fn render_heading_with_chevron<'a>(
             .on_enter(Message::HeadingHoverEnter(id))
             .on_exit(Message::HeadingHoverExit(id)),
     )
+    // Inside the anchored container, so measured heights include the space.
+    .padding(Padding {
+        top: space_above,
+        ..Padding::ZERO
+    })
     .id(block_anchor_id(id))
     .into()
 }
@@ -575,20 +598,12 @@ fn render_block<'a>(
     };
     match b {
         Block::Heading { level, inlines, .. } => {
-            let size = match level {
-                1 => typ.h1_size,
-                2 => typ.h2_size,
-                3 => typ.h3_size,
-                4 => typ.h4_size,
-                5 => typ.h5_size,
-                _ => typ.h6_size,
-            };
-            let spans = inline_spans(inlines, pal, size, &mut ctx);
-            rich_text_links(spans)
+            let spans = inline_spans(inlines, pal, typ.heading_size(*level), &mut ctx);
+            rich_text_spaced(spans, crate::theme::HEADING_LINE_HEIGHT)
         }
         Block::Paragraph(inlines) => {
             let spans = inline_spans(inlines, pal, typ.body_size, &mut ctx);
-            rich_text_links(spans)
+            rich_text_spaced(spans, typ.line_height)
         }
         Block::CodeBlock { code, spans, .. } => {
             let pal_c = *pal;
@@ -763,6 +778,14 @@ fn for_text_runs<'a>(text_str: &'a str, mut visit: impl FnMut(&'a str, bool)) {
 /// The span `Link` type is `Message`, so the click handler is the identity.
 fn rich_text_links<'a>(spans: Vec<RtSpan<'a>>) -> Element<'a, Message> {
     rich_text(spans).on_link_click(|m| m).into()
+}
+
+/// Rich text at a relative line height (body or heading).
+fn rich_text_spaced<'a>(spans: Vec<RtSpan<'a>>, line_height: f32) -> Element<'a, Message> {
+    rich_text(spans)
+        .line_height(iced::widget::text::LineHeight::Relative(line_height))
+        .on_link_click(|m| m)
+        .into()
 }
 
 struct HlCtx<'a> {
@@ -1335,8 +1358,13 @@ fn render_list<'a>(
         });
         col = col.push(
             row![
-                container(text(bullet).color(pal.accent).size(typ.body_size))
-                    .width(Length::Fixed(28.0)),
+                container(
+                    text(bullet)
+                        .color(pal.accent)
+                        .size(typ.body_size)
+                        .line_height(iced::widget::text::LineHeight::Relative(typ.line_height)),
+                )
+                .width(Length::Fixed(28.0)),
                 inner
             ]
             .spacing(6),
@@ -1355,7 +1383,7 @@ fn render_block_inner<'a>(
     match b {
         Block::Paragraph(inlines) => {
             let spans = inline_spans(inlines, pal, typ.body_size, ctx);
-            rich_text_links(spans)
+            rich_text_spaced(spans, typ.line_height)
         }
         _ => render_block(b, pal, typ, ctx.query, ctx.current_in_block, img),
     }
@@ -2243,7 +2271,7 @@ mod tests {
 
     #[test]
     fn reading_width_caps_main_area_and_fills_panels() {
-        assert_eq!(reading_max_width(ReadingWidth::Capped), 780.0);
+        assert_eq!(reading_max_width(ReadingWidth::Capped), 720.0);
         assert!(reading_max_width(ReadingWidth::Fill) > 10_000.0);
     }
 

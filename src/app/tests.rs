@@ -8633,6 +8633,39 @@ fn settings_rows_change_the_same_state_as_their_commands_and_persist() {
     assert_eq!(app.font_scale, 1.0);
     assert_eq!(saved(&isolated).font_scale, 1.0);
 
+    // Line spacing: → / ← step the three settings and save; Space resets.
+    use crate::theme::LineSpacing;
+    assert_eq!(app.line_spacing, LineSpacing::Default);
+    at(&mut app, SettingsRow::LineSpacing, Message::SettingsStep(1));
+    assert_eq!(app.line_spacing, LineSpacing::Relaxed);
+    assert_eq!(saved(&isolated).line_spacing, LineSpacing::Relaxed);
+    assert!((app.typography.line_height - 1.725).abs() < 1e-5);
+    at(
+        &mut app,
+        SettingsRow::LineSpacing,
+        Message::SettingsStep(-1),
+    );
+    at(
+        &mut app,
+        SettingsRow::LineSpacing,
+        Message::SettingsStep(-1),
+    );
+    assert_eq!(app.line_spacing, LineSpacing::Compact);
+    assert!((app.typography.line_height - 1.35).abs() < 1e-5);
+    // Font zoom keeps the chosen line spacing.
+    let _ = app.update(Message::FontSizeUp);
+    assert!((app.typography.line_height - 1.35).abs() < 1e-5);
+    let _ = app.update(Message::FontSizeReset);
+    assert!((app.typography.line_height - 1.35).abs() < 1e-5);
+    at(
+        &mut app,
+        SettingsRow::LineSpacing,
+        Message::SettingsActivate,
+    );
+    assert_eq!(app.line_spacing, LineSpacing::Default);
+    assert_eq!(saved(&isolated).line_spacing, LineSpacing::Default);
+    assert_eq!(app.typography.line_height, 1.5);
+
     // Theme: → switches to the next card and saves it; ← stops at the first.
     let start = app
         .theme_entries()

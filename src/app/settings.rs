@@ -12,6 +12,7 @@ pub enum SettingsRow {
     Glass,
     GlassOpacity,
     FontSize,
+    LineSpacing,
     Footer,
     HiddenFiles,
     MindmapAutocenter,
@@ -30,7 +31,14 @@ impl SettingsRow {
         if cfg!(target_os = "macos") {
             rows.extend([Glass, GlassOpacity]);
         }
-        rows.extend([FontSize, Footer, HiddenFiles, MindmapAutocenter, AutoFocus]);
+        rows.extend([
+            FontSize,
+            LineSpacing,
+            Footer,
+            HiddenFiles,
+            MindmapAutocenter,
+            AutoFocus,
+        ]);
         if crate::cli_install::install_path().is_some() {
             rows.push(Cli);
         }
@@ -107,6 +115,7 @@ impl App {
             SettingsRow::SoftSyntax => Message::ToggleSoftSyntax,
             SettingsRow::Glass => Message::SetGlass(self.prefs.glass.next()),
             SettingsRow::FontSize => Message::FontSizeReset,
+            SettingsRow::LineSpacing => Message::SetLineSpacing(crate::theme::LineSpacing::Default),
             SettingsRow::Footer => Message::ToggleFooter,
             SettingsRow::HiddenFiles => Message::ToggleHidden,
             SettingsRow::MindmapAutocenter => Message::ToggleMindmapAutocenter,
@@ -119,7 +128,7 @@ impl App {
         self.update(message)
     }
 
-    /// ← / →: step a theme, glass mode, opacity, or font size; set a switch
+    /// ← / →: step a theme, glass mode, opacity, font size, or line spacing; set a switch
     /// off (←) or on (→).
     pub(super) fn settings_step(&mut self, dir: i32) -> Task<Message> {
         let forward = dir > 0;
@@ -151,6 +160,10 @@ impl App {
             SettingsRow::GlassOpacity => None,
             SettingsRow::FontSize if forward => Some(Message::FontSizeUp),
             SettingsRow::FontSize => Some(Message::FontSizeDown),
+            SettingsRow::LineSpacing => {
+                let next = self.line_spacing.step(dir);
+                (next != self.line_spacing).then_some(Message::SetLineSpacing(next))
+            }
             SettingsRow::SoftSyntax => switch(self.prefs.soft_syntax, Message::ToggleSoftSyntax),
             SettingsRow::Footer => switch(self.show_footer, Message::ToggleFooter),
             SettingsRow::HiddenFiles => switch(self.show_hidden, Message::ToggleHidden),
@@ -177,6 +190,21 @@ impl App {
             ""
         };
         self.show_toast(format!("Window glass: {}{restart}", glass.label()))
+    }
+
+    pub(super) fn set_line_spacing(&mut self, spacing: crate::theme::LineSpacing) -> Task<Message> {
+        if self.line_spacing == spacing {
+            return Task::none();
+        }
+        self.line_spacing = spacing;
+        self.rebuild_typography();
+        self.prefs.line_spacing = spacing;
+        self.save_prefs();
+        // Every measured block height changed with the line height.
+        self.height_cache.clear();
+        self.rebuild_virt_here();
+        let preview_measure = self.refresh_full_mindmap_preview_heights();
+        Task::batch([self.measure_window_heights(), preview_measure])
     }
 
     pub(super) fn set_glass_opacity(&mut self, opacity: f32) -> Task<Message> {

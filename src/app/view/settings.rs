@@ -3,6 +3,7 @@
 use super::*;
 // Explicit import: the `column!` macro is otherwise ambiguous between the glob
 // import and iced's exported macro.
+use crate::theme::LineSpacing;
 use iced::widget::column;
 
 /// Theme cards per line on the Theme row.
@@ -109,7 +110,8 @@ fn section_title(row: SettingsRow) -> &'static str {
         | SettingsRow::SoftSyntax
         | SettingsRow::Glass
         | SettingsRow::GlassOpacity
-        | SettingsRow::FontSize => "Appearance",
+        | SettingsRow::FontSize
+        | SettingsRow::LineSpacing => "Appearance",
         SettingsRow::Footer | SettingsRow::HiddenFiles | SettingsRow::MindmapAutocenter => {
             "Reading"
         }
@@ -223,6 +225,12 @@ fn settings_row_body<'a>(app: &'a App, row: SettingsRow, pal: Palette) -> Elemen
             .spacing(6)
             .align_y(iced::Alignment::Center)
             .into(),
+            pal,
+        ),
+        SettingsRow::LineSpacing => labeled(
+            "Line spacing",
+            "Space between lines of body text.".into(),
+            line_spacing_control(app.line_spacing, pal),
             pal,
         ),
         SettingsRow::Footer => labeled(
@@ -430,49 +438,19 @@ fn theme_card<'a>(entry: &ThemeEntry, selected: bool, pal: Palette) -> Element<'
 }
 
 fn glass_row<'a>(app: &'a App, pal: Palette) -> Element<'a, Message> {
-    let mut modes = irow![].spacing(2);
-    for (glass, label) in [
-        (Glass::Off, "Off"),
-        (Glass::Sidebar, "Sidebar"),
-        (Glass::Window, "Window"),
-    ] {
-        let on = app.prefs.glass == glass;
-        modes = modes.push(
-            button(text(label).size(12.5))
-                .padding(Padding::from([5, 12]))
-                .on_press(Message::SetGlass(glass))
-                .style(move |_, status| button::Style {
-                    background: if on {
-                        Some(pal.surface_alt.into())
-                    } else if matches!(status, button::Status::Hovered) {
-                        Some(pal.hover().into())
-                    } else {
-                        None
-                    },
-                    text_color: if on { pal.fg } else { pal.muted },
-                    border: Border {
-                        radius: theme::radius::SM.into(),
-                        ..Default::default()
-                    },
-                    ..Default::default()
-                }),
-        );
-    }
-    let segmented = container(modes)
-        .padding(2)
-        .style(move |_| container::Style {
-            background: Some(pal.chip().into()),
-            border: Border {
-                color: pal.border(),
-                width: 1.0,
-                radius: (theme::radius::SM + 2.0).into(),
-            },
-            ..Default::default()
-        });
+    let modes = segmented(
+        [
+            (Glass::Off, "Off"),
+            (Glass::Sidebar, "Sidebar"),
+            (Glass::Window, "Window"),
+        ]
+        .map(|(glass, label)| (label, app.prefs.glass == glass, Message::SetGlass(glass))),
+        pal,
+    );
     let main = labeled(
         "Window glass",
         "Let the blurred desktop show through. macOS only.".into(),
-        segmented.into(),
+        modes,
         pal,
     );
     if !app.glass_needs_restart() {
@@ -505,6 +483,61 @@ fn glass_row<'a>(app: &'a App, pal: Palette) -> Element<'a, Message> {
     ]
     .spacing(10)
     .into()
+}
+
+fn line_spacing_control<'a>(current: LineSpacing, pal: Palette) -> Element<'a, Message> {
+    segmented(
+        LineSpacing::ALL.map(|spacing| {
+            (
+                spacing.label(),
+                spacing == current,
+                Message::SetLineSpacing(spacing),
+            )
+        }),
+        pal,
+    )
+}
+
+/// A segmented control: one button per `(label, selected, message)`.
+fn segmented<'a, const N: usize>(
+    options: [(&'static str, bool, Message); N],
+    pal: Palette,
+) -> Element<'a, Message> {
+    let mut modes = irow![].spacing(2);
+    for (label, on, press) in options {
+        modes = modes.push(
+            button(text(label).size(12.5))
+                .padding(Padding::from([5, 12]))
+                .on_press(press)
+                .style(move |_, status| button::Style {
+                    background: if on {
+                        Some(pal.surface_alt.into())
+                    } else if matches!(status, button::Status::Hovered) {
+                        Some(pal.hover().into())
+                    } else {
+                        None
+                    },
+                    text_color: if on { pal.fg } else { pal.muted },
+                    border: Border {
+                        radius: theme::radius::SM.into(),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                }),
+        );
+    }
+    container(modes)
+        .padding(2)
+        .style(move |_| container::Style {
+            background: Some(pal.chip().into()),
+            border: Border {
+                color: pal.border(),
+                width: 1.0,
+                radius: (theme::radius::SM + 2.0).into(),
+            },
+            ..Default::default()
+        })
+        .into()
 }
 
 /// An on/off switch: a pill track with a sliding knob.
