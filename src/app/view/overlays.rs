@@ -306,7 +306,7 @@ pub(in crate::app) fn shortcuts_overlay<'a>(pal: Palette) -> Element<'a, Message
     // darkness matches the command palette (`overlay_frame`).
     let panel = container(card)
         .max_width(1060.0)
-        .max_height(520.0)
+        .max_height(630.0)
         .style(move |_| container::Style {
             background: Some(pal.popover().into()),
             border: Border {
