@@ -445,6 +445,23 @@ impl App {
     }
 
     pub(super) fn assign_quick_slot(&mut self, index: usize) -> Task<Message> {
+        self.assign_quick_slot_checked(index, false)
+    }
+
+    /// Apply the assignment the open confirmation asked about. Every guard
+    /// runs again, so a change made while the dialog was open still counts.
+    pub(super) fn confirm_quick_slot_replace(&mut self) -> Task<Message> {
+        let Some(pending) = self.quick_slot_replace.take() else {
+            return Task::none();
+        };
+        self.assign_quick_slot_checked(pending.index, true)
+    }
+
+    fn assign_quick_slot_checked(
+        &mut self,
+        index: usize,
+        replace_confirmed: bool,
+    ) -> Task<Message> {
         if index >= crate::quick_slots::SLOT_COUNT {
             return Task::none();
         }
@@ -464,6 +481,20 @@ impl App {
             return self
                 .show_toast("Quick Slots only store files inside the active workspace".into());
         };
+        if !replace_confirmed {
+            if let Some(current) = self.quick_slots.occupied(index) {
+                let same_file = crate::quick_slots::normalize_relative_path(&current.relative_path)
+                    .is_some_and(|slot_path| slot_path == relative_path);
+                if !same_file {
+                    self.quick_slot_replace = Some(QuickSlotReplace {
+                        index,
+                        current: current.relative_path.clone(),
+                        incoming: relative_path,
+                    });
+                    return Task::none();
+                }
+            }
+        }
         let slot = crate::quick_slots::QuickSlot {
             relative_path,
             context: context.normalized(),
@@ -474,40 +505,6 @@ impl App {
         self.quick_slots_undo = None;
         self.persist_quick_slots_now();
         self.show_toast(format!("Quick Slot {} assigned", index + 1))
-    }
-
-    pub(super) fn new_quick_slot(&mut self) -> Task<Message> {
-        if self.full_mindmap.is_none() && self.workspace.is_none() {
-            return self.show_toast("Open a workspace before assigning Quick Slots".into());
-        }
-        if self.dirty {
-            return self.show_toast(self.unsaved_edits_open_message());
-        }
-        let Some((path, _context)) = self.current_quick_slot_context() else {
-            return self.show_toast("Open a file before assigning a Quick Slot".into());
-        };
-        let Some(root) = self.quick_slots_workspace_root() else {
-            return self.show_toast("Open a workspace before assigning Quick Slots".into());
-        };
-        let Some(relative_path) = crate::quick_slots::relative_path(root, &path) else {
-            return self
-                .show_toast("Quick Slots only store files inside the active workspace".into());
-        };
-        let matching = (0..crate::quick_slots::SLOT_COUNT).find(|&index| {
-            self.quick_slots
-                .occupied(index)
-                .and_then(|slot| crate::quick_slots::normalize_relative_path(&slot.relative_path))
-                .is_some_and(|slot_path| slot_path == relative_path)
-        });
-        if let Some(index) = matching {
-            return self.begin_quick_slot_activation(index);
-        }
-        let Some(index) = (0..crate::quick_slots::SLOT_COUNT)
-            .find(|&index| self.quick_slots.occupied(index).is_none())
-        else {
-            return self.show_toast("Quick Slots are full".into());
-        };
-        self.assign_quick_slot(index)
     }
 
     pub(super) fn clear_quick_slot(&mut self, index: usize) -> Task<Message> {

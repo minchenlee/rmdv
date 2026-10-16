@@ -33,12 +33,16 @@ pub enum Message {
     ToggleShortcuts,
     /// Activate the slot addressed by its zero-based rail index.
     QuickSlotActivate(usize),
-    /// Assign/overwrite the slot with the current reading context.
+    /// Assign the current reading context to the slot. A slot that holds a
+    /// different file asks for confirmation first.
     QuickSlotAssign(usize),
+    /// Replace the slot named by the open confirmation.
+    QuickSlotReplaceConfirm,
+    /// Close the replace confirmation and keep the slot.
+    QuickSlotReplaceCancel,
     QuickSlotClear(usize),
     QuickSlotClearAll,
     QuickSlotUndo,
-    QuickSlotNew,
     QuickSlotClose,
     QuickSlotCloseWindow,
     QuickSlotCycle(i8),

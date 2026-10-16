@@ -84,6 +84,16 @@ pub(super) struct PendingIpcFileOpen {
     pub(super) nav: Option<PendingNav>,
 }
 
+/// An assignment that waits for the user to confirm replacing an occupied slot.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct QuickSlotReplace {
+    pub(super) index: usize,
+    /// Workspace-relative path the slot holds now.
+    pub(super) current: String,
+    /// Workspace-relative path that replaces it.
+    pub(super) incoming: String,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub(super) struct PendingQuickSlotRestore {
     pub(super) generation: u64,

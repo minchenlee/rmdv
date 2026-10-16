@@ -405,6 +405,8 @@ pub struct App {
     pub quick_slots: crate::quick_slots::WorkspaceSlots,
     quick_slots_root: Option<PathBuf>,
     quick_slots_undo: Option<crate::quick_slots::ClearUndo>,
+    /// Open "replace slot?" confirmation; it owns the keyboard while set.
+    quick_slot_replace: Option<QuickSlotReplace>,
     pub quick_slots_modifier_held: bool,
     quick_slots_rail_revealed: bool,
     quick_slots_modifier_generation: u64,
@@ -578,6 +580,7 @@ impl Default for App {
             quick_slots: crate::quick_slots::WorkspaceSlots::default(),
             quick_slots_root: None,
             quick_slots_undo: None,
+            quick_slot_replace: None,
             quick_slots_modifier_held: false,
             quick_slots_rail_revealed: false,
             quick_slots_modifier_generation: 0,
@@ -2692,6 +2695,7 @@ impl App {
         let settings_open = self.settings_open;
         let quick_slots_allowed =
             quick_slots_shortcuts_enabled(overlay_open, vault_open, focused, editing, self.dirty);
+        let slot_replace_open = self.quick_slot_replace.is_some();
         let keys = iced::event::listen_with(|ev, status, _id| {
             let is_keyboard = matches!(
                 &ev,
@@ -2711,35 +2715,42 @@ impl App {
             let _ = status;
             Some(ev)
         })
+        // Std tuples hash only up to 12 fields, so the modal flag nests.
         .with((
-            focused,
-            overlay_open,
-            tree_active,
-            outline_active,
-            sidebar_open,
-            editing,
-            fold_chord,
-            mindmap,
-            vault_open,
-            full_mindmap,
-            quick_slots_allowed,
-            settings_open,
+            (
+                focused,
+                overlay_open,
+                tree_active,
+                outline_active,
+                sidebar_open,
+                editing,
+                fold_chord,
+                mindmap,
+                vault_open,
+                full_mindmap,
+                quick_slots_allowed,
+                settings_open,
+            ),
+            slot_replace_open,
         ))
         .map(
             |(
                 (
-                    focused,
-                    overlay_open,
-                    tree_active,
-                    outline_active,
-                    sidebar_open,
-                    editing,
-                    fold_chord,
-                    mindmap,
-                    vault_open,
-                    full_mindmap,
-                    quick_slots_allowed,
-                    settings_open,
+                    (
+                        focused,
+                        overlay_open,
+                        tree_active,
+                        outline_active,
+                        sidebar_open,
+                        editing,
+                        fold_chord,
+                        mindmap,
+                        vault_open,
+                        full_mindmap,
+                        quick_slots_allowed,
+                        settings_open,
+                    ),
+                    slot_replace_open,
                 ),
                 ev,
             )| {
@@ -2766,6 +2777,15 @@ impl App {
                 };
                 if is_primary_modifier_key(&key) {
                     return Message::QuickSlotsModifier(!released);
+                }
+                // The replace-slot confirmation owns the keyboard: nothing
+                // reaches the surfaces underneath it.
+                if slot_replace_open {
+                    return if released {
+                        Message::Noop
+                    } else {
+                        quick_slot_replace_key_message(&key)
+                    };
                 }
                 // A non-Latin input source reports e.g. "ㄖ" for the B key;
                 // match shortcuts on the physical key's Latin character.
@@ -3597,6 +3617,10 @@ impl App {
             overlay_layer
         ]
         .into();
+        let slot_replace_layer: Element<'_, Message> = match &self.quick_slot_replace {
+            Some(pending) => quick_slot_replace_overlay(pending, pal),
+            None => Space::new().into(),
+        };
         let toast_layer: Element<'_, Message> = match &self.toast {
             Some(t) => toast_overlay(t, pal),
             None => Space::new().into(),
@@ -3614,7 +3638,14 @@ impl App {
             Some(u) => update_banner(&u.version, pal),
             None => Space::new().into(),
         };
-        iced::widget::stack![base, progress_layer, toast_layer, update_layer].into()
+        iced::widget::stack![
+            base,
+            slot_replace_layer,
+            progress_layer,
+            toast_layer,
+            update_layer
+        ]
+        .into()
     }
 }
 

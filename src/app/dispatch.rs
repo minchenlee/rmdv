@@ -19,6 +19,11 @@ impl App {
     }
 
     fn dispatch_message(&mut self, msg: Message) -> Task<Message> {
+        // A clean Zen editor can keep focus under the replace confirmation;
+        // its Enter must not type into the buffer.
+        if self.quick_slot_replace.is_some() && matches!(msg, Message::EditorAction(_)) {
+            return Task::none();
+        }
         if let Some(rel) = self.queued_snap.take() {
             // Drain any pending IPC-driven scroll BEFORE dispatching the new
             // message so the snap lands before further state mutation.
@@ -353,7 +358,11 @@ impl App {
             Message::QuickSlotClear(index) => self.clear_quick_slot(index),
             Message::QuickSlotClearAll => self.clear_all_quick_slots(),
             Message::QuickSlotUndo => self.undo_quick_slot_clear(),
-            Message::QuickSlotNew => self.new_quick_slot(),
+            Message::QuickSlotReplaceConfirm => self.confirm_quick_slot_replace(),
+            Message::QuickSlotReplaceCancel => {
+                self.quick_slot_replace = None;
+                Task::none()
+            }
             Message::QuickSlotClose => self.close_active_quick_slot(),
             Message::QuickSlotCloseWindow => self.close_quick_slot_window(),
             Message::QuickSlotCycle(delta) => {

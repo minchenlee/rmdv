@@ -113,6 +113,48 @@ pub(super) fn quick_slots_primary_modifier(modifiers: iced::keyboard::Modifiers)
     }
 }
 
+/// Modifier added to the primary key (⌘ on macOS, Ctrl elsewhere) that turns
+/// a slot digit from "activate" into "assign the current file". Change the
+/// assign chord here and in `QUICK_SLOT_ASSIGN_HINT` only.
+pub(super) const QUICK_SLOT_ASSIGN_EXTRA: iced::keyboard::Modifiers =
+    iced::keyboard::Modifiers::ALT;
+
+/// Shortcut-sheet label for the assign chord.
+pub(super) const QUICK_SLOT_ASSIGN_HINT: &str = "⌥⌘1–9";
+
+/// True when the non-primary modifiers are exactly the assign chord.
+pub(super) fn quick_slot_assign_modifier(modifiers: iced::keyboard::Modifiers) -> bool {
+    modifiers.shift() == QUICK_SLOT_ASSIGN_EXTRA.shift()
+        && modifiers.alt() == QUICK_SLOT_ASSIGN_EXTRA.alt()
+}
+
+/// True when no extra modifier is held, so a slot digit activates.
+fn quick_slot_activate_modifier(modifiers: iced::keyboard::Modifiers) -> bool {
+    !modifiers.shift() && !modifiers.alt()
+}
+
+/// The digit-chord action for slot `index`, or `None` for other modifiers.
+fn quick_slot_digit_message(index: usize, modifiers: iced::keyboard::Modifiers) -> Option<Message> {
+    if quick_slot_activate_modifier(modifiers) {
+        Some(Message::QuickSlotActivate(index))
+    } else if quick_slot_assign_modifier(modifiers) {
+        Some(Message::QuickSlotAssign(index))
+    } else {
+        None
+    }
+}
+
+/// Keys while the replace-slot confirmation is open: Esc cancels, Enter
+/// replaces, and every other key is swallowed.
+pub(super) fn quick_slot_replace_key_message(key: &iced::keyboard::Key) -> Message {
+    use iced::keyboard::{key::Named, Key};
+    match key {
+        Key::Named(Named::Escape) => Message::QuickSlotReplaceCancel,
+        Key::Named(Named::Enter) => Message::QuickSlotReplaceConfirm,
+        _ => Message::Noop,
+    }
+}
+
 pub(super) fn quick_slot_digit_index(physical: iced::keyboard::key::Physical) -> Option<usize> {
     use iced::keyboard::key::{Code, Physical};
     let Physical::Code(code) = physical else {
@@ -239,8 +281,8 @@ pub(super) fn quick_slots_rail_visible(
 
 /// Resolve the physical Quick Slot chord after the surrounding surfaces have
 /// been classified. Zen keeps Command+W/Command+Shift+W close semantics and
-/// clean-buffer tab creation/activation, while directional slot chords yield
-/// to editor-native arrows/line motion.
+/// clean-buffer slot activation/assignment, while directional slot chords
+/// yield to editor-native arrows/line motion.
 pub(super) fn quick_slot_physical_message(
     physical: iced::keyboard::key::Physical,
     modifiers: iced::keyboard::Modifiers,
@@ -257,18 +299,7 @@ pub(super) fn quick_slot_physical_message(
         if !quick_slots_allowed {
             return None;
         }
-        return Some(if !modifiers.shift() && !modifiers.alt() {
-            Message::QuickSlotActivate(index)
-        } else {
-            return None;
-        });
-    }
-    if matches!(physical, Physical::Code(Code::KeyN))
-        && quick_slots_allowed
-        && !modifiers.shift()
-        && !modifiers.alt()
-    {
-        return Some(Message::QuickSlotNew);
+        return quick_slot_digit_message(index, modifiers);
     }
     if editing {
         return match physical {

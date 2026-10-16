@@ -120,14 +120,23 @@ fn clean_zen_quick_slot_arrows_yield_to_editor_native_motion() {
         true,
     )
     .is_some_and(|message| matches!(message, Message::QuickSlotActivate(0))));
+    // Extra modifiers beyond the assign chord do nothing.
     assert!(quick_slot_physical_message(
         Physical::Code(Code::Digit1),
-        command | Modifiers::ALT,
+        command | Modifiers::SHIFT | Modifiers::ALT,
         quick_slots_allowed,
         true,
         true,
     )
     .is_none());
+    assert!(quick_slot_physical_message(
+        Physical::Code(Code::Digit1),
+        command | QUICK_SLOT_ASSIGN_EXTRA,
+        quick_slots_allowed,
+        true,
+        true,
+    )
+    .is_some_and(|message| matches!(message, Message::QuickSlotAssign(0))));
     assert!(quick_slot_physical_message(
         Physical::Code(Code::KeyN),
         command,
@@ -135,7 +144,7 @@ fn clean_zen_quick_slot_arrows_yield_to_editor_native_motion() {
         true,
         true,
     )
-    .is_some_and(|message| matches!(message, Message::QuickSlotNew)));
+    .is_none());
     assert!(matches!(
         quick_slot_physical_message(
             Physical::Code(Code::KeyW),
@@ -170,15 +179,7 @@ fn clean_zen_quick_slot_arrows_yield_to_editor_native_motion() {
     .is_none());
     assert!(quick_slot_physical_message(
         Physical::Code(Code::Digit1),
-        command | Modifiers::ALT,
-        dirty_quick_slots_allowed,
-        true,
-        true,
-    )
-    .is_none());
-    assert!(quick_slot_physical_message(
-        Physical::Code(Code::KeyN),
-        command,
+        command | QUICK_SLOT_ASSIGN_EXTRA,
         dirty_quick_slots_allowed,
         true,
         true,
@@ -207,9 +208,28 @@ fn quick_slot_navigation_and_new_tab_remain_available_outside_editor() {
             Some(Message::QuickSlotCycle(1))
         ));
         assert!(matches!(
-            quick_slot_physical_message(Physical::Code(Code::KeyN), command, true, false, true,),
-            Some(Message::QuickSlotNew)
+            quick_slot_physical_message(
+                Physical::Code(Code::Digit9),
+                command | QUICK_SLOT_ASSIGN_EXTRA,
+                true,
+                false,
+                true,
+            ),
+            Some(Message::QuickSlotAssign(8))
         ));
+        assert!(matches!(
+            quick_slot_physical_message(Physical::Code(Code::Digit9), command, true, false, true,),
+            Some(Message::QuickSlotActivate(8))
+        ));
+        // ⌘N no longer assigns and has no other binding.
+        assert!(quick_slot_physical_message(
+            Physical::Code(Code::KeyN),
+            command,
+            true,
+            false,
+            true,
+        )
+        .is_none());
         assert!(quick_slot_physical_message(
             Physical::Code(Code::ArrowLeft),
             command,
@@ -349,131 +369,157 @@ fn quick_slot_activation_rejects_older_generic_load_and_refresh() {
     let _ = std::fs::remove_dir_all(root);
 }
 
-#[test]
-fn new_quick_slot_activates_same_file_without_overwriting_context() {
-    let (mut app, old_file, _new_file) = quick_slot_restore_test_app("new-slot-existing");
-    app.file = Some(old_file.clone());
+fn quick_slot_test_cleanup(mut app: App) {
+    let isolated = app.quick_slots_persistence_path.clone().unwrap();
+    let root = app.workspace.take().unwrap();
+    let _ = std::fs::remove_file(isolated);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+fn quick_slot_assign_test_app(name: &str) -> App {
+    let (mut app, old_file, _new_file) = quick_slot_restore_test_app(name);
+    app.file = Some(old_file);
     app.source = "# Old\n".into();
     app.saved_source = app.source.clone();
+    app
+}
+
+fn slot_path(app: &App, index: usize) -> Option<&str> {
+    app.quick_slots
+        .occupied(index)
+        .map(|slot| slot.relative_path.as_str())
+}
+
+fn occupy_slot(app: &mut App, index: usize, relative_path: &str) {
+    assert!(app.quick_slots.set(
+        index,
+        crate::quick_slots::QuickSlot {
+            relative_path: relative_path.into(),
+            context: crate::quick_slots::SlotContext::default(),
+        },
+    ));
+}
+
+#[test]
+fn assign_to_occupied_slot_waits_for_replace_confirmation() {
+    let mut app = quick_slot_assign_test_app("assign-occupied-confirm");
+    occupy_slot(&mut app, 2, "new.md");
+
+    let _ = app.update(Message::QuickSlotAssign(2));
+
+    let pending = app
+        .quick_slot_replace
+        .clone()
+        .expect("occupied slot asks before replacing");
+    assert_eq!(pending.index, 2);
+    assert_eq!(pending.current, "new.md");
+    assert_eq!(pending.incoming, "old.md");
+    assert_eq!(slot_path(&app, 2), Some("new.md"));
+
+    let _ = app.update(Message::QuickSlotReplaceConfirm);
+
+    assert!(app.quick_slot_replace.is_none());
+    assert_eq!(slot_path(&app, 2), Some("old.md"));
+    assert_eq!(app.quick_slots.active, Some(2));
+    quick_slot_test_cleanup(app);
+}
+
+#[test]
+fn cancel_replace_keeps_occupied_slot() {
+    let mut app = quick_slot_assign_test_app("assign-occupied-cancel");
+    occupy_slot(&mut app, 0, "new.md");
+
+    let _ = app.update(Message::QuickSlotAssign(0));
+    assert!(app.quick_slot_replace.is_some());
+    let _ = app.update(Message::QuickSlotReplaceCancel);
+
+    assert!(app.quick_slot_replace.is_none());
+    assert_eq!(slot_path(&app, 0), Some("new.md"));
+    assert_eq!(app.quick_slots.active, None);
+    quick_slot_test_cleanup(app);
+}
+
+#[test]
+fn replace_modal_keys_map_escape_and_enter_and_swallow_the_rest() {
+    use iced::keyboard::{key::Named, Key};
+
+    assert!(matches!(
+        quick_slot_replace_key_message(&Key::Named(Named::Escape)),
+        Message::QuickSlotReplaceCancel
+    ));
+    assert!(matches!(
+        quick_slot_replace_key_message(&Key::Named(Named::Enter)),
+        Message::QuickSlotReplaceConfirm
+    ));
+    assert!(matches!(
+        quick_slot_replace_key_message(&Key::Character("p".into())),
+        Message::Noop
+    ));
+    assert!(matches!(
+        quick_slot_replace_key_message(&Key::Named(Named::ArrowDown)),
+        Message::Noop
+    ));
+}
+
+#[test]
+fn escape_key_through_modal_mapping_cancels_replace() {
+    use iced::keyboard::{key::Named, Key};
+
+    let mut app = quick_slot_assign_test_app("assign-occupied-escape");
+    occupy_slot(&mut app, 4, "new.md");
+    let _ = app.update(Message::QuickSlotAssign(4));
+    let _ = app.update(quick_slot_replace_key_message(&Key::Named(Named::Escape)));
+
+    assert!(app.quick_slot_replace.is_none());
+    assert_eq!(slot_path(&app, 4), Some("new.md"));
+    quick_slot_test_cleanup(app);
+}
+
+#[test]
+fn assign_to_empty_slot_skips_confirmation() {
+    let mut app = quick_slot_assign_test_app("assign-empty");
+
+    let _ = app.update(Message::QuickSlotAssign(1));
+
+    assert!(app.quick_slot_replace.is_none());
+    assert_eq!(slot_path(&app, 1), Some("old.md"));
+    assert_eq!(app.quick_slots.active, Some(1));
+    quick_slot_test_cleanup(app);
+}
+
+#[test]
+fn assign_same_file_skips_confirmation() {
+    let mut app = quick_slot_assign_test_app("assign-same-file");
     app.view_mode = ViewMode::Mindmap;
-    // Simulate a legacy persisted bank that retained a harmless CurDir
-    // segment; New Slot must still identify the current file.
+    // A legacy CurDir segment still names the same file.
     app.quick_slots.slots[0] = Some(crate::quick_slots::QuickSlot {
         relative_path: "./old.md".into(),
         context: crate::quick_slots::SlotContext::default(),
     });
 
-    let _ = app.update(Message::QuickSlotNew);
+    let _ = app.update(Message::QuickSlotAssign(0));
 
-    let slot = app.quick_slots.occupied(0).expect("existing file slot");
-    assert_eq!(slot.relative_path, "./old.md");
-    assert_eq!(slot.context.mode, crate::quick_slots::SlotMode::Rendered);
+    assert!(app.quick_slot_replace.is_none());
+    let slot = app.quick_slots.occupied(0).expect("slot stays assigned");
+    assert_eq!(
+        slot.context.mode,
+        crate::quick_slots::SlotMode::DocumentMindmap
+    );
     assert_eq!(app.quick_slots.active, Some(0));
-    let isolated = app.quick_slots_persistence_path.clone().unwrap();
-    let root = app.workspace.take().unwrap();
-    let _ = std::fs::remove_file(isolated);
-    let _ = std::fs::remove_dir_all(root);
+    quick_slot_test_cleanup(app);
 }
 
 #[test]
-fn new_quick_slot_uses_first_empty_slot() {
-    let (mut app, old_file, new_file) = quick_slot_restore_test_app("new-slot-empty");
-    app.file = Some(old_file.clone());
-    app.source = "# Old\n".into();
-    app.saved_source = app.source.clone();
-    app.quick_slots.set(
-        0,
-        crate::quick_slots::QuickSlot {
-            relative_path: "new.md".into(),
-            context: crate::quick_slots::SlotContext::default(),
-        },
-    );
+fn dirty_assign_keeps_unsaved_edits_toast_without_modal() {
+    let mut app = quick_slot_assign_test_app("assign-dirty");
+    occupy_slot(&mut app, 0, "new.md");
+    app.dirty = true;
 
-    let _ = app.update(Message::QuickSlotNew);
+    let _ = app.update(Message::QuickSlotAssign(0));
 
-    assert_eq!(app.quick_slots.active, Some(1));
-    assert_eq!(
-        app.quick_slots
-            .occupied(0)
-            .map(|slot| slot.relative_path.as_str()),
-        Some("new.md")
-    );
-    assert_eq!(
-        app.quick_slots
-            .occupied(1)
-            .map(|slot| slot.relative_path.as_str()),
-        Some("old.md")
-    );
-    assert!(new_file.is_file());
-    let isolated = app.quick_slots_persistence_path.clone().unwrap();
-    let root = app.workspace.take().unwrap();
-    let _ = std::fs::remove_file(isolated);
-    let _ = std::fs::remove_dir_all(root);
-}
-
-#[test]
-fn new_quick_slot_does_not_overwrite_full_bank() {
-    let (mut app, old_file, _new_file) = quick_slot_restore_test_app("new-slot-full");
-    app.file = Some(old_file.clone());
-    app.source = "# Old\n".into();
-    app.saved_source = app.source.clone();
-    for index in 0..crate::quick_slots::SLOT_COUNT {
-        assert!(app.quick_slots.set(
-            index,
-            crate::quick_slots::QuickSlot {
-                relative_path: format!("slot-{index}.md"),
-                context: crate::quick_slots::SlotContext::default(),
-            },
-        ));
-    }
-
-    let _ = app.update(Message::QuickSlotNew);
-
-    assert_eq!(app.quick_slots.active, None);
-    assert!(app
-        .toast
-        .as_ref()
-        .is_some_and(|toast| toast.text == "Quick Slots are full"));
-    for index in 0..crate::quick_slots::SLOT_COUNT {
-        let expected = format!("slot-{index}.md");
-        assert_eq!(
-            app.quick_slots
-                .occupied(index)
-                .map(|slot| slot.relative_path.as_str()),
-            Some(expected.as_str())
-        );
-    }
-    let isolated = app.quick_slots_persistence_path.clone().unwrap();
-    let root = app.workspace.take().unwrap();
-    let _ = std::fs::remove_file(isolated);
-    let _ = std::fs::remove_dir_all(root);
-}
-
-#[test]
-fn new_quick_slot_activates_existing_full_mindmap_file_without_overwrite() {
-    let (mut app, old_file, _new_file) = quick_slot_restore_test_app("new-slot-full-mode");
-    let mut full = App::new_full_mindmap_state();
-    full.selected = Some(WorkspaceNodeId::File(old_file.clone()));
-    app.full_mindmap = Some(full);
-    app.quick_slots.set(
-        0,
-        crate::quick_slots::QuickSlot {
-            relative_path: "old.md".into(),
-            context: crate::quick_slots::SlotContext::default(),
-        },
-    );
-
-    let _ = app.update(Message::QuickSlotNew);
-
-    assert_eq!(app.quick_slots.active, Some(0));
-    assert_eq!(
-        app.quick_slots.occupied(0).map(|slot| slot.context.mode),
-        Some(crate::quick_slots::SlotMode::Rendered)
-    );
-    let isolated = app.quick_slots_persistence_path.clone().unwrap();
-    let root = app.workspace.take().unwrap();
-    let _ = std::fs::remove_file(isolated);
-    let _ = std::fs::remove_dir_all(root);
+    assert!(app.quick_slot_replace.is_none());
+    assert_eq!(slot_path(&app, 0), Some("new.md"));
+    quick_slot_test_cleanup(app);
 }
 
 fn deferred_full_preview_restore_for_workspace(
@@ -636,6 +682,8 @@ fn overwriting_during_inflight_slot_restore_drops_stale_completion() {
     app.source = "# New\n".into();
     app.saved_source = app.source.clone();
     let _ = app.assign_quick_slot(0);
+    // Slot 0 holds another file, so the overwrite waits for confirmation.
+    let _ = app.update(Message::QuickSlotReplaceConfirm);
     let old_path =
         crate::quick_slots::resolve_path(app.workspace.as_deref().unwrap(), "old.md").unwrap();
     let _ = app.update(Message::QuickSlotFileLoaded {
@@ -2658,13 +2706,31 @@ fn mindmap_preserves_reader_font_chords_and_guards_obscured_surfaces() {
 }
 
 #[test]
-fn quick_slot_shortcut_hints_stay_within_four_characters() {
+fn quick_slot_shortcut_hints_stay_within_four_key_caps() {
     for (keys, _) in QUICK_SLOT_SHORTCUT_HINTS {
         assert!(
-            keys.chars().count() <= 4,
-            "Quick Slot shortcut hint `{keys}` exceeds the four-character limit"
+            key_cap_labels(keys).len() <= 4,
+            "Quick Slot shortcut hint `{keys}` exceeds the four-key-cap limit"
         );
     }
+}
+
+#[test]
+fn key_caps_keep_a_digit_range_in_one_cap() {
+    assert_eq!(key_cap_labels("⌥⌘1–9"), vec!["⌥", "⌘", "1–9"]);
+    assert_eq!(key_cap_labels("⌘K 0–6"), vec!["⌘", "K", "0–6"]);
+    assert_eq!(key_cap_labels("Home / g"), vec!["Home", "/", "g"]);
+    assert_eq!(key_cap_labels("⌘⇧W"), vec!["⌘", "⇧", "W"]);
+}
+
+#[test]
+fn quick_slot_shortcut_hints_name_the_assign_chord() {
+    assert!(QUICK_SLOT_SHORTCUT_HINTS
+        .iter()
+        .any(|(keys, _)| *keys == QUICK_SLOT_ASSIGN_HINT));
+    assert!(!QUICK_SLOT_SHORTCUT_HINTS
+        .iter()
+        .any(|(keys, _)| keys.contains("⌘N")));
 }
 
 #[test]

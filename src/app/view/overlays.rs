@@ -189,7 +189,7 @@ pub(in crate::app) fn file_finder_overlay<'a>(
 
 pub(in crate::app) const QUICK_SLOT_SHORTCUT_HINTS: &[(&str, &str)] = &[
     ("⌘1–9", "Activate slots 1 to 9"),
-    ("⌘N", "Add current file to next empty slot"),
+    (QUICK_SLOT_ASSIGN_HINT, "Assign current file to slot"),
     ("⌘↑", "Previous slot (outside Zen)"),
     ("⌘↓", "Next slot (outside Zen)"),
     ("⌘W", "Close active slot"),
@@ -337,49 +337,70 @@ pub(in crate::app) fn shortcuts_overlay<'a>(pal: Palette) -> Element<'a, Message
     stack![scrim, centered].into()
 }
 
-/// Render a shortcut string as a row of square key caps. Space-separated
-/// combos; within a combo each character gets its own square box, except
-/// multi-letter words (e.g. `Enter`, `Space`) which stay as one wider cap.
-pub(in crate::app) fn key_caps<'a>(keys: &str, pal: Palette) -> Element<'a, Message> {
-    let mut row = irow![].spacing(4).align_y(iced::Alignment::Center);
+/// Split a shortcut string into key-cap labels. Space-separated combos;
+/// within a combo each character gets its own cap, except multi-letter words
+/// (e.g. `Enter`, `Space`) and digit ranges (e.g. `1–9`), which stay whole.
+pub(in crate::app) fn key_cap_labels(keys: &str) -> Vec<String> {
+    let mut caps = Vec::new();
     for combo in keys.split(' ').filter(|s| !s.is_empty()) {
         let is_word = combo.chars().count() > 1 && combo.chars().all(|c| c.is_ascii_alphabetic());
-        let caps: Vec<String> = if is_word {
-            vec![combo.to_string()]
-        } else {
-            combo.chars().map(|c| c.to_string()).collect()
-        };
-        for cap in caps {
-            let multi = cap.chars().count() > 1;
-            let cap_text = text(cap).size(12).color(pal.fg).font(editor_font());
-            // Square (24x24) for single glyphs; wider but same height for words.
-            let w = if multi {
-                Length::Shrink
-            } else {
-                Length::Fixed(24.0)
-            };
-            row = row.push(
-                container(cap_text)
-                    .width(w)
-                    .height(Length::Fixed(24.0))
-                    .padding(if multi {
-                        Padding::from([0, 8])
-                    } else {
-                        Padding::ZERO
-                    })
-                    .align_x(iced::alignment::Horizontal::Center)
-                    .align_y(iced::alignment::Vertical::Center)
-                    .style(move |_| container::Style {
-                        background: Some(pal.chip().into()),
-                        border: Border {
-                            color: pal.border(),
-                            width: 1.0,
-                            radius: theme::radius::SM.into(),
-                        },
-                        ..Default::default()
-                    }),
-            );
+        if is_word {
+            caps.push(combo.to_string());
+            continue;
         }
+        let chars: Vec<char> = combo.chars().collect();
+        let mut i = 0;
+        while i < chars.len() {
+            let range = i + 2 < chars.len()
+                && chars[i].is_ascii_digit()
+                && chars[i + 1] == '–'
+                && chars[i + 2].is_ascii_digit();
+            if range {
+                caps.push(chars[i..i + 3].iter().collect());
+                i += 3;
+            } else {
+                caps.push(chars[i].to_string());
+                i += 1;
+            }
+        }
+    }
+    caps
+}
+
+/// Render a shortcut string as a row of key caps (see `key_cap_labels`).
+/// Single glyphs get square caps; longer labels get wider caps.
+pub(in crate::app) fn key_caps<'a>(keys: &str, pal: Palette) -> Element<'a, Message> {
+    let mut row = irow![].spacing(4).align_y(iced::Alignment::Center);
+    for cap in key_cap_labels(keys) {
+        let multi = cap.chars().count() > 1;
+        let cap_text = text(cap).size(12).color(pal.fg).font(editor_font());
+        // Square (24x24) for single glyphs; wider but same height for words.
+        let w = if multi {
+            Length::Shrink
+        } else {
+            Length::Fixed(24.0)
+        };
+        row = row.push(
+            container(cap_text)
+                .width(w)
+                .height(Length::Fixed(24.0))
+                .padding(if multi {
+                    Padding::from([0, 8])
+                } else {
+                    Padding::ZERO
+                })
+                .align_x(iced::alignment::Horizontal::Center)
+                .align_y(iced::alignment::Vertical::Center)
+                .style(move |_| container::Style {
+                    background: Some(pal.chip().into()),
+                    border: Border {
+                        color: pal.border(),
+                        width: 1.0,
+                        radius: theme::radius::SM.into(),
+                    },
+                    ..Default::default()
+                }),
+        );
     }
     row.into()
 }
@@ -689,4 +710,87 @@ pub(in crate::app) fn overlay_frame<'a>(
         .center_y(Length::Fill);
 
     iced::widget::stack![scrim, centered].into()
+}
+
+/// "Replace Quick Slot N?" confirmation. Esc or a backdrop click cancels;
+/// Enter or the primary button replaces.
+pub(in crate::app) fn quick_slot_replace_overlay<'a>(
+    pending: &QuickSlotReplace,
+    pal: Palette,
+) -> Element<'a, Message> {
+    let slot = pending.index + 1;
+    let file_name = |relative: &str| {
+        std::path::Path::new(relative)
+            .file_name()
+            .and_then(|name| name.to_str())
+            .map(str::to_owned)
+            .unwrap_or_else(|| relative.to_owned())
+    };
+    let mut title_font = iced::Font::with_name("Inter");
+    title_font.weight = iced::font::Weight::Semibold;
+    let title = text(format!("Replace Quick Slot {slot}?"))
+        .size(15)
+        .font(title_font)
+        .color(pal.fg);
+    let body = text(format!(
+        "Slot {slot} holds {}. Replace it with {}?",
+        file_name(&pending.current),
+        file_name(&pending.incoming)
+    ))
+    .size(13)
+    .color(pal.muted);
+    let cancel = button(text("Cancel").size(13).color(pal.fg))
+        .padding(Padding::from([8, 14]))
+        .style(move |_, status| button::Style {
+            background: match status {
+                button::Status::Hovered => Some(Background::Color(pal.hover())),
+                button::Status::Pressed => Some(Background::Color(pal.active())),
+                _ => None,
+            },
+            text_color: pal.fg,
+            border: Border {
+                color: pal.border(),
+                width: 1.0,
+                radius: theme::radius::PILL.into(),
+            },
+            ..Default::default()
+        })
+        .on_press(Message::QuickSlotReplaceCancel);
+    let replace = primary_button("Replace", pal).on_press(Message::QuickSlotReplaceConfirm);
+    let actions = irow![
+        hint_pills(&[("Esc", "cancel"), ("Enter", "replace")], pal),
+        Space::new().width(Length::Fill),
+        cancel,
+        replace,
+    ]
+    .spacing(8)
+    .align_y(iced::Alignment::Center);
+    let card = container(column![title, body, Space::new().height(8), actions].spacing(8))
+        .padding(Padding::from([20, 22]))
+        .max_width(440.0)
+        .style(move |_| container::Style {
+            background: Some(pal.popover().into()),
+            border: Border {
+                color: pal.border(),
+                width: 1.0,
+                radius: theme::radius::LG.into(),
+            },
+            shadow: theme::shadow::DIALOG,
+            ..Default::default()
+        });
+    let scrim = mouse_area(
+        container(Space::new().width(Length::Fill).height(Length::Fill))
+            .style(|_| container::Style {
+                background: Some(Background::Color(theme::shadow::SCRIM)),
+                ..Default::default()
+            })
+            .width(Length::Fill)
+            .height(Length::Fill),
+    )
+    .on_press(Message::QuickSlotReplaceCancel);
+    let centered = container(card)
+        .padding(Padding::from([40, 40]))
+        .center_x(Length::Fill)
+        .center_y(Length::Fill);
+    stack![scrim, centered].into()
 }
