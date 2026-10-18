@@ -1484,6 +1484,18 @@ impl App {
                             snapshot.recursive_supported_file_count,
                             tree::RecursiveFileCount::Exact(0)
                         );
+                        // A deferred file selection (refresh/re-entry) must land
+                        // inside the shown page; widen it in whole pages.
+                        let mut shown = tree::DIRECT_PAGE;
+                        if let Some(index) = self
+                            .full_mindmap
+                            .as_ref()
+                            .and_then(|full| full.deferred_file_selection.as_ref())
+                            .and_then(|path| snapshot.files.iter().position(|f| f == path))
+                        {
+                            let position = snapshot.folders.len() + index + 1;
+                            shown = position.div_ceil(tree::DIRECT_PAGE) * tree::DIRECT_PAGE;
+                        }
                         let folders = std::sync::Arc::new(snapshot.folders);
                         let files = std::sync::Arc::new(snapshot.files);
                         if let Some(full) = self.full_mindmap.as_mut() {
@@ -1496,7 +1508,7 @@ impl App {
                                     recursive_supported_file_count: snapshot
                                         .recursive_supported_file_count,
                                     truncated: snapshot.listing_truncated,
-                                    shown: crate::tree::DIRECT_PAGE,
+                                    shown,
                                 },
                             );
                         }

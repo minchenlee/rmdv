@@ -491,7 +491,8 @@ fn visible_folder_children<'a>(
 
 /// Split a loaded folder's direct children into the page that is shown:
 /// `(folders shown, files shown, children left)`. Folders come first, then
-/// files. The count is taken before hidden/exact-empty filtering.
+/// files. Folders left behind that would not render (exact-empty) are not
+/// counted.
 fn page_split(
     folder: &Path,
     materialized: &HashMap<PathBuf, MaterializedFolder>,
@@ -506,7 +507,16 @@ fn page_split(
             let total = folders.len() + files.len();
             let shown = (*shown).min(total);
             let shown_folders = shown.min(folders.len());
-            (shown_folders, shown - shown_folders, total - shown)
+            let shown_files = shown - shown_folders;
+            let left_folders = folders[shown_folders..]
+                .iter()
+                .filter(|node| should_show_folder(node, materialized))
+                .count();
+            (
+                shown_folders,
+                shown_files,
+                left_folders + files.len() - shown_files,
+            )
         }
         _ => (0, 0, 0),
     }

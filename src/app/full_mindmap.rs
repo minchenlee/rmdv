@@ -1039,20 +1039,20 @@ impl App {
         };
         let old_shown = *shown;
         *shown = old_shown.saturating_add(tree::DIRECT_PAGE);
-        let first_new = if old_shown < folders.len() {
-            Some(WorkspaceNodeId::Folder(folders[old_shown].path.clone()))
-        } else {
-            files
-                .get(old_shown - folders.len())
-                .map(|path| WorkspaceNodeId::File(path.clone()))
-        };
+        let revealed: Vec<WorkspaceNodeId> = folders
+            .iter()
+            .map(|node| WorkspaceNodeId::Folder(node.path.clone()))
+            .chain(files.iter().map(|path| WorkspaceNodeId::File(path.clone())))
+            .skip(old_shown)
+            .take(tree::DIRECT_PAGE)
+            .collect();
         self.invalidate_full_mindmap_layout();
         let followup = self.schedule_full_mindmap_verification_followup();
-        let target = first_new
-            .filter(|id| {
-                self.full_mindmap_graph()
-                    .is_some_and(|graph| graph.node(id).is_some())
-            })
+        // Verification may hide a revealed shell for now; select the first
+        // item that is actually in the graph.
+        let target = self
+            .full_mindmap_graph()
+            .and_then(|graph| revealed.into_iter().find(|id| graph.node(id).is_some()))
             .unwrap_or_else(|| {
                 if self.workspace.as_ref() == Some(&folder) {
                     WorkspaceNodeId::Root(folder)

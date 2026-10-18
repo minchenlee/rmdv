@@ -428,11 +428,12 @@ fn fill_bounded(
                 indexed_files.push(entry.path.clone());
             }
             if budget.supported_files >= budget.max_files {
+                // The cap is full but nothing was left out yet: keep the
+                // budget closed without claiming this listing is cut. A
+                // further file hits the check above and flags it.
                 budget.exhausted = true;
                 budget.truncated = true;
                 subtree_incomplete = true;
-                budget.listing_truncated |= depth == 0;
-                break;
             }
         }
     }
