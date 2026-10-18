@@ -481,8 +481,34 @@ fn visible_folder_children<'a>(
 ) -> &'a [Node] {
     match materialized.get(&node.path) {
         Some(MaterializedFolder::Verified { .. }) => &node.children,
-        Some(MaterializedFolder::Loaded { folders, .. }) => folders.as_slice(),
+        Some(MaterializedFolder::Loaded { folders, .. }) => {
+            let (shown_folders, _, _) = page_split(&node.path, materialized);
+            &folders[..shown_folders]
+        }
         _ => &node.children,
+    }
+}
+
+/// Split a loaded folder's direct children into the page that is shown:
+/// `(folders shown, files shown, children left)`. Folders come first, then
+/// files. The count is taken before hidden/exact-empty filtering.
+fn page_split(
+    folder: &Path,
+    materialized: &HashMap<PathBuf, MaterializedFolder>,
+) -> (usize, usize, usize) {
+    match materialized.get(folder) {
+        Some(MaterializedFolder::Loaded {
+            folders,
+            files,
+            shown,
+            ..
+        }) => {
+            let total = folders.len() + files.len();
+            let shown = (*shown).min(total);
+            let shown_folders = shown.min(folders.len());
+            (shown_folders, shown - shown_folders, total - shown)
+        }
+        _ => (0, 0, 0),
     }
 }
 
@@ -498,7 +524,8 @@ fn append_materialized_children(
         Some(MaterializedFolder::Loaded {
             files, truncated, ..
         }) => {
-            for path in files.iter() {
+            let (_, shown_files, left) = page_split(folder, materialized);
+            for path in files.iter().take(shown_files) {
                 let label = path
                     .file_name()
                     .map(|name| name.to_string_lossy().into_owned())
@@ -508,6 +535,18 @@ fn append_materialized_children(
                     WorkspaceNodeKind::File,
                     Some(path.clone()),
                     label,
+                    level,
+                    false,
+                );
+                builder.attach(parent, child);
+            }
+            if left > 0 {
+                let status = WorkspaceStatus::MoreItems;
+                let child = builder.push(
+                    WorkspaceNodeId::Status(folder.clone(), status),
+                    WorkspaceNodeKind::More,
+                    None,
+                    format!("More… ({left} left)"),
                     level,
                     false,
                 );

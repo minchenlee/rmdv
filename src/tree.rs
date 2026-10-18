@@ -279,6 +279,7 @@ pub(crate) fn build_workspace_with_limits(
         max_files,
         exhausted: false,
         truncated: false,
+        listing_truncated: false,
     };
     fill_bounded(
         &mut root_node,
@@ -301,7 +302,7 @@ pub(crate) fn build_workspace_with_limits(
         files,
         sidebar_files,
         truncated: budget.truncated,
-        listing_truncated: budget.truncated, // STUB (red phase)
+        listing_truncated: budget.listing_truncated,
     })
 }
 
@@ -314,6 +315,8 @@ struct ScanBudget {
     /// interruption, this stops later sibling walks too.
     exhausted: bool,
     truncated: bool,
+    /// Set only while reading the scan root's own entries (depth 0).
+    listing_truncated: bool,
 }
 
 fn fill_bounded(
@@ -357,6 +360,7 @@ fn fill_bounded(
             budget.exhausted = true;
             budget.truncated = true;
             subtree_incomplete = true;
+            budget.listing_truncated |= depth == 0;
             break;
         }
         budget.examined_entries += 1;
@@ -365,6 +369,7 @@ fn fill_bounded(
             Err(_) => {
                 budget.truncated = true;
                 subtree_incomplete = true;
+                budget.listing_truncated |= depth == 0;
                 continue;
             }
         };
@@ -413,6 +418,7 @@ fn fill_bounded(
                 budget.exhausted = true;
                 budget.truncated = true;
                 subtree_incomplete = true;
+                budget.listing_truncated |= depth == 0;
                 break;
             }
             budget.supported_files += 1;
@@ -425,6 +431,7 @@ fn fill_bounded(
                 budget.exhausted = true;
                 budget.truncated = true;
                 subtree_incomplete = true;
+                budget.listing_truncated |= depth == 0;
                 break;
             }
         }

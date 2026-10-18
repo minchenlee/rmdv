@@ -9524,6 +9524,7 @@ fn cross_block_drag_cost_per_event_on_300_blocks() {
 #[test]
 fn full_mindmap_more_node_reveals_next_page_on_activate() {
     let dir = full_mindmap_test_dir("more-page");
+    std::fs::create_dir_all(&dir).unwrap();
     let files: Vec<std::path::PathBuf> = (0..5).map(|i| dir.join(format!("n{i}.md"))).collect();
     for file in &files {
         std::fs::write(file, "# N\n").unwrap();

@@ -1098,6 +1098,9 @@ impl App {
                         }
                     }
                     let node = graph.node(&selected)?;
+                    if node.kind == WorkspaceNodeKind::More {
+                        return Some(Message::FullMindmapShowMore(selected.path().to_path_buf()));
+                    }
                     match node.kind {
                         WorkspaceNodeKind::Root | WorkspaceNodeKind::Folder => {
                             node.path.clone().map(Message::FullMindmapSetRoot)
@@ -1119,6 +1122,13 @@ impl App {
                     .full_mindmap
                     .as_ref()
                     .and_then(|full| full.selected.clone());
+                if let Some(id) = id.as_ref().filter(|id| {
+                    self.full_mindmap_graph()
+                        .and_then(|graph| graph.node(id).map(|node| node.kind.clone()))
+                        == Some(WorkspaceNodeKind::More)
+                }) {
+                    return self.update(Message::FullMindmapShowMore(id.path().to_path_buf()));
+                }
                 let can_toggle = self.full_mindmap_graph().is_some_and(|graph| {
                     id.as_ref().is_some_and(|id| {
                         graph.node(id).is_some_and(|node| {
@@ -1136,6 +1146,7 @@ impl App {
                 }
                 Task::none()
             }
+            Message::FullMindmapShowMore(folder) => self.full_mindmap_show_more(folder),
             Message::FullMindmapSelectRoot => {
                 if let Some(graph) = self.full_mindmap_graph() {
                     return self.update(Message::FullMindmapSelectNode(graph.root_id()));

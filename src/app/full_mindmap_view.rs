@@ -286,6 +286,7 @@ impl App {
                 let hint = match selected.map(|node| &node.kind) {
                     Some(WorkspaceNodeKind::Empty) => "No supported files are visible here.",
                     Some(WorkspaceNodeKind::Error) => "Choose another readable folder.",
+                    Some(WorkspaceNodeKind::More) => "Press Enter to show more items.",
                     Some(WorkspaceNodeKind::Truncated) => {
                         "Some files were omitted to keep navigation responsive."
                     }

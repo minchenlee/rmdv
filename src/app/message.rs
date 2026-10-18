@@ -228,6 +228,8 @@ pub enum Message {
     FullMindmapDiveWorkspace(WorkspaceNodeId),
     FullMindmapActivate,
     FullMindmapToggleSelected,
+    /// Reveal the next page of direct children for a folder's "More…" node.
+    FullMindmapShowMore(PathBuf),
     FullMindmapSelectRoot,
     FullMindmapSetRoot(PathBuf),
     FullMindmapWorkspaceParent,
