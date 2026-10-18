@@ -1109,7 +1109,7 @@ impl App {
         self.workspace_sidebar_files = snapshot.sidebar_files;
         self.workspace_tree = Some(snapshot.root);
         self.workspace_snapshot_show_hidden = self.show_hidden;
-        self.workspace_truncated = snapshot.truncated;
+        self.workspace_truncated = snapshot.listing_truncated;
         self.begin_workspace_epoch();
         self.workspace = Some(path);
         if let Some(root) = self.workspace.clone() {

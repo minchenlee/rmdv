@@ -903,6 +903,7 @@ impl App {
                     files,
                     recursive_supported_file_count,
                     truncated: false,
+                    listing_truncated: false,
                 },
             ));
             Task::done(Message::FullMindmapFolderLoaded { request, result })

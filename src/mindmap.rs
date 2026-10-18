@@ -1871,6 +1871,7 @@ mod tests {
                 files: Arc::new(vec![file.clone()]),
                 recursive_supported_file_count: RecursiveFileCount::Exact(1),
                 truncated: false,
+                shown: crate::tree::DIRECT_PAGE,
             },
         );
         let accepted_graph = workspace_mindmap::from_tree_with_hidden(

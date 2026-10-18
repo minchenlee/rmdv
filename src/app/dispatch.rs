@@ -1108,6 +1108,7 @@ impl App {
                         WorkspaceNodeKind::Empty
                         | WorkspaceNodeKind::Error
                         | WorkspaceNodeKind::Truncated
+                        | WorkspaceNodeKind::More
                         | WorkspaceNodeKind::Loading => None,
                     }
                 })();
@@ -1483,7 +1484,8 @@ impl App {
                                     files: std::sync::Arc::clone(&files),
                                     recursive_supported_file_count: snapshot
                                         .recursive_supported_file_count,
-                                    truncated: snapshot.truncated,
+                                    truncated: snapshot.listing_truncated,
+                                    shown: crate::tree::DIRECT_PAGE,
                                 },
                             );
                         }
@@ -2775,7 +2777,7 @@ impl App {
                                 self.workspace_sidebar_files = snapshot.sidebar_files;
                                 self.workspace_tree = Some(snapshot.root);
                                 self.workspace_snapshot_show_hidden = self.show_hidden;
-                                self.workspace_truncated = snapshot.truncated;
+                                self.workspace_truncated = snapshot.listing_truncated;
                                 self.begin_workspace_epoch();
                             }
                             Err(error) => {

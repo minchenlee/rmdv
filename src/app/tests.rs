@@ -3177,6 +3177,7 @@ fn full_workspace_state(root: &std::path::Path) -> FullMindmapState {
                     files: std::sync::Arc::new(snapshot.files),
                     recursive_supported_file_count: snapshot.recursive_supported_file_count,
                     truncated: snapshot.truncated,
+                    shown: crate::tree::DIRECT_PAGE,
                 },
             );
         }
@@ -3297,6 +3298,7 @@ fn full_mindmap_verification_wave_hides_unknowns_and_reveals_positive_counts() {
                 files: vec![candidates[0].join("readme.md"); 3],
                 recursive_supported_file_count: tree::RecursiveFileCount::Exact(3),
                 truncated: false,
+                listing_truncated: false,
             },
         )),
     });
@@ -3354,6 +3356,7 @@ fn full_mindmap_deselect_survives_exact_empty_verification_normalization() {
                 files: Vec::new(),
                 recursive_supported_file_count: tree::RecursiveFileCount::Exact(0),
                 truncated: false,
+                listing_truncated: false,
             },
         )),
     });
@@ -3522,6 +3525,7 @@ fn full_mindmap_materialized_child_stays_hidden_until_followup_exact_zero() {
         files: Vec::new(),
         recursive_supported_file_count: tree::RecursiveFileCount::LowerBound(1),
         truncated: false,
+        listing_truncated: false,
     };
     let _ = app.update(Message::FullMindmapFolderLoaded {
         request: pending,
@@ -3550,6 +3554,7 @@ fn full_mindmap_materialized_child_stays_hidden_until_followup_exact_zero() {
                 files: Vec::new(),
                 recursive_supported_file_count: tree::RecursiveFileCount::Exact(2),
                 truncated: false,
+                listing_truncated: false,
             },
         )),
     });
@@ -3570,6 +3575,7 @@ fn full_mindmap_materialized_child_stays_hidden_until_followup_exact_zero() {
                 files: Vec::new(),
                 recursive_supported_file_count: tree::RecursiveFileCount::Exact(0),
                 truncated: false,
+                listing_truncated: false,
             },
         )),
     });
@@ -3662,6 +3668,7 @@ fn full_mindmap_stale_prior_wave_completion_cannot_reveal_after_restart() {
                 files: Vec::new(),
                 recursive_supported_file_count: tree::RecursiveFileCount::Exact(9),
                 truncated: false,
+                listing_truncated: false,
             },
         )),
     });
@@ -3702,6 +3709,7 @@ fn full_mindmap_verification_stale_result_cannot_reveal_after_cancel() {
                 files: Vec::new(),
                 recursive_supported_file_count: tree::RecursiveFileCount::Exact(4),
                 truncated: false,
+                listing_truncated: false,
             },
         )),
     });
@@ -3728,6 +3736,7 @@ fn full_mindmap_verification_rejects_same_wave_wrong_request_id() {
                 files: Vec::new(),
                 recursive_supported_file_count: tree::RecursiveFileCount::Exact(1),
                 truncated: false,
+                listing_truncated: false,
             },
         )),
     });
@@ -9510,4 +9519,84 @@ fn cross_block_drag_cost_per_event_on_300_blocks() {
         drag.saturating_sub(hover),
         held.saturating_sub(hover)
     );
+}
+
+#[test]
+fn full_mindmap_more_node_reveals_next_page_on_activate() {
+    let dir = full_mindmap_test_dir("more-page");
+    let files: Vec<std::path::PathBuf> = (0..5).map(|i| dir.join(format!("n{i}.md"))).collect();
+    for file in &files {
+        std::fs::write(file, "# N\n").unwrap();
+    }
+    let mut app = App::default();
+    app.set_workspace(dir.clone(), false);
+    app.full_mindmap = Some(App::new_full_mindmap_state());
+    let more = WorkspaceNodeId::Status(dir.clone(), workspace_mindmap::WorkspaceStatus::MoreItems);
+    {
+        let full = app.full_mindmap.as_mut().unwrap();
+        full.expanded.insert(dir.clone());
+        full.materialized_folders.insert(
+            dir.clone(),
+            workspace_mindmap::MaterializedFolder::Loaded {
+                folders: std::sync::Arc::new(Vec::new()),
+                files: std::sync::Arc::new(files.clone()),
+                recursive_supported_file_count: tree::RecursiveFileCount::Exact(5),
+                truncated: false,
+                shown: 2,
+            },
+        );
+        full.selected = Some(more.clone());
+    }
+    let graph = app.full_mindmap_graph().unwrap();
+    assert!(graph.node(&more).is_some());
+    assert!(graph
+        .node(&WorkspaceNodeId::File(files[2].clone()))
+        .is_none());
+
+    let _ = app.update(Message::FullMindmapActivate);
+
+    let graph = app.full_mindmap_graph().unwrap();
+    for file in &files {
+        assert!(graph.node(&WorkspaceNodeId::File(file.clone())).is_some());
+    }
+    assert!(graph.node(&more).is_none(), "all items shown, no More node");
+    assert_eq!(
+        app.full_mindmap.as_ref().unwrap().selected,
+        Some(WorkspaceNodeId::File(files[2].clone())),
+        "selection moves to the first newly shown item"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn full_mindmap_scan_budget_exhaustion_adds_no_not_indexed_node() {
+    let dir = full_mindmap_test_dir("no-not-indexed");
+    for i in 0..4 {
+        std::fs::create_dir_all(dir.join(format!("d{i}"))).unwrap();
+        std::fs::write(dir.join(format!("d{i}/a.md")), "# A\n").unwrap();
+    }
+    let mut app = App::default();
+    app.set_workspace(dir.clone(), false);
+    // Budget ran out below the root, but the root's own listing was complete.
+    app.workspace_truncated = false;
+    app.full_mindmap = Some(App::new_full_mindmap_state());
+    app.full_mindmap
+        .as_mut()
+        .unwrap()
+        .expanded
+        .insert(dir.clone());
+    complete_full_mindmap_folder_loads(&mut app);
+    let graph = app.full_mindmap_graph().unwrap();
+    for i in 0..4 {
+        assert!(graph
+            .node(&WorkspaceNodeId::Folder(dir.join(format!("d{i}"))))
+            .is_some());
+    }
+    assert!(graph
+        .node(&WorkspaceNodeId::Status(
+            dir.clone(),
+            workspace_mindmap::WorkspaceStatus::Truncated
+        ))
+        .is_none());
+    let _ = std::fs::remove_dir_all(&dir);
 }
