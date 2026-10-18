@@ -1293,4 +1293,44 @@ mod tests {
             ))
             .is_some());
     }
+
+    #[test]
+    fn more_count_excludes_exact_empty_folders() {
+        let mk = |name: &str, count| {
+            let mut folder = node(&format!("/vault/{name}"), true, vec![]);
+            folder.recursive_supported_file_count = Some(count);
+            folder
+        };
+        let folders = vec![
+            mk("a", RecursiveFileCount::Exact(1)),
+            mk("empty", RecursiveFileCount::Exact(0)),
+            mk("c", RecursiveFileCount::Exact(1)),
+        ];
+        let root = node("/vault", true, vec![]);
+        let materialized = HashMap::from([(
+            PathBuf::from("/vault"),
+            MaterializedFolder::Loaded {
+                folders: Arc::new(folders),
+                files: Arc::new(Vec::new()),
+                recursive_supported_file_count: RecursiveFileCount::Exact(2),
+                truncated: false,
+                shown: 1,
+            },
+        )]);
+        let graph = from_tree(
+            &root,
+            &HashSet::from([PathBuf::from("/vault")]),
+            &materialized,
+            &HashSet::new(),
+            false,
+        );
+        let more = WorkspaceNodeId::Status(PathBuf::from("/vault"), WorkspaceStatus::MoreItems);
+        assert_eq!(
+            graph
+                .index_of(&more)
+                .and_then(|index| graph.nodes.get(index))
+                .map(|node| node.full_label.as_str()),
+            Some("More… (1 left)")
+        );
+    }
 }

@@ -1101,4 +1101,24 @@ mod tests {
         assert!(snapshot.listing_truncated);
         std::fs::remove_dir_all(root).unwrap();
     }
+
+    #[test]
+    fn file_cap_flags_listing_only_when_a_file_is_actually_left_out() {
+        let exact = test_dir("cap-exact");
+        for i in 0..3 {
+            std::fs::write(exact.join(format!("f{i}.md")), "# F\n").unwrap_or_else(|_| {
+                std::fs::create_dir_all(&exact).unwrap();
+                std::fs::write(exact.join(format!("f{i}.md")), "# F\n").unwrap();
+            });
+        }
+        let snapshot = build_workspace_with_limits(&exact, false, 12, 8, 3, 10_000).unwrap();
+        assert!(
+            !snapshot.listing_truncated,
+            "exactly at the cap, none left out"
+        );
+        std::fs::write(exact.join("f3.md"), "# F\n").unwrap();
+        let over = build_workspace_with_limits(&exact, false, 12, 8, 3, 10_000).unwrap();
+        assert!(over.listing_truncated);
+        std::fs::remove_dir_all(exact).unwrap();
+    }
 }

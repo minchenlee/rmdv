@@ -9601,3 +9601,82 @@ fn full_mindmap_scan_budget_exhaustion_adds_no_not_indexed_node() {
         .is_none());
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn full_mindmap_deferred_selection_beyond_first_page_stays_visible() {
+    let dir = full_mindmap_test_dir("deferred-page");
+    std::fs::create_dir_all(&dir).unwrap();
+    let total = tree::DIRECT_PAGE + 50;
+    let files: Vec<std::path::PathBuf> = (0..total)
+        .map(|i| dir.join(format!("n{i:05}.md")))
+        .collect();
+    for file in &files {
+        std::fs::write(file, "# N\n").unwrap();
+    }
+    let last = files.last().unwrap().clone();
+    let mut app = App::default();
+    app.set_workspace(dir.clone(), false);
+    app.full_mindmap = Some(App::new_full_mindmap_state());
+    {
+        let full = app.full_mindmap.as_mut().unwrap();
+        full.expanded.insert(dir.clone());
+        full.deferred_file_selection = Some(last.clone());
+    }
+    let _ = app.begin_full_mindmap_folder_load(dir.clone());
+    complete_full_mindmap_folder_loads(&mut app);
+    let graph = app.full_mindmap_graph().unwrap();
+    assert!(
+        graph.node(&WorkspaceNodeId::File(last.clone())).is_some(),
+        "deferred file must be inside the shown page"
+    );
+    assert_eq!(
+        app.full_mindmap.as_ref().unwrap().selected,
+        Some(WorkspaceNodeId::File(last))
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn full_mindmap_show_more_skips_verification_hidden_first_item() {
+    let dir = full_mindmap_test_dir("more-hidden");
+    std::fs::create_dir_all(&dir).unwrap();
+    let mk = |name: &str, count| Node {
+        path: dir.join(name),
+        name: name.into(),
+        is_dir: true,
+        children: Vec::new(),
+        recursive_supported_file_count: Some(count),
+    };
+    let folders = vec![
+        mk("a", tree::RecursiveFileCount::Exact(1)),
+        mk("b", tree::RecursiveFileCount::LowerBound(0)),
+        mk("c", tree::RecursiveFileCount::Exact(1)),
+    ];
+    let mut app = App::default();
+    app.set_workspace(dir.clone(), false);
+    app.full_mindmap = Some(App::new_full_mindmap_state());
+    let more = WorkspaceNodeId::Status(dir.clone(), workspace_mindmap::WorkspaceStatus::MoreItems);
+    {
+        let full = app.full_mindmap.as_mut().unwrap();
+        full.expanded.insert(dir.clone());
+        full.verification_hidden.insert(dir.join("b"));
+        full.materialized_folders.insert(
+            dir.clone(),
+            workspace_mindmap::MaterializedFolder::Loaded {
+                folders: std::sync::Arc::new(folders),
+                files: std::sync::Arc::new(Vec::new()),
+                recursive_supported_file_count: tree::RecursiveFileCount::LowerBound(2),
+                truncated: false,
+                shown: 1,
+            },
+        );
+        full.selected = Some(more);
+    }
+    let _ = app.update(Message::FullMindmapActivate);
+    assert_eq!(
+        app.full_mindmap.as_ref().unwrap().selected,
+        Some(WorkspaceNodeId::Folder(dir.join("c"))),
+        "selection lands on the first visible new item, not the parent"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
