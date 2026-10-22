@@ -41,22 +41,30 @@ impl App {
         match msg {
             Message::Open(p) => self.load_file_unless_dirty(p),
             Message::Refresh => self.refresh_status(),
+            Message::DismissError => {
+                self.error = None;
+                self.error_path = None;
+                Task::none()
+            }
+            Message::RevealPath(path) => match Self::reveal_file_in_finder(&reveal_target(&path)) {
+                Ok(()) => self.show_toast("Revealed in Finder".to_string()),
+                Err(error) => self.show_error_toast(error),
+            },
             Message::RevealFileInFinder => {
                 let Some(path) = self.focused_file_path() else {
                     return self.show_toast("No file open".into());
                 };
-                let label = match Self::reveal_file_in_finder(&path) {
-                    Ok(()) => "Revealed in Finder".to_string(),
-                    Err(error) => error,
-                };
-                self.show_toast(label)
+                match Self::reveal_file_in_finder(&path) {
+                    Ok(()) => self.show_toast("Revealed in Finder".to_string()),
+                    Err(error) => self.show_error_toast(error),
+                }
             }
             Message::CopyFilePath => {
                 let Some(path) = self.focused_file_path() else {
                     return self.show_toast("No file open".into());
                 };
                 let Some(expected) = path.to_str().map(str::to_owned) else {
-                    return self.show_toast("File path cannot be copied as text".into());
+                    return self.show_error_toast("File path cannot be copied as text".into());
                 };
                 self.pending_clipboard_copy = Some(expected.clone());
                 let toast = self.show_toast("Copying file path…".into());
@@ -90,7 +98,7 @@ impl App {
                 if actual.as_deref() == Some(expected.as_str()) {
                     self.show_toast("File path copied".into())
                 } else {
-                    self.show_toast("Couldn't copy file path".into())
+                    self.show_error_toast("Couldn't copy file path".into())
                 }
             }
             Message::OpenFileFinderPath(p) => {
@@ -165,6 +173,7 @@ impl App {
                 self.vault_cursor = 0;
                 self.vault_collapsed.clear();
                 self.vault_viewport = None;
+                self.list_pointer = ListPointer::default();
                 // Bump seq so any in-flight `run` from a prior open is dropped
                 // by the `VaultSearchDone` seq guard instead of repopulating
                 // the freshly-blank page.
@@ -188,6 +197,8 @@ impl App {
             }
             Message::VaultRunSearch => {
                 self.vault_cursor = 0;
+                // A new list under a still pointer is not motion.
+                self.list_pointer.settle();
                 self.vault_seq += 1;
                 self.vault_searched_query = Some(self.vault_query.clone());
                 let seq = self.vault_seq;
@@ -215,6 +226,7 @@ impl App {
                     self.vault_file_count = n;
                     self.vault_truncated = r.truncated;
                     self.vault_cursor = 0;
+                    self.list_pointer.settle();
                     // New result set: drop the stale viewport so virtualization
                     // renders from the top, and scroll the list back to 0.
                     self.vault_viewport = None;
@@ -232,7 +244,21 @@ impl App {
                 }
                 let next = (self.vault_cursor as isize + d).clamp(0, visible.len() as isize - 1);
                 self.vault_cursor = next as usize;
+                self.list_pointer.settle();
                 self.scroll_vault_to_cursor()
+            }
+            Message::VaultHover(index) => {
+                if self.list_pointer.take_motion() {
+                    let visible = self.vault_visible_matches().len();
+                    if index < visible {
+                        self.vault_cursor = index;
+                    }
+                }
+                Task::none()
+            }
+            Message::ListPointerMoved(at) => {
+                self.list_pointer.moved(at);
+                Task::none()
             }
             Message::VaultToggleFile(path) => {
                 // Remember which hit the cursor pointed at so it tracks that
@@ -249,6 +275,8 @@ impl App {
                         // Anchored hit is now hidden: clamp to the last visible.
                         self.vault_cursor.min(visible.len().saturating_sub(1))
                     });
+                // Rows shift under the pointer; that is not motion.
+                self.list_pointer.settle();
                 Task::none()
             }
             Message::VaultOpenSelected => {
@@ -435,7 +463,8 @@ impl App {
                         }
                         if self.dirty {
                             self.invalidate_pending_quick_slot_restore();
-                            return self.show_toast(self.unsaved_edits_open_message());
+                            return self
+                                .show_unsaved_edits_toast(self.unsaved_edits_open_message());
                         }
                         self.update(Message::FileLoaded(Ok((path, source))))
                     }
@@ -656,6 +685,7 @@ impl App {
                 self.reader_select_all = false;
                 Task::none()
             }
+            Message::WelcomeNeedsFile => self.show_toast("Open a file first".into()),
             Message::FoldChordStart => {
                 self.fold_chord_pending = true;
                 return self.show_toast("Fold: press 0-6 …".into());
@@ -1262,7 +1292,7 @@ impl App {
                     }
                     self.pending_nav = None;
                     self.invalidate_pending_quick_slot_restore();
-                    return self.show_toast(self.unsaved_edits_open_message());
+                    return self.show_unsaved_edits_toast(self.unsaved_edits_open_message());
                 }
                 match result {
                     Err(error) => {
@@ -1996,7 +2026,11 @@ impl App {
                                 ),
                                 Err(e) => format!("Screenshot failed: {e}"),
                             };
-                            self.show_toast(msg)
+                            if saved.is_ok() {
+                                self.show_toast(msg)
+                            } else {
+                                self.show_error_toast(msg)
+                            }
                         }
                     }
                 } else {
@@ -2083,6 +2117,7 @@ impl App {
                 }
                 Task::none()
             }
+            Message::FocusEditor => iced::widget::operation::focus(Self::editor_id()),
             Message::EditorUndo => {
                 let mut changed = false;
                 if let Some(ed) = self.editor.as_mut() {
@@ -2178,7 +2213,11 @@ impl App {
                 if self.source == saved_source {
                     self.dirty = true;
                 }
-                self.error = Some(format!("save failed: {e}"));
+                let message = format!("save failed: {e}");
+                match self.file.clone() {
+                    Some(path) => self.set_error_for(message, path),
+                    None => self.error = Some(message),
+                }
                 Task::none()
             }
             Message::OpenImageZoom(url) => {
@@ -2225,6 +2264,7 @@ impl App {
                     if p.is_dir() {
                         pk.navigate_to(p);
                         self.overlay_selected = 0;
+                        self.list_pointer.settle();
                         // Leaf folder (no subfolders, readable): treat the
                         // navigation as a workspace pick. Saves the user an
                         // extra Space/Enter on dead-end folders.
@@ -2242,6 +2282,7 @@ impl App {
                 if let Some(pk) = self.picker.as_mut() {
                     pk.parent();
                     self.overlay_selected = 0;
+                    self.list_pointer.settle();
                 }
                 Task::none()
             }
@@ -2254,9 +2295,10 @@ impl App {
                 Task::none()
             }
             Message::PickerSelectFolderHere => {
-                if let Some(pk) = &self.picker {
-                    let p = pk.cwd.clone();
-                    return Task::done(Message::OpenWorkspace(p));
+                if let Some(pk) = self.picker.take() {
+                    // Same close-then-open order as Enter on a folder row.
+                    self.overlay = Overlay::None;
+                    return Task::done(Message::OpenWorkspace(pk.cwd));
                 }
                 Task::none()
             }
@@ -2306,11 +2348,14 @@ impl App {
             Message::OverlayQueryChanged(q) => {
                 self.overlay_query = q;
                 self.overlay_selected = 0;
+                // A new list under a still pointer is not motion.
+                self.list_pointer.settle();
                 Task::none()
             }
             Message::OverlayMove(d) => {
                 let len = match self.overlay {
-                    Overlay::FileFinder => self.filtered_files().len(),
+                    // Only the rendered rows are reachable.
+                    Overlay::FileFinder => self.filtered_files().len().min(FILE_FINDER_ROW_CAP),
                     Overlay::Command => self.filtered_commands().len(),
                     Overlay::ThemePicker => self.filtered_themes().len(),
                     Overlay::FolderPicker => {
@@ -2323,7 +2368,19 @@ impl App {
                 }
                 let next = (self.overlay_selected as isize + d).clamp(0, len as isize - 1);
                 self.overlay_selected = next as usize;
+                self.list_pointer.settle();
                 self.scroll_overlay_to_cursor_with_len(len)
+            }
+            Message::OverlayPick(index) => {
+                // A row click is Enter on that row.
+                self.overlay_selected = index;
+                self.update(Message::OverlayConfirm)
+            }
+            Message::OverlayHover(index) => {
+                if self.list_pointer.take_motion() {
+                    self.overlay_selected = index;
+                }
+                Task::none()
             }
             Message::OverlayConfirm => match self.overlay {
                 Overlay::FileFinder => {
@@ -2377,6 +2434,7 @@ impl App {
                             if e.is_dir {
                                 pk.navigate_to(e.path);
                                 self.overlay_selected = 0;
+                                self.list_pointer.settle();
                                 // Leaf folder: auto-open as workspace.
                                 if pk.entries.is_empty() && pk.error.is_none() {
                                     let cwd = pk.cwd.clone();
@@ -2404,7 +2462,19 @@ impl App {
                     // this read before it reached the update loop.
                     return Task::none();
                 }
-                self.update(Message::FileLoaded(result))
+                let failed_path = self
+                    .generic_load
+                    .take()
+                    .filter(|(load, _)| *load == generation)
+                    .map(|(_, path)| path);
+                let failure = result.as_ref().err().cloned();
+                let task = self.update(Message::FileLoaded(result));
+                if let (Some(error), Some(path)) = (failure, failed_path) {
+                    if self.error.as_ref() == Some(&error) {
+                        self.set_error_for(error, path);
+                    }
+                }
+                task
             }
             Message::RefreshFileLoaded { request, result } => {
                 let current = self.pending_refresh_file.as_ref() == Some(&request)
@@ -2468,7 +2538,7 @@ impl App {
                     // affect the next successful open after this one is blocked.
                     self.pending_nav = None;
                     self.invalidate_pending_quick_slot_restore();
-                    return self.show_toast(self.unsaved_edits_open_message());
+                    return self.show_unsaved_edits_toast(self.unsaved_edits_open_message());
                 }
                 // Non-refresh loads supersede a refresh transaction. The
                 // refresh-owned path calls `apply_loaded_file` directly after
@@ -2762,7 +2832,7 @@ impl App {
                     // apply() relaunches + exits on success; only returns on error.
                     if let Err(e) = crate::update::apply(ready) {
                         self.pending_update = None;
-                        return self.show_toast(format!("Update failed: {e}"));
+                        return self.show_error_toast(format!("Update failed: {e}"));
                     }
                 }
                 Task::none()
@@ -2864,9 +2934,30 @@ impl App {
                 }
                 let len_i = len as isize;
                 self.tree_cursor = ((self.tree_cursor as isize + d).rem_euclid(len_i)) as usize;
+                self.tree_cursor_shown = true;
                 self.scroll_tree_to_cursor_with_len(len)
             }
+            Message::TreeRowClicked { path, is_dir } => {
+                if let Some(root) = &self.workspace_tree {
+                    let rows = tree::flatten_with_files(
+                        root,
+                        &self.workspace_sidebar_files,
+                        &self.expanded,
+                    );
+                    if let Some(index) = rows.iter().position(|row| row.node.path() == path) {
+                        self.tree_cursor = index;
+                    }
+                }
+                self.tree_cursor_shown = false;
+                // Then the row's own action, as before the cursor moved.
+                self.dispatch_message(if is_dir {
+                    Message::TreeToggle(path)
+                } else {
+                    Message::Open(path)
+                })
+            }
             Message::TreeActivate => {
+                self.tree_cursor_shown = true;
                 let Some(root) = &self.workspace_tree else {
                     return Task::none();
                 };
@@ -2896,6 +2987,12 @@ impl App {
                     ((self.outline_cursor as isize + d).rem_euclid(len_i)) as usize;
                 self.scroll_outline_to_cursor()
             }
+            Message::OutlineRowClicked { index, line } => {
+                if index < self.outline_sections.len() {
+                    self.outline_cursor = index;
+                }
+                self.scroll_to_line_top(line)
+            }
             Message::OutlineActivate => {
                 let Some(s) = self.outline_sections.get(self.outline_cursor) else {
                     return Task::none();
@@ -2904,6 +3001,7 @@ impl App {
             }
             Message::ScrollToLine(line) => self.scroll_to_line_top(line),
             Message::TreeToggleAtCursor => {
+                self.tree_cursor_shown = true;
                 let Some(root) = &self.workspace_tree else {
                     return Task::none();
                 };
@@ -2921,6 +3019,7 @@ impl App {
                 Task::none()
             }
             Message::CopyTreePath => {
+                self.tree_cursor_shown = true;
                 let Some(root) = &self.workspace_tree else {
                     return Task::none();
                 };
@@ -3020,6 +3119,19 @@ impl App {
                     self.match_idx = (self.match_idx + self.matches.len() - 1) % self.matches.len();
                 }
                 self.scroll_to_current_match()
+            }
+            Message::FindStepClicked(next) => {
+                let step = self.update(if next {
+                    Message::NextMatch
+                } else {
+                    Message::PrevMatch
+                });
+                // The click moved focus to the chevron; typing and Enter
+                // belong to the query field.
+                Task::batch([
+                    step,
+                    iced::widget::operation::focus(Self::search_input_id()),
+                ])
             }
             Message::TreeScrolled(v) => {
                 self.tree_viewport = Some(v);

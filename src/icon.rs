@@ -34,6 +34,12 @@ pub mod ic {
     pub const PANEL_LEFT: char = '\u{e12a}';
     /// Lucide "panel-left-close" — collapse the left sidebar.
     pub const PANEL_LEFT_CLOSE: char = '\u{e21c}';
+    /// Lucide "panel-right-open" / "panel-right-close" — show or hide a
+    /// right-hand panel.
+    pub const PANEL_RIGHT_OPEN: char = '\u{e434}';
+    pub const PANEL_RIGHT_CLOSE: char = '\u{e432}';
+    /// Lucide "folder-up" — go to the parent folder.
+    pub const FOLDER_UP: char = '\u{e33d}';
     pub const COPY: char = '\u{e09e}';
     /// Lucide "maximize" — used for diagram hover-zoom affordance.
     pub const ZOOM: char = '\u{e1a1}';

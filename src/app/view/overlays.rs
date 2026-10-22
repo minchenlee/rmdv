@@ -15,8 +15,20 @@ pub(in crate::app) fn folder_picker_overlay<'a>(
         let mut crumb_row = iced::widget::Row::new()
             .spacing(2)
             .align_y(iced::Alignment::Center);
-        crumb_row = crumb_row.push(ghost_lu(ic::HOME, pal).on_press(Message::PickerHome));
-        crumb_row = crumb_row.push(ghost_lu(ic::ARROW_UP, pal).on_press(Message::PickerParent));
+        crumb_row = crumb_row.push(action_tip(
+            ghost_lu(ic::HOME, pal).on_press(Message::PickerHome),
+            "Home Folder",
+            None,
+            iced::widget::tooltip::Position::Bottom,
+            pal,
+        ));
+        crumb_row = crumb_row.push(action_tip(
+            ghost_lu(ic::ARROW_UP, pal).on_press(Message::PickerParent),
+            "Parent Folder",
+            Some("←"),
+            iced::widget::tooltip::Position::Bottom,
+            pal,
+        ));
         crumb_row = crumb_row.push(Space::new().width(8));
         for (label, path) in crumbs.iter() {
             crumb_row = crumb_row.push(text("/").color(pal.subtle).size(12));
@@ -72,21 +84,9 @@ pub(in crate::app) fn folder_picker_overlay<'a>(
                 .padding(Padding::from([7, 12]))
                 .width(Length::Fill)
                 .height(Length::Fixed(32.0))
-                .style(move |_, status| button::Style {
-                    background: match (is_sel, status) {
-                        (true, _) => Some(Background::Color(pal.hover())),
-                        (_, button::Status::Hovered) => Some(Background::Color(pal.hover())),
-                        _ => None,
-                    },
-                    text_color: pal.fg,
-                    border: Border {
-                        radius: theme::radius::SM.into(),
-                        ..Default::default()
-                    },
-                    ..Default::default()
-                })
+                .style(list_row_style(is_sel, pal))
                 .on_press(on_press);
-                list = list.push(row);
+                list = list.push(hover_row(row, is_sel, Message::OverlayHover(i)));
             }
         }
         let body = scrollable(list)
@@ -129,10 +129,11 @@ pub(in crate::app) fn file_finder_overlay<'a>(
     );
 
     let mut list = Column::new().spacing(0).padding(Padding::from([6, 8]));
+    let more = file_finder_more_label(files.len());
     if files.is_empty() {
         list = list.push(container(text("No matches").color(pal.subtle).size(13)).padding(14));
     } else {
-        for (i, (p, rel, _)) in files.into_iter().enumerate().take(80) {
+        for (i, (p, rel, _)) in files.into_iter().enumerate().take(FILE_FINDER_ROW_CAP) {
             let is_sel = i == selected;
             let path_clone = p.clone();
             let parent = std::path::Path::new(&rel)
@@ -153,22 +154,14 @@ pub(in crate::app) fn file_finder_overlay<'a>(
                 .padding(Padding::from([7, 12]))
                 .width(Length::Fill)
                 .height(Length::Fixed(32.0))
-                .style(move |_, status| button::Style {
-                    background: match (is_sel, status) {
-                        (true, _) => Some(Background::Color(pal.hover())),
-                        (_, button::Status::Hovered) => Some(Background::Color(pal.hover())),
-                        _ => None,
-                    },
-                    text_color: pal.fg,
-                    border: Border {
-                        radius: theme::radius::SM.into(),
-                        ..Default::default()
-                    },
-                    ..Default::default()
-                })
+                .style(list_row_style(is_sel, pal))
                 .on_press(Message::OpenFileFinderPath(path_clone));
-            list = list.push(row);
+            list = list.push(hover_row(row, is_sel, Message::OverlayHover(i)));
         }
+    }
+    if let Some(more) = more {
+        list = list
+            .push(container(text(more).size(12).color(pal.subtle)).padding(Padding::from([8, 12])));
     }
     let body = scrollable(list)
         .id(App::overlay_scroll_id())
@@ -185,6 +178,21 @@ pub(in crate::app) fn file_finder_overlay<'a>(
         });
 
     overlay_frame(column![input, divider, body].into(), pal, 600.0, 460.0)
+}
+
+/// Line under a capped file-finder list; `None` when every result shows.
+/// Past `FILE_FINDER_RESULT_CAP` the hidden count is a lower bound.
+pub(in crate::app) fn file_finder_more_label(total: usize) -> Option<String> {
+    let hidden = total.saturating_sub(FILE_FINDER_ROW_CAP);
+    if hidden == 0 {
+        return None;
+    }
+    let plus = if total >= FILE_FINDER_RESULT_CAP {
+        "+"
+    } else {
+        ""
+    };
+    Some(format!("{hidden}{plus} more — keep typing to narrow"))
 }
 
 pub(in crate::app) const QUICK_SLOT_SHORTCUT_HINTS: &[(&str, &str)] = &[
@@ -319,18 +327,10 @@ pub(in crate::app) fn shortcuts_overlay<'a>(pal: Palette) -> Element<'a, Message
             ..Default::default()
         });
 
-    let scrim = mouse_area(
-        container(Space::new().width(Length::Fill).height(Length::Fill))
-            .style(|_| container::Style {
-                background: Some(Background::Color(theme::shadow::SCRIM)),
-                ..Default::default()
-            })
-            .width(Length::Fill)
-            .height(Length::Fill),
-    )
-    .on_press(Message::CloseOverlay);
+    let scrim = modal_scrim(Message::CloseOverlay);
 
-    let centered = container(panel)
+    // Opaque: a click on the sheet itself must not reach the scrim.
+    let centered = container(iced::widget::opaque(panel))
         .padding(Padding::from([60, 40]))
         .center_x(Length::Fill)
         .center_y(Length::Fill);
@@ -433,27 +433,15 @@ pub(in crate::app) fn command_overlay<'a>(
     if cmds.is_empty() {
         list = list.push(container(text("No commands").color(pal.subtle).size(13)).padding(14));
     } else {
-        for (i, (label, msg, _)) in cmds.into_iter().enumerate() {
+        for (i, (label, _, _)) in cmds.into_iter().enumerate() {
             let is_sel = i == selected;
             let row = button(text(label).size(13).color(pal.fg))
                 .padding(Padding::from([7, 12]))
                 .width(Length::Fill)
                 .height(Length::Fixed(32.0))
-                .style(move |_, status| button::Style {
-                    background: match (is_sel, status) {
-                        (true, _) => Some(Background::Color(pal.hover())),
-                        (_, button::Status::Hovered) => Some(Background::Color(pal.hover())),
-                        _ => None,
-                    },
-                    text_color: pal.fg,
-                    border: Border {
-                        radius: theme::radius::SM.into(),
-                        ..Default::default()
-                    },
-                    ..Default::default()
-                })
-                .on_press(msg);
-            list = list.push(row);
+                .style(list_row_style(is_sel, pal))
+                .on_press(Message::OverlayPick(i));
+            list = list.push(hover_row(row, is_sel, Message::OverlayHover(i)));
         }
     }
 
@@ -532,7 +520,6 @@ pub(in crate::app) fn theme_overlay<'a>(
             ..Default::default()
         });
         let label = t.label().to_string();
-        let msg = t.message();
         let marker: Element<'a, Message> = if is_current {
             icon::glyph(ic::CHECK, 12.0, pal.accent).into()
         } else {
@@ -552,21 +539,9 @@ pub(in crate::app) fn theme_overlay<'a>(
         )
         .padding(Padding::from([7, 12]))
         .width(Length::Fill)
-        .style(move |_, status| button::Style {
-            background: match (is_sel, status) {
-                (true, _) => Some(Background::Color(pal.hover())),
-                (_, button::Status::Hovered) => Some(Background::Color(pal.hover())),
-                _ => None,
-            },
-            text_color: pal.fg,
-            border: Border {
-                radius: theme::radius::SM.into(),
-                ..Default::default()
-            },
-            ..Default::default()
-        })
-        .on_press(msg);
-        list = list.push(row);
+        .style(list_row_style(is_sel, pal))
+        .on_press(Message::OverlayPick(i));
+        list = list.push(hover_row(row, is_sel, Message::OverlayHover(i)));
     }
 
     let body = scrollable(list)
@@ -624,6 +599,11 @@ pub(in crate::app) fn picker_hint_footer<'a>(pal: Palette) -> Element<'a, Messag
         hint("↵", "open"),
         Space::new().width(Length::Fill),
         hint("⎋", "close"),
+        Space::new().width(14),
+        // The pointer path to open the current folder; rows descend on click.
+        primary_button("Open This Folder", pal)
+            .padding(Padding::from([5, 12]))
+            .on_press(Message::PickerSelectFolderHere),
     ]
     .align_y(iced::Alignment::Center);
     column![
@@ -674,6 +654,7 @@ pub(in crate::app) fn overlay_frame<'a>(
     max_w: f32,
     max_h: f32,
 ) -> Element<'a, Message> {
+    let content = stack![content, list_pointer_tracker()];
     let panel = container(content)
         .max_width(max_w)
         .max_height(max_h)
@@ -691,21 +672,13 @@ pub(in crate::app) fn overlay_frame<'a>(
             ..Default::default()
         });
 
-    let scrim = mouse_area(
-        container(Space::new().width(Length::Fill).height(Length::Fill))
-            .style(|_| container::Style {
-                background: Some(Background::Color(theme::shadow::SCRIM)),
-                ..Default::default()
-            })
-            .width(Length::Fill)
-            .height(Length::Fill),
-    )
-    .on_press(Message::CloseOverlay);
+    let scrim = modal_scrim(Message::CloseOverlay);
 
     // The panel is `Fill` tall up to `max_h`, so its box has a fixed height
     // and a fixed top while the result list filters. Centering that box (not
     // the content) keeps the input row still.
-    let centered = container(panel)
+    // Opaque: a click on blank panel space must not reach the scrim.
+    let centered = container(iced::widget::opaque(panel))
         .padding(Padding::from([40, 40]))
         .center_x(Length::Fill)
         .center_y(Length::Fill);
@@ -779,17 +752,8 @@ pub(in crate::app) fn quick_slot_replace_overlay<'a>(
             shadow: theme::shadow::DIALOG,
             ..Default::default()
         });
-    let scrim = mouse_area(
-        container(Space::new().width(Length::Fill).height(Length::Fill))
-            .style(|_| container::Style {
-                background: Some(Background::Color(theme::shadow::SCRIM)),
-                ..Default::default()
-            })
-            .width(Length::Fill)
-            .height(Length::Fill),
-    )
-    .on_press(Message::QuickSlotReplaceCancel);
-    let centered = container(card)
+    let scrim = modal_scrim(Message::QuickSlotReplaceCancel);
+    let centered = container(iced::widget::opaque(card))
         .padding(Padding::from([40, 40]))
         .center_x(Length::Fill)
         .center_y(Length::Fill);

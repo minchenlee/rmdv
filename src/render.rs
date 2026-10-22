@@ -144,6 +144,9 @@ pub fn render<'a>(
         .into()
 }
 
+/// Side of the square that a heading's fold chevron answers clicks in.
+const FOLD_CHEVRON_HIT: f32 = 24.0;
+
 pub(crate) fn render_heading_with_chevron<'a>(
     id: BlockId,
     b: &'a Block,
@@ -175,20 +178,26 @@ pub(crate) fn render_heading_with_chevron<'a>(
     } else {
         iced::Color::TRANSPARENT
     };
+    // Only the chevron folds; the rest of the row is text to select.
     let chev = mouse_area(
-        container(crate::icon::glyph(glyph, 14.0, color)).padding(Padding::from([0, 4])),
+        container(crate::icon::glyph(glyph, 14.0, color))
+            .center_x(Length::Fixed(FOLD_CHEVRON_HIT))
+            .center_y(Length::Fixed(FOLD_CHEVRON_HIT)),
     )
     .interaction(iced::mouse::Interaction::Pointer)
     .on_press(Message::ToggleFold(id));
+    let action = if folded {
+        "Expand section"
+    } else {
+        "Collapse section"
+    };
+    let chev = crate::app::reader_tip(chev, action, tooltip::Position::Left, *pal);
     let chev_layer = container(chev)
         .width(Length::Fill)
         .height(Length::Fill)
         .align_x(iced::alignment::Horizontal::Right)
         .align_y(iced::alignment::Vertical::Center);
-    let head_clickable = mouse_area(container(head).width(Length::Fill))
-        .interaction(iced::mouse::Interaction::Pointer)
-        .on_press(Message::ToggleFold(id));
-    let stacked = stack![head_clickable, chev_layer];
+    let stacked = stack![container(head).width(Length::Fill), chev_layer];
     container(
         mouse_area(stacked)
             .on_enter(Message::HeadingHoverEnter(id))
@@ -651,7 +660,7 @@ fn render_block<'a>(
             let code_str = code.to_string();
             let icon_glyph = crate::icon::glyph(crate::icon::ic::COPY, 13.0, pal_c.muted);
             let copy_btn =
-                container(
+                container(crate::app::reader_tip(
                     mouse_area(container(icon_glyph).padding(Padding::from([4, 6])).style(
                         move |_| container::Style {
                             background: Some(pal_c.code_bg.into()),
@@ -665,7 +674,10 @@ fn render_block<'a>(
                     ))
                     .interaction(iced::mouse::Interaction::Pointer)
                     .on_press(Message::CopyCode(code_str)),
-                )
+                    "Copy Code",
+                    tooltip::Position::Left,
+                    pal_c,
+                ))
                 .padding(Padding::from([6, 8]))
                 .align_x(iced::alignment::Horizontal::Right)
                 .width(Length::Fill);
@@ -1091,12 +1103,10 @@ fn render_image<'a>(
     let placeholder = |msg: String| -> Element<'a, Message> { text(msg).color(pal.muted).into() };
     if is_remote_url(url) {
         match img.cache.get(url) {
-            Some(ImageState::Loaded(h)) => mouse_area(image_widget(h.clone()))
-                .on_press(Message::OpenImageZoom(url.to_string()))
-                .into(),
-            Some(ImageState::LoadedSvg { svg, .. }) => mouse_area(svg_widget(svg.clone()))
-                .on_press(Message::OpenImageZoom(url.to_string()))
-                .into(),
+            Some(ImageState::Loaded(h)) => zoomable(image_widget(h.clone()), url.to_string()),
+            Some(ImageState::LoadedSvg { svg, .. }) => {
+                zoomable(svg_widget(svg.clone()), url.to_string())
+            }
             Some(ImageState::Failed) => placeholder(format!("[image failed: {alt} ({url})]")),
             _ => placeholder(format!("[loading: {alt} ({url})]")),
         }
@@ -1108,12 +1118,8 @@ fn render_image<'a>(
         };
         let key = p.to_string_lossy().into_owned();
         match img.cache.get(&key) {
-            Some(ImageState::Loaded(h)) => mouse_area(image_widget(h.clone()))
-                .on_press(Message::OpenImageZoom(key))
-                .into(),
-            Some(ImageState::LoadedSvg { svg, .. }) => mouse_area(svg_widget(svg.clone()))
-                .on_press(Message::OpenImageZoom(key))
-                .into(),
+            Some(ImageState::Loaded(h)) => zoomable(image_widget(h.clone()), key),
+            Some(ImageState::LoadedSvg { svg, .. }) => zoomable(svg_widget(svg.clone()), key),
             Some(ImageState::Failed) => placeholder(format!("[image missing: {alt} ({url})]")),
             Some(ImageState::Loading) => placeholder(format!("[loading: {alt} ({url})]")),
             // Not read ahead (an image added while editing, or a preview of
@@ -1124,17 +1130,22 @@ fn render_image<'a>(
                     .and_then(|e| e.to_str())
                     .is_some_and(|e| e.eq_ignore_ascii_case("svg"));
                 if is_svg {
-                    mouse_area(svg_widget(iced::widget::svg::Handle::from_path(p)))
-                        .on_press(Message::OpenImageZoom(key))
-                        .into()
+                    zoomable(svg_widget(iced::widget::svg::Handle::from_path(p)), key)
                 } else {
-                    mouse_area(image_widget(p))
-                        .on_press(Message::OpenImageZoom(key))
-                        .into()
+                    zoomable(image_widget(p), key)
                 }
             }
         }
     }
+}
+
+/// An image that opens the image viewer on click, with the zoom-in cursor
+/// that says so.
+fn zoomable<'a>(image: impl Into<Element<'a, Message>>, key: String) -> Element<'a, Message> {
+    mouse_area(image)
+        .interaction(iced::mouse::Interaction::ZoomIn)
+        .on_press(Message::OpenImageZoom(key))
+        .into()
 }
 
 /// Render a `Block::Diagram { kind: Math }`. Unlike mermaid/dot diagrams,

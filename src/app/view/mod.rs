@@ -15,5 +15,5 @@ pub(super) use overlays::*;
 pub(super) use settings::*;
 pub(super) use sidebar::*;
 pub(super) use vault_search::*;
-pub(crate) use widgets::sleek_scrollable_style;
 pub(super) use widgets::*;
+pub(crate) use widgets::{reader_tip, sleek_scrollable_style};

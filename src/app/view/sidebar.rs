@@ -4,6 +4,7 @@ use super::*;
 // Explicit import: the `column!` macro is otherwise ambiguous between the glob
 // import and iced's exported macro.
 use iced::widget::column;
+use iced::widget::tooltip::Position;
 
 pub(in crate::app) fn sidebar_view<'a>(app: &'a App, pal: Palette) -> Element<'a, Message> {
     let recently_scrolled = app
@@ -16,30 +17,8 @@ pub(in crate::app) fn sidebar_view<'a>(app: &'a App, pal: Palette) -> Element<'a
         .unwrap_or("workspace");
     // Title row: workspace name on the left; the Files/Outline tabs, command-palette
     // button, and sidebar-collapse button pinned to the right beside each other.
-    let kbd_pill = |label: &'static str, pal: Palette| {
-        container(
-            text(label)
-                .size(11)
-                .color(pal.fg)
-                .shaping(iced::widget::text::Shaping::Advanced),
-        )
-        .padding(Padding::from([4, 8]))
-        .style(move |_| container::Style {
-            background: Some(pal.chip().into()),
-            border: Border {
-                color: pal.border(),
-                width: 1.0,
-                radius: theme::radius::SM.into(),
-            },
-            ..Default::default()
-        })
-    };
     let switch_tip = |inner: Element<'a, Message>| {
-        iced::widget::tooltip(
-            inner,
-            kbd_pill("← → switch", pal),
-            iced::widget::tooltip::Position::Bottom,
-        )
+        action_tip(inner, "Switch Tab", Some("← →"), Position::Bottom, pal)
     };
     // Only the (variable-length) title may be clipped on a narrow sidebar — the
     // control cluster stays unclipped so the collapse button is never cut off.
@@ -66,20 +45,26 @@ pub(in crate::app) fn sidebar_view<'a>(app: &'a App, pal: Palette) -> Element<'a
             SidebarTab::Outline,
             pal
         )),
-        iced::widget::tooltip(
+        action_tip(
             ghost_lu(ic::COMMAND, pal).on_press(Message::OpenCommandPalette),
-            kbd_pill("⌘⇧P", pal),
-            iced::widget::tooltip::Position::Bottom,
+            "Command Palette",
+            Some("⌘⇧P"),
+            Position::Bottom,
+            pal,
         ),
-        iced::widget::tooltip(
+        action_tip(
             ghost_lu(ic::SETTINGS, pal).on_press(Message::ToggleSettings),
-            kbd_pill("⌘,", pal),
-            iced::widget::tooltip::Position::Bottom,
+            "Settings",
+            Some("⌘,"),
+            Position::Bottom,
+            pal,
         ),
-        iced::widget::tooltip(
+        action_tip(
             ghost_lu(ic::PANEL_LEFT_CLOSE, pal).on_press(Message::ToggleSidebar),
-            kbd_pill("⌘B", pal),
-            iced::widget::tooltip::Position::Bottom,
+            "Hide Sidebar",
+            Some("⌘B"),
+            Position::Bottom,
+            pal,
         ),
     ]
     .spacing(6)
@@ -174,7 +159,8 @@ pub(in crate::app) fn sidebar_files_body<'a>(
     if let Some(tree_root) = &app.workspace_tree {
         let rows = tree::flatten_with_files(tree_root, &app.workspace_sidebar_files, &app.expanded);
         let current = app.file.as_ref();
-        let cursor = app.tree_cursor;
+        // The cursor row is painted only while the arrow keys drive it.
+        let cursor = app.tree_cursor_shown.then_some(app.tree_cursor);
         for r in rows.iter() {
             let w = tree_row_width(r.node, r.depth);
             if w > content_w {
@@ -185,7 +171,14 @@ pub(in crate::app) fn sidebar_files_body<'a>(
         // full height so scroll offsets and keyboard edge-scroll still match.
         list = push_sidebar_rows(list, app.tree_viewport.as_ref(), rows.len(), |i| {
             let r = &rows[i];
-            tree_row(r.node, r.depth, &app.expanded, current, i == cursor, pal)
+            tree_row(
+                r.node,
+                r.depth,
+                &app.expanded,
+                current,
+                cursor == Some(i),
+                pal,
+            )
         });
     }
     let list = list.width(Length::Fixed(content_w));
@@ -222,7 +215,7 @@ pub(in crate::app) fn sidebar_outline_body<'a>(
         );
     } else {
         list = push_sidebar_rows(list, app.outline_viewport.as_ref(), sections.len(), |i| {
-            outline_row(&sections[i], i == app.outline_cursor, pal)
+            outline_row(&sections[i], i, i == app.outline_cursor, pal)
         });
     }
     scrollable(list.width(Length::Fill))
@@ -325,6 +318,7 @@ pub(in crate::app) fn sidebar_rows_near(
 
 pub(in crate::app) fn outline_row<'a>(
     s: &crate::ipc::sections::Section,
+    index: usize,
     is_cursor: bool,
     pal: Palette,
 ) -> Element<'a, Message> {
@@ -363,7 +357,10 @@ pub(in crate::app) fn outline_row<'a>(
             },
             ..Default::default()
         })
-        .on_press(goto_line_message(s.line))
+        .on_press(Message::OutlineRowClicked {
+            index,
+            line: s.line,
+        })
         .into()
 }
 
@@ -504,11 +501,7 @@ pub(in crate::app) fn tree_row<'a>(
     .align_y(iced::Alignment::Center)
     .spacing(0);
 
-    let on_press = if is_dir {
-        Message::TreeToggle(path)
-    } else {
-        Message::Open(path)
-    };
+    let on_press = Message::TreeRowClicked { path, is_dir };
 
     button(content)
         .padding(Padding::from([4, 8]))

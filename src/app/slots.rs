@@ -349,7 +349,7 @@ impl App {
         };
         let Some(path) = crate::quick_slots::resolve_path(root, &slot.relative_path) else {
             if self.dirty {
-                return self.show_toast(self.unsaved_edits_open_message());
+                return self.show_unsaved_edits_toast(self.unsaved_edits_open_message());
             }
             self.invalidate_pending_quick_slot_restore();
             self.quick_slots.active = Some(index);
@@ -369,7 +369,7 @@ impl App {
             return Task::none();
         }
         if self.dirty {
-            return self.show_toast(self.unsaved_edits_open_message());
+            return self.show_unsaved_edits_toast(self.unsaved_edits_open_message());
         }
         if !path.is_file() {
             self.invalidate_pending_quick_slot_restore();
@@ -469,7 +469,7 @@ impl App {
             return self.show_toast("Open a workspace before assigning Quick Slots".into());
         }
         if self.dirty {
-            return self.show_toast(self.unsaved_edits_open_message());
+            return self.show_unsaved_edits_toast(self.unsaved_edits_open_message());
         }
         let Some((path, context)) = self.current_quick_slot_context() else {
             return self.show_toast("Open a file before assigning a Quick Slot".into());
@@ -509,7 +509,7 @@ impl App {
 
     pub(super) fn clear_quick_slot(&mut self, index: usize) -> Task<Message> {
         if self.dirty {
-            return self.show_toast(self.unsaved_edits_open_message());
+            return self.show_unsaved_edits_toast(self.unsaved_edits_open_message());
         }
         let Some(slot) = self.quick_slots.clear(index) else {
             return self.show_toast(format!("Quick Slot {} is empty", index + 1));
@@ -532,7 +532,7 @@ impl App {
 
     pub(super) fn clear_all_quick_slots(&mut self) -> Task<Message> {
         if self.dirty {
-            return self.show_toast(self.unsaved_edits_open_message());
+            return self.show_unsaved_edits_toast(self.unsaved_edits_open_message());
         }
         let removed = self.quick_slots.clear_all();
         if removed.is_empty() {
@@ -577,7 +577,7 @@ impl App {
             return self.show_toast("No active Quick Slot".into());
         };
         if self.dirty {
-            return self.show_toast(self.unsaved_edits_open_message());
+            return self.show_unsaved_edits_toast(self.unsaved_edits_open_message());
         }
         let checkpoint = self.checkpoint_active_quick_slot();
         self.invalidate_pending_quick_slot_restore();
@@ -602,7 +602,7 @@ impl App {
 
     pub(super) fn close_quick_slot_window(&mut self) -> Task<Message> {
         if self.dirty {
-            return self.show_toast(self.unsaved_edits_open_message());
+            return self.show_unsaved_edits_toast(self.unsaved_edits_open_message());
         }
         let checkpoint = self.checkpoint_active_quick_slot();
         // The checkpoint mutates the in-memory slot synchronously. Persist it

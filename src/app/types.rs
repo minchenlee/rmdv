@@ -94,6 +94,41 @@ pub(super) struct QuickSlotReplace {
     pub(super) incoming: String,
 }
 
+/// Tells real pointer motion over a list from the row hovers that scrolling
+/// under a still pointer causes, so hover moves the keyboard selection only
+/// when the pointer moves.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub(super) struct ListPointer {
+    /// Latest pointer position over the list surface.
+    last: Option<iced::Point>,
+    /// The position a row hover or a keyboard move last consumed.
+    consumed: Option<iced::Point>,
+}
+
+impl ListPointer {
+    /// Record the pointer over the list surface. The first report after the
+    /// list appears is a baseline, not motion: the pointer may rest where the
+    /// list opened.
+    pub(super) fn moved(&mut self, at: iced::Point) {
+        if self.last.is_none() {
+            self.consumed = Some(at);
+        }
+        self.last = Some(at);
+    }
+
+    /// Whether the pointer moved since the last hover or keyboard move.
+    pub(super) fn take_motion(&mut self) -> bool {
+        let moved = self.last != self.consumed;
+        self.consumed = self.last;
+        moved
+    }
+
+    /// The keyboard moved the selection; motion so far is spent.
+    pub(super) fn settle(&mut self) {
+        self.consumed = self.last;
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub(super) struct PendingQuickSlotRestore {
     pub(super) generation: u64,
@@ -151,6 +186,9 @@ pub struct Toast {
     pub id: u64,
     pub text: String,
     pub action: Option<ToastAction>,
+    /// A failure report: it stays as long as an action toast and can be
+    /// closed.
+    pub error: bool,
 }
 
 #[derive(Debug, Clone)]

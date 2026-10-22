@@ -31,6 +31,10 @@ const QUICK_SLOTS_RAIL_REVEAL_DELAY_MS: u64 = 500;
 /// debounced above it, where one search no longer fits inside a frame.
 const SEARCH_DEBOUNCE_MIN_BYTES: usize = 1024 * 1024;
 const SEARCH_DEBOUNCE_MS: u64 = 80;
+/// Results the file finder keeps after fuzzy ranking.
+const FILE_FINDER_RESULT_CAP: usize = 200;
+/// Rows the file finder renders; keyboard selection stays within them.
+const FILE_FINDER_ROW_CAP: usize = 80;
 const READING_MAX: f32 = theme::READING_MAX_PX;
 /// Radius of the reader panel's top-left corner next to the sidebar.
 const READER_CORNER_RADIUS: f32 = 24.0;
@@ -127,8 +131,8 @@ pub use types::{
     MindmapDir, Overlay, PendingNav, PendingRefreshFile, PendingRefreshWorkspace,
     PendingWatcherReload, SidebarTab, ThemeEntry, Toast, ToastAction, ViewMode, ZenRestoreState,
 };
-pub(crate) use view::sleek_scrollable_style;
 use view::*;
+pub(crate) use view::{reader_tip, sleek_scrollable_style};
 
 fn quick_slots_rail_left_offset(sidebar_open: bool, sidebar_width: f32, full_mindmap: bool) -> f32 {
     if sidebar_open && !full_mindmap {
@@ -157,6 +161,12 @@ pub struct App {
     pub line_spacing: theme::LineSpacing,
     pub show_footer: bool,
     pub error: Option<String>,
+    /// The file or folder the error card's Reveal in Finder shows, with the
+    /// error text it belongs to; a different error hides the button.
+    error_path: Option<(String, PathBuf)>,
+    /// The path of the newest generic file load and its refresh generation,
+    /// so a failed read can name the file it tried to open.
+    generic_load: Option<(u64, PathBuf)>,
     pub query: String,
     pub matches: Matches,
     pub match_idx: usize,
@@ -188,6 +198,9 @@ pub struct App {
     pub sidebar_open: bool,
     pub sidebar_tab: SidebarTab,
     pub tree_cursor: usize,
+    /// The tree cursor's background shows only while the arrow keys move it;
+    /// a row click hides it, so hover and cursor never look like two rows.
+    pub tree_cursor_shown: bool,
     pub outline_cursor: usize,
     /// Heading outline, rebuilt in `load_ast_from_source` when the document
     /// changes. Cached so the Outline sidebar (rendered every frame) and arrow
@@ -196,6 +209,9 @@ pub struct App {
     pub overlay: Overlay,
     pub overlay_query: String,
     pub overlay_selected: usize,
+    /// Pointer motion over the overlay lists and vault results; gates hover
+    /// selection on real motion.
+    list_pointer: ListPointer,
     /// Vault search results page (Zed-style) — full reader-area, not an overlay.
     /// Shown when `vault_open`; workspace-level, so it renders even with no file.
     pub vault_open: bool,
@@ -477,6 +493,8 @@ impl Default for App {
             line_spacing: prefs.line_spacing,
             show_footer: prefs.show_footer,
             error: None,
+            error_path: None,
+            generic_load: None,
             query: String::new(),
             matches: Matches::default(),
             match_idx: 0,
@@ -494,11 +512,13 @@ impl Default for App {
             sidebar_open: false,
             sidebar_tab: SidebarTab::Files,
             tree_cursor: 0,
+            tree_cursor_shown: false,
             outline_cursor: 0,
             outline_sections: Vec::new(),
             overlay: Overlay::None,
             overlay_query: String::new(),
             overlay_selected: 0,
+            list_pointer: ListPointer::default(),
             vault_open: false,
             vault_query: String::new(),
             vault_searched_query: None,
@@ -845,7 +865,9 @@ impl App {
         self.edit_history.clear();
         self.edit_redo.clear();
         self.view_mode = ViewMode::Raw;
-        Task::none()
+        // The editor handles keys only while focused; focus it so typing
+        // works right after ⌘E.
+        iced::widget::operation::focus(Self::editor_id())
     }
 
     fn leave_zen_edit_mode(&mut self, sync_editor: bool) {
@@ -910,7 +932,7 @@ impl App {
             .and_then(|p| p.file_name())
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_default();
-        Some(self.show_toast(format!(
+        Some(self.show_unsaved_edits_toast(format!(
             "unsaved edits in {name} \u{2014} press \u{2318}S to save before opening another file"
         )))
     }
@@ -947,6 +969,7 @@ impl App {
         self.cancel_refresh_tracking();
         self.bump_file_refresh_generation();
         let generation = self.file_refresh_generation;
+        self.generic_load = Some((generation, path.clone()));
         Task::perform(load_file(path), move |result| Message::FileLoadCompleted {
             generation,
             result,
@@ -1459,10 +1482,25 @@ impl App {
                 if let Some(full) = self.full_mindmap.as_mut() {
                     full.load_error = Some(message);
                 } else {
-                    self.error = Some(message);
+                    self.set_error_for(message, path);
                 }
             }
         }
+    }
+
+    /// Show `message` on the error card with a Reveal in Finder for `path`.
+    fn set_error_for(&mut self, message: String, path: PathBuf) {
+        self.error_path = Some((message.clone(), path));
+        self.error = Some(message);
+    }
+
+    /// The path the error card can reveal: only while the error it was
+    /// recorded for is still the one shown.
+    fn error_reveal_path(&self) -> Option<&Path> {
+        self.error_path
+            .as_ref()
+            .filter(|(message, _)| self.error.as_ref() == Some(message))
+            .map(|(_, path)| path.as_path())
     }
 
     fn show_toast(&mut self, text: String) -> Task<Message> {
@@ -1479,19 +1517,45 @@ impl App {
         )
     }
 
+    fn show_error_toast(&mut self, text: String) -> Task<Message> {
+        self.push_toast(text, None, true)
+    }
+
+    /// The dirty-guard toast: it names the unsaved file and offers Save.
+    fn show_unsaved_edits_toast(&mut self, text: String) -> Task<Message> {
+        self.show_toast_with_action(
+            text,
+            Some(ToastAction {
+                label: "Save".to_string(),
+                message: Message::SaveFile,
+            }),
+        )
+    }
+
     fn show_toast_with_action(
         &mut self,
         text: String,
         action: Option<ToastAction>,
     ) -> Task<Message> {
+        self.push_toast(text, action, false)
+    }
+
+    fn push_toast(
+        &mut self,
+        text: String,
+        action: Option<ToastAction>,
+        error: bool,
+    ) -> Task<Message> {
         self.toast_seq = self.toast_seq.wrapping_add(1);
         let id = self.toast_seq;
-        let duration = if action.is_some() {
-            std::time::Duration::from_secs(8)
-        } else {
-            std::time::Duration::from_millis(1500)
+        let toast = Toast {
+            id,
+            text,
+            action,
+            error,
         };
-        self.toast = Some(Toast { id, text, action });
+        let duration = toast_duration(&toast);
+        self.toast = Some(toast);
         Task::perform(
             async move { tokio::time::sleep(duration).await },
             move |_| Message::ToastExpire(id),
@@ -1510,6 +1574,12 @@ impl App {
     fn overlay_scroll_id() -> iced::widget::Id {
         iced::widget::Id::new("overlay")
     }
+    fn editor_id() -> iced::widget::Id {
+        iced::widget::Id::new("zen-editor")
+    }
+    fn toast_close_id() -> iced::widget::Id {
+        iced::widget::Id::new("toast-close")
+    }
     fn search_input_id() -> iced::widget::Id {
         iced::widget::Id::new("search-input")
     }
@@ -1521,6 +1591,12 @@ impl App {
     }
     fn vault_scroll_id() -> iced::widget::Id {
         iced::widget::Id::new("vault")
+    }
+    fn vault_search_button_id() -> iced::widget::Id {
+        iced::widget::Id::new("vault-search-button")
+    }
+    fn vault_close_button_id() -> iced::widget::Id {
+        iced::widget::Id::new("vault-close-button")
     }
     /// Stable id for the n-th visible match block, used to scroll to the cursor
     /// by measured bounds (blocks vary in height, so estimation can't track it).
@@ -1598,8 +1674,9 @@ impl App {
     /// filtered list length this update (`OverlayMove` does, every arrow key).
     fn scroll_overlay_to_cursor_with_len(&self, len: usize) -> Task<Message> {
         let (total, row_h) = match self.overlay {
-            // FileFinder renders at most 80 rows; scroll math matches.
-            Overlay::FileFinder => (len.min(80), 32.0),
+            // FileFinder renders at most FILE_FINDER_ROW_CAP rows; scroll
+            // math matches.
+            Overlay::FileFinder => (len.min(FILE_FINDER_ROW_CAP), 32.0),
             Overlay::Command | Overlay::ThemePicker => (len, 32.0),
             Overlay::FolderPicker => (len, 33.0),
             Overlay::None | Overlay::ImageZoom | Overlay::Shortcuts => (0, 32.0),
@@ -2308,6 +2385,7 @@ impl App {
         self.overlay_query.clear();
         self.overlay_selected = 0;
         self.overlay_viewport = None;
+        self.list_pointer = ListPointer::default();
         if kind == Overlay::FolderPicker {
             let start = self.workspace.clone().or_else(|| {
                 self.file
@@ -2602,7 +2680,7 @@ impl App {
             })
             .collect();
         scored.sort_by(|a, b| b.2.cmp(&a.2).then_with(|| a.1.cmp(&b.1)));
-        scored.truncate(200);
+        scored.truncate(FILE_FINDER_RESULT_CAP);
         self.file_finder_memo.replace(Some(FileFinderMemo {
             query: self.overlay_query.clone(),
             root: root.cloned(),
@@ -2682,7 +2760,9 @@ impl App {
             return Some(path.clone());
         }
 
+        // A hidden tree cursor is not a visible target: the open file is.
         let files_sidebar_active = self.sidebar_open
+            && self.tree_cursor_shown
             && self.workspace.is_some()
             && self.sidebar_tab == SidebarTab::Files
             && self.full_mindmap.is_none();
@@ -2704,7 +2784,7 @@ impl App {
     pub fn subscription(&self) -> iced::Subscription<Message> {
         let dnd = iced::event::listen_with(|ev, _status, _id| match ev {
             iced::Event::Window(iced::window::Event::FileDropped(path)) => {
-                Some(Message::Open(path))
+                Some(dropped_path_message(path))
             }
             _ => None,
         });
@@ -3292,12 +3372,24 @@ impl App {
                 reader_fill,
             )
         } else if let Some(err) = &self.error {
+            let mut actions =
+                irow![secondary_button("Dismiss", pal).on_press(Message::DismissError)]
+                    .spacing(8)
+                    .align_y(iced::Alignment::Center);
+            if let Some(path) = self.error_reveal_path() {
+                actions = actions.push(
+                    secondary_button("Reveal in Finder", pal)
+                        .on_press(Message::RevealPath(path.to_path_buf())),
+                );
+            }
+            actions = actions
+                .push(primary_button("Open Folder", pal).on_press(Message::OpenFolderPicker));
             centered_card(
                 column![
                     text("Couldn't open file").size(20).color(pal.fg),
                     text(err.clone()).color(pal.muted).size(13),
                     Space::new().height(8),
-                    primary_button("Open Folder", pal).on_press(Message::OpenFolderPicker),
+                    actions,
                 ]
                 .spacing(10)
                 .align_x(iced::Alignment::Center)
@@ -3372,6 +3464,7 @@ impl App {
             } else if self.view_mode == ViewMode::Raw {
                 if let Some(ed) = self.editor.as_ref() {
                     let editor = iced::widget::text_editor(ed)
+                        .id(Self::editor_id())
                         .on_action(Message::EditorAction)
                         // Filter cmd/ctrl combos so global shortcuts (⌘B, ⌘T,
                         // ⌘E, ⌘K, ⌘M, ⌘P, ⌘O, etc.) don't ALSO get inserted
@@ -3405,15 +3498,21 @@ impl App {
                             selection: pal.selection,
                         })
                         .height(Length::Fill);
-                    container(
-                        container(editor)
-                            .width(Length::Fill)
-                            .height(Length::Fill)
-                            .max_width(READING_MAX),
+                    // A click in the empty margin beside the editor column
+                    // focuses the editor; clicks inside it are captured by the
+                    // editor and never reach this area.
+                    iced::widget::mouse_area(
+                        container(
+                            container(editor)
+                                .width(Length::Fill)
+                                .height(Length::Fill)
+                                .max_width(READING_MAX),
+                        )
+                        .width(Length::Fill)
+                        .height(Length::Fill)
+                        .center_x(Length::Fill),
                     )
-                    .width(Length::Fill)
-                    .height(Length::Fill)
-                    .center_x(Length::Fill)
+                    .on_press(Message::FocusEditor)
                     .into()
                 } else {
                     let fallback = text(self.source.as_str())
@@ -3788,5 +3887,33 @@ fn block_contains_diagram_hash(block: &Block, hash: u64) -> bool {
     }
 }
 
+/// How long a toast stays on screen: a toast with an action button or an
+/// error stays long enough to read and act on; a status note goes quickly.
+fn toast_duration(toast: &Toast) -> std::time::Duration {
+    if toast.action.is_some() || toast.error {
+        std::time::Duration::from_secs(8)
+    } else {
+        std::time::Duration::from_millis(1500)
+    }
+}
+
+/// The message a file or folder dropped on the window sends. It shares the
+/// Finder open path: a folder opens as the workspace, a file honors Full
+/// Mindmap and the unsaved-edits guard, and an open overlay closes.
+fn dropped_path_message(path: PathBuf) -> Message {
+    Message::OpenFileFinderPath(path)
+}
+
+/// The path Finder can reveal for `path`: the path itself, or its nearest
+/// existing folder when it no longer exists.
+fn reveal_target(path: &Path) -> PathBuf {
+    path.ancestors()
+        .find(|ancestor| ancestor.exists())
+        .unwrap_or(path)
+        .to_path_buf()
+}
+
+#[cfg(test)]
+mod pointer_tests;
 #[cfg(test)]
 mod tests;

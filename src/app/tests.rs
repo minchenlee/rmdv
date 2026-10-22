@@ -2298,6 +2298,8 @@ fn copy_file_path_uses_focused_file_sidebar_row() {
         .iter()
         .position(|row| row.node.path() == focused)
         .expect("focused sidebar file should be visible");
+    // The arrow keys moved the cursor here, so it is shown.
+    app.tree_cursor_shown = true;
 
     assert_eq!(app.focused_file_path(), Some(focused));
     let _ = std::fs::remove_dir_all(&dir);

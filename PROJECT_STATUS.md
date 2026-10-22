@@ -1,17 +1,18 @@
 # rmdv — project status
 
-Last verified: 2026-10-17 (Asia/Taipei)
+Last verified: 2026-10-19 (Asia/Taipei)
 Stale after: 7 days
 Canonical repository: `~/Documents/GitHub/mdv`
 Expected branch / HEAD / PR: start new work from the live `origin/main`.
-Latest published release: `v0.10.0` → `9e876c0` (2026-10-17, Release run
-39039978898).
+Latest published release: `v0.10.1` → `09d6394` (2026-10-19, Release run
+39197195676).
 Authority: This is a routing snapshot. Verify Git, GitHub, runtime identity, and
 manual evidence before mutation.
 
 ## Current outcome
 
-- `v0.8.0` (2026-10-09), `v0.9.0` (2026-10-16), and `v0.10.0` (2026-10-17) are published. v0.9.0 added
+- `v0.8.0` (2026-10-09), `v0.9.0` (2026-10-16), `v0.10.0` (2026-10-17), and
+  `v0.10.1` (2026-10-19) are published. v0.9.0 added
   rounded tables, Notion-like typography with Line spacing, and Quick Slot
   assign and confirm. Record:
   [`docs/releases/v0.9.0-content-pack.md`](docs/releases/v0.9.0-content-pack.md).
@@ -25,6 +26,10 @@ manual evidence before mutation.
   (no auto-scroll); an endpoint scrolled out of the virtual window copies its
   whole block; after a double or triple click, dragging into another block
   selects by character; Shift-extend works inside one block.
+- `v0.10.1` shipped `MDV-044` (PR #69, `a72381f`): Full Mindmap lists a
+  folder's direct files and folders up to 10,000 items, and a folder with more
+  than 2,000 items opens in pages of 2,000 behind a `More (N left)` node.
+  Notes: [`docs/releases/v0.10.1-release-notes.md`](docs/releases/v0.10.1-release-notes.md).
 
 ## Live workstreams
 
@@ -44,7 +49,8 @@ No active product workstream. Pick the next task from
 - Website deploys run locally with `wrangler deploy` by the owner. The
   `deploy-site` workflow fails because the repo has no `CLOUDFLARE_API_TOKEN`
   secret (run 39041702967); v0.10.0's site went live this way (Worker version
-  `6e4b9588`, 2026-10-17).
+  `6e4b9588`, 2026-10-17). The v0.10.1 version strings are on `main`; the
+  site deploy waits for the owner.
 - Release dispatches default to `dry_run: true`; a real release needs
   `dry_run: false` and owner authority.
 
@@ -57,6 +63,15 @@ No active product workstream. Pick the next task from
 
 ### Verified now
 
+- `v0.10.1` was tagged at `09d6394` by the owner (2026-10-19). Release run
+  39197195676 passed every job. The seven installers match `SHA256SUMS`, and
+  `latest.json` reports `0.10.1` for darwin-aarch64, darwin-x86_64, and
+  linux-x86_64. The `aarch64` app and dmg pass codesign, stapler, and `spctl`
+  (Notarized Developer ID), version `0.10.1`. The release body is the
+  committed release notes file.
+- A dry run before the tag (run 39193575518) failed only at "Check out release
+  notes", because the tag did not exist yet; tracked on the board as
+  `rmdv-release-dryrun-notes`.
 - `v0.10.0` was tagged at `9e876c0` (owner authority, 2026-10-17); the Release
   workflow passed every job and the seven installers match `SHA256SUMS`. The
   `aarch64` dmg and app were also checked by hand: codesign valid, stapled,
@@ -71,8 +86,10 @@ No active product workstream. Pick the next task from
 
 - Cross-block selection was checked with headless screenshots, unit tests, and
   an owner trial build; there is no automated native-window test.
-- The x86_64, Linux, and Windows v0.10.0 installers were checked by SHA-256
-  only, not opened.
+- The x86_64, Linux, and Windows v0.10.0 and v0.10.1 installers were checked
+  by SHA-256 only, not opened.
+- `MDV-044`: the >10,000-item behavior is inferred from source, not tested on
+  a real folder. Cold start and frame time were not measured.
 - `MDV-038`: a table row clipped at the viewport top can render without text
   after `goto` (pre-existing). `MDV-042`: `goto` stops about one block high.
 - `HlCache` is bounded by entry count only (`MDV-002`).

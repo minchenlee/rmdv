@@ -22,10 +22,12 @@ pub(in crate::app) fn settings_page<'a>(
     page = page.push(
         irow![
             container(text("Settings").size(22).color(pal.fg)).width(Length::Fill),
-            iced::widget::tooltip(
+            action_tip(
                 ghost_lu(ic::X, pal).on_press(Message::CloseSettings),
-                text("Esc").size(11).color(pal.muted),
+                "Close Settings",
+                Some("Esc"),
                 iced::widget::tooltip::Position::Bottom,
+                pal,
             ),
         ]
         .align_y(iced::Alignment::Center),

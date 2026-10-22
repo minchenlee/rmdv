@@ -15,7 +15,7 @@ rmdv is built with AI (Claude Code and Codex). A human sets direction, tests, re
 ## Source and releases
 
 - [GitHub repository](https://github.com/minchenlee/rmdv): Source code, issue tracker, pull requests. MIT license.
-- [Releases](https://github.com/minchenlee/rmdv/releases): Pre-built binaries for macOS, Linux, and Windows with published SHA-256 checksums. Latest: v0.10.0 (2026-10-17).
+- [Releases](https://github.com/minchenlee/rmdv/releases): Pre-built binaries for macOS, Linux, and Windows with published SHA-256 checksums. Latest: v0.10.1 (2026-10-19).
 
 ## Key facts
 

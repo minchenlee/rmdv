@@ -55,6 +55,11 @@ pub(in crate::app) fn vault_search_page<'a>(
                     selection: pal.selection,
                 }),
             text(count_text).size(12).color(pal.subtle),
+            // Pointer paths for Enter (search) and Esc (close).
+            container(ghost_lu(icon::ic::SEARCH, pal).on_press(Message::VaultRunSearch))
+                .id(App::vault_search_button_id()),
+            container(ghost_lu(icon::ic::X, pal).on_press(Message::VaultClose))
+                .id(App::vault_close_button_id()),
         ]
         .spacing(12)
         .align_y(iced::Alignment::Center),
@@ -265,25 +270,13 @@ pub(in crate::app) fn vault_search_page<'a>(
                     let row = button(block)
                         .padding(Padding::from([6, 8]))
                         .width(Length::Fill)
-                        .style(move |_, status| button::Style {
-                            background: match (is_cursor, status) {
-                                (true, _) => Some(Background::Color(pal.hover())),
-                                (_, button::Status::Hovered) => {
-                                    Some(Background::Color(pal.hover()))
-                                }
-                                _ => None,
-                            },
-                            text_color: pal.fg,
-                            border: Border {
-                                radius: theme::radius::SM.into(),
-                                ..Default::default()
-                            },
-                            ..Default::default()
-                        })
+                        .style(list_row_style(is_cursor, pal))
                         .on_press(Message::VaultOpenHit(hi));
+                    let vis_idx = *vis_idx;
+                    let row = hover_row(row, is_cursor, Message::VaultHover(vis_idx));
                     // Stable id so cursor-follow can scroll by measured bounds.
                     let row = container(row)
-                        .id(App::vault_match_anchor_id(*vis_idx))
+                        .id(App::vault_match_anchor_id(vis_idx))
                         .width(Length::Fill);
                     list = list.push(row);
                 }
@@ -308,6 +301,7 @@ pub(in crate::app) fn vault_search_page<'a>(
         .width(Length::Fill)
         .direction(slim_scroll_direction())
         .style(move |_, status| sleek_scrollable_style(status, pal, true));
+    let body = stack![body, list_pointer_tracker()];
 
     let divider = container(Space::new().height(1.0))
         .width(Length::Fill)

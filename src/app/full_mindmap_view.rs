@@ -9,11 +9,26 @@ impl App {
     /// Full-window workspace navigator. It deliberately reads only
     /// `full_mindmap` and `workspace_mindmap` state; document mindmap layout,
     /// collapse, selection, and preview state stay untouched underneath.
+    /// The Back/parent/panel island floats over every state, so the pointer
+    /// can always leave.
     pub(super) fn full_mindmap_view(
         &self,
         pal: Palette,
         recently_scrolled: bool,
     ) -> Element<'_, Message> {
+        let Some(full) = self.full_mindmap.as_ref() else {
+            return Space::new().into();
+        };
+        stack![
+            self.full_mindmap_body(pal, recently_scrolled),
+            full_mindmap_nav(full.panel_open, self.window_fullscreen, pal),
+        ]
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .into()
+    }
+
+    fn full_mindmap_body(&self, pal: Palette, recently_scrolled: bool) -> Element<'_, Message> {
         let Some(full) = self.full_mindmap.as_ref() else {
             return Space::new().into();
         };

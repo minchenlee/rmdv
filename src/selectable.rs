@@ -527,12 +527,13 @@ mod tests {
     }
 
     #[test]
-    fn clicking_right_of_heading_text_still_folds() {
+    fn clicking_right_of_heading_text_does_not_fold() {
+        // Only the chevron folds (MDV-048): blank row space is inert.
         let block = heading_block();
         let (_, messages) = run(heading(&block), press_release(Point::new(500.0, 14.0)));
         assert!(
-            folds(&messages),
-            "empty-space click must fold: {messages:?}"
+            !folds(&messages),
+            "empty-space click must not fold: {messages:?}"
         );
     }
 

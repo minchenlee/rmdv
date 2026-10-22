@@ -16,6 +16,13 @@ pub enum Message {
     OpenVaultSearch,
     Refresh,
     RevealFileInFinder,
+    /// Reveal this path (or its nearest existing folder) in Finder.
+    RevealPath(PathBuf),
+    /// Close the error card and show what is beneath it.
+    DismissError,
+    /// A welcome-page row whose command acts on an open document: say why it
+    /// does nothing yet.
+    WelcomeNeedsFile,
     CopyFilePath,
     VaultQueryChanged(String),
     /// Run the search for the current query (Enter when the query has changed).
@@ -24,6 +31,13 @@ pub enum Message {
     VaultEnter,
     VaultSearchDone(crate::vault_search::VaultResults),
     VaultMove(isize),
+    /// Pointer motion over a vault hit (visible-match index); gated like
+    /// [`Message::OverlayHover`].
+    VaultHover(usize),
+    /// Pointer position over an overlay list or the vault results. A changed
+    /// position is real motion; row hovers caused by scrolling under a still
+    /// pointer arrive without one.
+    ListPointerMoved(iced::Point),
     VaultOpenSelected,
     VaultOpenHit(usize),
     VaultToggleFile(PathBuf),
@@ -71,6 +85,12 @@ pub enum Message {
     OverlayQueryChanged(String),
     OverlayMove(isize),
     OverlayConfirm,
+    /// Pointer click on a palette or theme row: select it, then confirm
+    /// exactly as Enter does.
+    OverlayPick(usize),
+    /// Pointer motion over an overlay list row. Moves the keyboard selection
+    /// only after real pointer motion (see [`Message::ListPointerMoved`]).
+    OverlayHover(usize),
     OverlayDescend,
     FileLoaded(Result<(PathBuf, String), String>),
     FileLoadCompleted {
@@ -117,6 +137,18 @@ pub enum Message {
     /// Toggle visibility of dot-prefixed entries in tree + picker.
     ToggleHidden,
     TreeToggle(PathBuf),
+    /// A pointer click on a file-tree row: moves the tree cursor there, then
+    /// opens the file or toggles the folder.
+    TreeRowClicked {
+        path: PathBuf,
+        is_dir: bool,
+    },
+    /// A pointer click on an outline row: moves the outline cursor there,
+    /// then scrolls to the heading's line.
+    OutlineRowClicked {
+        index: usize,
+        line: u32,
+    },
     TreeMove(isize),
     TreeActivate,
     OutlineMove(isize),
@@ -133,6 +165,9 @@ pub enum Message {
     SearchDebounced(u64),
     NextMatch,
     PrevMatch,
+    /// A find-bar chevron click: step to the next (`true`) or previous
+    /// match, then give the search input its focus back.
+    FindStepClicked(bool),
     TreeScrolled(iced::widget::scrollable::Viewport),
     OutlineScrolled(iced::widget::scrollable::Viewport),
     OverlayScrolled(iced::widget::scrollable::Viewport),
@@ -320,6 +355,8 @@ pub enum Message {
     HeadingHoverEnter(crate::ast::BlockId),
     HeadingHoverExit(crate::ast::BlockId),
     EditorAction(iced::widget::text_editor::Action),
+    /// Focus the Zen editor (a click in the margin beside it).
+    FocusEditor,
     SaveFile,
     FileSaved {
         result: Result<(), String>,

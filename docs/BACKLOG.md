@@ -14,15 +14,15 @@ contract passed; code or prose merely existing is not sufficient.
 Roadmap order (owner-approved 2026-10-04, re-confirmed 2026-10-05): phases 0–2,
 the phase-3 visual pass, the Settings page, and releases v0.8.0 and v0.9.0
 have landed. Selectable text and CJK reading (MDV-040) are on `main`; the
-v0.10.0 release (MDV-041) is published. The remaining phase-4 items
-(MDV-008, MDV-030) run alongside. Phase 5 tasks (MDV-032 to MDV-035) start with
+v0.10.0 release (MDV-041) and v0.10.1 (MDV-044) are published. The remaining
+phase-4 items (MDV-008, MDV-030) run alongside. Phase 5 tasks (MDV-032 to MDV-035) start with
 a design for the owner, not code. Sources:
 [`MDV-022`](plans/completed/MDV-022-refactor-phases-0-2.md) and
 [`MDV-024–028`](plans/completed/MDV-024-028-phase-2-performance.md).
 
 | ID | Priority | State | Outcome | Acceptance | Plan | Blocked by |
 | --- | --- | --- | --- | --- | --- | --- |
-| MDV-044 | P2 | proposed | Full Mindmap: opening a large folder such as `/` shows `More files not indexed` / `More items not indexed` nodes that do nothing on Enter, so later items are unreachable. List direct children with a plain non-recursive `read_dir`, independent of the 10,000-item scan budget; keep a `More… (N left)` node only when one folder has more than ~2,000 children, and load the next batch from it. | Failing test first: with a root over the budget, every direct child folder is selectable and the More node expands; recursive counts still show `N+` / `scan limit reached`. | — | — |
+| MDV-048 | P1 | in progress | Smooth pointer support: every flow works with the mouse or trackpad (no dead ends, context menus, consistent gestures, visible controls), keyboard shortcuts unchanged. | Per-phase tests and review; owner trial build per phase. | [`MDV-048`](plans/active/MDV-048-pointer-support.md) | — |
 | MDV-045 | P3 | done | Website screenshots: seven uniform full-screen-size captures (1470x956 logical, 2x) in a window frame with shadow; plain hero. | Before/after shown to the owner; deployed by the owner (rmdv-site `34037c9a`, 2026-10-18). Merged at `2fd7e5f`. | — | — |
 | MDV-046 | P3 | proposed | Re-test cold start and parse numbers on a quiet machine (v0.8.0 claims). | Recorded numbers next to the v0.8.0 claims; docs flag cleared or corrected. | — | Quiet machine. |
 | MDV-047 | P3 | proposed | Promo videos: README GIF and an agent-scenario short clip. | Owner records with the manual tour; files stored and linked. | — | Owner recording time. |
@@ -53,6 +53,7 @@ a design for the owner, not code. Sources:
 
 | ID | Outcome | Evidence route |
 | --- | --- | --- |
+| MDV-044 | Full Mindmap lists a folder's direct files and folders up to 10,000 items; folders over 2,000 items open in pages behind `More (N left)`. Published in v0.10.1. | PR #69 (`a72381f`), tag `v0.10.1` (`09d6394`), Release run 39197195676, [`docs/releases/v0.10.1-release-notes.md`](releases/v0.10.1-release-notes.md). |
 | MDV-041 | Published rmdv v0.10.0 (selectable text, cross-block copy, CJK reading); release notes follow the new template. | Tag `v0.10.0` (`9e876c0`), Release run 39039978898, [`docs/plans/completed/MDV-041-release-v0.10.0.md`](plans/completed/MDV-041-release-v0.10.0.md). |
 | MDV-040 | Selectable text: drag, double-click, triple-click, ⌘A and ⌘C in the reader and the data view; one drag can cross blocks (visible range); ⌘C works under non-Latin input sources; CJK reading with bundled Noto Sans TC, taller CJK lines, and squeezed full-width punctuation. Owner-accepted on a trial build. | `main@d53f0a3`; cross-block drag is vendored `iced_selection` plus `src/select_scope.rs` (see `vendor/iced_selection/VENDORED.md`). |
 | MDV-039 | Published rmdv v0.8.0. | [`docs/plans/completed/MDV-039-release-v0.8.0.md`](plans/completed/MDV-039-release-v0.8.0.md) and [`docs/releases/v0.8.0-release-notes.md`](releases/v0.8.0-release-notes.md). |

@@ -222,11 +222,11 @@ impl App {
     /// Relaunch rmdv with the current file (or folder), then close this window.
     pub(super) fn restart_app(&mut self) -> Task<Message> {
         if self.dirty {
-            return self.show_toast(self.unsaved_edits_open_message());
+            return self.show_unsaved_edits_toast(self.unsaved_edits_open_message());
         }
         let exe = match std::env::current_exe() {
             Ok(exe) => exe,
-            Err(error) => return self.show_toast(format!("Couldn't restart rmdv: {error}")),
+            Err(error) => return self.show_error_toast(format!("Couldn't restart rmdv: {error}")),
         };
         let reopen = self.file.clone().or_else(|| self.workspace.clone());
         let argv = relaunch_argv(&exe, reopen.as_deref());
@@ -242,7 +242,7 @@ impl App {
             .stderr(std::process::Stdio::null())
             .spawn();
         if let Err(error) = spawned {
-            return self.show_toast(format!("Couldn't restart rmdv: {error}"));
+            return self.show_error_toast(format!("Couldn't restart rmdv: {error}"));
         }
         let checkpoint = self.checkpoint_active_quick_slot();
         self.persist_quick_slots_now();
@@ -265,7 +265,7 @@ impl App {
         }
         match Self::reveal_file_in_finder(&path) {
             Ok(()) => Task::none(),
-            Err(error) => self.show_toast(error),
+            Err(error) => self.show_error_toast(error),
         }
     }
 }

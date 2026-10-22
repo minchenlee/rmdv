@@ -4,10 +4,11 @@ use super::*;
 // Explicit import: the `column!` macro is otherwise ambiguous between the glob
 // import and iced's exported macro.
 use iced::widget::column;
+use iced::widget::tooltip::Position;
 
 /// Bottom-center banner inviting the user to install a downloaded update.
 pub(in crate::app) fn update_banner<'a>(version: &str, pal: Palette) -> Element<'a, Message> {
-    use iced::widget::{button, container, row, text as text_w};
+    use iced::widget::{container, row, text as text_w};
     // A small accent dot signals "something new", matching the warm accent the
     // rest of the UI uses for its single highlight color.
     let dot = container(Space::new().width(7).height(7)).style(move |_| container::Style {
@@ -24,23 +25,7 @@ pub(in crate::app) fn update_banner<'a>(version: &str, pal: Palette) -> Element<
     // Primary action uses the shared accent-pill button; "Later" is a quiet
     // ghost so the two read as primary/secondary, not two competing buttons.
     let install = primary_button("Install & Restart", pal).on_press(Message::InstallUpdate);
-    let later = button(text_w("Later").size(13.0).color(pal.muted))
-        .padding(Padding::from([8, 14]))
-        .style(move |_, status| button::Style {
-            background: match status {
-                button::Status::Hovered => Some(Background::Color(pal.hover())),
-                button::Status::Pressed => Some(Background::Color(pal.active())),
-                _ => None,
-            },
-            text_color: pal.muted,
-            border: Border {
-                color: pal.border(),
-                width: 1.0,
-                radius: theme::radius::PILL.into(),
-            },
-            ..Default::default()
-        })
-        .on_press(Message::DismissUpdate);
+    let later = secondary_button("Later", pal).on_press(Message::DismissUpdate);
     let bar = container(
         row![dot, label, Space::new().width(8), install, later]
             .spacing(10)
@@ -122,6 +107,13 @@ pub(in crate::app) fn toast_overlay<'a>(toast: &Toast, pal: Palette) -> Element<
             })
             .on_press(action.message.clone());
         content = content.push(action_button);
+    }
+    // Toasts that stay long (an action or an error) can be closed early.
+    if toast.action.is_some() || toast.error {
+        content = content.push(
+            container(ghost_lu(ic::X, pal).on_press(Message::ToastExpire(toast.id)))
+                .id(App::toast_close_id()),
+        );
     }
     let bubble = container(content)
         .padding([8, 14])
@@ -272,8 +264,12 @@ pub(in crate::app) fn image_zoom_overlay<'a>(
         ..Default::default()
     });
     // Click background scrim → close. Pointer cursor would mislead since
-    // most of the surface is the viewer (which handles its own drags).
-    let scrim_click = mouse_area(scrim).on_press(Message::CloseOverlay);
+    // most of the surface is the viewer (which handles its own drags). The
+    // idle cursor and the swallowed wheel keep the reader below inert.
+    let scrim_click = mouse_area(scrim)
+        .interaction(iced::mouse::Interaction::Idle)
+        .on_scroll(|_| Message::Noop)
+        .on_press(Message::CloseOverlay);
     // Top-right close button. Sits on its own mouse_area so a click on the
     // X always fires CloseOverlay (independent of the scrim mouse_area
     // beneath it in the stack).
@@ -294,9 +290,15 @@ pub(in crate::app) fn image_zoom_overlay<'a>(
             },
             ..Default::default()
         });
-    let close_btn = mouse_area(close_btn_inner)
-        .interaction(iced::mouse::Interaction::Pointer)
-        .on_press(Message::CloseOverlay);
+    let close_btn = action_tip(
+        mouse_area(close_btn_inner)
+            .interaction(iced::mouse::Interaction::Pointer)
+            .on_press(Message::CloseOverlay),
+        "Close",
+        Some("Esc"),
+        Position::Left,
+        pal,
+    );
     let close_overlay = container(close_btn)
         .padding(Padding::from([14, 16]))
         .align_x(iced::alignment::Horizontal::Right)
@@ -307,8 +309,10 @@ pub(in crate::app) fn image_zoom_overlay<'a>(
 }
 
 pub(in crate::app) fn welcome_view<'a>(pal: Palette) -> Element<'a, Message> {
-    let kbd = |label: &'static str, key: &'static str| {
-        irow![
+    // Each row is a button that sends its shortcut's message; the key cap
+    // stays visible as the hint.
+    let kbd = |label: &'static str, key: &'static str, message: Message| {
+        let row = irow![
             container(
                 text(key)
                     .size(12)
@@ -331,7 +335,23 @@ pub(in crate::app) fn welcome_view<'a>(pal: Palette) -> Element<'a, Message> {
             }),
         ]
         .spacing(8)
-        .align_y(iced::Alignment::Center)
+        .align_y(iced::Alignment::Center);
+        button(row)
+            .padding(Padding::from([3, 6]))
+            .style(move |_, status| button::Style {
+                background: match status {
+                    button::Status::Hovered => Some(Background::Color(pal.hover())),
+                    button::Status::Pressed => Some(Background::Color(pal.active())),
+                    _ => None,
+                },
+                text_color: pal.fg,
+                border: Border {
+                    radius: theme::radius::SM.into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            })
+            .on_press(message)
     };
     centered_card(
         column![
@@ -342,15 +362,16 @@ pub(in crate::app) fn welcome_view<'a>(pal: Palette) -> Element<'a, Message> {
             Space::new().height(22),
             primary_button("Browse a Project as Mindmap", pal).on_press(Message::ToggleFullMindmap),
             Space::new().height(8),
-            kbd("Open Folder", "⌘O"),
-            kbd("Find File in Workspace", "⌘P"),
-            kbd("Command Palette", "⌘⇧P"),
-            kbd("Toggle Sidebar", "⌘B"),
-            kbd("Find in Document", "⌘F"),
-            kbd("Cycle Theme", "⌘T"),
-            kbd("Edit / Select Text", "⌘E"),
-            kbd("Fold to Level (then 0–6)", "⌘K"),
-            kbd("Full Mindmap Mode", "⌘⇧M"),
+            kbd("Open Folder", "⌘O", Message::OpenFolderPicker),
+            kbd("Find File in Workspace", "⌘P", Message::OpenFileFinder),
+            kbd("Command Palette", "⌘⇧P", Message::OpenCommandPalette),
+            kbd("Toggle Sidebar", "⌘B", Message::ToggleSidebar),
+            kbd("Find in Document", "⌘F", Message::ToggleSearch),
+            kbd("Cycle Theme", "⌘T", Message::ToggleTheme),
+            // Edit and Fold act on an open document; here they explain that.
+            kbd("Edit / Select Text", "⌘E", Message::WelcomeNeedsFile),
+            kbd("Fold to Level (then 0–6)", "⌘K", Message::WelcomeNeedsFile),
+            kbd("Full Mindmap Mode", "⌘⇧M", Message::ToggleFullMindmap),
         ]
         .spacing(8)
         .align_x(iced::Alignment::Start)
@@ -524,9 +545,27 @@ pub(in crate::app) fn search_bar_view<'a>(
                 })
                 .width(Length::Fill),
             text(counter).color(pal.muted).size(12),
-            ghost_lu(ic::CHEVRON_LEFT, pal).on_press(Message::PrevMatch),
-            ghost_lu(ic::CHEVRON_RIGHT, pal).on_press(Message::NextMatch),
-            ghost_lu(ic::X, pal).on_press(Message::ToggleSearch),
+            action_tip(
+                ghost_lu(ic::CHEVRON_LEFT, pal).on_press(Message::FindStepClicked(false)),
+                "Previous Match",
+                Some("⇧↩"),
+                Position::Bottom,
+                pal,
+            ),
+            action_tip(
+                ghost_lu(ic::CHEVRON_RIGHT, pal).on_press(Message::FindStepClicked(true)),
+                "Next Match",
+                Some("↩"),
+                Position::Bottom,
+                pal,
+            ),
+            action_tip(
+                ghost_lu(ic::X, pal).on_press(Message::ToggleSearch),
+                "Close Find",
+                Some("Esc"),
+                Position::Bottom,
+                pal,
+            ),
         ]
         .padding(Padding::from([8, 14]))
         .spacing(10)
@@ -543,6 +582,89 @@ pub(in crate::app) fn search_bar_view<'a>(
     })
     .width(Length::Fill)
     .into()
+}
+
+/// Full Mindmap's pointer exit and navigation: Back (as Esc), the parent
+/// folder, and the panel toggle, in an island at the top-left. Only the
+/// buttons take pointer input; the rest of the layer leaves the canvas its
+/// events.
+pub(in crate::app) fn full_mindmap_nav<'a>(
+    panel_open: bool,
+    fullscreen: bool,
+    pal: Palette,
+) -> Element<'a, Message> {
+    let back = button(
+        irow![
+            icon::glyph(ic::ARROW_LEFT, 14.0, pal.muted),
+            text("Back").size(12).color(pal.fg),
+        ]
+        .spacing(6)
+        .align_y(iced::Alignment::Center),
+    )
+    .padding(Padding::from([4, 10]))
+    .style(move |_, status| button::Style {
+        background: match status {
+            button::Status::Hovered => Some(Background::Color(pal.hover())),
+            button::Status::Pressed => Some(Background::Color(pal.active())),
+            _ => None,
+        },
+        text_color: pal.fg,
+        border: Border {
+            radius: theme::radius::PILL.into(),
+            ..Default::default()
+        },
+        ..Default::default()
+    })
+    .on_press(Message::ExitFullMindmap);
+    let (panel_glyph, panel_action) = if panel_open {
+        (ic::PANEL_RIGHT_CLOSE, "Hide Panel")
+    } else {
+        (ic::PANEL_RIGHT_OPEN, "Show Panel")
+    };
+    let buttons = irow![
+        action_tip(back, "Back to Reader", Some("Esc"), Position::Bottom, pal),
+        action_tip(
+            ghost_lu(ic::FOLDER_UP, pal).on_press(Message::FullMindmapWorkspaceParent),
+            "Parent Folder",
+            None,
+            Position::Bottom,
+            pal,
+        ),
+        action_tip(
+            ghost_lu(panel_glyph, pal).on_press(Message::FullMindmapTogglePanel),
+            panel_action,
+            Some("⌘⌥B"),
+            Position::Bottom,
+            pal,
+        ),
+    ]
+    .spacing(2)
+    .align_y(iced::Alignment::Center);
+    let island = container(buttons)
+        .padding(4)
+        .style(move |_| container::Style {
+            background: Some(pal.popover().into()),
+            border: Border {
+                color: pal.border(),
+                width: 1.0,
+                radius: theme::radius::PILL.into(),
+            },
+            shadow: theme::shadow::HINT,
+            ..Default::default()
+        });
+    container(island)
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .padding(Padding {
+            // Clear of the traffic lights while windowed.
+            top: sidebar_titlebar_reserve_for_fullscreen(fullscreen) + 10.0,
+            right: 0.0,
+            bottom: 0.0,
+            left: 16.0,
+        })
+        .align_x(iced::alignment::Horizontal::Left)
+        .align_y(iced::alignment::Vertical::Top)
+        .into()
 }
 
 /// Floating mind map keyboard hint. It sits over the canvas so side panels
