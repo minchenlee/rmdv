@@ -155,6 +155,23 @@ pub(super) fn quick_slot_replace_key_message(key: &iced::keyboard::Key) -> Messa
     }
 }
 
+/// Keys while the close confirmation is open: Esc cancels, Enter saves,
+/// ⌘D closes without saving, and every other key is swallowed.
+pub(super) fn close_confirm_key_message(
+    key: &iced::keyboard::Key,
+    modifiers: iced::keyboard::Modifiers,
+) -> Message {
+    use iced::keyboard::{key::Named, Key};
+    match key {
+        Key::Named(Named::Escape) => Message::CloseConfirmCancel,
+        Key::Named(Named::Enter) => Message::CloseConfirmSave,
+        Key::Character(c) if modifiers.command() && c.as_str().eq_ignore_ascii_case("d") => {
+            Message::CloseConfirmDiscard
+        }
+        _ => Message::Noop,
+    }
+}
+
 pub(super) fn quick_slot_digit_index(physical: iced::keyboard::key::Physical) -> Option<usize> {
     use iced::keyboard::key::{Code, Physical};
     let Physical::Code(code) = physical else {

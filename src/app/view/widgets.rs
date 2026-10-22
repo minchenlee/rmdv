@@ -345,6 +345,34 @@ pub(in crate::app) fn modal_scrim<'a>(on_press: Message) -> Element<'a, Message>
     .into()
 }
 
+/// Blank chrome that acts as the window's titlebar: a press moves the
+/// window and a double click zooms it. Controls inside take their own
+/// presses first, so only the blank space reaches this area. Only where
+/// rmdv hides the native title bar (`APP_DRAWS_TITLEBAR`).
+pub(in crate::app) fn window_drag_area<'a>(
+    content: impl Into<Element<'a, Message>>,
+) -> Element<'a, Message> {
+    titlebar_drag_area(content, APP_DRAWS_TITLEBAR)
+}
+
+/// `window_settings` hides the native title bar on macOS only; elsewhere
+/// the native title bar moves and zooms the window.
+pub(in crate::app) const APP_DRAWS_TITLEBAR: bool = cfg!(target_os = "macos");
+
+/// `window_drag_area`, or `content` unchanged under a native title bar.
+pub(in crate::app) fn titlebar_drag_area<'a>(
+    content: impl Into<Element<'a, Message>>,
+    titlebar_hidden: bool,
+) -> Element<'a, Message> {
+    if !titlebar_hidden {
+        return content.into();
+    }
+    mouse_area(content)
+        .on_press(Message::WindowDrag)
+        .on_double_click(Message::WindowTitlebarDoubleClick)
+        .into()
+}
+
 /// Blank layer that reports pointer motion over a list surface. Stack it
 /// above the list: the stack updates its top layer first, so the report
 /// precedes the row hovers of the same event.

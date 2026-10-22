@@ -14,6 +14,7 @@ pub mod icon;
 pub mod ipc;
 pub mod keyed_body;
 pub mod macos_open;
+pub mod macos_quit;
 pub mod macos_vibrancy;
 pub mod md_highlight;
 pub mod mindmap;

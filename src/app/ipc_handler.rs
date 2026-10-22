@@ -88,8 +88,13 @@ impl App {
                 Response::ok(id)
             }
             Cmd::Close => {
-                follow_up = iced::window::latest().and_then(|wid| iced::window::close(wid));
-                Response::ok(id)
+                // The same path as ⌘Q: unsaved edits ask in the window first.
+                follow_up = self.request_window_close(None);
+                if self.close_confirm.is_some() {
+                    Response::err(id, "unsaved edits; confirm in the window or save first")
+                } else {
+                    Response::ok(id)
+                }
             }
             Cmd::Mode { mode, focus } => {
                 let is_pdf = is_pdf_path(self.file.as_deref());
@@ -277,8 +282,9 @@ pub(super) fn apply_goto(
     };
     let block_top = app.virt_window.block_top(dpos);
     let block_h = app.virt_window.block_height(dpos);
-    // Body estimate + the scrollable's vertical content padding (56 top/bottom).
-    let estimated_h = app.virt_window.total_height() + 2.0 * BODY_TOP_PAD;
+    // Body estimate + the scrollable's vertical content padding.
+    let top_pad = app.body_top_pad();
+    let estimated_h = app.virt_window.total_height() + top_pad + BODY_BOTTOM_PAD;
     let (content_h, view_h) = app
         .body_viewport
         .as_ref()
@@ -290,7 +296,7 @@ pub(super) fn apply_goto(
         })
         .unwrap_or((estimated_h, 0.0));
     let max_scroll = (content_h - view_h).max(1.0);
-    let target = BODY_TOP_PAD + block_top + block_h * 0.5 - view_h * 0.38;
+    let target = top_pad + block_top + block_h * 0.5 - view_h * 0.38;
     let rel = (target / max_scroll).clamp(0.0, 1.0);
     app.queued_snap = Some(rel);
     app.queued_goto = app.ast.get(idx).map(|(bid, _)| *bid);
@@ -305,7 +311,7 @@ pub(super) fn current_line_estimate(app: &App) -> Option<u32> {
     if content_h <= view_h {
         return app.block_lines.first().copied();
     }
-    let body_off = (v.absolute_offset().y - BODY_TOP_PAD).max(0.0);
+    let body_off = (v.absolute_offset().y - app.body_top_pad()).max(0.0);
     let dpos = app.virt_window.display_pos_at(body_off)?;
     let ast_idx = *app.virt_window.display.get(dpos)?;
     app.block_lines.get(ast_idx).copied()

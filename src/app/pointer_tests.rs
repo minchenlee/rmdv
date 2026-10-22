@@ -16,6 +16,7 @@ const WINDOW: Size = Size::new(1280.0, 800.0);
 struct PointerUi {
     renderer: iced::Renderer,
     cache: Option<Cache>,
+    size: Size,
 }
 
 /// Locates a widget's bounds by the text it shows or by its container id.
@@ -63,6 +64,15 @@ impl PointerUi {
         Self {
             renderer,
             cache: None,
+            size: WINDOW,
+        }
+    }
+
+    /// A window of `size` instead of the default.
+    fn sized(size: Size) -> Self {
+        Self {
+            size,
+            ..Self::new()
         }
     }
 
@@ -75,7 +85,7 @@ impl PointerUi {
         events: Vec<Event>,
     ) -> (Vec<Message>, mouse::Interaction) {
         let cache = self.cache.take().unwrap_or_default();
-        let mut ui = UserInterface::build(app.view(), WINDOW, cache, &mut self.renderer);
+        let mut ui = UserInterface::build(app.view(), self.size, cache, &mut self.renderer);
         let mut messages = Vec::new();
         let mut clipboard = iced::advanced::clipboard::Null;
         let (state, _) = ui.update(
@@ -101,6 +111,23 @@ impl PointerUi {
             at,
             vec![Event::Mouse(mouse::Event::CursorMoved { position: at })],
         )
+    }
+
+    /// Two clicks in one pass, so a slow machine cannot stretch them past
+    /// the double-click interval.
+    fn double_click(&mut self, app: &App, at: Point) -> Vec<Message> {
+        let mut out = self.move_to(app, at).0;
+        let press = Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left));
+        let release = Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left));
+        out.extend(
+            self.send(
+                app,
+                at,
+                vec![press.clone(), release.clone(), press, release],
+            )
+            .0,
+        );
+        out
     }
 
     fn click(&mut self, app: &App, at: Point) -> Vec<Message> {
@@ -145,7 +172,7 @@ impl PointerUi {
 
     fn find(&mut self, app: &App, mut find: Find<'_>) -> Option<(Rectangle, Option<String>)> {
         let cache = self.cache.take().unwrap_or_default();
-        let mut ui = UserInterface::build(app.view(), WINDOW, cache, &mut self.renderer);
+        let mut ui = UserInterface::build(app.view(), self.size, cache, &mut self.renderer);
         ui.operate(&self.renderer, &mut find);
         self.cache = Some(ui.into_cache());
         find.found.map(|bounds| (bounds, find.found_text))
@@ -764,14 +791,14 @@ mod group2 {
     }
 
     impl PointerUi {
-        fn operate(&mut self, app: &App, operation: &mut dyn Operation) {
+        pub(super) fn operate(&mut self, app: &App, operation: &mut dyn Operation) {
             let cache = self.cache.take().unwrap_or_default();
-            let mut ui = UserInterface::build(app.view(), WINDOW, cache, &mut self.renderer);
+            let mut ui = UserInterface::build(app.view(), self.size, cache, &mut self.renderer);
             ui.operate(&self.renderer, operation);
             self.cache = Some(ui.into_cache());
         }
 
-        fn focused(&mut self, app: &App, id: &'static str) -> Option<bool> {
+        pub(super) fn focused(&mut self, app: &App, id: &'static str) -> Option<bool> {
             let mut probe = FocusProbe {
                 id: Id::new(id),
                 focused: None,
@@ -780,7 +807,7 @@ mod group2 {
             probe.focused
         }
 
-        fn type_char(&mut self, app: &App, c: char) -> Vec<Message> {
+        pub(super) fn type_char(&mut self, app: &App, c: char) -> Vec<Message> {
             let event = Event::Keyboard(keyboard::Event::KeyPressed {
                 key: keyboard::Key::Character(c.to_string().into()),
                 modified_key: keyboard::Key::Character(c.to_string().into()),
@@ -825,7 +852,7 @@ mod group2 {
 
     /// Like `apply`, and also runs the widget operations (focus, scroll) the
     /// tasks ask for on `ui`, as the runtime does after an update.
-    fn apply_ui(app: &mut App, ui: &mut PointerUi, messages: Vec<Message>) {
+    pub(super) fn apply_ui(app: &mut App, ui: &mut PointerUi, messages: Vec<Message>) {
         for message in messages {
             let (follow_ups, operations) = drain(app.update(message));
             for mut operation in operations {
@@ -1115,7 +1142,7 @@ mod group3 {
 
     /// A workspace with two files and a folder holding a third, opened with
     /// the Files sidebar showing.
-    fn tree_fixture(tag: &str) -> (App, PathBuf) {
+    pub(super) fn tree_fixture(tag: &str) -> (App, PathBuf) {
         let dir = std::env::temp_dir().join(format!("rmdv-tree-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("sub")).expect("fixture dir");
@@ -1220,13 +1247,13 @@ mod group3 {
     // --- 4. Icon-button tooltips name the action and its shortcut ----------
 
     /// Tooltip labels built for the current `view`.
-    fn tips(ui: &mut PointerUi, app: &App) -> Vec<String> {
+    pub(super) fn tips(ui: &mut PointerUi, app: &App) -> Vec<String> {
         let _ = tip_log::take();
         let _ = ui.text_bounds(app, "\u{0}");
         tip_log::take()
     }
 
-    fn assert_tips(tips: &[String], expected: &[&str]) {
+    pub(super) fn assert_tips(tips: &[String], expected: &[&str]) {
         for label in expected {
             assert!(
                 tips.iter().any(|tip| tip == label),
@@ -1423,7 +1450,7 @@ mod group3 {
     // --- 5. Full Mindmap Back, parent-folder, and panel buttons ----------------
 
     /// The tree fixture in Full Mindmap with its workspace graph loaded.
-    fn full_mindmap_app(tag: &str) -> (App, PathBuf) {
+    pub(super) fn full_mindmap_app(tag: &str) -> (App, PathBuf) {
         let (mut app, dir) = tree_fixture(tag);
         let _ = app.update(Message::ToggleFullMindmap);
         // The open workspace's snapshot may be reused without a new index.
@@ -1588,3 +1615,11 @@ mod group3 {
             .all(|(_, delay)| delay.is_zero()));
     }
 }
+
+// --- P2: the top toolbar ------------------------------------------------------
+
+mod toolbar;
+
+// --- P2 group 2: window and lifecycle ---------------------------------------
+
+mod window;

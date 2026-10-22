@@ -759,3 +759,57 @@ pub(in crate::app) fn quick_slot_replace_overlay<'a>(
         .center_y(Length::Fill);
     stack![scrim, centered].into()
 }
+
+/// "Save changes before closing?" confirmation for the red close button and
+/// ⌘Q. Esc or a backdrop click cancels; Enter saves, then closes; ⌘D closes
+/// without saving.
+pub(in crate::app) fn close_confirm_overlay<'a>(
+    file: Option<&Path>,
+    pal: Palette,
+) -> Element<'a, Message> {
+    let name = file
+        .and_then(|path| path.file_name())
+        .and_then(|name| name.to_str())
+        .unwrap_or("this document");
+    let mut title_font = iced::Font::with_name("Inter");
+    title_font.weight = iced::font::Weight::Semibold;
+    let title = text(format!("Save changes to {name}?"))
+        .size(15)
+        .font(title_font)
+        .color(pal.fg);
+    let body = text("Your edits are lost if you close without saving.")
+        .size(13)
+        .color(pal.muted);
+    let actions = irow![
+        secondary_button("Don't Save", pal).on_press(Message::CloseConfirmDiscard),
+        Space::new().width(Length::Fill),
+        secondary_button("Cancel", pal).on_press(Message::CloseConfirmCancel),
+        primary_button("Save", pal).on_press(Message::CloseConfirmSave),
+    ]
+    .spacing(8)
+    .align_y(iced::Alignment::Center);
+    let hints = hint_pills(
+        &[("Esc", "cancel"), ("⌘D", "don't save"), ("Enter", "save")],
+        pal,
+    );
+    let card = container(column![title, body, Space::new().height(8), actions, hints].spacing(8))
+        .padding(Padding::from([20, 22]))
+        .max_width(440.0)
+        .style(move |_| container::Style {
+            background: Some(pal.popover().into()),
+            border: Border {
+                color: pal.border(),
+                width: 1.0,
+                radius: theme::radius::LG.into(),
+            },
+            shadow: theme::shadow::DIALOG,
+            ..Default::default()
+        });
+    let scrim = modal_scrim(Message::CloseConfirmCancel);
+    // Opaque: a click on blank card space must not reach the scrim.
+    let centered = container(iced::widget::opaque(card))
+        .padding(Padding::from([40, 40]))
+        .center_x(Length::Fill)
+        .center_y(Length::Fill);
+    stack![scrim, centered].into()
+}

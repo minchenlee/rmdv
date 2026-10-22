@@ -13,6 +13,7 @@ pub enum SettingsRow {
     GlassOpacity,
     FontSize,
     LineSpacing,
+    Toolbar,
     Footer,
     HiddenFiles,
     MindmapAutocenter,
@@ -34,6 +35,7 @@ impl SettingsRow {
         rows.extend([
             FontSize,
             LineSpacing,
+            Toolbar,
             Footer,
             HiddenFiles,
             MindmapAutocenter,
@@ -116,6 +118,7 @@ impl App {
             SettingsRow::Glass => Message::SetGlass(self.prefs.glass.next()),
             SettingsRow::FontSize => Message::FontSizeReset,
             SettingsRow::LineSpacing => Message::SetLineSpacing(crate::theme::LineSpacing::Default),
+            SettingsRow::Toolbar => Message::SetToolbarMode(self.prefs.toolbar.toggled()),
             SettingsRow::Footer => Message::ToggleFooter,
             SettingsRow::HiddenFiles => Message::ToggleHidden,
             SettingsRow::MindmapAutocenter => Message::ToggleMindmapAutocenter,
@@ -164,6 +167,14 @@ impl App {
                 let next = self.line_spacing.step(dir);
                 (next != self.line_spacing).then_some(Message::SetLineSpacing(next))
             }
+            SettingsRow::Toolbar => {
+                let next = if forward {
+                    crate::prefs::ToolbarMode::Always
+                } else {
+                    crate::prefs::ToolbarMode::OnHover
+                };
+                (next != self.prefs.toolbar).then_some(Message::SetToolbarMode(next))
+            }
             SettingsRow::SoftSyntax => switch(self.prefs.soft_syntax, Message::ToggleSoftSyntax),
             SettingsRow::Footer => switch(self.show_footer, Message::ToggleFooter),
             SettingsRow::HiddenFiles => switch(self.show_hidden, Message::ToggleHidden),
@@ -205,6 +216,17 @@ impl App {
         self.rebuild_virt_here();
         let preview_measure = self.refresh_full_mindmap_preview_heights();
         Task::batch([self.measure_window_heights(), preview_measure])
+    }
+
+    pub(super) fn set_toolbar_mode(&mut self, mode: crate::prefs::ToolbarMode) -> Task<Message> {
+        if self.prefs.toolbar == mode {
+            return Task::none();
+        }
+        self.prefs.toolbar = mode;
+        self.save_prefs();
+        // The reader moves in the widget tree (under the toolbar or beside
+        // its hover band), which resets its scroll state.
+        self.restore_body_scroll()
     }
 
     pub(super) fn set_glass_opacity(&mut self, opacity: f32) -> Task<Message> {

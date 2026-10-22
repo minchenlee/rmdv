@@ -97,19 +97,9 @@ fn launch_instance(initial: Option<ipc::Request>) -> iced::Result {
         None => None,
     };
 
-    #[cfg(target_os = "macos")]
-    let platform_specific = iced::window::settings::PlatformSpecific {
-        title_hidden: true,
-        titlebar_transparent: true,
-        fullsize_content_view: true,
-    };
-    #[cfg(not(target_os = "macos"))]
-    let platform_specific = iced::window::settings::PlatformSpecific::default();
-    let window = iced::window::Settings {
-        platform_specific,
-        transparent: rmdv::macos_vibrancy::launch_transparent(rmdv::prefs::load().glass),
-        ..Default::default()
-    };
+    let window = rmdv::app::window_settings(rmdv::macos_vibrancy::launch_transparent(
+        rmdv::prefs::load().glass,
+    ));
 
     let mut app = iced::application(
         move || {

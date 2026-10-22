@@ -604,16 +604,7 @@ impl App {
         if self.dirty {
             return self.show_unsaved_edits_toast(self.unsaved_edits_open_message());
         }
-        let checkpoint = self.checkpoint_active_quick_slot();
-        // The checkpoint mutates the in-memory slot synchronously. Persist it
-        // before returning the close task so the debounce cannot lose the
-        // latest reading position when the process exits immediately.
-        self.persist_quick_slots_now();
-        self.invalidate_pending_quick_slot_restore();
-        Task::batch([
-            checkpoint,
-            iced::window::latest().and_then(iced::window::close),
-        ])
+        self.close_window_now(None)
     }
 
     pub(super) fn apply_pending_quick_slot_restore(&mut self) -> Task<Message> {

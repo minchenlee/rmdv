@@ -38,14 +38,15 @@ const FILE_FINDER_ROW_CAP: usize = 80;
 const READING_MAX: f32 = theme::READING_MAX_PX;
 /// Radius of the reader panel's top-left corner next to the sidebar.
 const READER_CORNER_RADIUS: f32 = 24.0;
+/// Space above the first line of the reader.
+const READER_TOP_PAD: f32 = 56.0;
 const KEYBOARD_BUTTON_HEIGHT: f32 = 26.0; // 14px text at 1.3 line-height + 4px vertical padding on each side.
 const KEYBOARD_BUTTON_BOTTOM_PAD: f32 = 12.0;
 const KEYBOARD_BUTTON_FOOTER_BOTTOM_PAD: f32 = 44.0;
 const ZEN_EDITOR_OVERLAY_CLEARANCE: f32 = 2.0;
-/// Top padding of the body scrollable's content (`Padding::from([56, 32])` in
-/// `view`). Virt-window math works in body-relative px; every conversion from
-/// scrollable offsets must subtract this.
-const BODY_TOP_PAD: f32 = 56.0;
+/// Bottom padding of the body scrollable's content. Its top padding is
+/// `App::body_top_pad`.
+const BODY_BOTTOM_PAD: f32 = 56.0;
 const TREE_INDENT: f32 = 14.0;
 const SCROLLER_FADE_MS: u64 = 1200;
 const SIDEBAR_MIN: f32 = 160.0;
@@ -70,6 +71,17 @@ fn zen_editor_bottom_inset(footer_visible: bool) -> f32 {
         KEYBOARD_BUTTON_BOTTOM_PAD
     };
     shortcut_bottom_pad + KEYBOARD_BUTTON_HEIGHT + ZEN_EDITOR_OVERLAY_CLEARANCE
+}
+
+/// Space above the raw editor's first line: it clears the hover toolbar's
+/// band, so reaching for the first line does not reveal the toolbar over it.
+/// Always mode lays the editor out below the toolbar, so the line stays put
+/// when the mode changes.
+fn zen_editor_top_inset(mode: crate::prefs::ToolbarMode) -> f32 {
+    match mode {
+        crate::prefs::ToolbarMode::OnHover => TOOLBAR_BAND_H,
+        crate::prefs::ToolbarMode::Always => TOOLBAR_BAND_H - TOOLBAR_H,
+    }
 }
 
 fn mindmap_panel_width_for_step(step: usize, window_size: Option<iced::Size>) -> f32 {
@@ -97,6 +109,8 @@ mod full_mindmap;
 mod full_mindmap_state;
 mod full_mindmap_view;
 mod ipc_handler;
+mod lifecycle;
+pub use lifecycle::window_settings;
 pub(crate) mod keys;
 mod loading;
 mod message;
@@ -105,6 +119,7 @@ mod preview_worker;
 mod scroll_tasks;
 mod settings;
 mod slots;
+mod toolbar;
 mod types;
 mod view;
 use full_mindmap_state::*;
@@ -129,7 +144,8 @@ use settings::*;
 use types::*;
 pub use types::{
     MindmapDir, Overlay, PendingNav, PendingRefreshFile, PendingRefreshWorkspace,
-    PendingWatcherReload, SidebarTab, ThemeEntry, Toast, ToastAction, ViewMode, ZenRestoreState,
+    PendingWatcherReload, SidebarTab, ThemeEntry, Toast, ToastAction, ToolbarView, ViewMode,
+    ZenRestoreState,
 };
 use view::*;
 pub(crate) use view::{reader_tip, sleek_scrollable_style};
@@ -294,6 +310,15 @@ pub struct App {
     /// again. Cleared wherever `editor` is replaced.
     pub editor_text: Option<String>,
     pub zen_restore: Option<ZenRestoreState>,
+    /// The pointer is in the toolbar's top band (Toolbar: On hover).
+    toolbar_hovered: bool,
+    /// The hover toolbar is shown: while hovered, and for a short delay after.
+    toolbar_revealed: bool,
+    /// Bumped on every band enter and leave; a hide delay that started under
+    /// an older generation does nothing.
+    toolbar_hover_generation: u64,
+    /// Where the hover band last sat in the widget tree (`App::toolbar_band_slot`).
+    toolbar_band_at: Option<ToolbarBandSlot>,
     /// Last document text known to have been persisted successfully. `source`
     /// may contain an unsaved Zen edit after switching back to rendered mode.
     pub saved_source: String,
@@ -428,6 +453,19 @@ pub struct App {
     quick_slots_undo: Option<crate::quick_slots::ClearUndo>,
     /// Open "replace slot?" confirmation; it owns the keyboard while set.
     quick_slot_replace: Option<QuickSlotReplace>,
+    /// Open "save before closing?" confirmation; it owns the keyboard while
+    /// set.
+    close_confirm: Option<CloseConfirm>,
+    /// A close that waits for this save (the text it writes) to succeed.
+    close_after_save: Option<CloseAfterSave>,
+    /// The window close was sent; no further close request applies.
+    window_closing: bool,
+    /// Files are being dragged over the window: the drop highlight shows.
+    drop_hover: bool,
+    /// Recent files and folders that still exist, for the welcome page.
+    recent: crate::recent::Recent,
+    /// Where the recent list is stored; tests use a private file.
+    recent_store: Option<PathBuf>,
     pub quick_slots_modifier_held: bool,
     quick_slots_rail_revealed: bool,
     quick_slots_modifier_generation: u64,
@@ -566,6 +604,10 @@ impl Default for App {
             editor: None,
             editor_text: None,
             zen_restore: None,
+            toolbar_hovered: false,
+            toolbar_revealed: false,
+            toolbar_hover_generation: 0,
+            toolbar_band_at: None,
             saved_source: String::new(),
             dirty: false,
             edit_history: crate::history::SnapshotStack::default(),
@@ -610,6 +652,30 @@ impl Default for App {
             quick_slots_root: None,
             quick_slots_undo: None,
             quick_slot_replace: None,
+            close_confirm: None,
+            close_after_save: None,
+            window_closing: false,
+            drop_hover: false,
+            recent: {
+                #[cfg(not(test))]
+                {
+                    crate::recent::load().existing()
+                }
+                #[cfg(test)]
+                {
+                    crate::recent::Recent::default()
+                }
+            },
+            recent_store: {
+                #[cfg(not(test))]
+                {
+                    crate::recent::store_path()
+                }
+                #[cfg(test)]
+                {
+                    Some(test_quick_slots_persistence_path().with_extension("recent.json"))
+                }
+            },
             quick_slots_modifier_held: false,
             quick_slots_rail_revealed: false,
             quick_slots_modifier_generation: 0,
@@ -1042,7 +1108,7 @@ impl App {
             )
         });
         self.bump_file_refresh_generation();
-        crate::recent::add(&path);
+        self.remember_recent_file(&path);
         if switching_file && pending_slot_restore.is_none() {
             // Manual/file-finder navigation leaves the old slot checkpointed
             // but unslotted; only an explicit Quick Slot activation may make
@@ -1476,7 +1542,14 @@ impl App {
     fn set_workspace(&mut self, path: PathBuf, open_sidebar: bool) {
         let path = canonicalize_existing_path(path);
         match tree::build_workspace(&path, self.show_hidden) {
-            Ok(snapshot) => self.apply_workspace_snapshot(path, snapshot, open_sidebar),
+            Ok(snapshot) => {
+                // A folder opened on purpose (not a file's implied parent)
+                // joins the recent folders.
+                if open_sidebar {
+                    self.remember_recent_folder(&path);
+                }
+                self.apply_workspace_snapshot(path, snapshot, open_sidebar)
+            }
             Err(error) => {
                 let message = format!("Couldn't index {}: {error}", path.display());
                 if let Some(full) = self.full_mindmap.as_mut() {
@@ -1699,6 +1772,8 @@ impl App {
         crate::native_pinch::install();
         // Finder delivers document opens through AppKit rather than argv.
         crate::macos_open::install();
+        // ⌘Q with unsaved edits asks first, as the red close button does.
+        crate::macos_quit::install();
         let mut app = Self::default();
         let mut errs = Vec::new();
         let mut combined = crate::theme_load::bundled().clone();
@@ -1793,11 +1868,15 @@ impl App {
         }
     }
 
+    /// Window title. The native title text stays hidden; the string still
+    /// names the window in Mission Control and the Window menu, so it carries
+    /// a bullet while the file has unsaved edits.
     pub fn title(&self) -> String {
         match &self.file {
             Some(p) => format!(
-                "rmdv — {}",
-                p.file_name().and_then(|n| n.to_str()).unwrap_or("?")
+                "rmdv — {}{}",
+                p.file_name().and_then(|n| n.to_str()).unwrap_or("?"),
+                if self.dirty { " •" } else { "" }
             ),
             None => "rmdv".into(),
         }
@@ -1944,11 +2023,23 @@ impl App {
         Task::done(Message::RestoreBodySnap(rel.clamp(0.0, 1.0)))
     }
 
+    /// Top padding of the body scrollable's content. Virt-window math works
+    /// in body-relative px; every conversion from scrollable offsets must
+    /// subtract this. Always mode reserves the toolbar's height above the
+    /// reader, so the text starts at the same height in both modes.
+    fn body_top_pad(&self) -> f32 {
+        match self.prefs.toolbar {
+            crate::prefs::ToolbarMode::OnHover => READER_TOP_PAD,
+            crate::prefs::ToolbarMode::Always => READER_TOP_PAD - TOOLBAR_H,
+        }
+    }
+
     /// Body-relative scroll offset (px past the top of the rendered column).
     fn body_offset(&self) -> f32 {
+        let pad = self.body_top_pad();
         self.body_viewport
             .as_ref()
-            .map(|v| (v.absolute_offset().y - BODY_TOP_PAD).max(0.0))
+            .map(|v| (v.absolute_offset().y - pad).max(0.0))
             .unwrap_or(0.0)
     }
 
@@ -2783,9 +2874,7 @@ impl App {
 
     pub fn subscription(&self) -> iced::Subscription<Message> {
         let dnd = iced::event::listen_with(|ev, _status, _id| match ev {
-            iced::Event::Window(iced::window::Event::FileDropped(path)) => {
-                Some(dropped_path_message(path))
-            }
+            iced::Event::Window(event) => file_drag_message(event),
             _ => None,
         });
         let watcher = crate::watch::watch_subscription(self.file.clone()).map(Message::FileChanged);
@@ -2809,6 +2898,7 @@ impl App {
         let quick_slots_allowed =
             quick_slots_shortcuts_enabled(overlay_open, vault_open, focused, editing, self.dirty);
         let slot_replace_open = self.quick_slot_replace.is_some();
+        let close_confirm_open = self.close_confirm.is_some();
         let keys = iced::event::listen_with(|ev, status, _id| {
             let is_keyboard = matches!(
                 &ev,
@@ -2847,7 +2937,11 @@ impl App {
                 quick_slots_allowed,
                 settings_open,
             ),
-            (slot_replace_open, self.reader_select_all),
+            (
+                slot_replace_open,
+                self.reader_select_all,
+                close_confirm_open,
+            ),
         ))
         .map(
             |(
@@ -2866,7 +2960,7 @@ impl App {
                         quick_slots_allowed,
                         settings_open,
                     ),
-                    (slot_replace_open, select_all),
+                    (slot_replace_open, select_all, close_confirm_open),
                 ),
                 (ev, reader_copied),
             )| {
@@ -2910,6 +3004,14 @@ impl App {
                 // match shortcuts on the physical key's Latin character.
                 let key = latin_shortcut_key(key, physical, mods);
                 let modified_key = latin_shortcut_key(modified_key, physical, mods);
+                // The close confirmation owns the keyboard the same way.
+                if close_confirm_open {
+                    return if released {
+                        Message::Noop
+                    } else {
+                        close_confirm_key_message(&key, mods)
+                    };
+                }
                 let cmd = mods.command() || mods.control();
                 // Quick Slot chords are physical-key based so alternate
                 // layouts cannot turn a digit/arrow into a different action.
@@ -3271,6 +3373,8 @@ impl App {
         let ipc = iced::Subscription::run(ipc_subscription_stream);
         let native_pinch = crate::native_pinch::subscription().map(Message::MindmapNativePinch);
         let macos_open = crate::macos_open::subscription().map(Message::OpenFileFinderPath);
+        let macos_quit = crate::macos_quit::subscription().map(|()| Message::QuitRequested);
+        let close_requests = iced::window::close_requests().map(Message::WindowCloseRequested);
         let window_events = iced::window::events().filter_map(|(id, event)| match event {
             iced::window::Event::Unfocused => Some(Message::WindowUnfocused(id)),
             iced::window::Event::Opened { .. }
@@ -3306,6 +3410,8 @@ impl App {
             ipc,
             native_pinch,
             macos_open,
+            macos_quit,
+            close_requests,
         ])
     }
 
@@ -3350,6 +3456,8 @@ impl App {
             && self.file.is_some()
             && self.view_mode != ViewMode::Mindmap;
 
+        let toolbar_always = self.prefs.toolbar == crate::prefs::ToolbarMode::Always;
+        let reader_top_pad = self.body_top_pad();
         let reader: Element<'_, Message> = if self.settings_open {
             // Drawn over whatever view is open, which stays untouched below.
             settings_page(self, pal, reader_fill)
@@ -3397,7 +3505,7 @@ impl App {
                 pal,
             )
         } else if self.file.is_none() {
-            welcome_view(pal)
+            welcome_view(&self.recent, pal)
         } else {
             // Results still belong to the previous query while a debounced
             // search is pending, so don't mark any hit as current.
@@ -3477,7 +3585,7 @@ impl App {
                         .line_height(iced::widget::text::LineHeight::Relative(1.55))
                         .height(Length::Fill)
                         .padding(iced::Padding {
-                            top: 0.0,
+                            top: zen_editor_top_inset(self.prefs.toolbar),
                             right: 32.0,
                             bottom: zen_editor_bottom_inset(footer_visible),
                             left: 64.0,
@@ -3585,6 +3693,7 @@ impl App {
                 // each block, and it covers off-screen blocks as they scroll in.
                 let select_all = self.reader_select_all && self.reader_shows_document();
                 let column = container(body)
+                    .id(iced::widget::Id::new("reader-column"))
                     .max_width(READING_MAX)
                     .width(Length::Fill)
                     .style(move |_| container::Style {
@@ -3593,7 +3702,12 @@ impl App {
                     });
                 let scroll: Element<'_, Message> = scrollable(
                     container(column)
-                        .padding(Padding::from([56, 32]))
+                        .padding(Padding {
+                            top: reader_top_pad,
+                            right: 32.0,
+                            bottom: BODY_BOTTOM_PAD,
+                            left: 32.0,
+                        })
                         .center_x(Length::Fill)
                         .width(Length::Fill),
                 )
@@ -3617,7 +3731,46 @@ impl App {
             }
         };
 
-        let reader_with_search: Element<'_, Message> = if self.search_open && !full_mindmap {
+        let find_bar_open = self.search_open && !full_mindmap;
+        let sidebar_visible = !full_mindmap && self.sidebar_open && self.workspace.is_some();
+        // On hover, the toolbar's band lies over the top of the reader, under
+        // the find bar when that is open.
+        let reader: Element<'_, Message> = if toolbar_always {
+            reader
+        } else {
+            let revealed = self.toolbar_revealed.then(|| {
+                toolbar(
+                    self,
+                    pal,
+                    ToolbarLook {
+                        fill: reader_ground,
+                        left_inset: toolbar_left_inset(
+                            !sidebar_visible && !find_bar_open,
+                            self.window_fullscreen,
+                        ),
+                        corner_radius: if sidebar_visible && !find_bar_open {
+                            READER_CORNER_RADIUS
+                        } else {
+                            0.0
+                        },
+                        hairline: true,
+                    },
+                )
+            });
+            // The vault search page keeps its own bar (query, Search, Close)
+            // in the top band; the band would cover it.
+            let vault_page = self.vault_open && !self.settings_open && !full_mindmap;
+            let band: Element<'_, Message> = if vault_page {
+                Space::new().into()
+            } else {
+                toolbar_band(revealed)
+            };
+            stack![reader, band]
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .into()
+        };
+        let reader_with_search: Element<'_, Message> = if find_bar_open {
             column![
                 search_bar_view(
                     &self.query,
@@ -3633,6 +3786,36 @@ impl App {
             reader.into()
         };
 
+        // Always: the toolbar sits above everything in the reader panel; the
+        // panel's own fill shows through it. It is a layer over the reader's
+        // reserved top strip, not a column row: a stack stops at the press
+        // the toolbar takes, so the Zen editor below keeps its focus.
+        let reader_with_search: Element<'_, Message> = if toolbar_always {
+            stack![
+                container(reader_with_search)
+                    .padding(Padding {
+                        top: TOOLBAR_H,
+                        ..Padding::ZERO
+                    })
+                    .width(Length::Fill)
+                    .height(Length::Fill),
+                toolbar(
+                    self,
+                    pal,
+                    ToolbarLook {
+                        fill: Color::TRANSPARENT,
+                        left_inset: toolbar_left_inset(!sidebar_visible, self.window_fullscreen),
+                        corner_radius: 0.0,
+                        hairline: false,
+                    },
+                ),
+            ]
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .into()
+        } else {
+            reader_with_search
+        };
         let main_area: Element<'_, Message> =
             if !full_mindmap && self.sidebar_open && self.workspace.is_some() {
                 // View panel paints its own rounded background. iced 0.14 doesn't
@@ -3806,6 +3989,11 @@ impl App {
             Some(pending) => quick_slot_replace_overlay(pending, pal),
             None => Space::new().into(),
         };
+        let close_confirm_layer: Element<'_, Message> = if self.close_confirm.is_some() {
+            close_confirm_overlay(self.file.as_deref(), pal)
+        } else {
+            Space::new().into()
+        };
         let toast_layer: Element<'_, Message> = match &self.toast {
             Some(t) => toast_overlay(t, pal),
             None => Space::new().into(),
@@ -3819,6 +4007,11 @@ impl App {
             }
             _ => Space::new().into(),
         };
+        let drop_layer: Element<'_, Message> = if self.drop_hover {
+            drop_highlight(pal)
+        } else {
+            Space::new().into()
+        };
         let update_layer: Element<'_, Message> = match &self.pending_update {
             Some(u) => update_banner(&u.version, pal),
             None => Space::new().into(),
@@ -3826,9 +4019,11 @@ impl App {
         iced::widget::stack![
             base,
             slot_replace_layer,
+            close_confirm_layer,
             progress_layer,
             toast_layer,
-            update_layer
+            update_layer,
+            drop_layer
         ]
         .into()
     }
@@ -3901,7 +4096,19 @@ fn toast_duration(toast: &Toast) -> std::time::Duration {
 /// Finder open path: a folder opens as the workspace, a file honors Full
 /// Mindmap and the unsaved-edits guard, and an open overlay closes.
 fn dropped_path_message(path: PathBuf) -> Message {
-    Message::OpenFileFinderPath(path)
+    Message::FileDropped(path)
+}
+
+/// The message a file drag over the window sends: entering shows the drop
+/// highlight; leaving or dropping removes it. Each arrives once per file, not
+/// per pointer move.
+fn file_drag_message(event: iced::window::Event) -> Option<Message> {
+    match event {
+        iced::window::Event::FileHovered(_) => Some(Message::DropHover(true)),
+        iced::window::Event::FilesHoveredLeft => Some(Message::DropHover(false)),
+        iced::window::Event::FileDropped(path) => Some(dropped_path_message(path)),
+        _ => None,
+    }
 }
 
 /// The path Finder can reveal for `path`: the path itself, or its nearest

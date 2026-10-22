@@ -73,6 +73,8 @@ pub(in crate::app) fn sidebar_view<'a>(app: &'a App, pal: Palette) -> Element<'a
         .spacing(6)
         .align_y(iced::Alignment::Center);
 
+    // The header sits where a titlebar would: its blank space moves the
+    // window.
     let header = container(column![
         Space::new().height(Length::Fixed(sidebar_titlebar_reserve_for_fullscreen(
             app.window_fullscreen,
@@ -87,6 +89,7 @@ pub(in crate::app) fn sidebar_view<'a>(app: &'a App, pal: Palette) -> Element<'a
             .width(Length::Fill),
     ])
     .width(Length::Fill);
+    let header = window_drag_area(header);
 
     let body: Element<'a, Message> = match app.sidebar_tab {
         SidebarTab::Files => sidebar_files_body(app, pal, recently_scrolled),

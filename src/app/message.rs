@@ -211,6 +211,8 @@ pub enum Message {
     FontSizeReset,
     /// Settings → Line spacing.
     SetLineSpacing(crate::theme::LineSpacing),
+    /// Settings → Toolbar: shown on hover or always.
+    SetToolbarMode(crate::prefs::ToolbarMode),
     ToggleFooter,
     ToggleSoftSyntax,
     /// Window glass: off → sidebar → whole window (macOS).
@@ -255,6 +257,18 @@ pub enum Message {
     ToggleMindmapPanel,
     MindmapCyclePanelWidth,
     ToggleFullMindmap,
+    /// The pointer entered (true) or left (false) the toolbar's top band.
+    ToolbarHover(bool),
+    /// The hide delay after the pointer left the toolbar band ran out; the
+    /// number is the hover generation that started it.
+    ToolbarHideAfter(u64),
+    /// A toolbar segment: show this view.
+    ToolbarView(ToolbarView),
+    /// A press on the toolbar's blank space or the sidebar header: move the
+    /// window, as a press on a titlebar does.
+    WindowDrag,
+    /// A double click there: zoom the window, as on a titlebar.
+    WindowTitlebarDoubleClick,
     ExitFullMindmap,
     FullMindmapToggleNode(WorkspaceNodeId),
     FullMindmapSelectNode(WorkspaceNodeId),
@@ -331,6 +345,20 @@ pub enum Message {
         result: Result<(PathBuf, tree::ExpandedFolderSnapshot), String>,
     },
     WindowResized(iced::window::Id, iced::Size),
+    /// Files are dragged over the window (true) or left it (false).
+    DropHover(bool),
+    /// A file or folder was dropped on the window.
+    FileDropped(PathBuf),
+    /// The red close button (or the platform's close) asked to close.
+    WindowCloseRequested(iced::window::Id),
+    /// ⌘Q (the app menu's Quit) asked to quit; macOS only.
+    QuitRequested,
+    /// Close confirmation: save, then close if the save succeeds.
+    CloseConfirmSave,
+    /// Close confirmation: close without saving.
+    CloseConfirmDiscard,
+    /// Close confirmation: keep the window open.
+    CloseConfirmCancel,
     WindowUnfocused(iced::window::Id),
     RefreshWindowMode(iced::window::Id),
     RefreshWindowModeSettled(iced::window::Id),

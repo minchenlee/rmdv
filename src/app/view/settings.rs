@@ -113,7 +113,8 @@ fn section_title(row: SettingsRow) -> &'static str {
         | SettingsRow::Glass
         | SettingsRow::GlassOpacity
         | SettingsRow::FontSize
-        | SettingsRow::LineSpacing => "Appearance",
+        | SettingsRow::LineSpacing
+        | SettingsRow::Toolbar => "Appearance",
         SettingsRow::Footer | SettingsRow::HiddenFiles | SettingsRow::MindmapAutocenter => {
             "Reading"
         }
@@ -233,6 +234,25 @@ fn settings_row_body<'a>(app: &'a App, row: SettingsRow, pal: Palette) -> Elemen
             "Line spacing",
             "Space between lines of body text.".into(),
             line_spacing_control(app.line_spacing, pal),
+            pal,
+        ),
+        SettingsRow::Toolbar => labeled(
+            "Toolbar",
+            "Show it when the pointer reaches the top edge, or always.".into(),
+            segmented(
+                [
+                    (crate::prefs::ToolbarMode::OnHover, "On hover"),
+                    (crate::prefs::ToolbarMode::Always, "Always"),
+                ]
+                .map(|(mode, label)| {
+                    (
+                        label,
+                        app.prefs.toolbar == mode,
+                        Message::SetToolbarMode(mode),
+                    )
+                }),
+                pal,
+            ),
             pal,
         ),
         SettingsRow::Footer => labeled(

@@ -42,6 +42,30 @@ pub struct Prefs {
     /// preferences, never inside a workspace tree.
     #[serde(default, deserialize_with = "lenient_quick_slots")]
     pub quick_slots: crate::quick_slots::QuickSlotsStore,
+    /// When the top toolbar shows (Settings → Toolbar).
+    #[serde(default, deserialize_with = "lenient_toolbar")]
+    pub toolbar: ToolbarMode,
+}
+
+/// When the top toolbar shows.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolbarMode {
+    /// Hidden until the pointer reaches the top edge of the window.
+    #[default]
+    OnHover,
+    /// Always shown; the content sits below it.
+    Always,
+}
+
+impl ToolbarMode {
+    /// The other mode.
+    pub fn toggled(self) -> Self {
+        match self {
+            ToolbarMode::OnHover => ToolbarMode::Always,
+            ToolbarMode::Always => ToolbarMode::OnHover,
+        }
+    }
 }
 
 fn default_true() -> bool {
@@ -101,6 +125,16 @@ where
     Ok(serde_json::from_value(value).unwrap_or_default())
 }
 
+/// An unknown toolbar mode falls back to showing on hover instead of failing
+/// the whole file.
+fn lenient_toolbar<'de, D>(deserializer: D) -> Result<ToolbarMode, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    Ok(serde_json::from_value(value).unwrap_or_default())
+}
+
 /// A malformed or newer-format Quick Slot store (e.g. after a downgrade) falls
 /// back to empty slots instead of failing the whole file and resetting every
 /// other preference.
@@ -128,6 +162,7 @@ impl Default for Prefs {
             show_hidden: false,
             mindmap_autocenter: true,
             quick_slots: crate::quick_slots::QuickSlotsStore::default(),
+            toolbar: ToolbarMode::OnHover,
         }
     }
 }
@@ -267,6 +302,30 @@ mod tests {
         })
         .unwrap();
         assert!(json.contains(r#""line_spacing":"compact""#), "{json}");
+    }
+
+    #[test]
+    fn toolbar_mode_defaults_to_on_hover_and_survives_bad_values() {
+        // A prefs file from before the setting existed.
+        let prefs: Prefs = serde_json::from_str(r#"{"show_footer":false}"#).unwrap();
+        assert_eq!(prefs.toolbar, ToolbarMode::OnHover);
+        assert_eq!(Prefs::default().toolbar, ToolbarMode::OnHover);
+        let prefs: Prefs = serde_json::from_str(r#"{"toolbar":"always"}"#).unwrap();
+        assert_eq!(prefs.toolbar, ToolbarMode::Always);
+        // An unknown or malformed value must not reset other preferences.
+        let prefs: Prefs =
+            serde_json::from_str(r#"{"toolbar":"floating","show_footer":false}"#).unwrap();
+        assert_eq!(prefs.toolbar, ToolbarMode::OnHover);
+        assert!(!prefs.show_footer);
+        let prefs: Prefs = serde_json::from_str(r#"{"toolbar":7,"show_footer":false}"#).unwrap();
+        assert_eq!(prefs.toolbar, ToolbarMode::OnHover);
+        assert!(!prefs.show_footer);
+        let json = serde_json::to_string(&Prefs {
+            toolbar: ToolbarMode::Always,
+            ..Prefs::default()
+        })
+        .unwrap();
+        assert!(json.contains(r#""toolbar":"always""#), "{json}");
     }
 
     use crate::quick_slots::{QuickSlot, SlotContext, WorkspaceSlots};

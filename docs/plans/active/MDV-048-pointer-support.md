@@ -4,7 +4,7 @@ State: in progress
 Owner / accountable lead: gh-rmdv-orch
 Active writer: gh-rmdv-orch (one phase branch at a time)
 Created: 2026-10-22
-Updated: 2026-10-22
+Updated: 2026-10-23
 
 ## Outcome
 
@@ -82,6 +82,8 @@ Per phase:
 ## Progress
 
 - 2026-10-22: audit done; owner decisions recorded; P1 started.
+- 2026-10-23: P1 done on `feat/pointer-p1` (PR #70): 17 items, 5 review fixes; lib 591 passed, all integration tests passed. Trial build: Release dry run 39814478737. P2 started on `feat/pointer-p2`.
+- 2026-10-23: P2 done on `feat/pointer-p2` (PR #71, stacked on #70): 11 items, 7 distinct review findings fixed red-first; lib 648 passed, integration 726 passed. Trial build: Release dry run 39842358643. P3 started on `feat/pointer-p3`.
 
 ## Decision log
 

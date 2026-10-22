@@ -45,4 +45,10 @@ pub mod ic {
     pub const ZOOM: char = '\u{e1a1}';
     /// Lucide "keyboard" — floating shortcuts-cheatsheet button.
     pub const KEYBOARD: char = '\u{e284}';
+    /// Lucide "save" — write the file.
+    pub const SAVE: char = '\u{e14d}';
+    /// Lucide "network" — Full Mindmap Mode.
+    pub const NETWORK: char = '\u{e125}';
+    /// Lucide "panel-left-open" — show the left sidebar.
+    pub const PANEL_LEFT_OPEN: char = '\u{e21d}';
 }

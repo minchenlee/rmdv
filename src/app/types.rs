@@ -9,6 +9,15 @@ pub enum ViewMode {
     Mindmap,
 }
 
+/// The views the toolbar's segmented control switches between.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolbarView {
+    Read,
+    Edit,
+    Mindmap,
+    FullMindmap,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SidebarTab {
     Files,
@@ -82,6 +91,21 @@ pub struct PendingNav {
 pub(super) struct PendingIpcFileOpen {
     pub(super) path: PathBuf,
     pub(super) nav: Option<PendingNav>,
+}
+
+/// A window close that waits for the user to save or drop unsaved edits.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct CloseConfirm {
+    /// The window to close; `None` for a quit (⌘Q), which closes the latest.
+    pub(super) window: Option<iced::window::Id>,
+}
+
+/// A close confirmed with Save: it goes ahead once the write of `text`
+/// succeeds.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct CloseAfterSave {
+    pub(super) window: Option<iced::window::Id>,
+    pub(super) text: String,
 }
 
 /// An assignment that waits for the user to confirm replacing an occupied slot.
@@ -207,4 +231,12 @@ pub(super) struct FileFinderMemo {
     pub(super) files_rev: u64,
     pub(super) files_len: usize,
     pub(super) results: Vec<(PathBuf, String, i32)>,
+}
+
+/// How `view` wraps the hover toolbar's band (`App::toolbar_band_slot`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ToolbarBandSlot {
+    pub find_bar: bool,
+    pub sidebar: bool,
+    pub glass_corner: bool,
 }
