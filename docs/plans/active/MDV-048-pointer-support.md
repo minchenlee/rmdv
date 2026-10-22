@@ -84,6 +84,8 @@ Per phase:
 - 2026-10-22: audit done; owner decisions recorded; P1 started.
 - 2026-10-23: P1 done on `feat/pointer-p1` (PR #70): 17 items, 5 review fixes; lib 591 passed, all integration tests passed. Trial build: Release dry run 39814478737. P2 started on `feat/pointer-p2`.
 - 2026-10-23: P2 done on `feat/pointer-p2` (PR #71, stacked on #70): 11 items, 7 distinct review findings fixed red-first; lib 648 passed, integration 726 passed. Trial build: Release dry run 39842358643. P3 started on `feat/pointer-p3`.
+- 2026-10-23: P2 CI fix `eff6c56` (opaque toolbar under a native title bar; runner-speed-proof double-click tests); P2 trial build: Release dry run 39845309025, notarized.
+- 2026-10-23: P3 done on `feat/pointer-p3` (stacked on P2): history (100 stops, scroll restore, dirty guard), mouse side buttons, `⌘[` `⌘]`, toolbar chevrons, link hover pill, in-app link targets and missing-file toast, linked images; 9 review findings fixed; lib 692 passed. P4 next.
 
 ## Decision log
 

@@ -15,14 +15,19 @@ fn always(mut app: App) -> App {
 }
 
 /// A point on the toolbar's blank space: left of the view switch and clear
-/// of the file name and the Show Sidebar button.
+/// of the file name, the Show Sidebar button, and Back / Forward.
 fn blank_toolbar_point(ui: &mut PointerUi, app: &App) -> Point {
     let bar = ui.id_bounds(app, "toolbar").expect("toolbar shown");
     let read = ui.text_bounds(app, "Read").expect("Read segment");
     let name = ui.text_bounds(app, "pointer-long.md");
+    // The Forward chevron ends the left controls.
+    let left_end = ui
+        .text_bounds(app, &ic::CHEVRON_RIGHT.to_string())
+        .filter(|b| b.y < bar.y + bar.height)
+        .map_or(0.0, |b| b.x + b.width + 16.0);
     let y = bar.y + bar.height / 2.0;
-    let x = (0..40)
-        .map(|step| bar.x + 160.0 + step as f32 * 10.0)
+    let x = (0..60)
+        .map(|step| (bar.x + 160.0).max(left_end) + step as f32 * 10.0)
         .find(|x| {
             *x < read.x - 20.0
                 && !name.is_some_and(|n| *x >= n.x - 8.0 && *x <= n.x + n.width + 8.0)

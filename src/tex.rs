@@ -94,7 +94,7 @@ fn fmt_block_for_hash<H: Hasher>(b: &Block, h: &mut H) {
             lang.hash(h);
             code.hash(h);
         }
-        Block::Image { url, alt } => {
+        Block::Image { url, alt, .. } => {
             url.hash(h);
             alt.hash(h);
         }
@@ -565,6 +565,7 @@ impl<'a> Parser<'a> {
             .map(|url| Block::Image {
                 url,
                 alt: String::new(),
+                link: None,
             })
             .collect();
         if let Some(cap) = caption {
@@ -578,6 +579,7 @@ impl<'a> Parser<'a> {
             return Block::Image {
                 url: String::new(),
                 alt: String::new(),
+                link: None,
             };
         }
         let first = blocks.remove(0);

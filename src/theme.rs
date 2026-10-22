@@ -625,6 +625,14 @@ impl Palette {
         }
     }
 
+    /// Tint behind a link under the pointer: the link color, faint.
+    pub fn link_hover(&self) -> Color {
+        Color {
+            a: if self.is_dark() { 0.16 } else { 0.12 },
+            ..self.accent
+        }
+    }
+
     /// Fill of keycaps and static chips.
     pub fn chip(&self) -> Color {
         self.ink(0.06)

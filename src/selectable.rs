@@ -12,36 +12,70 @@ use iced::{Color, Element};
 /// A span of reader text. The link payload is the `Message` to dispatch.
 pub type RtSpan<'a> = iced::advanced::text::Span<'a, Message, iced::Font>;
 
+/// What reader text fills behind its glyphs: the selection, and the tint
+/// behind a link under the pointer.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TextFills {
+    pub selection: Color,
+    pub link_hover: Color,
+}
+
+impl TextFills {
+    pub fn of(pal: &crate::theme::Palette) -> Self {
+        Self {
+            selection: pal.selection,
+            link_hover: pal.link_hover(),
+        }
+    }
+}
+
 /// Selectable rich text whose link spans dispatch their carried `Message`
 /// on click. Drag, double-click (word), and triple-click (line) select;
-/// ⌘C copies the selection as plain text. `selection` fills the highlight.
-pub fn rich_text_links<'a>(spans: Vec<RtSpan<'a>>, selection: Color) -> Element<'a, Message> {
-    selectable(spans, None, selection)
+/// ⌘C copies the selection as plain text. `fills.selection` fills the
+/// highlight.
+pub fn rich_text_links<'a>(spans: Vec<RtSpan<'a>>, fills: TextFills) -> Element<'a, Message> {
+    selectable(spans, None, fills)
 }
 
 /// [`rich_text_links`] at a relative line height (body or heading).
 pub fn rich_text_spaced<'a>(
     spans: Vec<RtSpan<'a>>,
     line_height: f32,
-    selection: Color,
+    fills: TextFills,
 ) -> Element<'a, Message> {
-    selectable(spans, Some(LineHeight::Relative(line_height)), selection)
+    selectable(spans, Some(LineHeight::Relative(line_height)), fills)
 }
 
 fn selectable<'a>(
     spans: Vec<RtSpan<'a>>,
     line_height: Option<LineHeight>,
-    selection: Color,
+    fills: TextFills,
 ) -> Element<'a, Message> {
+    let selection = fills.selection;
     // The highlight rows follow the widget's size and line height, not the
     // spans'. Reader blocks use one size per block, so take it from the spans.
     let size = spans.iter().find_map(|s| s.size);
     let line_height = line_height.or_else(|| spans.iter().find_map(|s| s.line_height));
+    let link_hover = iced_selection::text::LinkHover {
+        background: fills.link_hover,
+        radius: crate::theme::radius::XS,
+    };
+    // Hover sends one message on entering a link and one on leaving it;
+    // the app shows the destination while the pointer is on the link.
     let mut text = iced_selection::rich_text(spans)
         .on_link_click(|m| m)
+        .on_link_enter(|m, source| match m {
+            Message::OpenLink(url) => Message::LinkHovered(url, source),
+            _ => Message::Noop,
+        })
+        .on_link_leave(|m, source| match m {
+            Message::OpenLink(url) => Message::LinkLeft(url, source),
+            _ => Message::Noop,
+        })
         .style(move |_| iced_selection::text::Style {
             color: None,
             selection,
+            link_hover: Some(link_hover),
         });
     if let Some(size) = size {
         text = text.size(size);
@@ -225,7 +259,7 @@ pub fn copied_by_reader(event: &iced::Event, status: iced::event::Status) -> boo
 
 #[cfg(test)]
 mod tests {
-    use super::{copied_by_reader, rich_text_links};
+    use super::{copied_by_reader, rich_text_links, TextFills};
     use crate::app::Message;
     use iced::advanced::clipboard::{Clipboard, Kind};
     use iced::advanced::renderer::Headless;
@@ -234,6 +268,14 @@ mod tests {
     use iced::widget::span;
     use iced::{Event, Font, Pixels, Point, Size};
     use iced_runtime::user_interface::{Cache, UserInterface};
+
+    /// `selection` and a link tint no test looks for.
+    fn fills(selection: iced::Color) -> TextFills {
+        TextFills {
+            selection,
+            link_hover: iced::Color::from_rgb(0.0, 0.0, 1.0),
+        }
+    }
 
     #[derive(Default)]
     struct RecordingClipboard(Option<String>);
@@ -306,7 +348,7 @@ mod tests {
     fn drag_then_cmd_c_copies_the_selected_plain_text() {
         let el = rich_text_links(
             vec![span("Hello "), span("world").underline(true)],
-            iced::Color::BLACK,
+            fills(iced::Color::BLACK),
         );
         let start = Point::new(1.0, 8.0);
         let end = Point::new(700.0, 8.0);
@@ -343,7 +385,7 @@ mod tests {
     /// non-Latin character; ⌘C must still copy the selection.
     #[test]
     fn cmd_c_copies_under_a_non_latin_input_source() {
-        let el = rich_text_links(vec![span("Hello world")], iced::Color::BLACK);
+        let el = rich_text_links(vec![span("Hello world")], fills(iced::Color::BLACK));
         let start = Point::new(1.0, 8.0);
         let end = Point::new(700.0, 8.0);
         let zhuyin_c = Event::Keyboard(keyboard::Event::KeyPressed {
@@ -398,7 +440,7 @@ mod tests {
                 span(seg.to_string()).font(f)
             })
             .collect();
-        let el = rich_text_links(spans, iced::Color::BLACK);
+        let el = rich_text_links(spans, fills(iced::Color::BLACK));
         let start = Point::new(1.0, 8.0);
         let end = Point::new(700.0, 8.0);
         let (clipboard, _) = run(
@@ -432,7 +474,10 @@ mod tests {
 
     #[test]
     fn clicking_a_link_without_dragging_still_dispatches_it() {
-        let el = rich_text_links(vec![span("go").link(Message::Noop)], iced::Color::BLACK);
+        let el = rich_text_links(
+            vec![span("go").link(Message::OpenLink("go.md".into()))],
+            fills(iced::Color::BLACK),
+        );
         let at = Point::new(4.0, 8.0);
         let (clipboard, messages) = run(
             el,
@@ -452,7 +497,14 @@ mod tests {
                 ),
             ],
         );
-        assert!(matches!(messages.as_slice(), [Message::Noop]));
+        // The move onto the link reports the hover; the click opens it.
+        assert!(
+            matches!(
+                messages.as_slice(),
+                [Message::LinkHovered(..), Message::OpenLink(url)] if url == "go.md"
+            ),
+            "{messages:?}"
+        );
         assert_eq!(clipboard.0, None);
     }
 
@@ -610,7 +662,7 @@ mod tests {
         // highlight must follow the spans' line height, not the default.
         use super::rich_text_spaced;
         let red = iced::Color::from_rgb(1.0, 0.0, 0.0);
-        let el = rich_text_spaced(vec![span("Title Title Title").size(40.0)], 1.3, red);
+        let el = rich_text_spaced(vec![span("Title Title Title").size(40.0)], 1.3, fills(red));
         let size = Size::new(400.0, 120.0);
         let mut renderer = headless_renderer();
         let mut clipboard = RecordingClipboard::default();
@@ -659,5 +711,114 @@ mod tests {
         let red_in_row = |y: usize| (0..380).filter(|&x| red_at(x, y)).count();
         assert!(red_in_row(4) > 20, "top of the line is highlighted");
         assert!(red_in_row(48) > 20, "bottom of the line is highlighted");
+    }
+
+    /// Feeds one cursor move per point and returns the messages each sent.
+    fn moves_per_step(el: iced::Element<'_, Message>, points: &[Point]) -> Vec<Vec<Message>> {
+        let mut renderer = headless_renderer();
+        let mut clipboard = RecordingClipboard::default();
+        let mut ui =
+            UserInterface::build(el, Size::new(800.0, 200.0), Cache::default(), &mut renderer);
+        points
+            .iter()
+            .map(|&at| {
+                let mut messages = Vec::new();
+                let _ = ui.update(
+                    &[moved(at)],
+                    mouse::Cursor::Available(at),
+                    &mut renderer,
+                    &mut clipboard,
+                    &mut messages,
+                );
+                messages
+            })
+            .collect()
+    }
+
+    fn link_line() -> iced::Element<'static, Message> {
+        rich_text_links(
+            vec![
+                span("linklinklinklink").link(Message::OpenLink("b.md".into())),
+                span(" plain words after"),
+            ],
+            fills(iced::Color::BLACK),
+        )
+    }
+
+    #[test]
+    fn a_link_sends_one_message_on_enter_and_one_on_leave() {
+        let steps = moves_per_step(
+            link_line(),
+            &[
+                Point::new(600.0, 100.0), // outside the text
+                Point::new(200.0, 8.0),   // over the plain words
+                Point::new(4.0, 8.0),     // into the link
+                Point::new(12.0, 8.0),
+                Point::new(20.0, 9.0),
+                Point::new(30.0, 7.0),
+                Point::new(600.0, 100.0), // out again
+            ],
+        );
+        let names: Vec<Vec<String>> = steps
+            .iter()
+            .map(|step| step.iter().map(|m| format!("{m:?}")).collect())
+            .collect();
+        assert!(steps[0].is_empty() && steps[1].is_empty(), "{names:?}");
+        assert!(
+            matches!(steps[2].as_slice(), [Message::LinkHovered(url, _)] if url == "b.md"),
+            "entering sends one LinkHovered: {names:?}"
+        );
+        for step in &steps[3..6] {
+            assert!(
+                step.is_empty(),
+                "moves inside the link send nothing: {names:?}"
+            );
+        }
+        assert!(
+            matches!(steps[6].as_slice(), [Message::LinkLeft(url, _)] if url == "b.md"),
+            "leaving sends one LinkLeft: {names:?}"
+        );
+    }
+
+    #[test]
+    fn a_hovered_link_is_tinted() {
+        let blue_pixels = |hover: bool| {
+            let mut renderer = headless_renderer();
+            let mut clipboard = RecordingClipboard::default();
+            let mut messages = Vec::new();
+            let mut ui = UserInterface::build(
+                link_line(),
+                Size::new(400.0, 40.0),
+                Cache::default(),
+                &mut renderer,
+            );
+            let at = if hover {
+                Point::new(8.0, 8.0)
+            } else {
+                Point::new(300.0, 35.0)
+            };
+            let _ = ui.update(
+                &[moved(at)],
+                mouse::Cursor::Available(at),
+                &mut renderer,
+                &mut clipboard,
+                &mut messages,
+            );
+            ui.draw(
+                &mut renderer,
+                &iced::Theme::Light,
+                &iced::advanced::renderer::Style {
+                    text_color: iced::Color::BLACK,
+                },
+                mouse::Cursor::Available(at),
+            );
+            let rgba = renderer.screenshot(iced::Size::new(400, 40), 1.0, iced::Color::WHITE);
+            (0..40usize)
+                .flat_map(|y| (0..400usize).map(move |x| (y * 400 + x) * 4))
+                .filter(|&i| rgba[i] < 60 && rgba[i + 1] < 60 && rgba[i + 2] > 200)
+                .count()
+        };
+        assert_eq!(blue_pixels(false), 0, "no tint at rest");
+        assert!(blue_pixels(true) > 200, "the hovered link is tinted");
     }
 }

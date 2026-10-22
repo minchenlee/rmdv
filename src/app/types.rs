@@ -240,3 +240,92 @@ pub struct ToolbarBandSlot {
     pub sidebar: bool,
     pub glass_corner: bool,
 }
+
+/// The most stops Back keeps; the oldest drop off first.
+pub(super) const HISTORY_LIMIT: usize = 100;
+
+/// One stop in navigation history: a file, where its reader was scrolled
+/// to, and the reading surface it showed.
+#[derive(Debug, Clone, PartialEq)]
+pub(super) struct HistoryEntry {
+    pub(super) path: PathBuf,
+    /// Body scroll position, normalized to 0–1 like a Quick Slot's.
+    pub(super) position: f32,
+    /// `Rendered` or `Mindmap`; Zen edit maps to `Rendered`.
+    pub(super) mode: ViewMode,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HistoryDir {
+    Back,
+    Forward,
+}
+
+/// Back and Forward stacks, like a browser's. A new navigation clears
+/// Forward; a workspace change clears both.
+#[derive(Debug, Default)]
+pub(super) struct NavHistory {
+    pub(super) back: Vec<HistoryEntry>,
+    pub(super) forward: Vec<HistoryEntry>,
+    /// A Back or Forward whose file is still loading. The stacks move only
+    /// when that load lands, so a newer open that supersedes it records as
+    /// an ordinary navigation.
+    pub(super) pending: Option<(HistoryDir, PathBuf)>,
+    /// The reader position a Back or Forward is scrolling the open file
+    /// to, until the reader reports a viewport of its own. A stop left
+    /// before then keeps this position, not the top.
+    pub(super) arriving: Option<f32>,
+}
+
+impl NavHistory {
+    pub(super) fn stack(&self, dir: HistoryDir) -> &Vec<HistoryEntry> {
+        match dir {
+            HistoryDir::Back => &self.back,
+            HistoryDir::Forward => &self.forward,
+        }
+    }
+
+    /// The stack `dir` takes from and the one it gives the current stop to.
+    pub(super) fn stacks_mut(
+        &mut self,
+        dir: HistoryDir,
+    ) -> (&mut Vec<HistoryEntry>, &mut Vec<HistoryEntry>) {
+        match dir {
+            HistoryDir::Back => (&mut self.back, &mut self.forward),
+            HistoryDir::Forward => (&mut self.forward, &mut self.back),
+        }
+    }
+
+    pub(super) fn push(stack: &mut Vec<HistoryEntry>, entry: HistoryEntry) {
+        stack.push(entry);
+        if stack.len() > HISTORY_LIMIT {
+            stack.remove(0);
+        }
+    }
+}
+
+/// The link under the pointer, and the destination its pill shows.
+#[derive(Debug, Clone, PartialEq)]
+pub(super) struct HoveredLink {
+    /// The link as written; a leave for another link leaves this one shown.
+    pub(super) url: String,
+    pub(super) label: String,
+    /// The widget that reported the hover; only its leave hides the pill.
+    pub(super) source: u64,
+}
+
+/// What the reader shows under the pointer. When it changes (another
+/// file, another view, a modal, a page over the reader), a link's pill no
+/// longer matches what is under the pointer. A scroll is not a change:
+/// the link widgets report leaving when content moves off the pointer.
+#[derive(Debug, Clone, PartialEq)]
+pub(super) struct LinkPage {
+    pub(super) file: Option<PathBuf>,
+    pub(super) view_mode: ViewMode,
+    pub(super) full_mindmap: bool,
+    pub(super) overlay: Overlay,
+    /// Settings, vault search and the error card replace the reader.
+    pub(super) settings_open: bool,
+    pub(super) vault_open: bool,
+    pub(super) error: bool,
+}

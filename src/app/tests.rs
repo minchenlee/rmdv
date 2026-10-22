@@ -6264,6 +6264,7 @@ fn full_mindmap_preview_failed_image_is_terminal_for_current_wave() {
         Block::Image {
             url: url.clone(),
             alt: "permanent failure".into(),
+            link: None,
         },
     )];
     let mut by_block = HashMap::new();
@@ -6363,6 +6364,7 @@ fn full_mindmap_preview_old_wave_failure_cannot_mutate_reentered_range() {
             Block::Image {
                 url: url.clone(),
                 alt: "range A".into(),
+                link: None,
             },
         ),
         (
@@ -6370,6 +6372,7 @@ fn full_mindmap_preview_old_wave_failure_cannot_mutate_reentered_range() {
             Block::Image {
                 url: url.clone(),
                 alt: "range B".into(),
+                link: None,
             },
         ),
     ];

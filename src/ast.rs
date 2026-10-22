@@ -28,6 +28,10 @@ pub enum Block {
     Image {
         url: String,
         alt: String,
+        /// The link the image is wrapped in (a badge): a click follows it
+        /// instead of opening the image viewer.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        link: Option<String>,
     },
     Diagram {
         kind: DiagramKind,

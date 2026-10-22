@@ -1623,3 +1623,11 @@ mod toolbar;
 // --- P2 group 2: window and lifecycle ---------------------------------------
 
 mod window;
+
+// --- P3: navigation history ---------------------------------------------------
+
+mod history;
+
+// --- P3 group 2: links --------------------------------------------------------
+
+mod links;

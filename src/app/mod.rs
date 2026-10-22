@@ -108,6 +108,7 @@ mod dispatch;
 mod full_mindmap;
 mod full_mindmap_state;
 mod full_mindmap_view;
+mod history;
 mod ipc_handler;
 mod lifecycle;
 pub use lifecycle::window_settings;
@@ -143,7 +144,7 @@ use scroll_tasks::*;
 use settings::*;
 use types::*;
 pub use types::{
-    MindmapDir, Overlay, PendingNav, PendingRefreshFile, PendingRefreshWorkspace,
+    HistoryDir, MindmapDir, Overlay, PendingNav, PendingRefreshFile, PendingRefreshWorkspace,
     PendingWatcherReload, SidebarTab, ThemeEntry, Toast, ToastAction, ToolbarView, ViewMode,
     ZenRestoreState,
 };
@@ -475,6 +476,14 @@ pub struct App {
     pending_quick_slot_restore: Option<PendingQuickSlotRestore>,
     quick_slot_preview_restore_guard: Option<PendingQuickSlotRestore>,
     quick_slot_body_restore: Option<f32>,
+    /// Back and Forward navigation history.
+    history: NavHistory,
+    /// The link under the pointer; its destination shows bottom left.
+    hovered_link: Option<HoveredLink>,
+    /// Links handed to the OS, with whether they open in the background.
+    /// Tests record them here instead of launching a browser.
+    #[cfg(test)]
+    pub(super) external_opens: Vec<(String, bool)>,
     quick_slot_preview_restore: Option<f32>,
     quick_slots_persistence_path: Option<PathBuf>,
     watcher_generation: u64,
@@ -685,6 +694,10 @@ impl Default for App {
             pending_quick_slot_restore: None,
             quick_slot_preview_restore_guard: None,
             quick_slot_body_restore: None,
+            history: NavHistory::default(),
+            hovered_link: None,
+            #[cfg(test)]
+            external_opens: Vec::new(),
             quick_slot_preview_restore: None,
             quick_slots_persistence_path: {
                 #[cfg(test)]
@@ -1101,6 +1114,12 @@ impl App {
             self.invalidate_pending_quick_slot_restore();
         }
         let switching_file = self.file.as_deref() != Some(path.as_path());
+        // Read the stop being left before any state below changes.
+        let history_restore = if switching_file {
+            self.history_on_file_switch(&path)
+        } else {
+            None
+        };
         let refresh_full_mindmap_preview = self.full_mindmap.as_ref().is_some_and(|full| {
             matches!(
                 full.selected.as_ref(),
@@ -1176,6 +1195,9 @@ impl App {
             self.apply_quick_slot_restore_after_file(&path, pending.slot)
         });
         fetches.push(slot_restore);
+        if let Some(entry) = history_restore {
+            fetches.push(self.restore_history_after_file(entry));
+        }
         if refresh_full_mindmap_preview {
             let source = self.source_snapshot_for_preview();
             fetches.push(self.begin_full_mindmap_preview_source(path, source));
@@ -1190,6 +1212,12 @@ impl App {
         });
         if root_changed {
             self.invalidate_pending_quick_slot_restore();
+        }
+        let workspace_changed = self.workspace.as_ref().is_some_and(|current| {
+            crate::quick_slots::workspace_key(current) != crate::quick_slots::workspace_key(&path)
+        });
+        if workspace_changed {
+            self.clear_history();
         }
         let _ = self.checkpoint_active_quick_slot();
         self.persist_quick_slots_now();
@@ -1578,6 +1606,44 @@ impl App {
 
     fn show_toast(&mut self, text: String) -> Task<Message> {
         self.show_toast_with_action(text, None)
+    }
+
+    fn link_page(&self) -> LinkPage {
+        LinkPage {
+            file: self.file.clone(),
+            view_mode: self.view_mode,
+            full_mindmap: self.full_mindmap.is_some(),
+            overlay: self.overlay,
+            settings_open: self.settings_open,
+            vault_open: self.vault_open,
+            error: self.error.is_some(),
+        }
+    }
+
+    /// Hands a link target to the OS: a URL to the browser, a local file
+    /// to its default app. `background` keeps rmdv in front.
+    fn open_externally(&mut self, target: String, background: bool) {
+        #[cfg(test)]
+        {
+            self.external_opens.push((target, background));
+        }
+        #[cfg(not(test))]
+        {
+            #[cfg(target_os = "macos")]
+            if background {
+                if let Some(mut child) =
+                    background_open_command(&target).and_then(|mut c| c.spawn().ok())
+                {
+                    // Reap `open` when it exits; it returns at once.
+                    std::thread::spawn(move || {
+                        let _ = child.wait();
+                    });
+                    return;
+                }
+            }
+            let _ = background;
+            let _ = open::that_detached(&target);
+        }
     }
 
     fn show_cli_install_prompt(&mut self) -> Task<Message> {
@@ -2684,6 +2750,8 @@ impl App {
             ("Reveal File in Finder  ⌘⌥R", Message::RevealFileInFinder),
             ("Copy Focused File Path  ⌘⌥C", Message::CopyFilePath),
             ("Find File in Workspace…  ⌘P", Message::OpenFileFinder),
+            ("Go Back  ⌘[", Message::HistoryGo(HistoryDir::Back)),
+            ("Go Forward  ⌘]", Message::HistoryGo(HistoryDir::Forward)),
             ("Toggle Sidebar  ⌘B", Message::ToggleSidebar),
             ("Toggle Hidden Files  ⌘⇧.", Message::ToggleHidden),
             ("Find in Document  ⌘F", Message::ToggleSearch),
@@ -3140,6 +3208,9 @@ impl App {
                     // global/fallback commands. Other document-only chords do
                     // nothing while its surface is visible.
                     if full_mindmap {
+                        if let Some(message) = history_key_message(&key, physical, mods) {
+                            return message;
+                        }
                         return match c.as_str() {
                             "p" if cmd && mods.shift() => Message::OpenCommandPalette,
                             "P" if cmd => Message::OpenCommandPalette,
@@ -3160,6 +3231,9 @@ impl App {
                             return Message::OpenVaultSearch;
                         }
                         return Message::Noop;
+                    }
+                    if let Some(message) = history_key_message(&key, physical, mods) {
+                        return message;
                     }
                     match c.as_str() {
                         "p" if cmd && mods.shift() => return Message::OpenCommandPalette,
@@ -3370,6 +3444,9 @@ impl App {
         } else {
             iced::Subscription::none()
         };
+        // The mouse side buttons. The closure returns `None` for every
+        // other event, so it adds no messages and no redraws.
+        let mouse_history = iced::event::listen_with(|ev, _status, _id| mouse_history_message(&ev));
         let ipc = iced::Subscription::run(ipc_subscription_stream);
         let native_pinch = crate::native_pinch::subscription().map(Message::MindmapNativePinch);
         let macos_open = crate::macos_open::subscription().map(Message::OpenFileFinderPath);
@@ -3398,6 +3475,7 @@ impl App {
         };
         iced::Subscription::batch([
             dnd,
+            mouse_history,
             select_all_clear,
             watcher,
             theme_watcher,
@@ -3977,10 +4055,23 @@ impl App {
         } else {
             Space::new().into()
         };
+        let link_pill_layer: Element<'_, Message> = match &self.hovered_link {
+            Some(link) => link_pill(
+                &link.label,
+                pal,
+                if sidebar_visible {
+                    self.sidebar_width
+                } else {
+                    0.0
+                },
+            ),
+            None => Space::new().into(),
+        };
         let base: Element<'_, Message> = iced::widget::stack![
             Element::from(main),
             footer_layer,
             kb_button_layer,
+            link_pill_layer,
             quick_slots_layer,
             overlay_layer
         ]
@@ -4055,7 +4146,10 @@ fn block_text_bytes(block: &Block) -> usize {
             .chain(rows.iter().flat_map(|row| row.iter()))
             .map(|cells| inline_text_bytes(cells))
             .sum(),
-        Block::Image { url, alt } => url.len().saturating_add(alt.len()),
+        Block::Image { url, alt, link } => url
+            .len()
+            .saturating_add(alt.len())
+            .saturating_add(link.as_ref().map_or(0, String::len)),
         Block::Diagram { source, .. } => source.len(),
         Block::Rule => 0,
     }

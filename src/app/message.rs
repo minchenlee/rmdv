@@ -67,6 +67,9 @@ pub enum Message {
     QuickSlotsModifierReveal(u64),
     /// Debounced persistence generation for ordinary scrolling checkpoints.
     QuickSlotsPersist(u64),
+    /// Go Back or Forward in navigation history (⌘[ ⌘], the mouse side
+    /// buttons, the toolbar chevrons, the palette).
+    HistoryGo(HistoryDir),
     /// Internal handoff after entering/exiting Full Mindmap for a slot.
     QuickSlotRestorePending,
     /// Identity-bearing file read for a non-Full-Mindmap slot activation.
@@ -126,6 +129,12 @@ pub enum Message {
         actual: Option<String>,
     },
     OpenLink(String),
+    /// The pointer entered a link: its destination, and the widget that
+    /// holds it (two widgets can hold the same destination). Sent once
+    /// per link.
+    LinkHovered(String, u64),
+    /// The pointer left that link of that widget.
+    LinkLeft(String, u64),
     ToggleTheme,
     SetTheme(ThemePreset),
     SetCustomTheme(String),

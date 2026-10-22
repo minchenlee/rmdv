@@ -234,7 +234,7 @@ pub fn data_view<'a>(
                 .line_height(iced::widget::text::LineHeight::Relative(1.55)),
         );
     }
-    container(rich_text_links(out, pal.selection))
+    container(rich_text_links(out, TextFills::of(pal)))
         .padding(Padding::from([28, 32]))
         .width(Length::Fill)
         .into()
@@ -257,7 +257,7 @@ pub fn data_view_owned(code: String, pal: &Palette, typ: &Typography) -> Element
                 .line_height(iced::widget::text::LineHeight::Relative(1.55)),
         );
     }
-    container(rich_text_links(out, pal.selection))
+    container(rich_text_links(out, TextFills::of(pal)))
         .padding(Padding::from([28, 32]))
         .width(Length::Fill)
         .into()
@@ -608,14 +608,14 @@ fn render_block<'a>(
     match b {
         Block::Heading { level, inlines, .. } => {
             let spans = inline_spans(inlines, pal, typ.heading_size(*level), &mut ctx);
-            rich_text_spaced(spans, crate::theme::HEADING_LINE_HEIGHT, pal.selection)
+            rich_text_spaced(spans, crate::theme::HEADING_LINE_HEIGHT, TextFills::of(pal))
         }
         Block::Paragraph(inlines) => {
             let spans = inline_spans(inlines, pal, typ.body_size, &mut ctx);
             rich_text_spaced(
                 spans,
                 paragraph_line_height(inlines, typ.line_height),
-                pal.selection,
+                TextFills::of(pal),
             )
         }
         Block::CodeBlock { code, spans, .. } => {
@@ -645,7 +645,7 @@ fn render_block<'a>(
                     &mut ctx,
                 );
             }
-            let body = container(rich_text_links(out, pal_c.selection))
+            let body = container(rich_text_links(out, TextFills::of(&pal_c)))
                 .padding(Padding::from([10, 12]))
                 .style(move |_| container::Style {
                     background: Some(pal_c.code_bg.into()),
@@ -719,7 +719,7 @@ fn render_block<'a>(
         }
         Block::List { ordered, items } => render_list(*ordered, items, pal, typ, &mut ctx, img),
         Block::Table { headers, rows } => render_table(headers, rows, pal, typ, &mut ctx),
-        Block::Image { url, alt } => render_image(url, alt, pal, img),
+        Block::Image { url, alt, link } => render_image(url, alt, link.as_deref(), pal, img),
         Block::Rule => {
             let pal_r = *pal;
             container(Space::new().height(1.0))
@@ -813,7 +813,7 @@ fn for_text_runs<'a>(text_str: &'a str, mut visit: impl FnMut(&'a str, bool)) {
     }
 }
 
-use crate::selectable::{rich_text_links, rich_text_spaced};
+use crate::selectable::{rich_text_links, rich_text_spaced, TextFills};
 
 /// CJK body text reads best at about 1.75 em leading where Latin uses 1.5
 /// (Notion default), because ideographs fill the whole em box. The scale is
@@ -1096,16 +1096,30 @@ fn push_span<'a>(
 fn render_image<'a>(
     url: &'a str,
     alt: &'a str,
+    link: Option<&'a str>,
     pal: &Palette,
     img: &ImgCtx<'a>,
 ) -> Element<'a, Message> {
     use crate::app::{is_remote_url, resolve_image_path};
-    let placeholder = |msg: String| -> Element<'a, Message> { text(msg).color(pal.muted).into() };
+    // A badge's placeholder still follows its link.
+    let placeholder = |msg: String| -> Element<'a, Message> {
+        let shown: Element<'a, Message> = text(msg).color(pal.muted).into();
+        match link {
+            Some(link) => linked_image(shown, link, url),
+            None => shown,
+        }
+    };
+    let clickable = |image: Element<'a, Message>, key: String| match link {
+        Some(link) => linked_image(image, link, url),
+        None => zoomable(image, key),
+    };
     if is_remote_url(url) {
         match img.cache.get(url) {
-            Some(ImageState::Loaded(h)) => zoomable(image_widget(h.clone()), url.to_string()),
+            Some(ImageState::Loaded(h)) => {
+                clickable(image_widget(h.clone()).into(), url.to_string())
+            }
             Some(ImageState::LoadedSvg { svg, .. }) => {
-                zoomable(svg_widget(svg.clone()), url.to_string())
+                clickable(svg_widget(svg.clone()).into(), url.to_string())
             }
             Some(ImageState::Failed) => placeholder(format!("[image failed: {alt} ({url})]")),
             _ => placeholder(format!("[loading: {alt} ({url})]")),
@@ -1118,8 +1132,10 @@ fn render_image<'a>(
         };
         let key = p.to_string_lossy().into_owned();
         match img.cache.get(&key) {
-            Some(ImageState::Loaded(h)) => zoomable(image_widget(h.clone()), key),
-            Some(ImageState::LoadedSvg { svg, .. }) => zoomable(svg_widget(svg.clone()), key),
+            Some(ImageState::Loaded(h)) => clickable(image_widget(h.clone()).into(), key),
+            Some(ImageState::LoadedSvg { svg, .. }) => {
+                clickable(svg_widget(svg.clone()).into(), key)
+            }
             Some(ImageState::Failed) => placeholder(format!("[image missing: {alt} ({url})]")),
             Some(ImageState::Loading) => placeholder(format!("[loading: {alt} ({url})]")),
             // Not read ahead (an image added while editing, or a preview of
@@ -1130,13 +1146,39 @@ fn render_image<'a>(
                     .and_then(|e| e.to_str())
                     .is_some_and(|e| e.eq_ignore_ascii_case("svg"));
                 if is_svg {
-                    zoomable(svg_widget(iced::widget::svg::Handle::from_path(p)), key)
+                    clickable(
+                        svg_widget(iced::widget::svg::Handle::from_path(p)).into(),
+                        key,
+                    )
                 } else {
-                    zoomable(image_widget(p), key)
+                    clickable(image_widget(p).into(), key)
                 }
             }
         }
     }
+}
+
+/// An image wrapped in a link (a badge): a click follows the link instead
+/// of opening the image viewer, and the pointer shows the destination.
+fn linked_image<'a>(image: Element<'a, Message>, link: &str, url: &str) -> Element<'a, Message> {
+    let source = linked_image_source(link, url);
+    mouse_area(image)
+        .interaction(iced::mouse::Interaction::Pointer)
+        .on_press(Message::OpenLink(link.to_string()))
+        .on_enter(Message::LinkHovered(link.to_string(), source))
+        .on_exit(Message::LinkLeft(link.to_string(), source))
+        .into()
+}
+
+/// The hover source of a linked image: its link and picture, so it stays
+/// the same across rebuilds and reloads. The top bit keeps it apart from
+/// the reader text widgets' ids, which count up from 1.
+fn linked_image_source(link: &str, url: &str) -> u64 {
+    use std::hash::{DefaultHasher, Hash, Hasher};
+    let mut h = DefaultHasher::new();
+    link.hash(&mut h);
+    url.hash(&mut h);
+    h.finish() | (1 << 63)
 }
 
 /// An image that opens the image viewer on click, with the zoom-in cursor
@@ -1446,7 +1488,7 @@ fn render_block_inner<'a>(
             rich_text_spaced(
                 spans,
                 paragraph_line_height(inlines, typ.line_height),
-                pal.selection,
+                TextFills::of(pal),
             )
         }
         _ => render_block(b, pal, typ, ctx.query, ctx.current_in_block, img),
@@ -1483,7 +1525,7 @@ fn render_table<'a>(
                 },
                 ctx,
             );
-            rich_text_links(spans, pal.selection)
+            rich_text_links(spans, TextFills::of(pal))
         } else {
             text("").into()
         };
@@ -1494,7 +1536,7 @@ fn render_table<'a>(
         for column_index in 0..cols {
             let content: Element<'a, Message> = if let Some(cell) = row_cells.get(column_index) {
                 let spans = inline_spans(cell, pal, typ.body_size, ctx);
-                rich_text_links(spans, pal.selection)
+                rich_text_links(spans, TextFills::of(pal))
             } else {
                 text("").into()
             };

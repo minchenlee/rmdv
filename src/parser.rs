@@ -457,9 +457,10 @@ fn fmt_block_for_hash<H: Hasher>(b: &Block, h: &mut H) {
             lang.hash(h);
             code.hash(h);
         }
-        Block::Image { url, alt } => {
+        Block::Image { url, alt, link } => {
             url.hash(h);
             alt.hash(h);
+            link.hash(h);
         }
         Block::Blockquote(blocks) => {
             for x in blocks {
@@ -529,6 +530,9 @@ struct ParseState {
     /// Set when `mask_currency_dollars` replaced non-math `$` signs; `handle`
     /// turns them back into `$`.
     dollar_marker: Option<char>,
+    /// The open paragraph held an image. Images become their own blocks, so
+    /// a paragraph left with only the spaces between badges is dropped.
+    image_in_paragraph: bool,
 }
 
 enum Frame {
@@ -546,6 +550,12 @@ enum Frame {
     Link {
         url: String,
         children: Vec<Inline>,
+    },
+    /// An image; its description (alt) text collects here.
+    Image {
+        url: String,
+        alt: String,
+        link: Option<String>,
     },
     Blockquote(Vec<Block>),
     List {
@@ -645,10 +655,13 @@ impl ParseState {
                     inlines: Vec::new(),
                 });
             }
-            Tag::Paragraph => self.stack.push(Frame::Paragraph {
-                inlines: Vec::new(),
-                offset: Some(offset),
-            }),
+            Tag::Paragraph => {
+                self.image_in_paragraph = false;
+                self.stack.push(Frame::Paragraph {
+                    inlines: Vec::new(),
+                    offset: Some(offset),
+                })
+            }
             Tag::Emphasis => self.stack.push(Frame::Emph(Vec::new())),
             Tag::Strong => self.stack.push(Frame::Strong(Vec::new())),
             Tag::Strikethrough => self.stack.push(Frame::Strike(Vec::new())),
@@ -683,9 +696,28 @@ impl ParseState {
             }
             Tag::Image { dest_url, .. } => {
                 let url = self.clean_synthetic_marker(dest_url.into_string());
-                self.push_block(Block::Image {
+                // A badge: the image is (part of) a link's content.
+                let link = self
+                    .stack
+                    .iter()
+                    .rev()
+                    .take_while(|frame| {
+                        matches!(
+                            frame,
+                            Frame::Emph(_)
+                                | Frame::Strong(_)
+                                | Frame::Strike(_)
+                                | Frame::Link { .. }
+                        )
+                    })
+                    .find_map(|frame| match frame {
+                        Frame::Link { url, .. } => Some(url.clone()),
+                        _ => None,
+                    });
+                self.stack.push(Frame::Image {
                     url,
                     alt: String::new(),
+                    link,
                 });
             }
             Tag::Table(_) => self.stack.push(Frame::Table {
@@ -744,6 +776,12 @@ impl ParseState {
         let Some(frame) = self.stack.pop() else {
             return;
         };
+        let images_only = match &frame {
+            Frame::Paragraph { inlines, .. } => {
+                std::mem::take(&mut self.image_in_paragraph) && is_blank(inlines)
+            }
+            _ => false,
+        };
         match frame {
             Frame::Heading { level, inlines } => {
                 let id = slugify(&inline_to_string(&inlines));
@@ -752,6 +790,8 @@ impl ParseState {
             // Drop paragraphs left empty after display math split their
             // buffered inline content into sibling blocks.
             Frame::Paragraph { inlines, .. } if inlines.is_empty() => {}
+            // Only the spaces between images (a row of badges).
+            Frame::Paragraph { .. } if images_only => {}
             Frame::Paragraph {
                 inlines,
                 offset: Some(block_offset),
@@ -763,8 +803,30 @@ impl ParseState {
             Frame::Emph(children) => self.push_inline(Inline::Emph(children), offset, true),
             Frame::Strong(children) => self.push_inline(Inline::Strong(children), offset, true),
             Frame::Strike(children) => self.push_inline(Inline::Strike(children), offset, true),
+            // A link around images only: each image carries the link.
+            Frame::Link { children, .. } if children.is_empty() => {}
             Frame::Link { url, children } => {
                 self.push_inline(Inline::Link { url, children }, offset, true)
+            }
+            Frame::Image { url, alt, link } => {
+                if self
+                    .stack
+                    .iter()
+                    .any(|frame| matches!(frame, Frame::Paragraph { .. }))
+                {
+                    self.image_in_paragraph = true;
+                }
+                // A heading keeps the alt text as its title (and anchor),
+                // as it did before images became their own blocks.
+                if !alt.is_empty()
+                    && self
+                        .stack
+                        .iter()
+                        .any(|frame| matches!(frame, Frame::Heading { .. }))
+                {
+                    self.push_inline(Inline::Text(alt.clone()), offset, false);
+                }
+                self.push_block_in_container(Block::Image { url, alt, link });
             }
             Frame::Blockquote(blocks) => self.push_block(Block::Blockquote(blocks)),
             Frame::List { ordered, items } => self.push_block(Block::List { ordered, items }),
@@ -773,7 +835,10 @@ impl ParseState {
                 mut blocks,
                 loose_inlines,
             } => {
-                if !loose_inlines.is_empty() {
+                // The spaces after the last of a row of badges are not a
+                // paragraph of their own.
+                let trailing_spaces = !blocks.is_empty() && is_blank(&loose_inlines);
+                if !loose_inlines.is_empty() && !trailing_spaces {
                     blocks.push(Block::Paragraph(loose_inlines));
                 }
                 if let Some(Frame::List { items, .. }) = self.stack.last_mut() {
@@ -831,6 +896,11 @@ impl ParseState {
                     inlines.push(inl);
                 }
                 Frame::Link { children, .. } => children.push(inl),
+                Frame::Image { alt, .. } => {
+                    let mut text = String::new();
+                    stringify_inline(&inl, &mut text);
+                    alt.push_str(&text.replace('\n', " "));
+                }
                 Frame::CodeBlock { code, .. } => {
                     if let Inline::Text(t) = inl {
                         code.push_str(&t);
@@ -852,6 +922,32 @@ impl ParseState {
             }) => {
                 if !loose_inlines.is_empty() {
                     blocks.push(Block::Paragraph(std::mem::take(loose_inlines)));
+                }
+                blocks.push(b);
+            }
+            _ => self.blocks.push(b),
+        }
+    }
+
+    /// Push `b` into the nearest open block quote or list item, or the
+    /// document, skipping the inline frames (paragraph, link, emphasis) an
+    /// image sits in.
+    fn push_block_in_container(&mut self, b: Block) {
+        let container = self
+            .stack
+            .iter()
+            .rposition(|frame| matches!(frame, Frame::Blockquote(_) | Frame::Item { .. }));
+        match container.map(|i| &mut self.stack[i]) {
+            Some(Frame::Blockquote(blocks)) => blocks.push(b),
+            Some(Frame::Item {
+                blocks,
+                loose_inlines,
+                ..
+            }) => {
+                // The spaces between badges in a tight item are dropped.
+                let inlines = std::mem::take(loose_inlines);
+                if !inlines.is_empty() && !is_blank(&inlines) {
+                    blocks.push(Block::Paragraph(inlines));
                 }
                 blocks.push(b);
             }
@@ -961,6 +1057,13 @@ fn heading_level(l: HeadingLevel) -> u8 {
         HeadingLevel::H5 => 5,
         HeadingLevel::H6 => 6,
     }
+}
+
+/// Only whitespace text: what a row of badges leaves between its images.
+fn is_blank(inlines: &[Inline]) -> bool {
+    inlines
+        .iter()
+        .all(|i| matches!(i, Inline::Text(t) if t.trim().is_empty()))
 }
 
 fn inline_to_string(v: &[Inline]) -> String {
@@ -1306,6 +1409,183 @@ mod tests {
         });
 
         assert_eq!(url, Some(expected));
+    }
+
+    /// Every image in `blocks`, nested ones included, as (url, alt, link).
+    fn images(blocks: &[Block]) -> Vec<(String, String, Option<String>)> {
+        let mut out = Vec::new();
+        for block in blocks {
+            match block {
+                Block::Image { url, alt, link } => {
+                    out.push((url.clone(), alt.clone(), link.clone()))
+                }
+                Block::Blockquote(inner) => out.extend(images(inner)),
+                Block::List { items, .. } => {
+                    for item in items {
+                        out.extend(images(&item.blocks));
+                    }
+                }
+                _ => {}
+            }
+        }
+        out
+    }
+
+    fn blocks_of(src: &str) -> Vec<Block> {
+        parse(src).0.into_iter().map(|(_, b)| b).collect()
+    }
+
+    fn image(url: &str, alt: &str, link: Option<&str>) -> (String, String, Option<String>) {
+        (url.into(), alt.into(), link.map(Into::into))
+    }
+
+    #[test]
+    fn an_image_wrapped_in_a_link_keeps_the_link() {
+        let blocks =
+            blocks_of("[![build](https://img.example/b.svg)](https://ci.example.com)\n\nAfter.\n");
+        assert_eq!(
+            images(&blocks),
+            vec![image(
+                "https://img.example/b.svg",
+                "build",
+                Some("https://ci.example.com")
+            )]
+        );
+        assert_eq!(
+            blocks[1..],
+            [Block::Paragraph(vec![Inline::Text("After.".into())])],
+            "the alt text is not left behind as a link paragraph"
+        );
+    }
+
+    #[test]
+    fn an_unlinked_image_has_no_link_and_keeps_its_alt_text() {
+        let blocks = blocks_of("![a *nice* plot](plot.png)\n\nNext.\n");
+        assert_eq!(
+            images(&blocks),
+            vec![image("plot.png", "a nice plot", None)]
+        );
+        assert_eq!(
+            blocks[1..],
+            [Block::Paragraph(vec![Inline::Text("Next.".into())])]
+        );
+    }
+
+    #[test]
+    fn a_row_of_badges_keeps_each_link() {
+        let blocks = blocks_of(
+            "[![a](a.svg)](https://a.example) [![b](b.svg)](https://b.example)\n\nAfter.\n",
+        );
+        assert_eq!(
+            images(&blocks),
+            vec![
+                image("a.svg", "a", Some("https://a.example")),
+                image("b.svg", "b", Some("https://b.example")),
+            ]
+        );
+        assert_eq!(
+            blocks[2..],
+            [Block::Paragraph(vec![Inline::Text("After.".into())])],
+            "no blank paragraph is left between the badges"
+        );
+    }
+
+    #[test]
+    fn a_linked_image_in_a_list_item_keeps_its_link() {
+        let blocks = blocks_of("- [![x](x.svg)](docs/x.md)\n- two\n");
+        assert_eq!(
+            images(&blocks),
+            vec![image("x.svg", "x", Some("docs/x.md"))]
+        );
+        let Some(Block::List { items, .. }) = blocks.first() else {
+            panic!("a list: {blocks:?}");
+        };
+        assert_eq!(items.len(), 2, "{blocks:?}");
+    }
+
+    #[test]
+    fn a_badge_in_a_table_cell_does_not_end_the_table() {
+        let blocks = blocks_of(
+            "| Name | Status |\n|---|---|\n| one | [![ok](ok.svg)](https://ci.example) |\n| two | done |\n",
+        );
+        assert_eq!(
+            images(&blocks),
+            vec![image("ok.svg", "ok", Some("https://ci.example"))]
+        );
+        let table = blocks
+            .iter()
+            .find_map(|b| match b {
+                Block::Table { rows, .. } => Some(rows),
+                _ => None,
+            })
+            .expect("a table");
+        assert_eq!(table.len(), 2, "both rows stay in the table: {blocks:?}");
+    }
+
+    #[test]
+    fn a_heading_with_an_image_keeps_the_alt_text_as_its_title() {
+        let blocks = blocks_of("# ![logo](l.png)\n\ntext\n");
+        assert_eq!(images(&blocks), vec![image("l.png", "logo", None)]);
+        assert!(
+            blocks.iter().any(|b| matches!(
+                b,
+                Block::Heading { id, inlines, .. }
+                    if id == "logo" && inline_to_string(inlines) == "logo"
+            )),
+            "{blocks:?}"
+        );
+        let blocks = blocks_of("# ![logo](l.png) Title\n");
+        assert!(
+            blocks.iter().any(|b| matches!(
+                b,
+                Block::Heading { id, .. } if id == "logo-title"
+            )),
+            "the anchor stays logo-title: {blocks:?}"
+        );
+    }
+
+    #[test]
+    fn a_row_of_badges_in_a_list_item_leaves_no_blank_paragraph() {
+        let blocks = blocks_of("- [![a](a.svg)](u1) [![b](b.svg)](u2)\n- two\n");
+        let Some(Block::List { items, .. }) = blocks.first() else {
+            panic!("a list: {blocks:?}");
+        };
+        assert_eq!(
+            items[0].blocks,
+            vec![
+                Block::Image {
+                    url: "a.svg".into(),
+                    alt: "a".into(),
+                    link: Some("u1".into()),
+                },
+                Block::Image {
+                    url: "b.svg".into(),
+                    alt: "b".into(),
+                    link: Some("u2".into()),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn a_link_with_an_image_and_text_keeps_both() {
+        let blocks = blocks_of("[![logo](l.png) Project](https://p.example)\n");
+        assert_eq!(
+            images(&blocks),
+            vec![image("l.png", "logo", Some("https://p.example"))]
+        );
+        assert!(
+            blocks.iter().any(|b| matches!(
+                b,
+                Block::Paragraph(inlines) if matches!(
+                    inlines.as_slice(),
+                    [Inline::Link { url, children }]
+                        if url == "https://p.example"
+                            && children == &vec![Inline::Text(" Project".into())]
+                )
+            )),
+            "{blocks:?}"
+        );
     }
 
     #[test]

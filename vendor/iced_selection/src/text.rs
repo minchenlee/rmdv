@@ -785,6 +785,18 @@ pub struct Style {
     pub color: Option<Color>,
     /// The [`Color`] of text selections.
     pub selection: Color,
+    /// The fill behind a link under the pointer. The default, `None`,
+    /// underlines a hovered link instead.
+    pub link_hover: Option<LinkHover>,
+}
+
+/// The fill behind a hovered link of a [`Rich`] text.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LinkHover {
+    /// The fill color.
+    pub background: Color,
+    /// The corner radius of the fill.
+    pub radius: f32,
 }
 
 /// The theme catalog of a [`Text`].
@@ -821,6 +833,7 @@ pub fn default(theme: &Theme) -> Style {
     Style {
         color: None,
         selection: theme.extended_palette().primary.weak.color,
+        link_hover: None,
     }
 }
 

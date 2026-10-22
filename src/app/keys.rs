@@ -423,3 +423,44 @@ pub(super) fn reader_select_all_key(
         _ => None,
     }
 }
+
+/// The mouse side buttons go Back and Forward in navigation history.
+/// Presses only: the release would act a second time. `App::history_go`
+/// ignores them while a modal is open.
+pub(super) fn mouse_history_message(event: &iced::Event) -> Option<Message> {
+    use iced::mouse::{Button, Event};
+    match event {
+        iced::Event::Mouse(Event::ButtonPressed(Button::Back)) => {
+            Some(Message::HistoryGo(super::HistoryDir::Back))
+        }
+        iced::Event::Mouse(Event::ButtonPressed(Button::Forward)) => {
+            Some(Message::HistoryGo(super::HistoryDir::Forward))
+        }
+        _ => None,
+    }
+}
+
+/// ⌘[ goes Back and ⌘] goes Forward (Ctrl off macOS), as in Safari and
+/// Finder. The physical bracket keys match too, for layouts that put
+/// another character there.
+pub(super) fn history_key_message(
+    key: &iced::keyboard::Key,
+    physical: iced::keyboard::key::Physical,
+    modifiers: iced::keyboard::Modifiers,
+) -> Option<Message> {
+    use iced::keyboard::key::{Code, Physical};
+    let primary = modifiers.command() || modifiers.control();
+    if !primary || modifiers.shift() || modifiers.alt() {
+        return None;
+    }
+    let dir = match (key.as_ref(), physical) {
+        (iced::keyboard::Key::Character("["), _) | (_, Physical::Code(Code::BracketLeft)) => {
+            super::HistoryDir::Back
+        }
+        (iced::keyboard::Key::Character("]"), _) | (_, Physical::Code(Code::BracketRight)) => {
+            super::HistoryDir::Forward
+        }
+        _ => return None,
+    };
+    Some(Message::HistoryGo(dir))
+}

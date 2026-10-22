@@ -47,6 +47,8 @@ pub struct Rich<
     on_link_click: Option<Box<dyn Fn(Link) -> Message + 'a>>,
     on_link_hover: Option<Box<dyn Fn(Link) -> Message + 'a>>,
     on_hover_lost: Option<Box<dyn Fn() -> Message + 'a>>,
+    on_link_enter: Option<Box<dyn Fn(Link, u64) -> Message + 'a>>,
+    on_link_leave: Option<Box<dyn Fn(Link, u64) -> Message + 'a>>,
 }
 
 impl<'a, Link, Message, Theme, Renderer>
@@ -74,6 +76,8 @@ where
             on_link_click: None,
             on_link_hover: None,
             on_hover_lost: None,
+            on_link_enter: None,
+            on_link_leave: None,
         }
     }
 
@@ -187,6 +191,62 @@ where
         self
     }
 
+    /// Sets the message that will be produced, with the link and the id
+    /// of this widget's state, when the pointer enters a link of the
+    /// [`Rich`] text. It takes precedence over [`Rich::on_link_hover`].
+    /// The id tells apart two widgets that hold the same link.
+    pub fn on_link_enter(
+        mut self,
+        on_link_enter: impl Fn(Link, u64) -> Message + 'a,
+    ) -> Self {
+        self.on_link_enter = Some(Box::new(on_link_enter));
+        self
+    }
+
+    /// Sets the message that will be produced, with the link that was
+    /// hovered and the id of this widget's state, when the pointer leaves
+    /// a link of the [`Rich`] text. It takes precedence over
+    /// [`Rich::on_hover_lost`].
+    pub fn on_link_leave(
+        mut self,
+        on_link_leave: impl Fn(Link, u64) -> Message + 'a,
+    ) -> Self {
+        self.on_link_leave = Some(Box::new(on_link_leave));
+        self
+    }
+
+    /// Publishes the hover message for a change of the hovered link span:
+    /// entering `now`'s link, or else leaving `before`'s.
+    fn publish_link_change(
+        &self,
+        id: u64,
+        before: Option<usize>,
+        now: Option<usize>,
+        shell: &mut Shell<'_, Message>,
+    ) {
+        let link_of = |index: Option<usize>| {
+            self.spans
+                .as_ref()
+                .as_ref()
+                .get(index?)
+                .and_then(|span| span.link.clone())
+        };
+        if let Some(link) = link_of(now) {
+            if let Some(on_link_enter) = self.on_link_enter.as_deref() {
+                shell.publish(on_link_enter(link, id));
+            } else if let Some(on_link_hovered) = self.on_link_hover.as_deref()
+            {
+                shell.publish(on_link_hovered(link));
+            }
+        } else if let Some(on_link_leave) = self.on_link_leave.as_deref() {
+            if let Some(link) = link_of(before) {
+                shell.publish(on_link_leave(link, id));
+            }
+        } else if let Some(on_hover_lost) = self.on_hover_lost.as_deref() {
+            shell.publish(on_hover_lost());
+        }
+    }
+
     /// Sets the message that will be produced when a link of the [`Rich`] text
     /// is no longer hovered.
     pub fn on_hover_lost_with(
@@ -245,6 +305,8 @@ pub struct State<Link> {
     keyboard_modifiers: keyboard::Modifiers,
     visual_lines_bounds: Vec<core::Rectangle>,
     external: Option<Selection>,
+    /// Unique per state: the source of this widget's link messages.
+    id: u64,
 }
 
 impl<Link> State<Link> {
@@ -444,6 +506,11 @@ where
             keyboard_modifiers: keyboard::Modifiers::default(),
             visual_lines_bounds: Vec::new(),
             external: None,
+            id: {
+                use std::sync::atomic::{AtomicU64, Ordering};
+                static NEXT_ID: AtomicU64 = AtomicU64::new(1);
+                NEXT_ID.fetch_add(1, Ordering::Relaxed)
+            },
         })
     }
 
@@ -497,6 +564,10 @@ where
         for (index, span) in self.spans.as_ref().as_ref().iter().enumerate() {
             let is_hovered_link = self.on_link_click.is_some()
                 && Some(index) == state.hovered_link;
+            // With a hover fill, a hovered link is tinted; without one it
+            // gets an underline, as upstream draws it.
+            let hover_underline =
+                is_hovered_link && style.link_hover.is_none();
 
             if span.highlight.is_some()
                 || span.underline
@@ -505,6 +576,27 @@ where
             {
                 let translation = layout.position() - Point::ORIGIN;
                 let regions = state.paragraph.span_bounds(index);
+
+                if let Some(hover) =
+                    style.link_hover.filter(|_| is_hovered_link)
+                {
+                    for bounds in &regions {
+                        renderer.fill_quad(
+                            renderer::Quad {
+                                bounds: Rectangle::new(
+                                    bounds.position() - Vector::new(2.0, 0.0),
+                                    bounds.size() + Size::new(4.0, 0.0),
+                                ) + translation,
+                                border: core::Border {
+                                    radius: hover.radius.into(),
+                                    ..Default::default()
+                                },
+                                ..Default::default()
+                            },
+                            hover.background,
+                        );
+                    }
+                }
 
                 if let Some(highlight) = span.highlight {
                     for bounds in &regions {
@@ -529,7 +621,7 @@ where
                     }
                 }
 
-                if span.underline || span.strikethrough || is_hovered_link {
+                if span.underline || span.strikethrough || hover_underline {
                     let size = span
                         .size
                         .or(self.size)
@@ -551,7 +643,7 @@ where
                             size.0 + (line_height.0 - size.0) / 2.0,
                         );
 
-                    if span.underline || is_hovered_link {
+                    if span.underline || hover_underline {
                         for bounds in &regions {
                             renderer.fill_quad(
                                 renderer::Quad {
@@ -637,6 +729,13 @@ where
             && state.selection.is_empty()
             && state.dragging.is_none()
         {
+            // Scrolled out of view under the pointer (a jump moves it
+            // in one step): it no longer hovers its link.
+            if let Some(index) = state.hovered_link.take() {
+                state.is_hovered = false;
+                self.publish_link_change(state.id, Some(index), None, shell);
+                shell.request_redraw();
+            }
             return;
         }
 
@@ -897,25 +996,21 @@ where
             _ => {}
         }
 
+        // Hover messages go out only when the hovered link changes: once on
+        // entering a link and once on leaving it, never per pointer move.
+        if state.hovered_link != hovered_link_before {
+            self.publish_link_change(
+                state.id,
+                hovered_link_before,
+                state.hovered_link,
+                shell,
+            );
+        }
+
         if state.is_hovered != was_hovered
             || state.selection != selection_before
             || state.hovered_link != hovered_link_before
         {
-            if let Some(span) = state.hovered_link {
-                if let Some((link, on_link_hovered)) = self
-                    .spans
-                    .as_ref()
-                    .as_ref()
-                    .get(span)
-                    .and_then(|span| span.link.clone())
-                    .zip(self.on_link_hover.as_deref())
-                {
-                    shell.publish(on_link_hovered(link));
-                }
-            } else if let Some(on_hover_lost) = self.on_hover_lost.as_deref() {
-                shell.publish(on_hover_lost());
-            }
-
             shell.request_redraw();
         }
     }

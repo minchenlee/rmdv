@@ -323,6 +323,7 @@ impl App {
         self.mindmap_panel_shown = self.mindmap_selected;
         self.mindmap_panel_open = slot.context.mindmap_panel_open;
         self.finish_pending_quick_slot_restore();
+        self.history.arriving = None;
         self.quick_slot_body_restore = Some(slot.context.body_position);
         if path == self.file.as_deref().unwrap_or(path) {
             let max = self

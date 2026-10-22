@@ -224,6 +224,7 @@ pub(in crate::app) fn shortcuts_overlay<'a>(pal: Palette) -> Element<'a, Message
         (
             "Navigation",
             &[
+                ("⌘[ ⌘]", "Go Back / Forward"),
                 ("⌘F", "Find in Document"),
                 ("⌘⇧F", "Search All Files"),
                 ("⌘A ⌘C", "Copy Whole Document"),

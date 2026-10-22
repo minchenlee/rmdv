@@ -51,7 +51,8 @@ pub(in crate::app) fn toolbar<'a>(
     let sidebar_visible = !full_mindmap && app.sidebar_open && app.workspace.is_some();
 
     // Left: the sidebar toggle while the sidebar is hidden (its header has
-    // its own Hide button). Back / Forward join here with navigation history.
+    // its own Hide button), then Back and Forward through navigation
+    // history, each disabled while it has nowhere to go.
     let mut left = irow![].spacing(2).align_y(iced::Alignment::Center);
     if app.workspace.is_some() && !full_mindmap && !sidebar_visible {
         left = left.push(action_tip(
@@ -63,6 +64,23 @@ pub(in crate::app) fn toolbar<'a>(
             ),
             "Show Sidebar",
             Some("⌘B"),
+            Position::Bottom,
+            pal,
+        ));
+    }
+    for (dir, glyph, action, key) in [
+        (HistoryDir::Back, ic::CHEVRON_LEFT, "Go Back", "⌘["),
+        (HistoryDir::Forward, ic::CHEVRON_RIGHT, "Go Forward", "⌘]"),
+    ] {
+        left = left.push(action_tip(
+            tool_button(
+                glyph,
+                app.can_go(dir).then_some(Message::HistoryGo(dir)),
+                false,
+                pal,
+            ),
+            action,
+            Some(key),
             Position::Bottom,
             pal,
         ));

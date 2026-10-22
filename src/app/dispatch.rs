@@ -8,7 +8,12 @@ impl App {
         if self.settings_open && msg.leaves_settings() {
             self.settings_open = false;
         }
+        // Only while a link pill shows: the snapshot clones the path.
+        let link_page = self.hovered_link.is_some().then(|| self.link_page());
         let mut task = self.dispatch_message(msg);
+        if link_page.is_some_and(|page| page != self.link_page()) {
+            self.hovered_link = None;
+        }
         // ⌘Q reads this from AppKit, outside the update loop.
         crate::macos_quit::set_unsaved(self.dirty);
         self.sync_toolbar_band();
@@ -457,6 +462,7 @@ impl App {
                 Task::none()
             }
             Message::QuickSlotRestorePending => self.apply_pending_quick_slot_restore(),
+            Message::HistoryGo(dir) => self.history_go(dir),
             Message::QuickSlotFileLoaded {
                 index,
                 slot,
@@ -2640,39 +2646,68 @@ impl App {
                     if let Some(line) =
                         fragment.and_then(|f| line_for_fragment(&self.source, f, is_tex))
                     {
+                        // A jump in the document is a stop, as in a browser.
+                        self.record_history();
                         return Task::done(goto_line_message(line));
                     }
                     return Task::none();
                 }
-                // Local markdown file: open it in-app, then navigate to the
-                // fragment (if any) once it has loaded.
-                if !is_external_link(target) {
-                    if let Some(path) = resolve_image_path(target, self.file.as_deref()) {
-                        let is_md = path.extension().and_then(|e| e.to_str()).is_some_and(|e| {
-                            e.eq_ignore_ascii_case("md")
-                                || e.eq_ignore_ascii_case("markdown")
-                                || e.eq_ignore_ascii_case("tex")
-                        });
-                        if is_md && path.is_file() {
-                            if let Some(blocked) = self.block_file_open_if_dirty(&path) {
-                                return blocked;
-                            }
-                            if let Some(f) = fragment {
-                                self.pending_nav = Some(PendingNav {
-                                    fragment: Some(f.to_string()),
-                                    ..Default::default()
-                                });
-                            }
-                            return Task::done(Message::Open(path));
+                // ⌘-click opens a web link behind rmdv (macOS `open -g`).
+                if is_external_link(target) {
+                    let background = cfg!(target_os = "macos") && self.quick_slots_modifier_held;
+                    self.open_externally(url, background);
+                    return Task::none();
+                }
+                let Some(path) = resolve_image_path(target, self.file.as_deref()) else {
+                    // A relative link with no open file to resolve it from.
+                    self.open_externally(url, false);
+                    return Task::none();
+                };
+                if !path.exists() {
+                    let name = path
+                        .file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_else(|| target.to_string());
+                    return self.show_toast(format!("File not found: {name}"));
+                }
+                // A file the sidebar would open: open it in-app, then
+                // navigate to the fragment (if any) once it has loaded.
+                if link_opens_in_app(&path) && path.is_file() {
+                    // `this.md#part` from inside this.md jumps in place,
+                    // like a bare `#part`.
+                    let same_file = self.file.as_ref().is_some_and(|current| {
+                        canonicalize_existing_path(current.clone())
+                            == canonicalize_existing_path(path.clone())
+                    });
+                    if same_file {
+                        let is_tex = is_tex_path(self.file.as_deref());
+                        if let Some(line) =
+                            fragment.and_then(|f| line_for_fragment(&self.source, f, is_tex))
+                        {
+                            self.record_history();
+                            return Task::done(goto_line_message(line));
                         }
                     }
+                    if let Some(blocked) = self.block_file_open_if_dirty(&path) {
+                        return blocked;
+                    }
+                    if let Some(f) = fragment {
+                        self.pending_nav = Some(PendingNav {
+                            fragment: Some(f.to_string()),
+                            ..Default::default()
+                        });
+                    }
+                    return Task::done(Message::Open(path));
                 }
-                let _ = open::that_detached(&url);
+                // A local file rmdv cannot show (an image, a folder): its
+                // default app opens it by the resolved path.
+                self.open_externally(path.to_string_lossy().into_owned(), false);
                 Task::none()
             }
             Message::FileLoaded(Err(e)) => {
                 self.cancel_refresh_tracking();
                 self.pending_nav = None;
+                self.history.pending = None;
                 self.error = Some(e);
                 Task::none()
             }
@@ -3296,6 +3331,11 @@ impl App {
                 }
                 self.body_viewport = Some(v);
                 self.last_scroll_at = Some(std::time::Instant::now());
+                if self.quick_slot_body_restore.is_none() {
+                    // No restore waits on this report: the viewport is
+                    // where the reader is.
+                    self.history.arriving = None;
+                }
                 let checkpoint = if self.quick_slot_body_restore.is_some() {
                     Task::none()
                 } else {
@@ -3724,6 +3764,25 @@ impl App {
                     return Task::batch([assets, scroll, followup]);
                 }
                 Task::batch([assets, followup])
+            }
+            Message::LinkHovered(url, source) => {
+                let label =
+                    link_destination_label(&url, self.file.as_deref(), self.workspace.as_deref());
+                self.hovered_link = Some(HoveredLink { url, label, source });
+                Task::none()
+            }
+            Message::LinkLeft(url, source) => {
+                // Moving straight from one link to another can report the
+                // new link's enter before the old one's leave, even when
+                // both links go to the same place.
+                if self
+                    .hovered_link
+                    .as_ref()
+                    .is_some_and(|h| h.url == url && h.source == source)
+                {
+                    self.hovered_link = None;
+                }
+                Task::none()
             }
             Message::Noop => Task::none(),
             Message::ToggleAutoFocusOnNav => {

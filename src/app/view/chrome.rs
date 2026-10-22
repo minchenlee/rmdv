@@ -88,6 +88,46 @@ pub(in crate::app) fn status_footer<'a>(words: usize, pal: Palette) -> Element<'
         .into()
 }
 
+/// The destination of the link under the pointer, bottom left of the
+/// reader, as a browser shows it. It takes no pointer events, so the link
+/// under it stays hovered.
+pub(in crate::app) fn link_pill<'a>(label: &str, pal: Palette, left: f32) -> Element<'a, Message> {
+    use iced::widget::{container, text as text_w};
+    let pill = container(
+        text_w(label.to_string())
+            .size(12.0)
+            .color(pal.fg)
+            .wrapping(iced::widget::text::Wrapping::None),
+    )
+    .padding([4, 10])
+    .clip(true)
+    .style(move |_| container::Style {
+        background: Some(pal.popover().into()),
+        border: iced::Border {
+            color: pal.border(),
+            width: 1.0,
+            radius: theme::radius::PILL.into(),
+        },
+        shadow: theme::shadow::HINT,
+        ..Default::default()
+    });
+    container(pill)
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .padding(Padding {
+            top: 0.0,
+            right: LINK_PILL_RIGHT_ROOM,
+            bottom: 10.0,
+            left: left + 12.0,
+        })
+        .align_x(iced::alignment::Horizontal::Left)
+        .align_y(iced::alignment::Vertical::Bottom)
+        .into()
+}
+
+/// Room kept on the right of the link pill for the word-count footer.
+const LINK_PILL_RIGHT_ROOM: f32 = 220.0;
+
 pub(in crate::app) fn toast_overlay<'a>(toast: &Toast, pal: Palette) -> Element<'a, Message> {
     use iced::widget::{button, container, text as text_w};
     let mut content = irow![text_w(toast.text.clone()).size(13.5).color(pal.fg)]

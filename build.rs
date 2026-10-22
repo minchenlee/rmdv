@@ -7,7 +7,11 @@ use std::fs;
 use std::path::PathBuf;
 
 fn main() {
-    let dir: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+    // Read at run time, not with `env!`: worktrees share one target dir, and a
+    // compiled build script would otherwise keep a deleted worktree's path and
+    // embed no themes.
+    let manifest_dir = env::var("CARGO_MANIFEST_DIR").expect("cargo sets CARGO_MANIFEST_DIR");
+    let dir: PathBuf = PathBuf::from(manifest_dir)
         .join("assets")
         .join("themes")
         .join("base16");
