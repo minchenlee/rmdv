@@ -58,6 +58,27 @@ pub struct Prefs {
     /// The statistic the status footer pill shows; a click cycles it.
     #[serde(default, deserialize_with = "lenient_footer_stat")]
     pub footer_stat: FooterStat,
+    /// The main window's size and position (and whether it was maximized),
+    /// saved after a resize or move settles and on close; restored on
+    /// launch. Full screen is not saved.
+    #[serde(
+        default,
+        deserialize_with = "lenient_window",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub window: Option<crate::window_frame::WindowFrame>,
+}
+
+/// A missing or malformed window frame falls back to none (the default
+/// launch frame) instead of failing the whole file.
+fn lenient_window<'de, D>(
+    deserializer: D,
+) -> Result<Option<crate::window_frame::WindowFrame>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    Ok(crate::window_frame::WindowFrame::from_json(&value))
 }
 
 /// The statistic the status footer pill shows.
@@ -254,6 +275,7 @@ impl Default for Prefs {
             toolbar: ToolbarMode::Always,
             sidebar_width: default_sidebar_width(),
             footer_stat: FooterStat::default(),
+            window: None,
         }
     }
 }
@@ -445,6 +467,53 @@ mod tests {
         })
         .unwrap();
         assert!(json.contains(r#""mindmap_scroll_pans":true"#), "{json}");
+    }
+
+    #[test]
+    fn the_window_frame_loads_leniently_and_round_trips() {
+        use crate::window_frame::WindowFrame;
+        // A prefs file from before the frame was saved.
+        let prefs: Prefs = serde_json::from_str(r#"{"show_footer":false}"#).unwrap();
+        assert_eq!(prefs.window, None);
+        assert_eq!(Prefs::default().window, None);
+        let prefs: Prefs = serde_json::from_str(
+            r#"{"window":{"width":900,"height":600,"x":40,"y":80,"maximized":true}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            prefs.window,
+            Some(WindowFrame {
+                width: 900.0,
+                height: 600.0,
+                x: Some(40.0),
+                y: Some(80.0),
+                maximized: true,
+            })
+        );
+        // A malformed frame must not reset other preferences.
+        for bad in [r#""big""#, "7", "null", r#"{"width":"x","height":600}"#] {
+            let json = format!(r#"{{"window":{bad},"show_footer":false}}"#);
+            let prefs: Prefs = serde_json::from_str(&json).unwrap_or_else(|e| panic!("{bad}: {e}"));
+            assert_eq!(prefs.window, None, "{bad}");
+            assert!(!prefs.show_footer, "{bad}");
+        }
+        // No frame yet: nothing written. A frame round-trips.
+        let json = serde_json::to_string(&Prefs::default()).unwrap();
+        assert!(!json.contains(r#""window":"#), "{json}");
+        let frame = WindowFrame {
+            width: 1000.0,
+            height: 700.0,
+            x: Some(-20.0),
+            y: Some(30.0),
+            maximized: false,
+        };
+        let json = serde_json::to_string(&Prefs {
+            window: Some(frame),
+            ..Prefs::default()
+        })
+        .unwrap();
+        let prefs: Prefs = serde_json::from_str(&json).unwrap();
+        assert_eq!(prefs.window, Some(frame), "{json}");
     }
 
     use crate::quick_slots::{QuickSlot, SlotContext, WorkspaceSlots};

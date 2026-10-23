@@ -13,6 +13,7 @@ impl App {
         // Only while a context menu is open.
         let menu_scope = self.context_menu.is_some().then(|| self.menu_scope());
         let outline_was_shown = self.outline_shown();
+        let menu_inert = msg.leaves_menu_unchanged();
         let mut task = self.dispatch_message(msg);
         // A menu closes when what is under it changes: an overlay, a view,
         // a modal, the sidebar.
@@ -41,7 +42,7 @@ impl App {
         }
         // ⌘Q reads this from AppKit, outside the update loop.
         crate::macos_quit::set_unsaved(self.dirty);
-        // So does the two-finger swipe bridge.
+        // The two-finger swipe bridge reads its state from AppKit too.
         crate::native_swipe::set_armed(self.swipe_directions());
         self.sync_toolbar_band();
         self.sync_sidebar_peek();
@@ -50,6 +51,12 @@ impl App {
         // so it does not pop back later.
         if self.quick_slots_pinned && !self.quick_slots_rail_allowed() {
             self.quick_slots_pinned = false;
+        }
+        // So does the menu bar, after the state above settled. It is pushed
+        // only when it changed; pointer and scroll reports cannot change it
+        // and skip the computation.
+        if !menu_inert || !self.menu_pushed.synced() {
+            self.sync_native_menu();
         }
         if let Some(scroll) = self.sync_outline_shown(outline_was_shown) {
             task = Task::batch([task, scroll]);
@@ -988,6 +995,7 @@ impl App {
                 Task::none()
             }
             Message::ToolbarView(target) => self.toolbar_view(target),
+            Message::NativeMenu(tag) => self.native_menu_click(tag),
             // A fullscreen window neither moves nor zooms, as on macOS.
             Message::WindowDrag if !self.window_fullscreen => {
                 iced::window::latest().and_then(iced::window::drag)
@@ -2322,8 +2330,25 @@ impl App {
                 Task::batch([
                     self.refresh_window_mode_after_native_transition(id),
                     preview_geometry,
+                    self.note_window_frame_change(id),
                 ])
             }
+            Message::WindowMoved(id, position) => {
+                self.window_position = Some(position);
+                // A move can precede a full screen transition, as before.
+                // The outer `update` runs the epilogue once, after this.
+                let mode = self.dispatch_message(Message::RefreshWindowMode(id));
+                Task::batch([mode, self.note_window_frame_change(id)])
+            }
+            Message::WindowFrameSettled(id) => self.window_frame_settle_fired(id),
+            Message::WindowFrameSampled {
+                fullscreen,
+                maximized,
+            } => {
+                self.save_window_frame(fullscreen, maximized);
+                Task::none()
+            }
+            Message::WindowMonitorSize(id, monitor) => self.fit_window_on_monitor(id, monitor),
             Message::WindowUnfocused(id) => {
                 self.context_menu = None;
                 // A selection drag's release can go to another app; the
@@ -2343,16 +2368,31 @@ impl App {
                 // visible window on current macOS releases.
                 crate::native_pinch::install();
                 crate::native_swipe::install();
+                // The menu bar replaces winit's app menu once the app has
+                // finished launching.
+                self.install_native_menu();
                 if self.glass_capable && self.glass_window.is_none() {
                     // `update` pushes the glass state to this window next.
                     self.glass_window = Some(id);
                 }
                 self.refresh_window_mode_after_native_transition(id)
             }
-            Message::WindowOpened(id, size) => {
-                // A resize may already have reported a newer size.
+            Message::WindowOpened(id, size, position) => {
+                // A resize or move may already have reported a newer frame.
+                // Opening is not a change: nothing is saved.
                 self.window_size.get_or_insert(size);
-                self.update(Message::RefreshWindowMode(id))
+                if let Some(position) = position {
+                    self.window_position.get_or_insert(position);
+                }
+                let mode = self.dispatch_message(Message::RefreshWindowMode(id));
+                // macOS fitted the frame to a screen before the window
+                // opened; elsewhere the monitor is known only now.
+                if cfg!(target_os = "macos") {
+                    return mode;
+                }
+                let monitor = iced::window::monitor_size(id)
+                    .map(move |monitor| Message::WindowMonitorSize(id, monitor));
+                Task::batch([mode, monitor])
             }
             Message::RefreshWindowModeSettled(id) => self.window_mode_settle_fired(id),
             Message::WindowModeChanged(mode) => {

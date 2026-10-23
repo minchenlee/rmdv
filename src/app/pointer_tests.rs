@@ -1761,3 +1761,7 @@ mod hit_targets;
 // --- P7: footer pill, shortcut sheet, palette caps, and clear buttons -----
 
 mod chrome_affordances;
+
+// --- P8: window frame persistence ------------------------------------------
+
+mod window_frame;

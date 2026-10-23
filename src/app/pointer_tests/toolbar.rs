@@ -945,6 +945,7 @@ fn window_size_is_known_from_the_moment_the_window_opens() {
     let _ = app.update(Message::WindowOpened(
         iced::window::Id::unique(),
         Size::new(900.0, 600.0),
+        None,
     ));
     assert_eq!(app.window_size, Some(Size::new(900.0, 600.0)));
 }

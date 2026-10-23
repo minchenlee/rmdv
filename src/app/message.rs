@@ -395,6 +395,8 @@ pub enum Message {
     SidebarPeekHideAfter(u64),
     /// A toolbar segment: show this view.
     ToolbarView(ToolbarView),
+    /// A click on a native menu bar item, by its tag (MDV-048 P8).
+    NativeMenu(u32),
     /// A press on the toolbar's blank space or the sidebar header: move the
     /// window, as a press on a titlebar does.
     WindowDrag,
@@ -487,6 +489,19 @@ pub enum Message {
         result: Result<(PathBuf, tree::ExpandedFolderSnapshot), String>,
     },
     WindowResized(iced::window::Id, iced::Size),
+    /// The window moved; the point is its frame's top-left corner.
+    WindowMoved(iced::window::Id, iced::Point),
+    /// The window frame's settle timer fired (see `WINDOW_FRAME_SETTLE`).
+    WindowFrameSettled(iced::window::Id),
+    /// The window's state once its frame settled: full screen keeps the
+    /// saved frame; maximized keeps the normal frame under the zoom.
+    WindowFrameSampled {
+        fullscreen: bool,
+        maximized: bool,
+    },
+    /// The logical size of the monitor the window opened on (asked off
+    /// macOS only, where no screen list exists before the window opens).
+    WindowMonitorSize(iced::window::Id, Option<iced::Size>),
     /// Files are dragged over the window (true) or left it (false).
     DropHover(bool),
     /// A file or folder was dropped on the window.
@@ -505,7 +520,7 @@ pub enum Message {
     RefreshWindowMode(iced::window::Id),
     /// The window opened at this inner size (the toolbar centers the file
     /// name on it before any resize).
-    WindowOpened(iced::window::Id, iced::Size),
+    WindowOpened(iced::window::Id, iced::Size, Option<iced::Point>),
     RefreshWindowModeSettled(iced::window::Id),
     WindowModeChanged(iced::window::Mode),
     /// Palette command: capture the window to a timestamped PNG on the Desktop.

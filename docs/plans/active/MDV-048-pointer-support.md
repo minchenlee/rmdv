@@ -107,6 +107,38 @@ Audit (read-only, 2026-10-22, `main@75b637c`, every item with file:line):
   only.
 - P7: the reader scrollbar fades only in the reader; the sidebar, panel,
   and table scrollbars keep the instant show and hide.
+- P8: menu bar app items show their shortcuts only while their menu is
+  open (`menuWillOpen:` sets the key equivalent, `menuDidClose:` clears
+  it), so every key still reaches the window and keeps its per-focus
+  behavior. An `NSMenuDelegate` that answers
+  `menuHasKeyEquivalent:forEvent:target:action:` with NO did not stop
+  AppKit: it still found the item and took the key, even for a disabled
+  item (AppKit test, 2026-10-24). Only Hide ⌘H, Hide Others ⌥⌘H and
+  Quit ⌘Q (the keys winit's menu already took) take their keys from the
+  menu.
+- P8: Enter Full Screen has no key equivalent: a native key is permanent,
+  and ⌃⌘F stays Find in Document through the Control-as-Command alias
+  (no existing shortcut changes). Full screen stays on the green button
+  and the menu click. Making ⌃⌘F the macOS full-screen key needs an owner
+  decision. ⌘M stays Mind Map (no Minimize key) and ⌘W stays Close Slot.
+- P8: a menu click runs what the item's shortcut runs on the surface that
+  has the keys now, and the item is disabled where the key does
+  something else. Edit > Copy copies the editor's selection or a
+  whole-document reader selection; a partial reader selection still
+  copies with ⌘C only.
+- P8: the main window's frame (size, position, zoomed) is saved in prefs
+  once it has been still for 500 ms after a move or resize, and on close;
+  full screen is never saved or restored (a zoomed window keeps its normal
+  frame under the zoom; with no normal frame saved yet it saves the launch
+  size, centered, so the zoomed size never becomes the normal one). On launch, macOS reads the screens' visible areas
+  from AppKit before the window opens (it answers before `NSApplication`
+  exists) and puts the window fully on the screen it overlaps most, or the
+  nearest one, at least 640×420. Other platforms have no screen list
+  before the window opens, so they restore the size and center the window;
+  once it is open, a window larger than its monitor (less 16×80 for the
+  frame, title bar and taskbar) shrinks to fit and stays centered.
+  A close cannot ask the window, so a zoom or unzoom in the last 500 ms
+  before a close is saved with the previous zoom state.
 
 ## Phases (one branch and PR each, stacked)
 
@@ -153,6 +185,10 @@ Per phase:
 - 2026-10-24: P7 sidebar and chrome on `feat/pointer-p7`: the outline marks the section at the reader's top line (recomputed only when the top block changes) and follows it while the pointer is off the outline; sidebar divider hover line, width saved in prefs (lenient), drag below the minimum collapses and a re-open restores the width, a lost release ends the drag; a toolbar Quick Slots button pins the rail as a popover (outside press, Esc, or a choice closes it; unassignable empty slots look disabled); ghost buttons, sidebar tabs, and slot chips 28 px with pressed states, toast buttons answer hover and press, whole-row Settings switches; the footer pill cycles its statistic (saved), the shortcut sheet has an X, clickable rows, and the missing ⌘, ⌘⇧M ⌘Z j/k Space ←→ rows (checked against the palette), palette shortcuts are right-aligned key caps that typing does not match, and the palette, finder, and vault fields have clear buttons. lib 939 passed, integration all passed.
 - 2026-10-24: P7 review on `feat/pointer-p7`: 13 findings (9 distinct after duplicates), all fixed red-first: losing window focus stops the drag auto-scroll and drops the held press; a Shift press beside the text lets a copy button, image, or chevron take it first (a Shift press on text, links included, still extends); the outline scrolls to its mark when shown again and an outline or scrollbar strip removed under the pointer drops its hover (one check after every update); the pinned Quick Slots popover unpins whenever the rail may not show, and its padding takes presses (`opaque`); the wide-table shade draws in its own layer above the table (pixel test); the copy check is keyed by block, not by text; word drags keep the last four lines' segments and one `CFStringTokenizer` per thread (200 moves over a 1000-character Chinese line: 11.7 s before, under 0.1 s after). lib 949 passed, integration all passed.
 - 2026-10-24: P6 trial build: Release dry run 39991024040, notarized (PR #76). P7 verified by the orchestrator: lib 949 passed, integration all passed, release build, Linux title bar simulation 338 passed with the 1 expected macOS-only failure.
+- 2026-10-24: P8 done on `feat/pointer-p8` (stacked on P7): native macOS menu bar (rmdv, File with Open Recent, Edit, View, Go with Quick Slots, Window, Help) built once with `objc2-app-kit` beside `native_pinch::install`; one target sends item tags through a subscription (`Message::NativeMenu`); a click runs the shortcut's `key_message` on the current surface; item state, slot titles and the recent list are pushed only on change and applied in `validateMenuItem:` / `menuNeedsUpdate:`. AppKit test target `native_menu_appkit` (no window). lib 966 passed, integration all passed.
+- 2026-10-24: P8 window frame persistence on `feat/pointer-p8`: size, position and zoom saved once per settled move or resize (500 ms) and on close, lenient load, restore clamped onto a visible screen (macOS) or centered (elsewhere); full screen not restored. AppKit test target `window_frame_appkit` (no window); a minimized (0×0) window keeps the saved frame. lib 986 passed, integration all passed.
+- 2026-10-24: P8 review on `feat/pointer-p8`: 8 findings, all fixed red-first: Edit items stay disabled while the vault page or Settings covers the Zen editor; Enter Full Screen has no key, so ⌃⌘F stays Find in Document; hover, scroll and tick messages skip the menu computation, and `WindowMoved` runs the update epilogue once; a first zoomed save keeps the launch size as the normal frame; off macOS a window larger than its monitor shrinks to fit once it opens. lib 992 passed, integration all passed.
+- 2026-10-24: P7 trial build: Release dry run 40024937189, macOS aarch64 notarized (PR #77). The first run failed on the Linux CJK double-click test (no CJK font sets glyph widths there), fixed in the P7 test and carried onto P8. macOS x86_64 failed twice on `hdiutil detach` "Resource busy" after notarization, a release-script issue outside MDV-048. P8 verified by the orchestrator: lib 992 passed, integration all passed, release build, Linux title bar simulation 348 passed with the 1 expected macOS-only failure.
 
 ## Decision log
 

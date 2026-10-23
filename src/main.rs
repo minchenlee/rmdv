@@ -97,9 +97,13 @@ fn launch_instance(initial: Option<ipc::Request>) -> iced::Result {
         None => None,
     };
 
-    let window = rmdv::app::window_settings(rmdv::macos_vibrancy::launch_transparent(
-        rmdv::prefs::load().glass,
-    ));
+    // The saved window frame is restored here: on macOS onto the screens'
+    // visible areas; elsewhere at its size, centered.
+    let prefs = rmdv::prefs::load();
+    let window = rmdv::app::launch_window_settings(
+        rmdv::macos_vibrancy::launch_transparent(prefs.glass),
+        prefs.window,
+    );
 
     let mut app = iced::application(
         move || {
