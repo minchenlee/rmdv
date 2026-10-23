@@ -17,6 +17,7 @@ pub enum SettingsRow {
     Footer,
     HiddenFiles,
     MindmapAutocenter,
+    MindmapScrollPans,
     AutoFocus,
     Cli,
     ThemesFolder,
@@ -39,6 +40,7 @@ impl SettingsRow {
             Footer,
             HiddenFiles,
             MindmapAutocenter,
+            MindmapScrollPans,
             AutoFocus,
         ]);
         if crate::cli_install::install_path().is_some() {
@@ -122,6 +124,7 @@ impl App {
             SettingsRow::Footer => Message::ToggleFooter,
             SettingsRow::HiddenFiles => Message::ToggleHidden,
             SettingsRow::MindmapAutocenter => Message::ToggleMindmapAutocenter,
+            SettingsRow::MindmapScrollPans => Message::ToggleMindmapScrollPans,
             SettingsRow::AutoFocus => Message::ToggleAutoFocusOnNav,
             SettingsRow::Cli if crate::cli_install::should_offer() => Message::InstallCli,
             SettingsRow::Cli => return Task::none(),
@@ -181,6 +184,10 @@ impl App {
             SettingsRow::MindmapAutocenter => {
                 switch(self.mindmap_autocenter, Message::ToggleMindmapAutocenter)
             }
+            SettingsRow::MindmapScrollPans => switch(
+                self.prefs.mindmap_scroll_pans,
+                Message::ToggleMindmapScrollPans,
+            ),
             SettingsRow::AutoFocus => {
                 switch(self.prefs.auto_focus_on_nav, Message::ToggleAutoFocusOnNav)
             }

@@ -959,3 +959,170 @@ fn a_document_mindmap_activation_reads_its_own_block_or_nothing() {
     assert_eq!(app.history.back.len(), back + 1, "one stop for the jump");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+// --- Wheel and drag (MDV-048 P5) -----------------------------------------
+
+fn settings_row_index(row: SettingsRow) -> usize {
+    SettingsRow::visible()
+        .iter()
+        .position(|r| *r == row)
+        .expect("row is visible on this platform")
+}
+
+#[test]
+fn scroll_pans_setting_switches_persists_and_has_a_command() {
+    let mut app = App::default();
+    let isolated = app.quick_slots_persistence_path.clone().unwrap();
+    let saved = |path: &Path| crate::prefs::load_from(path).mindmap_scroll_pans;
+    // Off by default: scrolling zooms, as before.
+    assert!(!app.prefs.mindmap_scroll_pans);
+
+    let _ = app.update(Message::OpenSettings);
+    let _ = app.update(Message::SettingsCursor(settings_row_index(
+        SettingsRow::MindmapScrollPans,
+    )));
+    let _ = app.update(Message::SettingsStep(1));
+    assert!(app.prefs.mindmap_scroll_pans && saved(&isolated));
+    let _ = app.update(Message::SettingsStep(1));
+    assert!(app.prefs.mindmap_scroll_pans, "→ again keeps it on");
+    let _ = app.update(Message::SettingsActivate);
+    assert!(!app.prefs.mindmap_scroll_pans && !saved(&isolated));
+
+    let command = app
+        .command_items()
+        .into_iter()
+        .find(|(label, _)| label.contains("Scroll to Pan"))
+        .expect("a Command Palette entry");
+    assert!(matches!(command.1, Message::ToggleMindmapScrollPans));
+    let _ = app.update(command.1);
+    assert!(app.prefs.mindmap_scroll_pans && saved(&isolated));
+}
+
+#[test]
+fn scroll_pans_setting_row_has_a_clickable_switch() {
+    let mut app = App::default();
+    let _ = app.update(Message::OpenSettings);
+    // A tall window shows every row without scrolling.
+    let mut ui = PointerUi::sized(Size::new(1280.0, 2000.0));
+    let label = ui
+        .text_bounds(&app, "Scroll pans the mind map")
+        .expect("the Settings page shows the row");
+    assert!(label.y + label.height < 2000.0, "{label:?}");
+    let index = settings_row_index(SettingsRow::MindmapScrollPans);
+    let row = ui
+        .find(
+            &app,
+            Find {
+                text: None,
+                contains: None,
+                id: Some(App::settings_row_id(index)),
+                found: None,
+                found_text: None,
+            },
+        )
+        .map(|(bounds, _)| bounds)
+        .expect("the row container");
+    // The 36 px switch sits at the right end of the row, inside its 14 px
+    // padding.
+    let switch = Point::new(row.x + row.width - 14.0 - 18.0, row.center_y());
+    let messages = ui.click(&app, switch);
+    assert!(
+        has(&messages, |m| matches!(m, Message::ToggleMindmapScrollPans)),
+        "{messages:?}"
+    );
+}
+
+/// The first mind map canvas state in `tree`, if any.
+fn canvas_state<Id: 'static>(
+    tree: &mut iced::advanced::widget::Tree,
+) -> Option<&mut crate::mindmap::MindmapState<Id>> {
+    use iced::advanced::widget::tree::State;
+    if let State::Some(state) = &mut tree.state {
+        if let Some(state) = state.downcast_mut::<crate::mindmap::MindmapState<Id>>() {
+            return Some(state);
+        }
+    }
+    tree.children.iter_mut().find_map(canvas_state::<Id>)
+}
+
+/// One event straight into the view's widget tree, kept in `tree` the way
+/// the event loop keeps it, with the pointer at `at`.
+fn send_to_tree(
+    ui: &PointerUi,
+    app: &App,
+    tree: &mut iced::advanced::widget::Tree,
+    at: Point,
+    event: iced::Event,
+) -> Vec<Message> {
+    use iced::advanced::{clipboard, layout, Layout, Shell};
+    let mut view = app.view();
+    tree.diff(view.as_widget());
+    let node = view.as_widget_mut().layout(
+        tree,
+        &ui.renderer,
+        &layout::Limits::new(Size::ZERO, ui.size),
+    );
+    let mut messages = Vec::new();
+    let mut shell = Shell::new(&mut messages);
+    view.as_widget_mut().update(
+        tree,
+        &event,
+        Layout::new(&node),
+        mouse::Cursor::Available(at),
+        &ui.renderer,
+        &mut clipboard::Null,
+        &mut shell,
+        &Rectangle::with_size(ui.size),
+    );
+    drop(view);
+    messages
+}
+
+/// The canvas pan before and after one two-finger scroll at `at`.
+fn scroll_canvas<Id: 'static>(app: &App, at: Point) -> (iced::Vector, iced::Vector) {
+    let ui = PointerUi::new();
+    let view = app.view();
+    let mut tree = iced::advanced::widget::Tree::new(view.as_widget());
+    drop(view);
+    let moved = iced::Event::Mouse(mouse::Event::CursorMoved { position: at });
+    let _ = send_to_tree(&ui, app, &mut tree, at, moved);
+    let before = canvas_state::<Id>(&mut tree)
+        .expect("a mind map canvas")
+        .pan;
+    let scroll = iced::Event::Mouse(mouse::Event::WheelScrolled {
+        delta: mouse::ScrollDelta::Pixels { x: 6.0, y: -10.0 },
+    });
+    let _ = send_to_tree(&ui, app, &mut tree, at, scroll);
+    let after = canvas_state::<Id>(&mut tree)
+        .expect("a mind map canvas")
+        .pan;
+    (before, after)
+}
+
+#[test]
+fn scroll_pans_reaches_both_mind_map_canvases() {
+    let (mut app, dir) = document_mindmap_app("p5-scroll-pans-doc");
+    let mut ui = PointerUi::new();
+    let plus = ui
+        .text_bounds(&app, &ic::PLUS.to_string())
+        .expect("zoom in button");
+    let probe = Point::new(plus.center_x(), plus.y - 40.0);
+    let (before, after) = scroll_canvas::<crate::ast::BlockId>(&app, probe);
+    assert_eq!(before, after, "off: a scroll zooms and pans nothing");
+    let _ = app.update(Message::ToggleMindmapScrollPans);
+    let (before, after) = scroll_canvas::<crate::ast::BlockId>(&app, probe);
+    assert_eq!(after - before, iced::Vector::new(6.0, -10.0), "on: it pans");
+    let _ = std::fs::remove_dir_all(&dir);
+
+    let (mut app, dir) = full_mindmap_app("p5-scroll-pans-fmm");
+    let minus = ui
+        .text_bounds(&app, &ic::MINUS.to_string())
+        .expect("zoom out button");
+    let probe = Point::new(minus.center_x(), minus.y - 40.0);
+    let (before, after) = scroll_canvas::<WorkspaceNodeId>(&app, probe);
+    assert_eq!(before, after, "off: a scroll zooms and pans nothing");
+    let _ = app.update(Message::ToggleMindmapScrollPans);
+    let (before, after) = scroll_canvas::<WorkspaceNodeId>(&app, probe);
+    assert_eq!(after - before, iced::Vector::new(6.0, -10.0), "on: it pans");
+    let _ = std::fs::remove_dir_all(&dir);
+}

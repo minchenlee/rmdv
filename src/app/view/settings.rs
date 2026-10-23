@@ -115,9 +115,10 @@ fn section_title(row: SettingsRow) -> &'static str {
         | SettingsRow::FontSize
         | SettingsRow::LineSpacing
         | SettingsRow::Toolbar => "Appearance",
-        SettingsRow::Footer | SettingsRow::HiddenFiles | SettingsRow::MindmapAutocenter => {
-            "Reading"
-        }
+        SettingsRow::Footer
+        | SettingsRow::HiddenFiles
+        | SettingsRow::MindmapAutocenter
+        | SettingsRow::MindmapScrollPans => "Reading",
         SettingsRow::AutoFocus | SettingsRow::Cli => "Agent & CLI",
         SettingsRow::ThemesFolder | SettingsRow::PrefsFile => "Advanced",
     }
@@ -273,6 +274,16 @@ fn settings_row_body<'a>(app: &'a App, row: SettingsRow, pal: Palette) -> Elemen
             switch(
                 app.mindmap_autocenter,
                 Message::ToggleMindmapAutocenter,
+                pal,
+            ),
+            pal,
+        ),
+        SettingsRow::MindmapScrollPans => labeled(
+            "Scroll pans the mind map",
+            "Off: scrolling zooms. On: it pans; pinch or ⌘+scroll zooms.".into(),
+            switch(
+                app.prefs.mindmap_scroll_pans,
+                Message::ToggleMindmapScrollPans,
                 pal,
             ),
             pal,

@@ -36,6 +36,8 @@ const FILE_FINDER_RESULT_CAP: usize = 200;
 /// Rows the file finder renders; keyboard selection stays within them.
 const FILE_FINDER_ROW_CAP: usize = 80;
 const READING_MAX: f32 = theme::READING_MAX_PX;
+/// The Zen editor's line height, relative to its font size.
+const EDITOR_LINE_HEIGHT: f32 = 1.55;
 /// Radius of the reader panel's top-left corner next to the sidebar.
 const READER_CORNER_RADIUS: f32 = 24.0;
 /// Space above the first line of the reader.
@@ -122,6 +124,7 @@ mod dispatch;
 mod full_mindmap;
 mod full_mindmap_state;
 mod full_mindmap_view;
+mod gestures;
 mod history;
 mod ipc_handler;
 mod lifecycle;
@@ -138,6 +141,7 @@ mod slots;
 mod toolbar;
 mod types;
 mod view;
+mod zoom_raster;
 use full_mindmap_state::*;
 
 pub use full_mindmap_state::{
@@ -165,6 +169,7 @@ pub use types::{
 };
 use view::*;
 pub(crate) use view::{reader_tip, sleek_scrollable_style};
+use zoom_raster::*;
 
 fn quick_slots_rail_left_offset(sidebar_open: bool, sidebar_width: f32, full_mindmap: bool) -> f32 {
     if sidebar_open && !full_mindmap {
@@ -387,6 +392,19 @@ pub struct App {
     /// [`crate::mindmap::ZoomRequest`].
     pub mindmap_zoom_request: crate::mindmap::ZoomRequest,
     pub full_mindmap_zoom_request: crate::mindmap::ZoomRequest,
+    /// The image viewer's latest zoom button or key, and its own native
+    /// pinch stream; see [`crate::zoom_viewer`].
+    pub image_zoom_request: crate::mindmap::ZoomRequest,
+    pub image_zoom_pinch_log: f64,
+    /// Pinch and ⌘+scroll over the reader, collected into font steps.
+    pub(crate) reader_zoom: gestures::ZoomAccumulator,
+    /// The latest reader zoom flush that changed the font; its trailing
+    /// [`Message::ReaderZoomSave`] writes prefs.
+    reader_zoom_save: u64,
+    /// The sharper raster of the diagram open in the viewer, and the last
+    /// request id given out; see `zoom_raster`.
+    image_zoom_raster: Option<ZoomRaster>,
+    image_zoom_raster_seq: u64,
     /// Cached mindmap layout, lazily rebuilt from (ast, file, mindmap_collapsed).
     /// Every mutation of those inputs must invalidate it or atomically replace
     /// it with a layout built from the new state.
@@ -431,9 +449,8 @@ pub struct App {
     pub diagram_theme_id: u32,
     /// Pre-rasterized image::Handle of the diagram currently shown in the
     /// zoom overlay. `None` when overlay shows a normal raster/svg image.
-    /// Using image::Handle lets the zoom modal reuse iced's built-in
-    /// `image::viewer` for scroll-to-zoom + drag-to-pan + escape-to-close
-    /// parity with normal images. Handle clones are cheap (Arc inside).
+    /// Using image::Handle lets diagrams and images share one viewer
+    /// (`crate::zoom_viewer`). Handle clones are cheap (Arc inside).
     pub zoom_diagram: Option<iced::widget::image::Handle>,
     /// Line numbers (0-based) for each block in `ast`, parallel to `ast`.
     /// Built from `parser::parse`'s byte-offset return via `build_byte_to_line`.
@@ -673,6 +690,12 @@ impl Default for App {
             full_mindmap_native_pinch_log: 0.0,
             mindmap_zoom_request: crate::mindmap::ZoomRequest::default(),
             full_mindmap_zoom_request: crate::mindmap::ZoomRequest::default(),
+            image_zoom_request: crate::mindmap::ZoomRequest::default(),
+            image_zoom_pinch_log: 0.0,
+            reader_zoom: gestures::ZoomAccumulator::default(),
+            reader_zoom_save: 0,
+            image_zoom_raster: None,
+            image_zoom_raster_seq: 0,
             mindmap_layout: std::cell::RefCell::new(None),
             mindmap_layout_generation: std::cell::Cell::new(0),
             mindmap_data_panel: std::cell::RefCell::new(None),
@@ -846,6 +869,37 @@ impl App {
         self.prefs.font_scale = self.font_scale;
         self.save_prefs();
         self.typography.body_size
+    }
+
+    /// `steps` ⌘+ (positive) or ⌘− (negative) steps at once, each clamped
+    /// as [`Self::adjust_font_scale`] clamps it, with one typography rebuild.
+    /// It does not write prefs: a gesture flushes many times, and the caller
+    /// writes once when it pauses.
+    fn step_font_scale(&mut self, steps: i32) -> f32 {
+        let factor = if steps > 0 { 1.1 } else { 1.0 / 1.1 };
+        let mut scale = self.font_scale;
+        for _ in 0..steps.unsigned_abs() {
+            scale = crate::prefs::clamp_font_scale(scale * factor);
+        }
+        if scale != self.font_scale {
+            self.font_scale = scale;
+            self.rebuild_typography();
+            self.prefs.font_scale = self.font_scale;
+        }
+        self.typography.body_size
+    }
+
+    /// After a font size change: drop the measured heights, rebuild the
+    /// reader window, and show `toast`.
+    fn font_size_changed(&mut self, toast: String) -> Task<Message> {
+        self.height_cache.clear();
+        self.rebuild_virt_here();
+        let preview_measure = self.refresh_full_mindmap_preview_heights();
+        Task::batch([
+            self.measure_window_heights(),
+            preview_measure,
+            self.show_toast(toast),
+        ])
     }
 
     /// Install a theme's palette. Every theme change goes through here so the
@@ -2835,6 +2889,10 @@ impl App {
                 "Toggle Mindmap Auto-Center",
                 Message::ToggleMindmapAutocenter,
             ),
+            (
+                "Toggle Mindmap Scroll to Pan",
+                Message::ToggleMindmapScrollPans,
+            ),
             ("Cycle Theme  ⌘T", Message::ToggleTheme),
             ("Pick Theme…", Message::OpenThemePicker),
             ("Reload Custom Themes", Message::ReloadThemes),
@@ -3016,6 +3074,7 @@ impl App {
         let full_mindmap = self.full_mindmap.is_some();
         let focused = self.search_open && !full_mindmap;
         let overlay_open = self.overlay != Overlay::None;
+        let image_zoom_open = self.overlay == Overlay::ImageZoom;
         let sidebar_open = self.sidebar_open && !full_mindmap;
         let outline_active =
             self.sidebar_open && self.sidebar_tab == SidebarTab::Outline && !full_mindmap;
@@ -3074,6 +3133,7 @@ impl App {
                 slot_replace_open,
                 self.reader_select_all,
                 close_confirm_open,
+                image_zoom_open,
             ),
         ))
         .map(
@@ -3093,7 +3153,7 @@ impl App {
                         quick_slots_allowed,
                         settings_open,
                     ),
-                    (slot_replace_open, select_all, close_confirm_open),
+                    (slot_replace_open, select_all, close_confirm_open, image_zoom_open),
                 ),
                 (ev, reader_copied),
             )| {
@@ -3349,6 +3409,11 @@ impl App {
                         return Message::ToggleViewMode;
                     }
                 }
+                if image_zoom_open {
+                    if let Some(message) = image_zoom_key_message(&key, mods) {
+                        return message;
+                    }
+                }
                 if overlay_open {
                     return match key {
                         Key::Named(Named::ArrowDown) => Message::OverlayMove(1),
@@ -3514,6 +3579,12 @@ impl App {
         let mouse_history = iced::event::listen_with(|ev, _status, _id| mouse_history_message(&ev));
         let ipc = iced::Subscription::run(ipc_subscription_stream);
         let native_pinch = crate::native_pinch::subscription().map(Message::MindmapNativePinch);
+        let native_swipe = crate::native_swipe::subscription().map(|swipe| {
+            Message::NativeSwipe(match swipe {
+                crate::native_swipe::Swipe::Back => HistoryDir::Back,
+                crate::native_swipe::Swipe::Forward => HistoryDir::Forward,
+            })
+        });
         let macos_open = crate::macos_open::subscription().map(Message::OpenFileFinderPath);
         let macos_quit = crate::macos_quit::subscription().map(|()| Message::QuitRequested);
         let close_requests = iced::window::close_requests().map(Message::WindowCloseRequested);
@@ -3552,6 +3623,7 @@ impl App {
             window_events,
             ipc,
             native_pinch,
+            native_swipe,
             macos_open,
             macos_quit,
             close_requests,
@@ -3682,6 +3754,7 @@ impl App {
                         && !self.search_open
                         && !self.fold_chord_pending,
                     native_pinch_log: self.mindmap_native_pinch_log,
+                    scroll_pans: self.prefs.mindmap_scroll_pans,
                     zoom_request: self.mindmap_zoom_request,
                     on_toggle: Box::new(Message::MindmapToggleNode),
                     on_select: Box::new(Message::MindmapSelectLeaf),
@@ -3735,7 +3808,7 @@ impl App {
                         .key_binding(editor_key_binding)
                         .font(editor_font())
                         .size(self.typography.code_size)
-                        .line_height(iced::widget::text::LineHeight::Relative(1.55))
+                        .line_height(iced::widget::text::LineHeight::Relative(EDITOR_LINE_HEIGHT))
                         .height(Length::Fill)
                         .padding(iced::Padding {
                             top: zen_editor_top_inset(self.prefs.toolbar),
@@ -3759,6 +3832,13 @@ impl App {
                             selection: pal.selection,
                         })
                         .height(Length::Fill);
+                    // A trackpad scrolls the editor by the finger distance.
+                    let editor = WheelGate::new(
+                        editor,
+                        Gate::EditorScroll {
+                            line_height: self.typography.code_size * EDITOR_LINE_HEIGHT,
+                        },
+                    );
                     // A click in the empty margin beside the editor column
                     // focuses the editor; clicks inside it are captured by the
                     // editor and never reach this area.
@@ -3853,7 +3933,7 @@ impl App {
                         background: select_all.then(|| pal.selection.into()),
                         ..Default::default()
                     });
-                let scroll: Element<'_, Message> = scrollable(
+                let scroll = scrollable(
                     container(column)
                         .padding(Padding {
                             top: reader_top_pad,
@@ -3868,8 +3948,13 @@ impl App {
                 .height(Length::Fill)
                 .on_scroll(Message::BodyScrolled)
                 .direction(slim_scroll_direction())
-                .style(move |_, status| sleek_scrollable_style(status, pal, recently_scrolled))
-                .into();
+                .style(move |_, status| sleek_scrollable_style(status, pal, recently_scrolled));
+                // ⌘+wheel changes the font size; the gate keeps it from
+                // also scrolling the reader. It also arms a swipe (macOS).
+                let gate = Gate::Reader {
+                    swipe: self.reader_swipe_probe(),
+                };
+                let scroll: Element<'_, Message> = WheelGate::new(scroll, gate).into();
                 if select_all {
                     stack![
                         scroll,
@@ -4058,12 +4143,25 @@ impl App {
                 )
             }
             Overlay::Shortcuts => shortcuts_overlay(pal),
-            Overlay::ImageZoom => image_zoom_overlay(
-                self.zoom_url.as_deref(),
-                self.zoom_diagram.as_ref(),
-                &self.image_cache,
-                pal,
-            ),
+            Overlay::ImageZoom => {
+                // A sharper raster, once made, draws at the inline raster's
+                // size, so the zoom does not jump when it arrives.
+                let raster = self.image_zoom_raster.as_ref();
+                let diagram = raster
+                    .and_then(|r| r.sharp.as_ref().map(|(_, handle)| handle))
+                    .or(self.zoom_diagram.as_ref());
+                image_zoom_overlay(
+                    self.zoom_url.as_deref(),
+                    diagram,
+                    &self.image_cache,
+                    ImageZoomInput {
+                        request: self.image_zoom_request,
+                        pinch_log: self.image_zoom_pinch_log,
+                        content: raster.map(|r| iced::Size::new(r.base.0 as f32, r.base.1 as f32)),
+                    },
+                    pal,
+                )
+            }
         };
         // Status footer floats over the reader (content scrolls behind it),
         // pinned bottom-right. Shown for any open document except mindmap.

@@ -42,6 +42,9 @@ const CHEVRON_HIT_MIN: f32 = 16.0;
 /// Screen px of the map that a drag always leaves inside the canvas, so the
 /// content cannot be thrown fully off-screen.
 const PAN_KEEP_VISIBLE: f32 = 48.0;
+/// Screen px one mouse wheel notch pans the canvas (Scroll pans the mind
+/// map), the step Iced's scrollable uses.
+const WHEEL_LINE_PX: f32 = 60.0;
 /// Screen px at the bottom of the canvas that Zoom to Fit leaves free for
 /// the floating hint and zoom buttons.
 const FIT_BOTTOM_INSET: f32 = 56.0;
@@ -445,6 +448,9 @@ pub struct MindmapState<Id = BlockId> {
     native_pinch_log: Option<f64>,
     /// The zoom request generation this canvas last applied.
     zoom_request_seen: Option<u64>,
+    /// The keyboard modifiers held now. A wheel event carries none, so
+    /// ⌘+scroll and Shift+wheel read them from here.
+    modifiers: keyboard::Modifiers,
 }
 
 impl<Id> Default for MindmapState<Id> {
@@ -474,6 +480,7 @@ impl<Id> Default for MindmapState<Id> {
             touch_span: None,
             native_pinch_log: None,
             zoom_request_seen: None,
+            modifiers: keyboard::Modifiers::default(),
         }
     }
 }
@@ -521,6 +528,9 @@ pub struct MindmapProgram<'a, Id, Message> {
     /// A cumulative log lets the canvas apply every queued pinch delta even
     /// when multiple native events arrive before the next redraw.
     pub native_pinch_log: f64,
+    /// Two-finger scroll and the mouse wheel pan the canvas (Settings →
+    /// Scroll pans the mind map). Pinch and ⌘+scroll zoom either way.
+    pub scroll_pans: bool,
     /// The latest zoom button press; see [`ZoomRequest`].
     pub zoom_request: ZoomRequest,
     pub on_toggle: Box<dyn Fn(Id) -> Message + 'a>,
@@ -761,6 +771,18 @@ fn clamp_pan_axis(pan: f32, origin: f32, content: f32, view: f32) -> f32 {
         std::mem::swap(&mut lo, &mut hi);
     }
     pan.clamp(lo.min(origin), hi.max(origin))
+}
+
+/// The pan a scroll asks for when Scroll pans the mind map. A trackpad
+/// moves both ways by its pixels; a wheel notch moves [`WHEEL_LINE_PX`], up
+/// and down, or sideways with Shift. A notch the system already turned
+/// sideways for Shift stays sideways.
+fn wheel_pan(delta: mouse::ScrollDelta, shift: bool) -> (f32, f32) {
+    match delta {
+        mouse::ScrollDelta::Pixels { x, y } => (x, y),
+        mouse::ScrollDelta::Lines { x, y } if shift && x == 0.0 => (y * WHEEL_LINE_PX, 0.0),
+        mouse::ScrollDelta::Lines { x, y } => (x * WHEEL_LINE_PX, y * WHEEL_LINE_PX),
+    }
 }
 
 fn touch_point_in_canvas(bounds: Rectangle, position: Point) -> Option<Point> {
@@ -1236,6 +1258,27 @@ where
         (zoom, pan)
     }
 
+    /// Move the canvas by a scroll, as a scroll view moves its content.
+    /// Direct input wins over any running zoom or focus pan, and at least
+    /// part of the map stays on screen.
+    fn pan_by(&self, state: &mut MindmapState<Id>, bounds: Rectangle, delta: Vector) {
+        state.pan_anim = None;
+        state.zoom_anim = None;
+        let z = zoom_of(state);
+        state.pan.x = clamp_pan_axis(
+            state.pan.x + delta.x,
+            state.pan.x,
+            self.content_size.width * z,
+            bounds.width,
+        );
+        state.pan.y = clamp_pan_axis(
+            state.pan.y + delta.y,
+            state.pan.y,
+            self.content_size.height * z,
+            bounds.height,
+        );
+    }
+
     /// Apply a macOS trackpad pinch that arrived through the native bridge.
     /// We only zoom when the current pointer is over this canvas, so a pinch
     /// over an adjacent panel never changes the graph behind it.
@@ -1420,6 +1463,9 @@ where
             state.zoom = 1.0;
             state.initialized = true;
         }
+        if let iced::Event::Keyboard(keyboard::Event::ModifiersChanged(modifiers)) = event {
+            state.modifiers = *modifiers;
+        }
         if let iced::Event::Keyboard(keyboard::Event::KeyPressed { key, .. }) = event {
             // Keyboard navigation centers its node again. Modifier keys
             // alone (for example holding ⌘) navigate nowhere.
@@ -1454,6 +1500,11 @@ where
                 let Some(pos) = cursor.position_in(bounds) else {
                     return None;
                 };
+                if self.scroll_pans && !state.modifiers.command() {
+                    let (dx, dy) = wheel_pan(*delta, state.modifiers.shift());
+                    self.pan_by(state, bounds, Vector::new(dx, dy));
+                    return Some(canvas::Action::request_redraw().and_capture());
+                }
                 let factor = match delta {
                     mouse::ScrollDelta::Lines { y, .. } => (*y * 0.05).exp(),
                     mouse::ScrollDelta::Pixels { y, .. } => (*y * 0.0025).exp(),
@@ -1483,11 +1534,18 @@ where
             }
             iced::Event::Mouse(mouse::Event::CursorMoved { .. }) => {
                 if let Some(origin) = state.drag_origin {
-                    let Some(pos) = cursor.position_in(bounds) else {
-                        // The press left the canvas, so it is no longer a
-                        // click. Outside the canvas nothing pans.
-                        state.drag_moved = true;
-                        return None;
+                    let pos = match cursor.position_in(bounds) {
+                        Some(pos) => pos,
+                        None => {
+                            // The press left the canvas, so it is no longer
+                            // a click. The pan still follows the pointer over
+                            // a panel or a layer above the canvas; without a
+                            // position (past the window) it waits.
+                            state.drag_moved = true;
+                            cursor
+                                .land()
+                                .position_from(Point::new(bounds.x, bounds.y))?
+                        }
                     };
                     let dx = pos.x - origin.x;
                     let dy = pos.y - origin.y;
@@ -2031,6 +2089,7 @@ mod tests {
             layout_generation: Some(generation),
             keyboard_zoom_enabled: false,
             native_pinch_log: 0.0,
+            scroll_pans: false,
             zoom_request: ZoomRequest::default(),
             on_toggle: Box::new(|_| ()),
             on_select: Box::new(|_| ()),
@@ -2413,6 +2472,7 @@ mod tests {
                 layout_generation: Some(1),
                 keyboard_zoom_enabled: false,
                 native_pinch_log: 0.0,
+                scroll_pans: false,
                 zoom_request: ZoomRequest::default(),
                 on_toggle: Box::new(|_| ()),
                 on_select: Box::new(|_| ()),
@@ -2806,6 +2866,7 @@ mod tests {
             layout_generation: Some(1),
             keyboard_zoom_enabled: false,
             native_pinch_log: 0.0,
+            scroll_pans: false,
             zoom_request: ZoomRequest::default(),
             on_toggle: Box::new(Ev::Toggle),
             on_select: Box::new(Ev::Select),
@@ -2950,7 +3011,12 @@ mod tests {
             None,
             "a release outside the canvas clicks nothing"
         );
-        assert_eq!(state.pan, Vector::ZERO, "outside the canvas nothing pans");
+        assert_eq!(
+            state.pan,
+            Vector::new(outside.x - leaf.x, 0.0),
+            "the pan follows the pointer outside the canvas"
+        );
+        state.pan = Vector::ZERO;
 
         // Out and back to the press point: the press already left.
         assert_eq!(press_at(&program, &mut state, leaf), None);
@@ -3342,6 +3408,7 @@ mod tests {
             layout_generation: Some(1),
             keyboard_zoom_enabled: false,
             native_pinch_log: 0.0,
+            scroll_pans: false,
             zoom_request: ZoomRequest::default(),
             on_toggle: Box::new(DocEv::Toggle),
             on_select: Box::new(DocEv::Select),
@@ -3658,5 +3725,275 @@ mod tests {
         let _ = move_at(&program, &mut state, Point::new(510.0, 400.0));
         assert_eq!(state.pan, Vector::new(-1990.0, 0.0));
         let _ = release_at(&program, &mut state, Point::new(510.0, 400.0));
+    }
+
+    // --- Wheel and drag (MDV-048 P5) -------------------------------------
+
+    fn wheel_at(
+        program: &MindmapProgram<'static, PathId, Ev>,
+        state: &mut MindmapState<PathId>,
+        delta: mouse::ScrollDelta,
+        at: Point,
+    ) -> Option<Ev> {
+        pointer_send(
+            program,
+            state,
+            iced::Event::Mouse(mouse::Event::WheelScrolled { delta }),
+            at,
+        )
+    }
+
+    fn hold(
+        program: &MindmapProgram<'static, PathId, Ev>,
+        state: &mut MindmapState<PathId>,
+        modifiers: keyboard::Modifiers,
+    ) {
+        let _ = pointer_send(
+            program,
+            state,
+            iced::Event::Keyboard(keyboard::Event::ModifiersChanged(modifiers)),
+            Point::ORIGIN,
+        );
+    }
+
+    fn pixels(x: f32, y: f32) -> mouse::ScrollDelta {
+        mouse::ScrollDelta::Pixels { x, y }
+    }
+
+    fn lines(x: f32, y: f32) -> mouse::ScrollDelta {
+        mouse::ScrollDelta::Lines { x, y }
+    }
+
+    /// The world point under `at` did not move.
+    fn assert_anchored(state: &MindmapState<PathId>, at: Point) {
+        let world = Point::new(
+            (at.x - state.pan.x) / state.zoom,
+            (at.y - state.pan.y) / state.zoom,
+        );
+        assert!(
+            (world.x - at.x).abs() < 0.01 && (world.y - at.y).abs() < 0.01,
+            "zoom about the pointer: {world:?} vs {at:?}"
+        );
+    }
+
+    #[test]
+    fn scroll_zooms_by_default_and_pans_when_the_setting_is_on() {
+        let mut program = pointer_program(notes_graph(), None);
+        program.autocenter = false;
+        let at = Point::new(500.0, 400.0);
+
+        // Off (today): a two-finger scroll and a wheel notch zoom about the
+        // pointer.
+        for delta in [pixels(0.0, 40.0), lines(0.0, 1.0)] {
+            let mut state = live_state();
+            assert_eq!(wheel_at(&program, &mut state, delta, at), None);
+            assert!(state.zoom_anim.is_some(), "{delta:?} zooms");
+            finish_zoom(&mut state);
+            assert!(state.zoom > 1.0, "{delta:?}");
+            assert_anchored(&state, at);
+        }
+
+        // On: a two-finger scroll pans both ways, as a scroll view does.
+        program.scroll_pans = true;
+        let mut state = live_state();
+        assert_eq!(
+            wheel_at(&program, &mut state, pixels(30.0, -20.0), at),
+            None
+        );
+        assert!(state.zoom_anim.is_none(), "no zoom");
+        assert_eq!(state.zoom, 1.0);
+        assert_eq!(state.pan, Vector::new(30.0, -20.0));
+
+        // A mouse wheel notch pans up and down.
+        let _ = wheel_at(&program, &mut state, lines(0.0, -1.0), at);
+        assert_eq!(state.pan, Vector::new(30.0, -20.0 - WHEEL_LINE_PX));
+        // Shift+wheel pans sideways.
+        hold(&program, &mut state, keyboard::Modifiers::SHIFT);
+        let _ = wheel_at(&program, &mut state, lines(0.0, -1.0), at);
+        assert_eq!(
+            state.pan,
+            Vector::new(30.0 - WHEEL_LINE_PX, -20.0 - WHEEL_LINE_PX)
+        );
+        // A notch the system already turned sideways for Shift stays so.
+        let _ = wheel_at(&program, &mut state, lines(1.0, 0.0), at);
+        assert_eq!(state.pan, Vector::new(30.0, -20.0 - WHEEL_LINE_PX));
+        hold(&program, &mut state, keyboard::Modifiers::empty());
+        let _ = wheel_at(&program, &mut state, lines(0.0, 1.0), at);
+        assert_eq!(state.pan, Vector::new(30.0, -20.0));
+
+        // A scroll beside the canvas does nothing.
+        let outside = Point::new(POINTER_BOUNDS.width + 20.0, 100.0);
+        assert_eq!(
+            wheel_at(&program, &mut state, pixels(30.0, 30.0), outside),
+            None
+        );
+        assert_eq!(state.pan, Vector::new(30.0, -20.0));
+    }
+
+    #[test]
+    fn command_scroll_and_pinch_zoom_in_either_mode() {
+        let mut program = pointer_program(notes_graph(), None);
+        program.autocenter = false;
+        let at = Point::new(300.0, 200.0);
+        for scroll_pans in [false, true] {
+            program.scroll_pans = scroll_pans;
+            program.native_pinch_log = 0.0;
+
+            // ⌘+scroll zooms about the pointer.
+            let mut state = live_state();
+            hold(&program, &mut state, keyboard::Modifiers::COMMAND);
+            for delta in [pixels(0.0, 40.0), lines(0.0, 1.0)] {
+                let _ = wheel_at(&program, &mut state, delta, at);
+                assert!(state.zoom_anim.is_some(), "{scroll_pans} {delta:?} zooms");
+                finish_zoom(&mut state);
+            }
+            assert!(state.zoom > 1.0, "{scroll_pans}");
+            assert_anchored(&state, at);
+            hold(&program, &mut state, keyboard::Modifiers::empty());
+
+            // A trackpad pinch zooms about the pointer.
+            let mut state = live_state();
+            let redraw_at = |program: &MindmapProgram<'static, PathId, Ev>,
+                             state: &mut MindmapState<PathId>| {
+                let _ = canvas::Program::update(
+                    program,
+                    state,
+                    &iced::Event::Window(window::Event::RedrawRequested(Instant::now())),
+                    POINTER_BOUNDS,
+                    mouse::Cursor::Available(at),
+                );
+            };
+            redraw_at(&program, &mut state);
+            program.native_pinch_log = 0.3;
+            redraw_at(&program, &mut state);
+            assert!(state.zoom_anim.is_some(), "{scroll_pans}: pinch zooms");
+            finish_zoom(&mut state);
+            assert!((state.zoom - 0.3f32.exp()).abs() < 1e-3, "{scroll_pans}");
+            assert_anchored(&state, at);
+        }
+    }
+
+    #[test]
+    fn a_scroll_pan_stops_animations_and_keeps_part_of_the_map_on_screen() {
+        let mut program = pointer_program(notes_graph(), None);
+        program.autocenter = false;
+        program.scroll_pans = true;
+        program.content_size = Size::new(600.0, 300.0);
+        let at = Point::new(500.0, 400.0);
+
+        // A scroll takes over from a running zoom or focus pan.
+        let mut state = live_state();
+        hold(&program, &mut state, keyboard::Modifiers::COMMAND);
+        let _ = wheel_at(&program, &mut state, pixels(0.0, 40.0), at);
+        assert!(state.zoom_anim.is_some());
+        hold(&program, &mut state, keyboard::Modifiers::empty());
+        let _ = wheel_at(&program, &mut state, pixels(5.0, 0.0), at);
+        assert!(state.zoom_anim.is_none(), "the scroll stops the zoom");
+        state.pan_anim = Some(PanAnim {
+            start: state.pan,
+            target: Vector::new(300.0, 0.0),
+            start_at: Instant::now(),
+        });
+        let _ = wheel_at(&program, &mut state, pixels(5.0, 0.0), at);
+        assert!(state.pan_anim.is_none(), "the scroll stops the focus pan");
+
+        // Up and left as far as the canvas allows.
+        let mut state = live_state();
+        let _ = wheel_at(&program, &mut state, pixels(-5000.0, -5000.0), at);
+        assert!(
+            state.pan.x + 600.0 >= PAN_KEEP_VISIBLE - 0.01
+                && state.pan.y + 300.0 >= PAN_KEEP_VISIBLE - 0.01,
+            "the map's far corner stays on screen: {:?}",
+            state.pan
+        );
+        // Then down and right.
+        let _ = wheel_at(&program, &mut state, lines(0.0, 500.0), at);
+        hold(&program, &mut state, keyboard::Modifiers::SHIFT);
+        let _ = wheel_at(&program, &mut state, lines(0.0, 500.0), at);
+        assert!(
+            state.pan.x <= 1000.0 - PAN_KEEP_VISIBLE + 0.01
+                && state.pan.y <= 800.0 - PAN_KEEP_VISIBLE + 0.01
+                && state.pan.x > 0.0
+                && state.pan.y > 0.0,
+            "the map's near corner stays on screen: {:?}",
+            state.pan
+        );
+
+        // A pan that starts out of range (after a zoom) never jumps.
+        hold(&program, &mut state, keyboard::Modifiers::empty());
+        state.pan = Vector::new(-2000.0, 0.0);
+        let _ = wheel_at(&program, &mut state, pixels(10.0, 0.0), at);
+        assert_eq!(state.pan, Vector::new(-1990.0, 0.0));
+    }
+
+    #[test]
+    fn a_drag_keeps_panning_outside_the_canvas() {
+        let mut program = pointer_program(notes_graph(), None);
+        program.autocenter = false;
+        let mut state = live_state();
+        // A canvas that does not start at the window's corner.
+        let bounds = Rectangle {
+            x: 200.0,
+            y: 50.0,
+            width: 600.0,
+            height: 500.0,
+        };
+        let send = |state: &mut MindmapState<PathId>, event: mouse::Event, cursor| {
+            canvas::Program::update(&program, state, &iced::Event::Mouse(event), bounds, cursor)
+                .and_then(|action| action.into_inner().0)
+        };
+        let moved = |at: Point| mouse::Event::CursorMoved { position: at };
+        let press = Point::new(400.0, 300.0);
+        let at = mouse::Cursor::Available;
+
+        assert_eq!(
+            send(
+                &mut state,
+                mouse::Event::ButtonPressed(mouse::Button::Left),
+                at(press)
+            ),
+            None
+        );
+        // Over the panel on the right, then below the canvas.
+        let _ = send(
+            &mut state,
+            moved(Point::new(900.0, 320.0)),
+            at(Point::new(900.0, 320.0)),
+        );
+        assert_eq!(state.pan, Vector::new(500.0, 20.0));
+        let _ = send(
+            &mut state,
+            moved(Point::new(900.0, 700.0)),
+            at(Point::new(900.0, 700.0)),
+        );
+        assert_eq!(state.pan, Vector::new(500.0, 400.0));
+        // Over a layer above the canvas (a zoom button) the pan still
+        // follows.
+        let over = Point::new(700.0, 500.0);
+        let _ = send(&mut state, moved(over), mouse::Cursor::Levitating(over));
+        assert_eq!(state.pan, Vector::new(300.0, 200.0));
+        // Without a pointer position (past the window) the pan stays.
+        let _ = send(&mut state, moved(over), mouse::Cursor::Unavailable);
+        assert_eq!(state.pan, Vector::new(300.0, 200.0));
+
+        // Back inside and released where it started: still not a click.
+        let _ = send(&mut state, moved(press), at(press));
+        assert_eq!(state.pan, Vector::ZERO);
+        assert_eq!(
+            send(
+                &mut state,
+                mouse::Event::ButtonReleased(mouse::Button::Left),
+                at(press)
+            ),
+            None
+        );
+        assert!(state.drag_origin.is_none());
+        // With the button up, a move outside pans nothing.
+        let _ = send(
+            &mut state,
+            moved(Point::new(900.0, 320.0)),
+            at(Point::new(900.0, 320.0)),
+        );
+        assert_eq!(state.pan, Vector::ZERO);
     }
 }

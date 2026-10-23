@@ -61,6 +61,28 @@ pub(super) fn reader_font_size_shortcut(
     Some(reader_action)
 }
 
+/// The image viewer's plain zoom keys: `=` (or `+`) zooms in, `-` out,
+/// and `0` shows 100%. With ⌘ or Ctrl they stay the reader's font keys.
+pub(super) fn image_zoom_key_message(
+    key: &iced::keyboard::Key,
+    modifiers: iced::keyboard::Modifiers,
+) -> Option<Message> {
+    use crate::mindmap::ZoomCommand;
+    if modifiers.command() || modifiers.control() || modifiers.alt() {
+        return None;
+    }
+    let iced::keyboard::Key::Character(c) = key else {
+        return None;
+    };
+    let command = match c.as_str() {
+        "=" | "+" => ZoomCommand::In,
+        "-" => ZoomCommand::Out,
+        "0" => ZoomCommand::Reset,
+        _ => return None,
+    };
+    Some(Message::ImageZoomCommand(command))
+}
+
 /// ⌘, (Ctrl+, off macOS) opens and closes the Settings page.
 pub(super) fn is_settings_key(
     key: &iced::keyboard::Key,

@@ -223,6 +223,15 @@ pub enum Message {
     FontSizeUp,
     FontSizeDown,
     FontSizeReset,
+    /// Pinch or ⌘+scroll over the reader: this many font steps (a fraction
+    /// of a step adds up). The font changes on the next
+    /// [`Message::ReaderZoomFlush`].
+    ReaderZoomBy(f32),
+    /// Apply the whole font steps the reader zoom gesture collected.
+    ReaderZoomFlush,
+    /// The reader zoom gesture paused after flush `seq`: write the font
+    /// size to prefs once, unless a later flush came since.
+    ReaderZoomSave(u64),
     /// Settings → Line spacing.
     SetLineSpacing(crate::theme::LineSpacing),
     /// Settings → Toolbar: shown on hover or always.
@@ -258,9 +267,20 @@ pub enum Message {
     /// A macOS magnification delta from the native event bridge. The shared
     /// canvas consumes the cumulative stream on its next redraw.
     MindmapNativePinch(f32),
+    /// A completed two-finger swipe from the macOS bridge: Back or Forward.
+    NativeSwipe(HistoryDir),
     /// A mind map zoom button: Fit, −, 100%, or +. It drives the canvas on
     /// screen (the document mind map or Full Mindmap).
     MindmapZoom(crate::mindmap::ZoomCommand),
+    /// An image viewer zoom button or key: Fit, −, 100%, or +.
+    ImageZoomCommand(crate::mindmap::ZoomCommand),
+    /// The viewer wants this many raster pixels per inline-raster pixel
+    /// for the diagram it shows.
+    ImageZoomDetail(u32),
+    /// The debounce of sharper-raster request `id` ended.
+    ImageZoomRasterDue(u64),
+    /// Sharper raster request `id` finished.
+    ImageZoomRasterReady(u64, Result<iced::widget::image::Handle, String>),
     MindmapToggleNode(crate::ast::BlockId),
     MindmapSelectLeaf(crate::ast::BlockId),
     /// A double click on a document mind map node: read that heading in
@@ -276,6 +296,8 @@ pub enum Message {
     /// A double click on the panel divider: back to the default width.
     MindmapPanelResetWidth,
     ToggleMindmapAutocenter,
+    /// Settings → Scroll pans the mind map: scroll pans instead of zooming.
+    ToggleMindmapScrollPans,
     ToggleMindmapPanel,
     MindmapCyclePanelWidth,
     ToggleFullMindmap,

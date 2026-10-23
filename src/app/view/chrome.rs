@@ -250,25 +250,38 @@ pub(in crate::app) fn full_mindmap_progress_overlay<'a>(
         .into()
 }
 
+/// What the image viewer takes from the app besides the image: the latest
+/// zoom button or key, and the native pinch stream.
+pub(in crate::app) struct ImageZoomInput {
+    pub request: crate::mindmap::ZoomRequest,
+    pub pinch_log: f64,
+    /// A diagram's 100% size (its inline raster's), which a sharper raster
+    /// keeps. Set only for diagrams, which also report the detail they want.
+    pub content: Option<iced::Size>,
+}
+
 pub(in crate::app) fn image_zoom_overlay<'a>(
     url: Option<&'a str>,
     diagram: Option<&iced::widget::image::Handle>,
     cache: &ImageCache,
+    input: ImageZoomInput,
     pal: Palette,
 ) -> Element<'a, Message> {
-    use iced::widget::image::viewer;
     let mk_viewer = |h: iced::widget::image::Handle| -> Element<'a, Message> {
-        viewer(h)
-            .min_scale(0.25)
-            .max_scale(10.0)
-            .scale_step(0.18)
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .into()
+        let viewer = crate::zoom_viewer::ZoomViewer::new(h)
+            .request(input.request)
+            .pinch_log(input.pinch_log)
+            .on_close(Message::CloseOverlay);
+        match input.content {
+            Some(size) => viewer
+                .content_size(size)
+                .on_detail(ZOOM_RASTER_DENSITY, Message::ImageZoomDetail)
+                .into(),
+            None => viewer.into(),
+        }
     };
     // Diagram overrides image source when set — DiagramZoom clears zoom_url.
-    // Reuses image::viewer for scroll-zoom + drag-pan + escape-close parity
-    // with normal images.
+    let mut ready = true;
     let inner: Element<'a, Message> = if let Some(handle) = diagram {
         mk_viewer(handle.clone())
     } else {
@@ -279,37 +292,41 @@ pub(in crate::app) fn image_zoom_overlay<'a>(
                     raster: Some(h), ..
                 }) => mk_viewer(h.clone()),
                 Some(ImageState::LoadedSvg { raster: None, .. }) | Some(ImageState::Loading) => {
+                    ready = false;
                     text("rendering…").color(pal.muted).into()
                 }
-                Some(ImageState::Failed) => text("image unavailable").color(pal.muted).into(),
+                Some(ImageState::Failed) => {
+                    ready = false;
+                    text("image unavailable").color(pal.muted).into()
+                }
                 None => {
                     // Local raster path (cache only stores svg/remote). Use direct viewer.
                     let p = std::path::PathBuf::from(u);
                     mk_viewer(iced::widget::image::Handle::from_path(p))
                 }
             },
-            None => text("").into(),
+            None => {
+                ready = false;
+                text("").into()
+            }
         }
     };
-    let scrim = container(
-        container(inner)
-            .padding(8)
-            .center_x(Length::Fill)
-            .center_y(Length::Fill),
-    )
-    .width(Length::Fill)
-    .height(Length::Fill)
-    .style(move |_| container::Style {
-        background: Some(Color { a: 0.85, ..pal.bg }.into()),
-        ..Default::default()
-    });
-    // Click background scrim → close. Pointer cursor would mislead since
-    // most of the surface is the viewer (which handles its own drags). The
-    // idle cursor and the swallowed wheel keep the reader below inert.
-    let scrim_click = mouse_area(scrim)
+    // The viewer fills the scrim and closes on a still click beside the
+    // image. While there is no image yet, a click anywhere closes. The idle
+    // cursor and the swallowed wheel keep the reader below inert.
+    let scrim = container(inner)
+        .center_x(Length::Fill)
+        .center_y(Length::Fill)
+        .style(move |_| container::Style {
+            background: Some(Color { a: 0.85, ..pal.bg }.into()),
+            ..Default::default()
+        });
+    let mut scrim_click = mouse_area(scrim)
         .interaction(iced::mouse::Interaction::Idle)
-        .on_scroll(|_| Message::Noop)
-        .on_press(Message::CloseOverlay);
+        .on_scroll(|_| Message::Noop);
+    if !ready {
+        scrim_click = scrim_click.on_press(Message::CloseOverlay);
+    }
     // Top-right close button. Sits on its own mouse_area so a click on the
     // X always fires CloseOverlay (independent of the scrim mouse_area
     // beneath it in the stack).
@@ -345,7 +362,12 @@ pub(in crate::app) fn image_zoom_overlay<'a>(
         .align_y(iced::alignment::Vertical::Top)
         .width(Length::Fill)
         .height(Length::Fill);
-    stack![scrim_click, close_overlay].into()
+    let zoom_island: Element<'a, Message> = if ready {
+        zoom_controls_island(&[], pal, Message::ImageZoomCommand)
+    } else {
+        Space::new().into()
+    };
+    stack![scrim_click, zoom_island, close_overlay].into()
 }
 
 pub(in crate::app) fn welcome_view<'a>(
@@ -874,19 +896,27 @@ pub(in crate::app) fn floating_mindmap_controls<'a>(
     let items = items.to_vec();
     let full_width = mindmap_controls_width(&items);
     iced::widget::responsive(move |size| {
-        mindmap_controls_island(
+        zoom_controls_island(
             if size.width >= full_width {
                 &items
             } else {
                 &[]
             },
             pal,
+            Message::MindmapZoom,
         )
     })
     .into()
 }
 
-fn mindmap_controls_island<'a>(items: &[(&'a str, &'a str)], pal: Palette) -> Element<'a, Message> {
+/// The floating zoom island of the mind map and the image viewer: optional
+/// keyboard hints, then Zoom to Fit, Zoom Out, 100%, and Zoom In, each
+/// sending `on_zoom`.
+pub(in crate::app) fn zoom_controls_island<'a>(
+    items: &[(&'a str, &'a str)],
+    pal: Palette,
+    on_zoom: fn(crate::mindmap::ZoomCommand) -> Message,
+) -> Element<'a, Message> {
     use crate::mindmap::ZoomCommand;
     let zoom = |content: Element<'a, Message>, command: ZoomCommand| {
         button(content)
@@ -904,7 +934,7 @@ fn mindmap_controls_island<'a>(items: &[(&'a str, &'a str)], pal: Palette) -> El
                 },
                 ..Default::default()
             })
-            .on_press(Message::MindmapZoom(command))
+            .on_press(on_zoom(command))
     };
     let glyph = |code: char| -> Element<'a, Message> { icon::glyph(code, 14.0, pal.muted).into() };
     let buttons = irow![
@@ -965,6 +995,10 @@ fn mindmap_controls_island<'a>(items: &[(&'a str, &'a str)], pal: Palette) -> El
             shadow: theme::shadow::HINT,
             ..Default::default()
         });
+    // The pill takes a press beside its buttons (the gaps and the padding),
+    // so a near miss does not reach the viewer or the canvas below. The
+    // full-window container around it lets every other press through.
+    let island = mouse_area(island).on_press(Message::Noop);
 
     container(island)
         .width(Length::Fill)

@@ -38,6 +38,10 @@ pub struct Prefs {
     /// Document Mindmap keeps the selected node in view while it moves.
     #[serde(default = "default_true")]
     pub mindmap_autocenter: bool,
+    /// Two-finger scroll and the mouse wheel pan the mind map instead of
+    /// zooming it (Settings → Scroll pans the mind map).
+    #[serde(default, deserialize_with = "lenient_off")]
+    pub mindmap_scroll_pans: bool,
     /// Workspace-scoped Quick Slot banks live alongside the existing user
     /// preferences, never inside a workspace tree.
     #[serde(default, deserialize_with = "lenient_quick_slots")]
@@ -136,6 +140,16 @@ where
     Ok(serde_json::from_value(value).unwrap_or_default())
 }
 
+/// A malformed switch that defaults off stays off instead of failing the
+/// whole file.
+fn lenient_off<'de, D>(deserializer: D) -> Result<bool, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    Ok(value.as_bool().unwrap_or(false))
+}
+
 /// A malformed or newer-format Quick Slot store (e.g. after a downgrade) falls
 /// back to empty slots instead of failing the whole file and resetting every
 /// other preference.
@@ -162,6 +176,7 @@ impl Default for Prefs {
             line_spacing: crate::theme::LineSpacing::Default,
             show_hidden: false,
             mindmap_autocenter: true,
+            mindmap_scroll_pans: false,
             quick_slots: crate::quick_slots::QuickSlotsStore::default(),
             toolbar: ToolbarMode::Always,
         }
@@ -332,6 +347,29 @@ mod tests {
         })
         .unwrap();
         assert!(json.contains(r#""toolbar":"on_hover""#), "{json}");
+    }
+
+    #[test]
+    fn mindmap_scroll_pans_defaults_off_and_survives_bad_values() {
+        // A prefs file from before the setting existed keeps today's zoom.
+        let prefs: Prefs = serde_json::from_str(r#"{"show_footer":false}"#).unwrap();
+        assert!(!prefs.mindmap_scroll_pans);
+        assert!(!Prefs::default().mindmap_scroll_pans);
+        let prefs: Prefs = serde_json::from_str(r#"{"mindmap_scroll_pans":true}"#).unwrap();
+        assert!(prefs.mindmap_scroll_pans);
+        // A malformed value must not reset other preferences.
+        for bad in [r#""yes""#, "1", "null", "{}"] {
+            let json = format!(r#"{{"mindmap_scroll_pans":{bad},"show_footer":false}}"#);
+            let prefs: Prefs = serde_json::from_str(&json).unwrap_or_else(|e| panic!("{bad}: {e}"));
+            assert!(!prefs.mindmap_scroll_pans, "{bad}");
+            assert!(!prefs.show_footer, "{bad}");
+        }
+        let json = serde_json::to_string(&Prefs {
+            mindmap_scroll_pans: true,
+            ..Prefs::default()
+        })
+        .unwrap();
+        assert!(json.contains(r#""mindmap_scroll_pans":true"#), "{json}");
     }
 
     use crate::quick_slots::{QuickSlot, SlotContext, WorkspaceSlots};

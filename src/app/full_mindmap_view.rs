@@ -90,6 +90,7 @@ impl App {
             layout_generation: Some(full.layout_generation),
             keyboard_zoom_enabled: self.overlay == Overlay::None,
             native_pinch_log: self.full_mindmap_native_pinch_log,
+            scroll_pans: self.prefs.mindmap_scroll_pans,
             zoom_request: self.full_mindmap_zoom_request,
             on_toggle: Box::new(Message::FullMindmapToggleNode),
             on_select: Box::new(Message::FullMindmapPointerSelect),

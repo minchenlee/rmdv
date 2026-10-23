@@ -11,11 +11,19 @@ impl App {
         // Only while a link pill shows: the snapshot clones the path.
         let link_page = self.hovered_link.is_some().then(|| self.link_page());
         let mut task = self.dispatch_message(msg);
+        // Every way out of the viewer (Esc, a click beside the image, an
+        // open from Finder or the CLI, Zen) frees what it holds: the sharper
+        // raster alone can be 64 MB.
+        if self.overlay != Overlay::ImageZoom {
+            self.drop_image_zoom();
+        }
         if link_page.is_some_and(|page| page != self.link_page()) {
             self.hovered_link = None;
         }
         // ⌘Q reads this from AppKit, outside the update loop.
         crate::macos_quit::set_unsaved(self.dirty);
+        // So does the two-finger swipe bridge.
+        crate::native_swipe::set_armed(self.swipe_directions());
         self.sync_toolbar_band();
         self.sync_sidebar_peek();
         // A folder click's double-click ends with the picker (Esc, an open,
@@ -32,6 +40,13 @@ impl App {
             return task;
         }
         Task::batch([task, self.load_incomplete_expanded_folders()])
+    }
+
+    /// Forget the viewer's image and rasters.
+    fn drop_image_zoom(&mut self) {
+        self.zoom_url = None;
+        self.zoom_diagram = None;
+        self.image_zoom_raster = None;
     }
 
     fn dispatch_message(&mut self, msg: Message) -> Task<Message> {
@@ -471,6 +486,7 @@ impl App {
             }
             Message::QuickSlotRestorePending => self.apply_pending_quick_slot_restore(),
             Message::HistoryGo(dir) => self.history_go(dir),
+            Message::NativeSwipe(dir) => self.native_swipe(dir),
             Message::QuickSlotFileLoaded {
                 index,
                 slot,
@@ -514,8 +530,7 @@ impl App {
                 let was_zoom = self.overlay == Overlay::ImageZoom;
                 self.overlay = Overlay::None;
                 self.picker = None;
-                self.zoom_url = None;
-                self.zoom_diagram = None;
+                self.drop_image_zoom();
                 if was_zoom {
                     self.restore_body_scroll()
                 } else {
@@ -828,26 +843,15 @@ impl App {
             }
             Message::FontSizeUp => {
                 let size = self.adjust_font_scale(1.1);
-                self.height_cache.clear();
-                self.rebuild_virt_here();
-                let preview_measure = self.refresh_full_mindmap_preview_heights();
-                Task::batch([
-                    self.measure_window_heights(),
-                    preview_measure,
-                    self.show_toast(format!("Font {:.0} px", size)),
-                ])
+                self.font_size_changed(format!("Font {:.0} px", size))
             }
             Message::FontSizeDown => {
                 let size = self.adjust_font_scale(1.0 / 1.1);
-                self.height_cache.clear();
-                self.rebuild_virt_here();
-                let preview_measure = self.refresh_full_mindmap_preview_heights();
-                Task::batch([
-                    self.measure_window_heights(),
-                    preview_measure,
-                    self.show_toast(format!("Font {:.0} px", size)),
-                ])
+                self.font_size_changed(format!("Font {:.0} px", size))
             }
+            Message::ReaderZoomBy(steps) => self.reader_zoom_by(steps),
+            Message::ReaderZoomFlush => self.reader_zoom_flush(),
+            Message::ReaderZoomSave(seq) => self.reader_zoom_save(seq),
             Message::FontSizeReset => {
                 self.font_scale = 1.0;
                 self.rebuild_typography();
@@ -887,13 +891,19 @@ impl App {
             Message::WindowDrag | Message::WindowTitlebarDoubleClick => Task::none(),
             Message::MindmapNativePinch(delta) => {
                 // The native monitor runs for the whole app. Only forward a
-                // finite magnification delta while a graph owns the visible
-                // surface; search and overlays retain their normal input.
-                if delta.is_finite() && self.overlay == Overlay::None {
+                // finite magnification delta while a graph, the image
+                // viewer, or the reader owns the visible surface; search
+                // and the other overlays retain their normal input.
+                if delta.is_finite() && self.overlay == Overlay::ImageZoom {
+                    self.image_zoom_pinch_log += f64::from(delta);
+                } else if delta.is_finite() && self.overlay == Overlay::None {
                     if self.full_mindmap.is_some() {
                         self.full_mindmap_native_pinch_log += f64::from(delta);
                     } else if self.view_mode == ViewMode::Mindmap && !self.search_open {
                         self.mindmap_native_pinch_log += f64::from(delta);
+                    } else if self.reader_shows_document() {
+                        // The reader's font, by the ⌘+ and ⌘− steps.
+                        return self.reader_zoom_by(super::gestures::pinch_zoom_steps(delta));
                     }
                 }
                 Task::none()
@@ -2016,6 +2026,64 @@ impl App {
                 }
                 Task::none()
             }
+            Message::ImageZoomCommand(command) => {
+                // The viewer applies the request on the redraw this message
+                // causes, as the mind map canvas does.
+                if self.overlay == Overlay::ImageZoom {
+                    self.image_zoom_request = self.image_zoom_request.next(command);
+                }
+                Task::none()
+            }
+            Message::ImageZoomDetail(tier) => {
+                let budget = crate::diagram::DEFAULT_CACHE_BYTE_BUDGET
+                    .saturating_sub(self.diagram_cache.cost_bytes())
+                    .min(crate::diagram::ZOOM_RASTER_MAX_BYTES);
+                let next = self.image_zoom_raster_seq.wrapping_add(1);
+                let requested = match self.image_zoom_raster.as_mut() {
+                    Some(raster) if self.overlay == Overlay::ImageZoom => {
+                        raster.want(tier, budget, next)
+                    }
+                    _ => None,
+                };
+                match requested {
+                    Some(id) => {
+                        self.image_zoom_raster_seq = id;
+                        Task::perform(
+                            async move { tokio::time::sleep(ZOOM_RASTER_DEBOUNCE).await },
+                            move |()| Message::ImageZoomRasterDue(id),
+                        )
+                    }
+                    None => Task::none(),
+                }
+            }
+            Message::ImageZoomRasterDue(id) => {
+                let Some(raster) = self.image_zoom_raster.as_mut() else {
+                    return Task::none();
+                };
+                let Some((width, _)) = raster.due(id) else {
+                    return Task::none();
+                };
+                let svg = match self.diagram_cache.peek(&raster.key) {
+                    Some(crate::diagram::DiagramState::Ready { source_bytes, .. }) => {
+                        source_bytes.clone()
+                    }
+                    _ => {
+                        // The diagram left the cache (a theme change or an
+                        // eviction); keep the raster on screen.
+                        raster.pending = None;
+                        return Task::none();
+                    }
+                };
+                Task::perform(crate::diagram::rasterize_zoom(svg, width), move |result| {
+                    Message::ImageZoomRasterReady(id, result)
+                })
+            }
+            Message::ImageZoomRasterReady(id, result) => {
+                if let Some(raster) = self.image_zoom_raster.as_mut() {
+                    raster.ready(id, result);
+                }
+                Task::none()
+            }
             Message::MindmapDeselect => {
                 // A click on empty canvas clears the selection; the panel
                 // stays open until its X or ⌘⌥B hides it.
@@ -2161,6 +2229,7 @@ impl App {
                 // leaves the macOS event loop alive without ever creating a
                 // visible window on current macOS releases.
                 crate::native_pinch::install();
+                crate::native_swipe::install();
                 if self.glass_capable && self.glass_window.is_none() {
                     // `update` pushes the glass state to this window next.
                     self.glass_window = Some(id);
@@ -2314,6 +2383,16 @@ impl App {
                     "Mindmap auto-center: on"
                 } else {
                     "Mindmap auto-center: off"
+                };
+                self.show_toast(label.into())
+            }
+            Message::ToggleMindmapScrollPans => {
+                self.prefs.mindmap_scroll_pans = !self.prefs.mindmap_scroll_pans;
+                self.save_prefs();
+                let label = if self.prefs.mindmap_scroll_pans {
+                    "Mindmap scroll: pans (pinch or ⌘+scroll zooms)"
+                } else {
+                    "Mindmap scroll: zooms"
                 };
                 self.show_toast(label.into())
             }
@@ -2491,6 +2570,7 @@ impl App {
                 };
                 self.zoom_url = Some(url);
                 self.zoom_diagram = None;
+                self.image_zoom_raster = None;
                 self.overlay = Overlay::ImageZoom;
                 let restore = self.restore_body_scroll();
                 match raster_task {
@@ -3592,6 +3672,7 @@ impl App {
                     _ => None,
                 };
                 if let Some(h) = handle {
+                    self.image_zoom_raster = rgba_size(&h).map(|base| ZoomRaster::new(key, base));
                     self.zoom_diagram = Some(h);
                     self.zoom_url = None;
                     self.overlay = Overlay::ImageZoom;

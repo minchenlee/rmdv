@@ -76,9 +76,9 @@ pub enum DiagramState {
     /// Render completed successfully.
     ///
     /// - `inline` is a pre-rasterized image handle used for both inline view
-    ///   and the zoom modal (reuses iced's `image::viewer` for scroll-zoom
-    ///   + drag-pan + escape-close parity with normal images). Bypasses
-    ///   iced_wgpu's per-redraw SVG parse/raster step.
+    ///   and the zoom modal (`crate::zoom_viewer`, the same viewer as for
+    ///   normal images). Bypasses iced_wgpu's per-redraw SVG parse/raster
+    ///   step.
     /// - `source_bytes` is the raw SVG payload (copy/export).
     Ready {
         inline: image::Handle,
@@ -361,15 +361,68 @@ pub async fn render_blocking_async(
     .unwrap_or_else(|_| Err("render task panicked".to_string()))
 }
 
+/// The largest side of a sharper raster made for the zoomed viewer.
+pub const ZOOM_RASTER_MAX_DIM: u32 = 8192;
+/// The most bytes one sharper zoom raster may hold (also limited by what
+/// is left of the diagram cache's byte budget).
+pub const ZOOM_RASTER_MAX_BYTES: usize = 64 * 1024 * 1024;
+
+/// The size of a sharper raster for a diagram whose inline raster is
+/// `base` pixels, when the viewer wants `tier` raster pixels per base
+/// pixel. Capped at [`ZOOM_RASTER_MAX_DIM`] a side and `budget_bytes` of
+/// RGBA. `None` when it would be no sharper than `base`.
+pub fn zoom_raster_size(base: (u32, u32), tier: u32, budget_bytes: usize) -> Option<(u32, u32)> {
+    let (bw, bh) = (base.0 as f64, base.1 as f64);
+    if bw < 1.0 || bh < 1.0 || tier <= 1 {
+        return None;
+    }
+    let max_dim = f64::from(ZOOM_RASTER_MAX_DIM);
+    let by_bytes = (budget_bytes as f64 / (4.0 * bw * bh)).sqrt();
+    let factor = f64::from(tier)
+        .min(max_dim / bw)
+        .min(max_dim / bh)
+        .min(by_bytes);
+    let (w, h) = ((bw * factor).floor(), (bh * factor).floor());
+    // Less than 5% wider is not worth a raster.
+    if w <= bw * 1.05 {
+        return None;
+    }
+    Some((w as u32, h as u32))
+}
+
+/// Rasterize a diagram's SVG `width` pixels wide for the zoomed viewer,
+/// off the UI thread and under the same concurrency cap as diagram renders.
+pub async fn rasterize_zoom(svg: Arc<Vec<u8>>, width: u32) -> Result<image::Handle, String> {
+    let _permit = RENDER_LIMIT
+        .acquire()
+        .await
+        .map_err(|_| "render limit closed".to_string())?;
+    tokio::task::spawn_blocking(move || {
+        let (rgba, w, h) = rasterize_scaled(&svg, |_| width as f32)?;
+        Ok(image::Handle::from_rgba(w, h, rgba))
+    })
+    .await
+    .unwrap_or_else(|_| Err("zoom raster task panicked".to_string()))
+}
+
 /// Rasterize a diagram SVG to RGBA at a size suitable for the inline view.
 ///
 /// The rasterization target is `min(viewbox_width * 2.0, 1600.0)` px wide,
 /// preserving aspect. This gives a crisp display up to ~800px wide UI
 /// without ballooning memory on absurdly wide diagrams.
 fn rasterize_for_inline(svg_bytes: &[u8]) -> Result<(Vec<u8>, u32, u32), String> {
+    const MAX_WIDTH: f32 = 1600.0;
+    rasterize_scaled(svg_bytes, |w| (w * RASTER_SCALE).min(MAX_WIDTH))
+}
+
+/// Rasterize an SVG `target(intrinsic width)` pixels wide, keeping its
+/// aspect.
+fn rasterize_scaled(
+    svg_bytes: &[u8],
+    target: impl FnOnce(f32) -> f32,
+) -> Result<(Vec<u8>, u32, u32), String> {
     use resvg::tiny_skia;
     use resvg::usvg;
-    const MAX_WIDTH: f32 = 1600.0;
 
     let mut opt = usvg::Options::default();
     opt.fontdb = USVG_FONTDB.clone();
@@ -379,7 +432,7 @@ fn rasterize_for_inline(svg_bytes: &[u8]) -> Result<(Vec<u8>, u32, u32), String>
     if w <= 0.0 || h <= 0.0 {
         return Err("svg has zero size".into());
     }
-    let target = (w * RASTER_SCALE).min(MAX_WIDTH);
+    let target = target(w);
     let scale = (target / w).max(0.01);
     let pw = (w * scale).round().max(1.0) as u32;
     let ph = (h * scale).round().max(1.0) as u32;
@@ -525,6 +578,42 @@ mod tests {
 
     fn palette() -> Palette {
         Palette::ONE_DARK
+    }
+
+    #[test]
+    fn zoom_raster_size_scales_by_tier_within_the_caps() {
+        let big = usize::MAX;
+        // Tier 1 is the inline raster itself: nothing sharper to make.
+        assert_eq!(zoom_raster_size((800, 400), 1, big), None);
+        assert_eq!(zoom_raster_size((800, 400), 0, big), None);
+        assert_eq!(zoom_raster_size((800, 400), 2, big), Some((1600, 800)));
+        assert_eq!(zoom_raster_size((800, 400), 4, big), Some((3200, 1600)));
+        // A side never passes the dimension cap; the aspect holds.
+        assert_eq!(zoom_raster_size((1600, 400), 16, big), Some((8192, 2048)));
+        // The byte budget caps the pixel count: 4 bytes a pixel.
+        let (w, h) = zoom_raster_size((800, 400), 8, 4 * 1600 * 800).unwrap();
+        assert!(w <= 1600 && h <= 800 && w > 800, "{w}x{h}");
+        assert!((w as usize) * (h as usize) * 4 <= 4 * 1600 * 800);
+        // No room left in the budget: keep the inline raster.
+        assert_eq!(zoom_raster_size((800, 400), 8, 4 * 800 * 400), None);
+        assert_eq!(zoom_raster_size((800, 400), 8, 0), None);
+        assert_eq!(zoom_raster_size((0, 400), 8, big), None);
+    }
+
+    #[test]
+    fn zoom_raster_is_made_at_the_requested_width() {
+        let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="100" height="50"><rect width="100" height="50" fill="red"/></svg>"#;
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let handle = runtime
+            .block_on(rasterize_zoom(Arc::new(svg.as_bytes().to_vec()), 640))
+            .expect("raster");
+        match handle {
+            image::Handle::Rgba { width, height, .. } => assert_eq!((width, height), (640, 320)),
+            other => panic!("{other:?}"),
+        }
     }
 
     #[test]

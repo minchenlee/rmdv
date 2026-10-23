@@ -12,6 +12,7 @@ mod sidebar;
 mod title_row;
 mod toolbar;
 mod vault_search;
+mod wheel_gate;
 mod widgets;
 
 pub(super) use chrome::*;
@@ -25,5 +26,10 @@ pub(super) use sidebar::*;
 pub(super) use title_row::TitleRow;
 pub(super) use toolbar::*;
 pub(super) use vault_search::*;
+#[cfg(test)]
+pub(super) use wheel_gate::HScrollProbe;
+#[cfg(test)]
+pub(super) use wheel_gate::PROBE_WALKS;
+pub(super) use wheel_gate::{Gate, WheelGate};
 pub(super) use widgets::*;
 pub(crate) use widgets::{reader_tip, sleek_scrollable_style};
