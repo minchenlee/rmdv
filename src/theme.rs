@@ -847,6 +847,8 @@ pub mod shadow {
     pub const DIALOG: Shadow = drop(0.28, 14.0, 50.0);
     /// The shortcuts sheet, the highest surface.
     pub const SHEET: Shadow = drop(0.35, 18.0, 60.0);
+    /// Context menus: a small surface right under the pointer.
+    pub const MENU: Shadow = drop(0.26, 6.0, 20.0);
     /// A panel shown over the content at the window's left edge: the
     /// sidebar peek. It falls to the right, onto the content.
     pub const PEEK: Shadow = Shadow {

@@ -522,6 +522,33 @@ fn back_waits_while_a_modal_is_open() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+#[test]
+fn back_waits_while_a_context_menu_is_open() {
+    let (mut app, dir) = fixture("menu");
+    let mut ui = PointerUi::new();
+    let (a, b) = (dir.join("a.md"), dir.join("b.md"));
+    open(&mut app, &mut ui, &a);
+    open(&mut app, &mut ui, &b);
+    send(&mut app, &mut ui, Message::PointerRightPress(READER));
+    app.open_context_menu(vec![MenuEntry::item("Copy", Message::Noop)], None);
+
+    assert_eq!(app.swipe_directions(), 0, "no swipe under a menu");
+    back(&mut app, &mut ui);
+    assert_eq!(
+        app.file.as_deref(),
+        Some(b.as_path()),
+        "the menu owns input"
+    );
+    assert!(app.context_menu.is_some());
+
+    // An open from elsewhere (Finder, the CLI) changes the document under
+    // the menu; its items were for the old one, so it closes.
+    send(&mut app, &mut ui, Message::Open(a.clone()));
+    assert_eq!(app.file.as_deref(), Some(a.as_path()));
+    assert!(app.context_menu.is_none());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 // --- 3. ⌘[ and ⌘] ----------------------------------------------------------------
 
 #[test]

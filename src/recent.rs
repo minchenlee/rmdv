@@ -68,6 +68,29 @@ pub fn add_folder_to(store: &Path, path: &Path) -> Recent {
     recent
 }
 
+/// After `old` was renamed to `new`, point every entry at or inside `old`
+/// at the same place under `new` in the list at `store`; returns the list.
+pub fn rename_in(store: &Path, old: &Path, new: &Path) -> Recent {
+    let mut recent = load_from(store);
+    let mut changed = false;
+    for list in [&mut recent.paths, &mut recent.folders] {
+        for entry in list.iter_mut() {
+            if let Ok(rest) = entry.strip_prefix(old) {
+                *entry = if rest.as_os_str().is_empty() {
+                    new.to_path_buf()
+                } else {
+                    new.join(rest)
+                };
+                changed = true;
+            }
+        }
+    }
+    if changed {
+        save_to(store, &recent);
+    }
+    recent
+}
+
 fn push_front(list: &mut Vec<PathBuf>, path: &Path) {
     list.retain(|x| x != path);
     list.insert(0, path.to_path_buf());

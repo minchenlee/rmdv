@@ -1,5 +1,6 @@
 //! Counts left presses over the whole window, for the folder picker's
-//! double-click (MDV-048 polish).
+//! double-click (MDV-048 polish), and reports right presses in window
+//! coordinates, so a context menu opens where the press was (MDV-048 P6).
 //!
 //! A double-click on a picker folder row opens that folder. The first click
 //! already descends, so the rows change under the pointer before the second
@@ -18,7 +19,7 @@ const DOUBLE_CLICK_SLOP: f32 = 4.0;
 
 /// The platform's double-click interval.
 #[cfg(all(not(test), target_os = "macos"))]
-fn double_click_interval() -> Duration {
+pub(in crate::app) fn double_click_interval() -> Duration {
     let seconds = objc2_app_kit::NSEvent::doubleClickInterval();
     if seconds.is_finite() && seconds > 0.0 {
         Duration::from_secs_f64(seconds.min(5.0))
@@ -29,14 +30,14 @@ fn double_click_interval() -> Duration {
 
 /// The common default (Windows uses 500 ms; most Linux desktops 400 ms).
 #[cfg(all(not(test), not(target_os = "macos")))]
-fn double_click_interval() -> Duration {
+pub(in crate::app) fn double_click_interval() -> Duration {
     Duration::from_millis(500)
 }
 
 /// Tests rebuild the view between the two clicks; a long interval keeps a
 /// slow runner from splitting a double-click into two clicks.
 #[cfg(test)]
-fn double_click_interval() -> Duration {
+pub(in crate::app) fn double_click_interval() -> Duration {
     Duration::from_secs(5)
 }
 
@@ -45,6 +46,7 @@ fn double_click_interval() -> Duration {
 pub(in crate::app) struct PressWatch<'a> {
     content: Element<'a, Message>,
     on_press: Option<fn(bool) -> Message>,
+    on_right_press: Option<fn(Point) -> Message>,
     swallow_double: bool,
 }
 
@@ -53,6 +55,7 @@ impl<'a> PressWatch<'a> {
         Self {
             content: content.into(),
             on_press: None,
+            on_right_press: None,
             swallow_double: false,
         }
     }
@@ -61,6 +64,14 @@ impl<'a> PressWatch<'a> {
     /// press completes a double-click. `None` publishes nothing.
     pub(in crate::app) fn on_press(mut self, on_press: Option<fn(bool) -> Message>) -> Self {
         self.on_press = on_press;
+        self
+    }
+
+    /// Publishes `on_right_press(position)` for each right press, before
+    /// the content sees it. Widgets inside a scrollable only know positions
+    /// relative to their content; this one is in window coordinates.
+    pub(in crate::app) fn on_right_press(mut self, on_right_press: fn(Point) -> Message) -> Self {
+        self.on_right_press = Some(on_right_press);
         self
     }
 
@@ -141,6 +152,14 @@ impl<'a> Widget<Message, iced::Theme, iced::Renderer> for PressWatch<'a> {
         shell: &mut Shell<'_, Message>,
         viewport: &Rectangle,
     ) {
+        if let (
+            Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Right)),
+            Some(at),
+            Some(on_right_press),
+        ) = (event, cursor.position(), self.on_right_press)
+        {
+            shell.publish(on_right_press(at));
+        }
         if let (Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)), Some(at)) =
             (event, cursor.position())
         {

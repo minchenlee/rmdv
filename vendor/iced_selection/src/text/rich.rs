@@ -444,6 +444,43 @@ impl<Link> State<Link> {
         !self.selection.is_empty()
     }
 
+    /// The text of the widget's own selection; `None` when it is empty.
+    pub fn selected_text(&self) -> Option<String> {
+        (!self.selection.is_empty())
+            .then(|| self.selection.text(&self.paragraph))
+    }
+
+    /// Whether `point` lies inside the widget's own selection. Both `point`
+    /// and `bounds` (the widget's layout bounds) are in the same
+    /// coordinates.
+    pub fn selection_contains(
+        &self,
+        point: Point,
+        bounds: core::Rectangle,
+    ) -> bool {
+        if self.selection.is_empty() || !bounds.contains(point) {
+            return false;
+        }
+        let at = self.position_at(point, bounds);
+        let Selection { start, end, .. } = self.selection;
+        start.min(end) <= at && at <= start.max(end)
+    }
+
+    /// The link of the span under `point`, if any. Both `point` and
+    /// `bounds` (the widget's layout bounds) are in the same coordinates.
+    pub fn link_at(&self, point: Point, bounds: core::Rectangle) -> Option<Link>
+    where
+        Link: Clone,
+    {
+        if !bounds.contains(point) {
+            return None;
+        }
+        let span = self
+            .paragraph
+            .hit_span(point - core::Vector::new(bounds.x, bounds.y))?;
+        self.spans.get(span)?.link.clone()
+    }
+
     /// Clears the widget's own selection and ends its drag.
     pub fn clear_selection(&mut self) {
         self.selection = Selection::default();

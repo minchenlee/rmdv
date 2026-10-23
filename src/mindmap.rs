@@ -361,6 +361,31 @@ pub fn collapsed_for_depth(ast: &[(BlockId, Block)], depth: u8) -> HashSet<Block
     collapsed
 }
 
+/// Heading `id` (or [`DOC_ROOT`]) and what lies below it, with nothing
+/// folded: every node of its subtree, itself first, and the branching nodes
+/// strictly below it. `None` when no such node is in the map.
+pub fn subtree_below(
+    ast: &[(BlockId, Block)],
+    id: BlockId,
+) -> Option<(Vec<BlockId>, Vec<BlockId>)> {
+    let nodes = build_tree(ast, "", &HashSet::new());
+    let start = nodes.iter().position(|node| node.id == Some(id))?;
+    let mut all = Vec::new();
+    let mut branches = Vec::new();
+    let mut stack = vec![start];
+    while let Some(index) = stack.pop() {
+        let node = &nodes[index];
+        if let Some(node_id) = node.id {
+            all.push(node_id);
+            if index != start && !node.children.is_empty() {
+                branches.push(node_id);
+            }
+        }
+        stack.extend(node.children.iter().rev());
+    }
+    Some((all, branches))
+}
+
 pub(crate) fn layout<Id>(nodes: &mut [MNode<Id>], idx: usize, y_cursor: &mut f32) -> f32 {
     let kids = nodes[idx].children.clone();
     let x = PAD + nodes[idx].level as f32 * (NODE_W + X_GAP);
@@ -542,6 +567,10 @@ pub struct MindmapProgram<'a, Id, Message> {
     /// node's full path. Without it the tooltip shows only a truncated
     /// label in full.
     pub hover_text: Option<Box<dyn Fn(&Id) -> Option<String> + 'a>>,
+    /// A right press: on a node (`Some`) or on empty canvas (`None`), for
+    /// the app's context menu. It starts no drag and selects nothing.
+    /// `None` leaves right presses to the layers around the canvas.
+    pub on_context: Option<Box<dyn Fn(Option<Id>) -> Message + 'a>>,
     pub on_deselect: Message,
 }
 
@@ -1532,6 +1561,21 @@ where
                 state.zoom_anim = None;
                 Some(canvas::Action::capture())
             }
+            iced::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Right)) => {
+                let on_context = self.on_context.as_ref()?;
+                let pos = cursor.position_in(bounds)?;
+                // A right press during a left drag or click changes nothing.
+                if state.drag_origin.is_some() {
+                    return Some(canvas::Action::capture());
+                }
+                // The node under the pointer (its chevron counts as the
+                // node), or empty canvas. No drag starts and nothing is
+                // selected.
+                let id = self
+                    .hit(state, pos)
+                    .and_then(|(i, _)| self.nodes[i].id.clone());
+                Some(canvas::Action::publish(on_context(id)).and_capture())
+            }
             iced::Event::Mouse(mouse::Event::CursorMoved { .. }) => {
                 if let Some(origin) = state.drag_origin {
                     let pos = match cursor.position_in(bounds) {
@@ -2095,6 +2139,7 @@ mod tests {
             on_select: Box::new(|_| ()),
             on_activate: None,
             hover_text: None,
+            on_context: None,
             on_deselect: (),
         }
     }
@@ -2478,6 +2523,7 @@ mod tests {
                 on_select: Box::new(|_| ()),
                 on_activate: None,
                 hover_text: None,
+                on_context: None,
                 on_deselect: (),
             }
         };
@@ -2847,6 +2893,7 @@ mod tests {
         Select(PathId),
         Activate(PathId),
         Deselect,
+        Context(Option<PathId>),
     }
 
     fn pointer_program(
@@ -2872,6 +2919,7 @@ mod tests {
             on_select: Box::new(Ev::Select),
             on_activate: Some(Box::new(Ev::Activate)),
             hover_text: None,
+            on_context: Some(Box::new(Ev::Context)),
             on_deselect: Ev::Deselect,
         }
     }
@@ -3414,6 +3462,7 @@ mod tests {
             on_select: Box::new(DocEv::Select),
             on_activate: Some(Box::new(DocEv::Activate)),
             hover_text: None,
+            on_context: None,
             on_deselect: DocEv::Deselect,
         };
         let mut state = MindmapState {
@@ -3995,5 +4044,86 @@ mod tests {
             at(Point::new(900.0, 320.0)),
         );
         assert_eq!(state.pan, Vector::ZERO);
+    }
+
+    // --- Context menu (MDV-048 P6) ------------------------------------------
+
+    fn right_press_at(
+        program: &MindmapProgram<'static, PathId, Ev>,
+        state: &mut MindmapState<PathId>,
+        at: Point,
+    ) -> Option<Ev> {
+        pointer_send(
+            program,
+            state,
+            iced::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Right)),
+            at,
+        )
+    }
+
+    #[test]
+    fn a_right_press_asks_for_a_menu_and_starts_no_drag_or_selection() {
+        let mut program = pointer_program(notes_graph(), None);
+        program.autocenter = false;
+        let mut state = live_state();
+        let documents = PathId(DOCUMENTS.into());
+        let on_node = node_center(&program, DOCUMENTS);
+
+        assert_eq!(
+            right_press_at(&program, &mut state, on_node),
+            Some(Ev::Context(Some(documents.clone()))),
+            "a right press on a node asks for that node's menu"
+        );
+        assert!(state.drag_origin.is_none(), "it starts no drag");
+        assert!(state.pressed.is_none(), "it presses no node");
+        // The pointer moves and the right button comes up: nothing pans,
+        // nothing is selected.
+        let far = Point::new(on_node.x + 80.0, on_node.y + 60.0);
+        assert_eq!(move_at(&program, &mut state, far), None);
+        assert_eq!(state.pan, Vector::ZERO);
+        assert_eq!(
+            pointer_send(
+                &program,
+                &mut state,
+                iced::Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Right)),
+                far,
+            ),
+            None
+        );
+        assert!(state.last_click.is_none(), "it is no first click");
+
+        // Empty canvas asks for the canvas menu.
+        let blank = Point::new(990.0, 790.0);
+        assert!(program.node_at(&state, blank).is_none());
+        assert_eq!(
+            right_press_at(&program, &mut state, blank),
+            Some(Ev::Context(None))
+        );
+
+        // A right press during a left drag changes nothing.
+        let _ = press_at(&program, &mut state, on_node);
+        assert_eq!(right_press_at(&program, &mut state, on_node), None);
+        assert!(state.drag_origin.is_some(), "the left press goes on");
+        assert_eq!(
+            release_at(&program, &mut state, on_node),
+            Some(Ev::Select(documents)),
+            "and still ends in its click"
+        );
+    }
+
+    #[test]
+    fn without_a_context_handler_a_right_press_falls_through() {
+        let mut program = pointer_program(notes_graph(), None);
+        program.on_context = None;
+        let mut state = live_state();
+        let on_node = node_center(&program, DOCUMENTS);
+        let action = canvas::Program::update(
+            &program,
+            &mut state,
+            &iced::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Right)),
+            POINTER_BOUNDS,
+            mouse::Cursor::Available(on_node),
+        );
+        assert!(action.is_none(), "the canvas leaves the press alone");
     }
 }

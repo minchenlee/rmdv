@@ -1,7 +1,8 @@
-use crate::app::{ImageCache, ImageState, Message};
+use crate::app::{ImageCache, ImageState, Message, ReaderTarget};
 use crate::ast::{Block, BlockId, Inline, ListItem};
 use crate::diagram::{DiagramCache, DiagramState};
 use crate::keyed_body::{KeyedBody, RowKey};
+use crate::select_scope::TargetMark;
 use crate::theme::{Palette, Typography};
 use iced::advanced::widget::{tree, Operation, Tree, Widget};
 use iced::advanced::{layout, mouse, overlay, renderer, Clipboard, Layout, Shell};
@@ -108,17 +109,22 @@ pub fn render<'a>(
             } else {
                 typ.heading_space_above(*level)
             };
-            render_heading_with_chevron(
-                *id,
-                b,
-                pal,
-                typ,
-                &hl.query,
-                local,
-                is_folded,
-                show_chev,
-                space_above,
+            let id = *id;
+            TargetMark::new(
+                move || ReaderTarget::Heading(id),
+                render_heading_with_chevron(
+                    id,
+                    b,
+                    pal,
+                    typ,
+                    &hl.query,
+                    local,
+                    is_folded,
+                    show_chev,
+                    space_above,
+                ),
             )
+            .into()
         } else {
             container(render_block(b, pal, typ, &hl.query, local, &img_ctx))
                 .id(block_anchor_id(*id))
@@ -681,7 +687,11 @@ fn render_block<'a>(
                 .padding(Padding::from([6, 8]))
                 .align_x(iced::alignment::Horizontal::Right)
                 .width(Length::Fill);
-            stack![body, copy_btn].into()
+            TargetMark::new(
+                move || ReaderTarget::Code(code.clone()),
+                stack![body, copy_btn],
+            )
+            .into()
         }
         Block::Blockquote(blocks) => {
             let inner = blocks.iter().fold(Column::new().spacing(8), |c, b| {
@@ -712,14 +722,33 @@ fn render_block<'a>(
         }
         Block::Diagram { source, hash, kind } => {
             if matches!(kind, crate::ast::DiagramKind::Math) {
-                render_math_block(*hash, source, pal, typ, img)
+                TargetMark::new(
+                    move || ReaderTarget::Math(source.clone()),
+                    render_math_block(*hash, source, pal, typ, img),
+                )
+                .into()
             } else {
-                render_diagram(*hash, source, pal, typ, img)
+                let hash = *hash;
+                TargetMark::new(
+                    move || ReaderTarget::Diagram(hash),
+                    render_diagram(hash, source, pal, typ, img),
+                )
+                .into()
             }
         }
         Block::List { ordered, items } => render_list(*ordered, items, pal, typ, &mut ctx, img),
         Block::Table { headers, rows } => render_table(headers, rows, pal, typ, &mut ctx),
-        Block::Image { url, alt, link } => render_image(url, alt, link.as_deref(), pal, img),
+        Block::Image { url, alt, link } => {
+            let current_file = img.current_file;
+            TargetMark::new(
+                move || ReaderTarget::Image {
+                    key: image_key(url, current_file),
+                    link: link.clone(),
+                },
+                render_image(url, alt, link.as_deref(), pal, img),
+            )
+            .into()
+        }
         Block::Rule => {
             let pal_r = *pal;
             container(Space::new().height(1.0))
@@ -1156,6 +1185,17 @@ fn render_image<'a>(
             }
         }
     }
+}
+
+/// What the image viewer opens for an image written as `url`: the URL of
+/// a remote image, the resolved path of a local one (the image cache key).
+fn image_key(url: &str, current_file: Option<&Path>) -> String {
+    if crate::app::is_remote_url(url) {
+        return url.to_string();
+    }
+    crate::app::resolve_image_path(url, current_file)
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_else(|| url.to_string())
 }
 
 /// An image wrapped in a link (a badge): a click follows the link instead

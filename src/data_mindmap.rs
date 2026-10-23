@@ -455,6 +455,47 @@ fn yaml_get_by_str_key<'a>(cur: &'a serde_yaml::Value, k: &str) -> Option<&'a se
     })
 }
 
+/// `path` as a path expression: `a.b[2]`. A key that is not a plain name
+/// is quoted: `a["b c"]`. The root is the empty string.
+pub fn path_text(path: &[PathSeg]) -> String {
+    let plain = |key: &str| {
+        key.chars()
+            .next()
+            .is_some_and(|c| c.is_alphabetic() || c == '_' || c == '$')
+            && key
+                .chars()
+                .all(|c| c.is_alphanumeric() || c == '_' || c == '$' || c == '-')
+    };
+    let mut out = String::new();
+    for seg in path {
+        match seg {
+            PathSeg::Key(key) if plain(key) => {
+                if !out.is_empty() {
+                    out.push('.');
+                }
+                out.push_str(key);
+            }
+            PathSeg::Key(key) => {
+                let quoted = serde_json::to_string(key).unwrap_or_else(|_| format!("\"{key}\""));
+                out.push('[');
+                out.push_str(&quoted);
+                out.push(']');
+            }
+            PathSeg::Index(index) => out.push_str(&format!("[{index}]")),
+        }
+    }
+    out
+}
+
+/// The last step of `path` as text: a key, or an array index. `None` for
+/// the root.
+pub fn path_key(path: &[PathSeg]) -> Option<String> {
+    path.last().map(|seg| match seg {
+        PathSeg::Key(key) => key.clone(),
+        PathSeg::Index(index) => index.to_string(),
+    })
+}
+
 /// Navigate `path` into the parsed source and pretty-print that subtree.
 pub fn subtree_pretty(source: &str, lang: &str, path: &[PathSeg]) -> Option<String> {
     match lang {
@@ -512,6 +553,24 @@ mod tests {
 
     fn obj(src: &str) -> DataValue {
         from_json(&serde_json::from_str(src).unwrap())
+    }
+
+    #[test]
+    fn path_text_reads_like_a_path_expression() {
+        use PathSeg::{Index, Key};
+        assert_eq!(path_text(&[]), "");
+        assert_eq!(
+            path_text(&[Key("a".into()), Key("b".into()), Index(2)]),
+            "a.b[2]"
+        );
+        assert_eq!(path_text(&[Index(0), Key("x_1".into())]), "[0].x_1");
+        assert_eq!(
+            path_text(&[Key("a".into()), Key("b c".into()), Key("say \"hi\"".into())]),
+            "a[\"b c\"][\"say \\\"hi\\\"\"]"
+        );
+        assert_eq!(path_text(&[Key("1st".into())]), "[\"1st\"]");
+        assert_eq!(path_key(&[]), None);
+        assert_eq!(path_key(&[Key("a".into()), Index(3)]).as_deref(), Some("3"));
     }
 
     #[test]

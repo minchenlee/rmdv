@@ -120,7 +120,9 @@ fn editor_font() -> iced::Font {
     }
 }
 
+mod context_menu;
 mod dispatch;
+mod editor_menu;
 mod full_mindmap;
 mod full_mindmap_state;
 mod full_mindmap_view;
@@ -130,18 +132,24 @@ mod ipc_handler;
 mod lifecycle;
 pub use lifecycle::window_settings;
 pub(crate) mod keys;
+mod list_menus;
 mod loading;
 mod message;
+mod mindmap_menu;
 mod paths;
 mod preview_worker;
+mod reader_menu;
 mod scroll_tasks;
 mod settings;
 mod sidebar_peek;
 mod slots;
 mod toolbar;
+mod tree_menu;
+mod tree_ops;
 mod types;
 mod view;
 mod zoom_raster;
+use context_menu::*;
 use full_mindmap_state::*;
 
 pub use full_mindmap_state::{
@@ -161,11 +169,13 @@ pub use paths::{is_external_link, is_remote_url, line_for_fragment, resolve_imag
 use preview_worker::*;
 use scroll_tasks::*;
 use settings::*;
+#[cfg(test)]
+use tree_ops::take_trashed_for_tests;
 use types::*;
 pub use types::{
     HistoryDir, MindmapDir, Overlay, PendingNav, PendingRefreshFile, PendingRefreshWorkspace,
-    PendingWatcherReload, SidebarTab, ThemeEntry, Toast, ToastAction, ToolbarView, ViewMode,
-    ZenRestoreState,
+    PendingWatcherReload, ReaderHit, ReaderTarget, SidebarTab, ThemeEntry, Toast, ToastAction,
+    ToolbarView, ViewMode, ZenRestoreState,
 };
 use view::*;
 pub(crate) use view::{reader_tip, sleek_scrollable_style};
@@ -249,6 +259,23 @@ pub struct App {
     /// Pointer motion over the overlay lists and vault results; gates hover
     /// selection on real motion.
     list_pointer: ListPointer,
+    /// The open context menu; at most one at a time.
+    context_menu: Option<ContextMenu>,
+    /// The file tree row being renamed in place (MDV-048 P6).
+    tree_rename: Option<TreeRename>,
+    /// Folders made with New Folder. They stay in the tree while empty,
+    /// though the scan leaves empty folders out.
+    tree_new_folders: Vec<PathBuf>,
+    /// The last file tree row click, for telling a double click.
+    tree_last_click: Option<(PathBuf, std::time::Instant)>,
+    /// A double click on a file row gave the arrow keys, Space, and Enter
+    /// to the reader instead of the file tree, until the tree is used again.
+    reader_keys: bool,
+    /// Where the latest right press was, in window coordinates.
+    right_press_at: Option<iced::Point>,
+    /// The reader element under the latest right press, for the reader's
+    /// context menu of the same press.
+    reader_menu_target: Option<ReaderTarget>,
     /// Vault search results page (Zed-style) — full reader-area, not an overlay.
     /// Shown when `vault_open`; workspace-level, so it renders even with no file.
     pub vault_open: bool,
@@ -613,6 +640,13 @@ impl Default for App {
             overlay_query: String::new(),
             overlay_selected: 0,
             list_pointer: ListPointer::default(),
+            context_menu: None,
+            tree_rename: None,
+            tree_new_folders: Vec::new(),
+            tree_last_click: None,
+            reader_keys: false,
+            right_press_at: None,
+            reader_menu_target: None,
             vault_open: false,
             vault_query: String::new(),
             vault_searched_query: None,
@@ -1315,6 +1349,7 @@ impl App {
         self.workspace_files_rev = self.workspace_files_rev.wrapping_add(1);
         self.workspace_sidebar_files = snapshot.sidebar_files;
         self.workspace_tree = Some(snapshot.root);
+        self.keep_new_folders_in_tree();
         self.workspace_snapshot_show_hidden = self.show_hidden;
         self.workspace_truncated = snapshot.listing_truncated;
         self.begin_workspace_epoch();
@@ -1383,6 +1418,7 @@ impl App {
         if !tree::graft_folder(root, &folder, snapshot.root) {
             return Task::none();
         }
+        self.keep_new_folders_in_tree();
         self.workspace_sidebar_files
             .replace_subtree(&folder, snapshot.sidebar_files);
         if !snapshot.files.is_empty() {
@@ -1468,6 +1504,15 @@ impl App {
         self.tree_cursor = self.tree_cursor.min(row_count.saturating_sub(1));
         self.reveal_current_file();
         self.error = None;
+        // A rename field lives in its row: a rescan that drops the row (the
+        // item was deleted or moved elsewhere) ends the rename.
+        if self
+            .tree_rename
+            .as_ref()
+            .is_some_and(|rename| !self.tree_rows().contains(&rename.path))
+        {
+            self.tree_rename = None;
+        }
     }
 
     fn begin_refresh_workspace_load(&mut self, path: PathBuf, id: u64) -> Task<Message> {
@@ -2424,6 +2469,13 @@ impl App {
         }
     }
 
+    /// Whether a press ends the whole-document selection now.
+    /// Not while a context menu is open: the press that closes the menu,
+    /// or chooses Copy in it, goes no further.
+    pub(super) fn select_all_clear_listens(&self) -> bool {
+        self.reader_select_all && self.context_menu.is_none()
+    }
+
     /// Plain text to copy while the whole document is selected.
     pub(crate) fn select_all_text(&self) -> Option<String> {
         (self.reader_select_all && self.reader_shows_document())
@@ -3078,10 +3130,7 @@ impl App {
         let sidebar_open = self.sidebar_open && !full_mindmap;
         let outline_active =
             self.sidebar_open && self.sidebar_tab == SidebarTab::Outline && !full_mindmap;
-        let tree_active = self.sidebar_open
-            && self.workspace.is_some()
-            && self.sidebar_tab == SidebarTab::Files
-            && !full_mindmap;
+        let tree_active = self.tree_keys_active();
         let editing = self.view_mode == ViewMode::Raw && self.editor.is_some() && !full_mindmap;
         let fold_chord = self.fold_chord_pending && !full_mindmap;
         let mindmap = self.view_mode == ViewMode::Mindmap && !full_mindmap;
@@ -3091,6 +3140,8 @@ impl App {
             quick_slots_shortcuts_enabled(overlay_open, vault_open, focused, editing, self.dirty);
         let slot_replace_open = self.quick_slot_replace.is_some();
         let close_confirm_open = self.close_confirm.is_some();
+        let menu_open = self.context_menu.is_some();
+        let renaming = self.tree_rename.is_some();
         let keys = iced::event::listen_with(|ev, status, _id| {
             let is_keyboard = matches!(
                 &ev,
@@ -3134,6 +3185,8 @@ impl App {
                 self.reader_select_all,
                 close_confirm_open,
                 image_zoom_open,
+                menu_open,
+                renaming,
             ),
         ))
         .map(
@@ -3153,7 +3206,14 @@ impl App {
                         quick_slots_allowed,
                         settings_open,
                     ),
-                    (slot_replace_open, select_all, close_confirm_open, image_zoom_open),
+                    (
+                        slot_replace_open,
+                        select_all,
+                        close_confirm_open,
+                        image_zoom_open,
+                        menu_open,
+                        renaming,
+                    ),
                 ),
                 (ev, reader_copied),
             )| {
@@ -3184,6 +3244,15 @@ impl App {
                 if is_primary_modifier_key(&key) {
                     return Message::QuickSlotsModifier(!released);
                 }
+                // An open context menu owns the keyboard, as a native menu
+                // does while it tracks.
+                if menu_open {
+                    return if released {
+                        Message::Noop
+                    } else {
+                        context_menu_key_message(&key)
+                    };
+                }
                 // The replace-slot confirmation owns the keyboard: nothing
                 // reaches the surfaces underneath it.
                 if slot_replace_open {
@@ -3203,6 +3272,16 @@ impl App {
                         Message::Noop
                     } else {
                         close_confirm_key_message(&key, mods)
+                    };
+                }
+                // The inline rename field takes typing, editing keys, and
+                // Enter itself; no shortcut acts on the tree or the reader
+                // underneath it. Both confirmations above end a rename.
+                if renaming {
+                    return if released {
+                        Message::Noop
+                    } else {
+                        tree_rename_key_message(&key)
                     };
                 }
                 let cmd = mods.command() || mods.control();
@@ -3599,13 +3678,8 @@ impl App {
         });
         // A click anywhere, including the start of a new drag, ends a
         // whole-document selection.
-        let select_all_clear = if self.reader_select_all {
-            iced::event::listen_with(|ev, _status, _id| match ev {
-                iced::Event::Mouse(iced::mouse::Event::ButtonPressed(_)) => {
-                    Some(Message::ClearSelectAll)
-                }
-                _ => None,
-            })
+        let select_all_clear = if self.select_all_clear_listens() {
+            iced::event::listen_with(|ev, _status, _id| select_all_ends_on(&ev))
         } else {
             iced::Subscription::none()
         };
@@ -3752,7 +3826,8 @@ impl App {
                     layout_generation: Some(self.mindmap_layout_generation.get()),
                     keyboard_zoom_enabled: self.overlay == Overlay::None
                         && !self.search_open
-                        && !self.fold_chord_pending,
+                        && !self.fold_chord_pending
+                        && self.context_menu.is_none(),
                     native_pinch_log: self.mindmap_native_pinch_log,
                     scroll_pans: self.prefs.mindmap_scroll_pans,
                     zoom_request: self.mindmap_zoom_request,
@@ -3766,6 +3841,7 @@ impl App {
                         Some(Box::new(Message::MindmapActivateNode))
                     },
                     hover_text: None,
+                    on_context: Some(Box::new(Message::MindmapContextMenu)),
                     on_deselect: Message::MindmapDeselect,
                 };
                 let canvas_el: Element<'_, Message> = iced::widget::canvas(program)
@@ -3854,6 +3930,9 @@ impl App {
                         .center_x(Length::Fill),
                     )
                     .on_press(Message::FocusEditor)
+                    // The editor ignores right presses: they open its menu
+                    // and leave its focus and selection alone.
+                    .on_right_press(Message::EditorContextMenu)
                     .into()
                 } else {
                     let fallback = text(self.source.as_str())
@@ -3954,7 +4033,13 @@ impl App {
                 let gate = Gate::Reader {
                     swipe: self.reader_swipe_probe(),
                 };
-                let scroll: Element<'_, Message> = WheelGate::new(scroll, gate).into();
+                let scroll = WheelGate::new(scroll, gate);
+                // A right press beside the text (the margins, below the
+                // end) opens the reader's menu too; the text reports its
+                // own presses first.
+                let scroll: Element<'_, Message> = iced::widget::mouse_area(scroll)
+                    .on_right_press(Message::ReaderContextMenu(ReaderHit::default()))
+                    .into();
                 if select_all {
                     stack![
                         scroll,
@@ -4294,6 +4379,10 @@ impl App {
             Some(u) => update_banner(&u.version, pal),
             None => Space::new().into(),
         };
+        let menu_layer: Element<'_, Message> = match &self.context_menu {
+            Some(menu) => context_menu_layer(menu, pal),
+            None => Space::new().into(),
+        };
         let root = iced::widget::stack![
             base,
             slot_replace_layer,
@@ -4301,6 +4390,7 @@ impl App {
             progress_layer,
             toast_layer,
             update_layer,
+            menu_layer,
             drop_layer
         ];
         // The picker's double-click: presses are reported only while the
@@ -4310,8 +4400,22 @@ impl App {
             self.overlay == Overlay::FolderPicker || self.picker_click != PickerClick::Idle;
         PressWatch::new(root)
             .on_press(watching.then_some(report))
+            .on_right_press(Message::PointerRightPress)
             .swallow_double(self.picker_click != PickerClick::Idle)
             .into()
+    }
+}
+
+/// A press ends the whole-document selection; a right press keeps it, for
+/// the reader's context menu to copy.
+fn select_all_ends_on(event: &iced::Event) -> Option<Message> {
+    match event {
+        iced::Event::Mouse(iced::mouse::Event::ButtonPressed(button))
+            if *button != iced::mouse::Button::Right =>
+        {
+            Some(Message::ClearSelectAll)
+        }
+        _ => None,
     }
 }
 

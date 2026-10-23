@@ -17,6 +17,11 @@ later commits add only what rmdv needs to select across reader blocks:
   link reports the leave too.
 - `text::Style::link_hover` (`LinkHover`: fill and corner radius) tints a
   hovered link instead of drawing a second underline over it.
+- `text::rich::State::link_at`, `selected_text`, and `selection_contains`
+  hit-test a right press for rmdv's reader context menu: the link under
+  the pointer, the widget's own selected text, and whether the pointer is
+  inside that selection. They read state only; a right press still changes
+  no selection.
 
 Keep changes small and listed here so a later upstream release can replace
 this copy.

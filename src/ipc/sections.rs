@@ -78,7 +78,7 @@ pub fn resolve_section_path<'a>(needle: &str, sections: &'a [Section]) -> Option
     })
 }
 
-fn inline_text(inlines: &[Inline]) -> String {
+pub(crate) fn inline_text(inlines: &[Inline]) -> String {
     let mut out = String::new();
     for i in inlines {
         push_inline(i, &mut out);

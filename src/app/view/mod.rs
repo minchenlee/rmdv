@@ -4,8 +4,11 @@
 use super::*;
 
 mod chrome;
+mod context_menu;
 mod edge_peek;
+mod menu_sink;
 mod overlays;
+mod press_outside;
 mod press_watch;
 mod settings;
 mod sidebar;
@@ -16,11 +19,13 @@ mod wheel_gate;
 mod widgets;
 
 pub(super) use chrome::*;
+pub(super) use context_menu::*;
 pub(super) use edge_peek::EdgePeek;
 #[cfg(test)]
 pub(super) use edge_peek::TEST_BUTTONS_DOWN;
 pub(super) use overlays::*;
-pub(super) use press_watch::PressWatch;
+pub(super) use press_outside::PressOutside;
+pub(super) use press_watch::{double_click_interval, PressWatch};
 pub(super) use settings::*;
 pub(super) use sidebar::*;
 pub(super) use title_row::TitleRow;

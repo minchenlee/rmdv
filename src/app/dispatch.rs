@@ -10,7 +10,25 @@ impl App {
         }
         // Only while a link pill shows: the snapshot clones the path.
         let link_page = self.hovered_link.is_some().then(|| self.link_page());
+        // Only while a context menu is open.
+        let menu_scope = self.context_menu.is_some().then(|| self.menu_scope());
         let mut task = self.dispatch_message(msg);
+        // A menu closes when what is under it changes: an overlay, a view,
+        // a modal, the sidebar.
+        if menu_scope.is_some_and(|scope| scope != self.menu_scope()) {
+            self.context_menu = None;
+        }
+        // An inline rename ends with the file tree that shows it; a tree
+        // shown again has the keys again.
+        if !self.file_tree_shown() {
+            self.tree_rename = None;
+            self.reader_keys = false;
+        }
+        // A confirmation card owns the keyboard; its Esc and Enter must not
+        // reach a rename field still focused underneath.
+        if self.close_confirm.is_some() || self.quick_slot_replace.is_some() {
+            self.tree_rename = None;
+        }
         // Every way out of the viewer (Esc, a click beside the image, an
         // open from Finder or the CLI, Zen) frees what it holds: the sharper
         // raster alone can be 64 MB.
@@ -42,6 +60,19 @@ impl App {
         Task::batch([task, self.load_incomplete_expanded_folders()])
     }
 
+    /// Open a vault hit's file at its line and leave the vault page.
+    fn open_vault_hit(&mut self, path: PathBuf, line: u32) -> Task<Message> {
+        if let Some(blocked) = self.block_file_open_if_dirty(&path) {
+            return blocked;
+        }
+        self.vault_open = false;
+        self.pending_nav = Some(PendingNav {
+            line: Some(line),
+            ..Default::default()
+        });
+        Task::done(Message::Open(path))
+    }
+
     /// Forget the viewer's image and rasters.
     fn drop_image_zoom(&mut self) {
         self.zoom_url = None;
@@ -50,10 +81,31 @@ impl App {
     }
 
     fn dispatch_message(&mut self, msg: Message) -> Task<Message> {
-        // A clean Zen editor can keep focus under the replace confirmation;
-        // its Enter must not type into the buffer.
-        if (self.quick_slot_replace.is_some() || self.close_confirm.is_some())
+        // A clean Zen editor can keep focus under the replace confirmation
+        // or a context menu; its Enter must not type into the buffer. The
+        // menu's items run after it closes.
+        if (self.quick_slot_replace.is_some()
+            || self.close_confirm.is_some()
+            || self.context_menu.is_some())
             && matches!(msg, Message::EditorAction(_))
+        {
+            return Task::none();
+        }
+        // So can the finder's, the vault page's, and the find bar's query
+        // fields, and a rename field: while a context menu is open, typing
+        // and Enter belong to the menu. The menu layer stops the keys; this
+        // drops what a field would still send.
+        if self.context_menu.is_some()
+            && matches!(
+                msg,
+                Message::OverlayQueryChanged(_)
+                    | Message::OverlayConfirm
+                    | Message::VaultQueryChanged(_)
+                    | Message::VaultEnter
+                    | Message::QueryChanged(_)
+                    | Message::TreeRenameInput(_)
+                    | Message::TreeRenameCommit
+            )
         {
             return Task::none();
         }
@@ -70,6 +122,9 @@ impl App {
             }
             tasks.push(Task::done(msg));
             return Task::batch(tasks);
+        }
+        if let Some(task) = self.context_menu_message(&msg) {
+            return task;
         }
         match msg {
             Message::Open(p) => self.load_file_unless_dirty(p),
@@ -319,19 +374,18 @@ impl App {
                     None => Task::none(),
                 }
             }
-            Message::VaultOpenHit(idx) => {
-                if let Some(hit) = self.vault_results.get(idx).cloned() {
-                    if let Some(blocked) = self.block_file_open_if_dirty(&hit.path) {
-                        return blocked;
-                    }
-                    self.vault_open = false;
-                    self.pending_nav = Some(PendingNav {
-                        line: Some(hit.line),
-                        ..Default::default()
-                    });
-                    return Task::done(Message::Open(hit.path));
+            Message::VaultOpenHit(idx) => match self.vault_results.get(idx) {
+                Some(hit) => {
+                    let (path, line) = (hit.path.clone(), hit.line);
+                    self.open_vault_hit(path, line)
                 }
-                Task::none()
+                None => Task::none(),
+            },
+            Message::VaultOpenHitAt { path, line } => {
+                if !self.vault_open {
+                    return Task::none();
+                }
+                self.open_vault_hit(path, line)
             }
             Message::OpenSettings => self.open_settings(),
             Message::CloseSettings => {
@@ -419,6 +473,8 @@ impl App {
             Message::QuickSlotClear(index) => self.clear_quick_slot(index),
             Message::QuickSlotClearAll => self.clear_all_quick_slots(),
             Message::QuickSlotUndo => self.undo_quick_slot_clear(),
+            Message::QuickSlotAssignPath(path) => self.assign_quick_slot_path(path),
+            Message::QuickSlotContextMenu(index) => self.open_quick_slot_context_menu(index),
             Message::QuickSlotReplaceConfirm => self.confirm_quick_slot_replace(),
             Message::QuickSlotReplaceCancel => {
                 self.quick_slot_replace = None;
@@ -735,6 +791,11 @@ impl App {
                 self.reader_select_all = false;
                 Task::none()
             }
+            Message::ReaderTarget(target) => {
+                self.note_reader_target(target);
+                Task::none()
+            }
+            Message::ReaderContextMenu(hit) => self.open_reader_context_menu(hit),
             Message::WelcomeNeedsFile => self.show_toast("Open a file first".into()),
             Message::FoldChordStart => {
                 self.fold_chord_pending = true;
@@ -2207,6 +2268,7 @@ impl App {
             }
             Message::WindowResized(id, size) => {
                 self.window_size = Some(size);
+                self.context_menu = None;
                 // The preview viewport height can change without a scroll
                 // event (for example when a window is tiled). Re-window and
                 // remeasure its retained layout deterministically.
@@ -2217,6 +2279,7 @@ impl App {
                 ])
             }
             Message::WindowUnfocused(id) => {
+                self.context_menu = None;
                 self.quick_slots_modifier_held = false;
                 self.quick_slots_rail_revealed = false;
                 self.quick_slots_modifier_generation =
@@ -2424,6 +2487,22 @@ impl App {
                 Task::none()
             }
             Message::FocusEditor => iced::widget::operation::focus(Self::editor_id()),
+            Message::EditorContextMenu => self.open_editor_context_menu(),
+            Message::MindmapContextMenu(target) => self.open_mindmap_context_menu(target),
+            Message::MindmapCollapseBelow(id) => self.mindmap_collapse_below(id),
+            Message::MindmapExpandBelow(id) => self.mindmap_expand_below(id),
+            Message::MindmapCopyDataValue(id) => match self.mindmap_data_value(id) {
+                Some(value) => self.update(Message::CopyCode(value)),
+                None => self.show_toast("No value to copy".into()),
+            },
+            Message::FullMindmapContextMenu(target) => self.open_full_mindmap_context_menu(target),
+            Message::OutlineContextMenu(index) => self.open_outline_context_menu(index),
+            Message::VaultHitContextMenu(index) => self.open_vault_hit_context_menu(index),
+            Message::FileFinderContextMenu(path) => self.open_file_finder_context_menu(path),
+            Message::EditorMenuCut => self.editor_menu_cut(),
+            Message::EditorMenuCopy => self.editor_menu_copy(),
+            Message::EditorMenuPaste => iced::clipboard::read().map(Message::EditorPasted),
+            Message::EditorPasted(text) => self.editor_pasted(text),
             Message::EditorUndo => {
                 let mut changed = false;
                 if let Some(ed) = self.editor.as_mut() {
@@ -3216,6 +3295,8 @@ impl App {
             }
             Message::SetSidebarTab(tab) => {
                 self.sidebar_tab = tab;
+                // ← on the Files tab gives the arrow keys back to the tree.
+                self.reader_keys = false;
                 Task::none()
             }
             Message::ToggleHidden => {
@@ -3242,6 +3323,7 @@ impl App {
                                 self.workspace_files_rev = self.workspace_files_rev.wrapping_add(1);
                                 self.workspace_sidebar_files = snapshot.sidebar_files;
                                 self.workspace_tree = Some(snapshot.root);
+                                self.keep_new_folders_in_tree();
                                 self.workspace_snapshot_show_hidden = self.show_hidden;
                                 self.workspace_truncated = snapshot.listing_truncated;
                                 self.begin_workspace_epoch();
@@ -3311,6 +3393,21 @@ impl App {
                 self.scroll_tree_to_cursor_with_len(len)
             }
             Message::TreeRowClicked { path, is_dir } => {
+                // The second click of a double click: the first already
+                // opened the file or toggled the folder. A file's double
+                // click also gives the arrow keys to the reader.
+                let now = std::time::Instant::now();
+                let double = self.tree_last_click.as_ref().is_some_and(|(last, at)| {
+                    *last == path && now.duration_since(*at) <= double_click_interval()
+                });
+                self.tree_last_click = (!double).then(|| (path.clone(), now));
+                if double {
+                    if !is_dir {
+                        self.reader_keys = true;
+                    }
+                    return Task::none();
+                }
+                self.reader_keys = false;
                 if let Some(root) = &self.workspace_tree {
                     let rows = tree::flatten_with_files(
                         root,
@@ -3402,6 +3499,26 @@ impl App {
                     return Task::none();
                 };
                 let path = r.node.path().display().to_string();
+                let toast = self.show_toast("Path copied".into());
+                Task::batch([iced::clipboard::write::<Message>(path), toast])
+            }
+            Message::TreeContextMenu(target) => self.open_tree_context_menu(target),
+            Message::TreeNewFile(folder) => self.create_tree_item(folder, false),
+            Message::TreeNewFolder(folder) => self.create_tree_item(folder, true),
+            Message::TreeRenameStart(path) => self.begin_tree_rename(path),
+            Message::TreeRenameInput(value) => {
+                if let Some(rename) = self.tree_rename.as_mut() {
+                    rename.value = value;
+                }
+                Task::none()
+            }
+            Message::TreeRenameCommit => self.commit_tree_rename(),
+            Message::TreeRenameCancel => {
+                self.tree_rename = None;
+                Task::none()
+            }
+            Message::TreeTrash(path) => self.trash_tree_item(path),
+            Message::CopyPath(path) => {
                 let toast = self.show_toast("Path copied".into());
                 Task::batch([iced::clipboard::write::<Message>(path), toast])
             }
@@ -3834,6 +3951,13 @@ impl App {
                 self.sidebar_drag = None;
                 Task::none()
             }
+            Message::SidebarResetWidth => {
+                self.sidebar_width = SIDEBAR_WIDTH;
+                // The double click's own press started a drag; end it before
+                // jitter drags the width back.
+                self.sidebar_drag = None;
+                Task::none()
+            }
             Message::ScrollerTick => {
                 if let Some(t) = self.last_scroll_at {
                     if t.elapsed() >= std::time::Duration::from_millis(SCROLLER_FADE_MS) {
@@ -4064,6 +4188,13 @@ impl App {
                 Task::none()
             }
             Message::Noop => Task::none(),
+            // Handled by `context_menu_message` above.
+            Message::PointerRightPress(_)
+            | Message::ContextMenuHover(..)
+            | Message::ContextMenuMove(_)
+            | Message::ContextMenuActivate
+            | Message::ContextMenuChoose(_)
+            | Message::ContextMenuClose => Task::none(),
             Message::ToggleAutoFocusOnNav => {
                 self.prefs.auto_focus_on_nav = !self.prefs.auto_focus_on_nav;
                 self.save_prefs();

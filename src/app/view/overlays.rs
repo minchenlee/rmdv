@@ -156,6 +156,7 @@ pub(in crate::app) fn file_finder_overlay<'a>(
                 .height(Length::Fixed(32.0))
                 .style(list_row_style(is_sel, pal))
                 .on_press(Message::OpenFileFinderPath(path_clone));
+            let row = mouse_area(row).on_right_press(Message::FileFinderContextMenu(p));
             list = list.push(hover_row(row, is_sel, Message::OverlayHover(i)));
         }
     }

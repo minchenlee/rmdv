@@ -60,7 +60,7 @@ liteparse = { version = "2", optional = true, default-features = false }
 block2 = "0.6"
 objc2 = "0.6"
 objc2-app-kit = { version = "0.3", features = ["NSEvent", "NSApplication", "NSResponder", "block2", "NSView", "NSVisualEffectView", "NSWindow", "NSColor", "NSGraphics", "NSAppearance", "objc2-core-foundation"] }
-objc2-foundation = { version = "0.3", features = ["NSArray", "NSString", "NSURL"] }
+objc2-foundation = { version = "0.3", features = ["NSArray", "NSError", "NSFileManager", "NSString", "NSURL"] }
 
 [features]
 # `pdf` is on by default so `.pdf` files render as markdown out of the box

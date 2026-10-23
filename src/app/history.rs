@@ -118,12 +118,14 @@ impl App {
         Task::none()
     }
 
-    /// A modal (an overlay, the close or replace confirmation) owns the
-    /// pointer and keyboard; Back and Forward wait until it closes.
+    /// A modal (an overlay, the close or replace confirmation, a context
+    /// menu) owns the pointer and keyboard; Back and Forward wait until it
+    /// closes.
     pub(super) fn history_blocked(&self) -> bool {
         self.overlay != Overlay::None
             || self.close_confirm.is_some()
             || self.quick_slot_replace.is_some()
+            || self.context_menu.is_some()
     }
 
     /// The ways a two-finger swipe may go now, as

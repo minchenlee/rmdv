@@ -219,6 +219,40 @@ pub fn graft_folder(root: &mut Node, folder: &Path, scanned: Node) -> bool {
     true
 }
 
+/// Show `folder`, an empty folder made in the app, in the tree: the scan
+/// prunes empty folders. Its parent must be in the tree already. Returns
+/// whether it was added.
+pub fn insert_empty_folder(root: &mut Node, folder: &Path) -> bool {
+    let (Some(parent), Some(name)) = (folder.parent(), folder.file_name()) else {
+        return false;
+    };
+    let Some(parent) = find_folder_mut(root, parent) else {
+        return false;
+    };
+    if parent.children.iter().any(|child| child.path == folder) {
+        return false;
+    }
+    let name = name.to_string_lossy().into_owned();
+    // The scan's order: hidden last, then by name ignoring case.
+    let key = |name: &str| (name.starts_with('.'), name.to_lowercase());
+    let at = parent
+        .children
+        .iter()
+        .position(|child| key(&child.name) > key(&name))
+        .unwrap_or(parent.children.len());
+    parent.children.insert(
+        at,
+        Node {
+            path: folder.to_path_buf(),
+            name,
+            is_dir: true,
+            children: Vec::new(),
+            recursive_supported_file_count: Some(RecursiveFileCount::Exact(0)),
+        },
+    );
+    true
+}
+
 impl Node {
     /// True when the bounded scan stopped before this folder's subtree was
     /// fully discovered (budget, depth, or read interruption below it).
@@ -627,6 +661,42 @@ pub fn ancestors_of(root: &Path, target: &Path) -> Vec<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_empty_folder_made_in_the_app_joins_its_parent_in_scan_order() {
+        let folder = |path: &str, children: Vec<Node>| Node {
+            path: PathBuf::from(path),
+            name: Path::new(path)
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .into_owned(),
+            is_dir: true,
+            children,
+            recursive_supported_file_count: Some(RecursiveFileCount::Exact(1)),
+        };
+        let mut root = folder(
+            "/w",
+            vec![
+                folder("/w/apple", vec![]),
+                folder("/w/Cherry", vec![]),
+                folder("/w/.git", vec![]),
+            ],
+        );
+        assert!(insert_empty_folder(&mut root, Path::new("/w/banana")));
+        assert!(
+            !insert_empty_folder(&mut root, Path::new("/w/banana")),
+            "once"
+        );
+        assert!(
+            !insert_empty_folder(&mut root, Path::new("/x/y")),
+            "no parent"
+        );
+        let names: Vec<&str> = root.children.iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(names, ["apple", "banana", "Cherry", ".git"]);
+        assert!(insert_empty_folder(&mut root, Path::new("/w/banana/inner")));
+        assert_eq!(root.children[1].children[0].name, "inner");
+    }
 
     fn test_dir(label: &str) -> PathBuf {
         let stamp = std::time::SystemTime::now()

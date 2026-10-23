@@ -9,8 +9,14 @@
 //!
 //! [`BlockMark`] wraps each block row and tells the scope which document
 //! block the text widgets under it belong to.
+//!
+//! On a right press the scope reports what the reader's text holds there
+//! ([`Message::ReaderContextMenu`]): the link under the pointer and the
+//! selected text. The press changes no selection. [`TargetMark`] wraps a
+//! reader element with its own menu items (a heading, a code block, an
+//! image, a diagram) and reports it first ([`Message::ReaderTarget`]).
 
-use crate::app::Message;
+use crate::app::{Message, ReaderHit, ReaderTarget};
 use crate::ast::{Block, BlockId};
 use iced::advanced::widget::{tree, Operation, Tree, Widget};
 use iced::advanced::{layout, mouse, overlay, renderer, Clipboard, Layout, Shell};
@@ -299,6 +305,62 @@ fn copy_text(
     pieces.join("\n\n")
 }
 
+/// What the reader's text holds at `p`: the link there, and the selected
+/// text (the scope's cross-block `range`, or one widget's own selection)
+/// with whether `p` is inside it. Nothing changes.
+#[allow(clippy::too_many_arguments)]
+fn right_press_hit(
+    content: &mut Element<'_, Message>,
+    tree: &mut Tree,
+    layout: Layout<'_>,
+    renderer: &iced::Renderer,
+    blocks: &[(BlockId, Block)],
+    folded: &HashSet<BlockId>,
+    range: Option<(Pos, Pos)>,
+    p: Point,
+) -> ReaderHit {
+    let mut link = None;
+    let mut own: Option<(String, bool)> = None;
+    visit(content, tree, layout, renderer, |_, _, bounds, text| {
+        if link.is_none() {
+            link = match text.link_at(p, bounds) {
+                Some(Message::OpenLink(url)) => Some(url),
+                _ => None,
+            };
+        }
+        if own.is_none() {
+            own = text
+                .selected_text()
+                .map(|selected| (selected, text.selection_contains(p, bounds)));
+        }
+    });
+    let (selection, in_selection) = match range {
+        Some((start, end)) => {
+            let inside = locate(content, tree, layout, renderer, p)
+                .is_some_and(|(at, over)| over && start <= at && at <= end);
+            let text = copy_text(
+                content,
+                tree,
+                layout,
+                renderer,
+                blocks,
+                folded,
+                (start, end),
+            );
+            (Some(text), inside)
+        }
+        None => match own {
+            Some((text, inside)) => (Some(text), inside),
+            None => (None, false),
+        },
+    };
+    ReaderHit {
+        link,
+        selection: selection.filter(|text| !text.is_empty()),
+        in_selection,
+    }
+}
+
 fn is_copy(event: &Event) -> bool {
     matches!(
         event,
@@ -388,6 +450,7 @@ impl<'a> Widget<Message, iced::Theme, iced::Renderer> for SelectScope<'a> {
         let latin = crate::selectable::latin_event(event);
         let event_seen = latin.as_ref().unwrap_or(event);
         let mut forward = true;
+        let mut right_press = None;
 
         match event_seen {
             Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {
@@ -429,6 +492,11 @@ impl<'a> Widget<Message, iced::Theme, iced::Renderer> for SelectScope<'a> {
                 state.press = None;
                 state.crossing = false;
             }
+            // Reported after the content, so a `TargetMark` under the
+            // pointer reports its element first.
+            Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Right)) => {
+                right_press = cursor.position_over(layout.bounds());
+            }
             Event::Keyboard(keyboard::Event::KeyPressed {
                 key: keyboard::Key::Named(keyboard::key::Named::Escape),
                 ..
@@ -467,6 +535,21 @@ impl<'a> Widget<Message, iced::Theme, iced::Renderer> for SelectScope<'a> {
             self.content.as_widget_mut().update(
                 child_tree, event, child, cursor, renderer, clipboard, shell, viewport,
             );
+        }
+
+        if let Some(p) = right_press {
+            let hit = right_press_hit(
+                &mut self.content,
+                child_tree,
+                child,
+                renderer,
+                self.blocks,
+                &self.folded,
+                state.ordered(),
+                p,
+            );
+            shell.publish(Message::ReaderContextMenu(hit));
+            shell.capture_event();
         }
 
         // Paint after every event while a range exists, so blocks mounted by
@@ -655,6 +738,145 @@ impl<'a> Widget<Message, iced::Theme, iced::Renderer> for BlockMark<'a> {
 
 impl<'a> From<BlockMark<'a>> for Element<'a, Message> {
     fn from(w: BlockMark<'a>) -> Self {
+        Element::new(w)
+    }
+}
+
+/// Wraps a reader element that has its own context menu items; transparent
+/// to layout, events, and the widget tree. On a right press over it, it
+/// reports its element after its content; the innermost mark reports first.
+pub struct TargetMark<'a> {
+    target: Box<dyn Fn() -> ReaderTarget + 'a>,
+    content: Element<'a, Message>,
+}
+
+impl<'a> TargetMark<'a> {
+    /// `target` builds the element's description; it runs only on a right
+    /// press, so a rebuild of the view copies nothing.
+    pub fn new(
+        target: impl Fn() -> ReaderTarget + 'a,
+        content: impl Into<Element<'a, Message>>,
+    ) -> Self {
+        Self {
+            target: Box::new(target),
+            content: content.into(),
+        }
+    }
+}
+
+impl<'a> Widget<Message, iced::Theme, iced::Renderer> for TargetMark<'a> {
+    fn tag(&self) -> tree::Tag {
+        self.content.as_widget().tag()
+    }
+
+    fn state(&self) -> tree::State {
+        self.content.as_widget().state()
+    }
+
+    fn children(&self) -> Vec<Tree> {
+        self.content.as_widget().children()
+    }
+
+    fn diff(&self, tree: &mut Tree) {
+        self.content.as_widget().diff(tree);
+    }
+
+    fn size(&self) -> Size<Length> {
+        self.content.as_widget().size()
+    }
+
+    fn size_hint(&self) -> Size<Length> {
+        self.content.as_widget().size_hint()
+    }
+
+    fn layout(
+        &mut self,
+        tree: &mut Tree,
+        renderer: &iced::Renderer,
+        limits: &layout::Limits,
+    ) -> layout::Node {
+        self.content.as_widget_mut().layout(tree, renderer, limits)
+    }
+
+    fn operate(
+        &mut self,
+        tree: &mut Tree,
+        layout: Layout<'_>,
+        renderer: &iced::Renderer,
+        operation: &mut dyn Operation,
+    ) {
+        self.content
+            .as_widget_mut()
+            .operate(tree, layout, renderer, operation);
+    }
+
+    fn update(
+        &mut self,
+        tree: &mut Tree,
+        event: &Event,
+        layout: Layout<'_>,
+        cursor: mouse::Cursor,
+        renderer: &iced::Renderer,
+        clipboard: &mut dyn Clipboard,
+        shell: &mut Shell<'_, Message>,
+        viewport: &Rectangle,
+    ) {
+        self.content.as_widget_mut().update(
+            tree, event, layout, cursor, renderer, clipboard, shell, viewport,
+        );
+        if matches!(
+            event,
+            Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Right))
+        ) && cursor.is_over(layout.bounds())
+        {
+            shell.publish(Message::ReaderTarget((self.target)()));
+        }
+    }
+
+    fn mouse_interaction(
+        &self,
+        tree: &Tree,
+        layout: Layout<'_>,
+        cursor: mouse::Cursor,
+        viewport: &Rectangle,
+        renderer: &iced::Renderer,
+    ) -> mouse::Interaction {
+        self.content
+            .as_widget()
+            .mouse_interaction(tree, layout, cursor, viewport, renderer)
+    }
+
+    fn draw(
+        &self,
+        tree: &Tree,
+        renderer: &mut iced::Renderer,
+        theme: &iced::Theme,
+        style: &renderer::Style,
+        layout: Layout<'_>,
+        cursor: mouse::Cursor,
+        viewport: &Rectangle,
+    ) {
+        self.content
+            .as_widget()
+            .draw(tree, renderer, theme, style, layout, cursor, viewport);
+    }
+
+    fn overlay<'b>(
+        &'b mut self,
+        tree: &'b mut Tree,
+        layout: Layout<'b>,
+        renderer: &iced::Renderer,
+        viewport: &Rectangle,
+        translation: Vector,
+    ) -> Option<overlay::Element<'b, Message, iced::Theme, iced::Renderer>> {
+        self.content
+            .as_widget_mut()
+            .overlay(tree, layout, renderer, viewport, translation)
+    }
+}
+
+impl<'a> From<TargetMark<'a>> for Element<'a, Message> {
+    fn from(w: TargetMark<'a>) -> Self {
         Element::new(w)
     }
 }

@@ -189,6 +189,12 @@ pub(in crate::app) fn sidebar_tab_button<'a>(
     .into()
 }
 
+/// Container id of the divider between the sidebar and the reader.
+pub(in crate::app) const SIDEBAR_DIVIDER_ID: &str = "sidebar-divider";
+
+/// Id of the file tree's inline rename field.
+pub(in crate::app) const TREE_RENAME_ID: &str = "tree-rename";
+
 pub(in crate::app) fn sidebar_files_body<'a>(
     app: &'a App,
     pal: Palette,
@@ -207,6 +213,12 @@ pub(in crate::app) fn sidebar_files_body<'a>(
         let current = app.file.as_ref();
         // The cursor row is painted only while the arrow keys drive it.
         let cursor = app.tree_cursor_shown.then_some(app.tree_cursor);
+        // The row an open context menu acts on.
+        let menu_target = app
+            .context_menu
+            .as_ref()
+            .and_then(|menu| menu.tree_target.as_deref());
+        let rename = app.tree_rename.as_ref();
         for r in rows.iter() {
             let w = tree_row_width(r.node, r.depth);
             if w > content_w {
@@ -223,6 +235,10 @@ pub(in crate::app) fn sidebar_files_body<'a>(
                 &app.expanded,
                 current,
                 cursor == Some(i),
+                menu_target == Some(r.node.path()),
+                rename
+                    .filter(|rename| rename.path == r.node.path())
+                    .map(|rename| rename.value.as_str()),
                 pal,
             )
         });
@@ -240,10 +256,14 @@ pub(in crate::app) fn sidebar_files_body<'a>(
         .on_scroll(Message::TreeScrolled)
         .direction(slim_scroll_direction())
         .style(move |_, status| sleek_scrollable_style(status, pal, recently_scrolled));
-    scrollable(inner)
+    let outer = scrollable(inner)
         .height(Length::Fill)
         .direction(slim_scroll_direction_horizontal())
-        .style(move |_, status| sleek_scrollable_style(status, pal, recently_scrolled))
+        .style(move |_, status| sleek_scrollable_style(status, pal, recently_scrolled));
+    // A right press on a row opens that row's menu (the row captures it);
+    // anywhere else in the tree it opens the workspace root's menu.
+    mouse_area(outer)
+        .on_right_press(Message::TreeContextMenu(None))
         .into()
 }
 
@@ -383,7 +403,7 @@ pub(in crate::app) fn outline_row<'a>(
         .wrapping(text::Wrapping::None);
     let content =
         irow![Space::new().width(Length::Fixed(indent)), label].align_y(iced::Alignment::Center);
-    button(content)
+    let row = button(content)
         .padding(Padding::from([4, 8]))
         .width(Length::Fill)
         .height(Length::Fixed(SIDEBAR_ROW_H))
@@ -406,7 +426,9 @@ pub(in crate::app) fn outline_row<'a>(
         .on_press(Message::OutlineRowClicked {
             index,
             line: s.line,
-        })
+        });
+    mouse_area(row)
+        .on_right_press(Message::OutlineContextMenu(index))
         .into()
 }
 
@@ -509,6 +531,7 @@ pub(in crate::app) fn full_mindmap_panel_resize_handle<'a>(
 pub(in crate::app) fn sidebar_resize_handle<'a>(pal: Palette) -> Element<'a, Message> {
     mouse_area(
         container(Space::new().width(Length::Fixed(5.0)).height(Length::Fill))
+            .id(iced::widget::Id::new(SIDEBAR_DIVIDER_ID))
             .style(move |_| container::Style {
                 background: Some(pal.sidebar.into()),
                 ..Default::default()
@@ -518,6 +541,7 @@ pub(in crate::app) fn sidebar_resize_handle<'a>(pal: Palette) -> Element<'a, Mes
     .interaction(iced::mouse::Interaction::ResizingHorizontally)
     .on_press(Message::SidebarDragStart)
     .on_release(Message::SidebarDragEnd)
+    .on_double_click(Message::SidebarResetWidth)
     .into()
 }
 
@@ -542,6 +566,8 @@ pub(in crate::app) fn tree_row<'a>(
     expanded: &HashSet<PathBuf>,
     current: Option<&'a PathBuf>,
     is_cursor: bool,
+    menu_target: bool,
+    rename: Option<&'a str>,
     pal: Palette,
 ) -> Element<'a, Message> {
     let is_dir = node.is_dir();
@@ -581,11 +607,39 @@ pub(in crate::app) fn tree_row<'a>(
     };
     let mut label_font = iced::Font::with_name("Inter");
     label_font.weight = label_weight;
-    let label = text(node.name().into_owned())
-        .size(13)
-        .color(label_color)
-        .font(label_font)
-        .wrapping(text::Wrapping::None);
+    let label: Element<'a, Message> = match rename {
+        // Renamed in place: Enter commits, Esc or a press elsewhere cancels.
+        Some(value) => PressOutside::new(
+            iced::widget::text_input("", value)
+                .id(iced::widget::Id::new(TREE_RENAME_ID))
+                .on_input(Message::TreeRenameInput)
+                .on_submit(Message::TreeRenameCommit)
+                .size(13)
+                .font(label_font)
+                .padding(Padding::from([1, 4]))
+                .width(Length::Fill)
+                .style(move |_, _| iced::widget::text_input::Style {
+                    background: pal.field().into(),
+                    border: Border {
+                        color: pal.accent,
+                        width: 1.0,
+                        radius: theme::radius::XS.into(),
+                    },
+                    icon: pal.muted,
+                    placeholder: pal.subtle,
+                    value: pal.fg,
+                    selection: pal.selection,
+                }),
+            Message::TreeRenameCancel,
+        )
+        .into(),
+        None => text(node.name().into_owned())
+            .size(13)
+            .color(label_color)
+            .font(label_font)
+            .wrapping(text::Wrapping::None)
+            .into(),
+    };
 
     let leaf_icon: Element<'a, Message> = if is_dir {
         let open = expanded.contains(node_path);
@@ -605,9 +659,13 @@ pub(in crate::app) fn tree_row<'a>(
     .align_y(iced::Alignment::Center)
     .spacing(0);
 
-    let on_press = Message::TreeRowClicked { path, is_dir };
+    let on_press = Message::TreeRowClicked {
+        path: path.clone(),
+        is_dir,
+    };
+    let on_right_press = Message::TreeContextMenu(Some((path, is_dir)));
 
-    button(content)
+    let row = button(content)
         .padding(Padding::from([4, 8]))
         .width(Length::Fill)
         .height(Length::Fixed(SIDEBAR_ROW_H))
@@ -622,20 +680,25 @@ pub(in crate::app) fn tree_row<'a>(
                     _ => None,
                 }
             };
-            // Selection and keyboard cursor: background fill only, no ring.
+            // Selection and keyboard cursor: background fill only. The ring
+            // marks the row an open context menu acts on.
             button::Style {
                 background: bg,
                 text_color: pal.fg,
                 border: Border {
-                    color: Color::TRANSPARENT,
-                    width: 0.0,
+                    color: if menu_target {
+                        pal.accent
+                    } else {
+                        Color::TRANSPARENT
+                    },
+                    width: if menu_target { 1.0 } else { 0.0 },
                     radius: theme::radius::SM.into(),
                 },
                 ..Default::default()
             }
         })
-        .on_press(on_press)
-        .into()
+        .on_press(on_press);
+    mouse_area(row).on_right_press(on_right_press).into()
 }
 
 pub(in crate::app) fn indent_guide<'a>(pal: Palette) -> Element<'a, Message> {

@@ -659,6 +659,7 @@ pub(in crate::app) fn quick_slots_rail<'a>(
         } else {
             irow![slot_button].into()
         };
+        let slot_view = mouse_area(slot_view).on_right_press(Message::QuickSlotContextMenu(index));
         controls = controls.push(slot_view);
     }
     container(controls)

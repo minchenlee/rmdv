@@ -40,6 +40,12 @@ pub enum Message {
     ListPointerMoved(iced::Point),
     VaultOpenSelected,
     VaultOpenHit(usize),
+    /// Open a vault hit by its file and line: a context menu's Open, which
+    /// must not follow a result list that a newer search replaced.
+    VaultOpenHitAt {
+        path: PathBuf,
+        line: u32,
+    },
     VaultToggleFile(PathBuf),
     VaultClose,
     /// Apply a measured absolute scroll offset to the vault results page.
@@ -50,6 +56,12 @@ pub enum Message {
     /// Assign the current reading context to the slot. A slot that holds a
     /// different file asks for confirmation first.
     QuickSlotAssign(usize),
+    /// Put this workspace file in the first free Quick Slot; with every slot
+    /// full, ask to replace the last one.
+    QuickSlotAssignPath(PathBuf),
+    /// A right press on the chip of Quick Slot `index`: open its context
+    /// menu.
+    QuickSlotContextMenu(usize),
     /// Replace the slot named by the open confirmation.
     QuickSlotReplaceConfirm,
     /// Close the replace confirmation and keep the slot.
@@ -79,6 +91,21 @@ pub enum Message {
         result: Result<(PathBuf, String), String>,
     },
     CloseOverlay,
+    /// A right press anywhere in the window, in window coordinates. A
+    /// context menu that a widget opens on the same press appears here.
+    PointerRightPress(iced::Point),
+    /// Pointer motion over a context menu item, with the pointer's position
+    /// in the menu; it highlights the item only after real pointer motion
+    /// (a changed position, see [`Message::ListPointerMoved`]).
+    ContextMenuHover(usize, iced::Point),
+    /// Up or Down in the open context menu: the next enabled item.
+    ContextMenuMove(isize),
+    /// Enter in the open context menu: choose the highlighted item.
+    ContextMenuActivate,
+    /// A click on a context menu item: close the menu, then run the item.
+    ContextMenuChoose(usize),
+    /// Close the context menu without choosing (Esc, a press outside it).
+    ContextMenuClose,
     PickerNavigate(PathBuf),
     PickerParent,
     PickerHome,
@@ -170,6 +197,27 @@ pub enum Message {
     ScrollToLine(u32),
     TreeToggleAtCursor,
     CopyTreePath,
+    /// The file tree's context menu: a right press on a row (`Some((path,
+    /// is_dir))`) or on the empty tree space, the workspace root (`None`).
+    TreeContextMenu(Option<(PathBuf, bool)>),
+    /// Copy this text (a path) to the clipboard.
+    CopyPath(String),
+    /// Create "Untitled.md" (or the next free "Untitled N.md") in this
+    /// folder, then rename it in place.
+    TreeNewFile(PathBuf),
+    /// Create "Untitled Folder" (or the next free one) in this folder, then
+    /// rename it in place.
+    TreeNewFolder(PathBuf),
+    /// Start renaming this file tree row in place.
+    TreeRenameStart(PathBuf),
+    /// The name typed in the rename field.
+    TreeRenameInput(String),
+    /// Enter in the rename field: rename the file or folder.
+    TreeRenameCommit,
+    /// Esc, or a press outside the rename field: keep the old name.
+    TreeRenameCancel,
+    /// Move this file or folder to the system Trash.
+    TreeTrash(PathBuf),
     ScrollBy(f32),
     ScrollToTop,
     ScrollToBottom,
@@ -193,6 +241,8 @@ pub enum Message {
     SidebarDragStart,
     SidebarDragMove(f32),
     SidebarDragEnd,
+    /// A double click on the sidebar divider: back to the default width.
+    SidebarResetWidth,
     /// Deferred body scroll restore. Emitted after a toggle that reinitialises
     /// the body scrollable. `RestoreBodySnap(y)` uses relative offset [0..1];
     /// `RestoreBodyScroll(y)` uses absolute px offset.
@@ -440,6 +490,12 @@ pub enum Message {
     CopyDocument,
     /// Esc, a click, or a new drag ends the whole-document selection.
     ClearSelectAll,
+    /// A reader element under a right press (a heading, a code block, an
+    /// image, a diagram); the [`Message::ReaderContextMenu`] of the same
+    /// press uses it.
+    ReaderTarget(ReaderTarget),
+    /// A right press in the reader: open the reader's context menu.
+    ReaderContextMenu(ReaderHit),
     FoldChordStart,
     FoldChordCancel,
     FoldToLevel(u8),
@@ -449,6 +505,34 @@ pub enum Message {
     EditorAction(iced::widget::text_editor::Action),
     /// Focus the Zen editor (a click in the margin beside it).
     FocusEditor,
+    /// A right press in the Zen editor: open its context menu.
+    EditorContextMenu,
+    /// The editor menu's Cut: copy the selection, then delete it.
+    EditorMenuCut,
+    /// The editor menu's Copy: copy the selection.
+    EditorMenuCopy,
+    /// The editor menu's Paste: read the clipboard.
+    EditorMenuPaste,
+    /// The clipboard text for the editor menu's Paste.
+    EditorPasted(Option<String>),
+    /// A right press on the document or data mind map: on a node (`Some`)
+    /// or on empty canvas (`None`). Opens its context menu.
+    MindmapContextMenu(Option<crate::ast::BlockId>),
+    /// Show the node's children, each branch below it folded.
+    MindmapCollapseBelow(crate::ast::BlockId),
+    /// Unfold the node and every branch below it.
+    MindmapExpandBelow(crate::ast::BlockId),
+    /// Copy a data map node's value as JSON, YAML, or TOML text.
+    MindmapCopyDataValue(crate::ast::BlockId),
+    /// A right press on Full Mindmap: on a node (`Some`) or on empty canvas
+    /// (`None`). Opens its context menu.
+    FullMindmapContextMenu(Option<WorkspaceNodeId>),
+    /// A right press on outline row `index`: open its context menu.
+    OutlineContextMenu(usize),
+    /// A right press on vault search hit `index` (into `vault_results`).
+    VaultHitContextMenu(usize),
+    /// A right press on a file finder row.
+    FileFinderContextMenu(PathBuf),
     SaveFile,
     FileSaved {
         result: Result<(), String>,

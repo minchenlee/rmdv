@@ -39,6 +39,15 @@ impl Operation for Find<'_> {
         }
     }
 
+    fn text_input(
+        &mut self,
+        id: Option<&Id>,
+        bounds: Rectangle,
+        _state: &mut dyn iced::advanced::widget::operation::TextInput,
+    ) {
+        self.container(id, bounds);
+    }
+
     fn text(&mut self, _id: Option<&Id>, bounds: Rectangle, text: &str) {
         if self.found.is_some() {
             return;
@@ -408,6 +417,7 @@ fn clicking_quick_slot_confirm_card_keeps_it_open() {
         index: 0,
         current: "a.md".into(),
         incoming: "b.md".into(),
+        path: None,
     });
     let mut ui = PointerUi::new();
     let title = ui
@@ -1164,7 +1174,7 @@ mod group3 {
         (app, dir)
     }
 
-    fn tree_index(app: &App, path: &Path) -> usize {
+    pub(super) fn tree_index(app: &App, path: &Path) -> usize {
         let rows = tree::flatten_with_files(
             app.workspace_tree.as_ref().unwrap(),
             &app.workspace_sidebar_files,
@@ -1655,3 +1665,39 @@ mod viewer;
 // --- P5: reader and editor gestures -------------------------------------------
 
 mod gestures;
+
+// --- P6: the shared context menu --------------------------------------------
+
+mod context_menu;
+
+// --- P6: the file tree context menu -----------------------------------------
+
+mod tree_menu;
+
+// --- P6: file operations from the file tree --------------------------------
+
+mod tree_ops;
+
+// --- P6: double clicks in the sidebar -----------------------------------------
+
+mod tree_double_click;
+
+// --- P6: the reader's context menu -------------------------------------------
+
+mod reader_menu;
+
+// --- P6: the Zen editor's context menu -----------------------------------------
+
+mod editor_menu;
+
+// --- P6: mind map context menus ---------------------------------------------
+
+mod mindmap_menu;
+
+// --- P6: outline, vault, and finder context menus -----------------------------
+
+mod list_menus;
+
+// --- P6: the Quick Slot context menu ----------------------------------------
+
+mod slot_menu;

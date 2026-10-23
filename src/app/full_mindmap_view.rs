@@ -88,7 +88,8 @@ impl App {
             panel_width: full.panel_width,
             autocenter: true,
             layout_generation: Some(full.layout_generation),
-            keyboard_zoom_enabled: self.overlay == Overlay::None,
+            // An open context menu owns the keyboard.
+            keyboard_zoom_enabled: self.overlay == Overlay::None && self.context_menu.is_none(),
             native_pinch_log: self.full_mindmap_native_pinch_log,
             scroll_pans: self.prefs.mindmap_scroll_pans,
             zoom_request: self.full_mindmap_zoom_request,
@@ -103,6 +104,7 @@ impl App {
                 | WorkspaceNodeId::File(path) => Some(path.display().to_string()),
                 WorkspaceNodeId::Status(..) => None,
             })),
+            on_context: Some(Box::new(Message::FullMindmapContextMenu)),
             on_deselect: Message::FullMindmapDeselect,
         };
         let canvas: Element<'_, Message> = iced::widget::canvas(program)
