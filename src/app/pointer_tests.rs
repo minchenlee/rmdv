@@ -236,6 +236,32 @@ impl PointerUi {
         .map(|(bounds, _)| bounds)
     }
 
+    /// The last widget showing exactly `text`. Overlays draw after the
+    /// page under them, so this finds an overlay row whose label the page
+    /// (for example the welcome page's shortcut list) shows too.
+    fn overlay_text_bounds(&mut self, app: &App, text: &str) -> Option<Rectangle> {
+        struct Last<'a> {
+            text: &'a str,
+            found: Option<Rectangle>,
+        }
+        impl Operation for Last<'_> {
+            fn traverse(&mut self, operate: &mut dyn FnMut(&mut dyn Operation)) {
+                operate(self);
+            }
+            fn text(&mut self, _id: Option<&Id>, bounds: Rectangle, text: &str) {
+                if text == self.text {
+                    self.found = Some(bounds);
+                }
+            }
+        }
+        let mut last = Last { text, found: None };
+        let cache = self.cache.take().unwrap_or_default();
+        let mut ui = UserInterface::build(app.view(), self.size, cache, &mut self.renderer);
+        ui.operate(&self.renderer, &mut last);
+        self.cache = Some(ui.into_cache());
+        last.found
+    }
+
     fn text_containing(&mut self, app: &App, needle: &str) -> Option<String> {
         self.find(
             app,
@@ -342,7 +368,7 @@ fn palette_row_click_closes_overlay_and_runs_command() {
     let sidebar_before = app.sidebar_open;
     let mut ui = PointerUi::new();
     let row = ui
-        .text_bounds(&app, "Toggle Sidebar  ⌘B")
+        .overlay_text_bounds(&app, "Toggle Sidebar")
         .expect("palette row is rendered");
 
     let messages = ui.click(&app, center(row));
@@ -392,7 +418,7 @@ fn clicking_blank_panel_space_keeps_overlays_open() {
     let _ = app.update(Message::OpenCommandPalette);
     let mut ui = PointerUi::new();
     let row_text = ui
-        .text_bounds(&app, "Open Settings  ⌘,")
+        .text_bounds(&app, "Open Settings")
         .expect("first palette row");
     // Row text starts 12 px inside the row; the list pads rows by 8 px.
     let blank = Point::new(row_text.x - 12.0 - 4.0, row_text.center_y());
@@ -465,7 +491,7 @@ fn overlay_scrim_blocks_hover_and_wheel_to_the_reader() {
 
     // Scrollables inside the panel still scroll.
     let row = ui
-        .text_bounds(&app, "Open Settings  ⌘,")
+        .text_bounds(&app, "Open Settings")
         .expect("first palette row");
     let messages = ui.wheel(&app, center(row));
     assert!(
@@ -483,7 +509,9 @@ fn palette_hover_moves_selection_after_pointer_motion() {
     let label = "Find in Document  ⌘F";
     let target = command_index(&app, label);
     let mut ui = PointerUi::new();
-    let row = ui.text_bounds(&app, label).expect("palette row");
+    let row = ui
+        .overlay_text_bounds(&app, split_command_label(label).0)
+        .expect("palette row");
 
     // The first pointer event after the overlay opens only sets a baseline:
     // a pointer resting where the list appears must not steal the selection.
@@ -759,9 +787,11 @@ fn narrowing_an_overlay_query_does_not_take_the_selection_from_a_still_pointer()
 fn moving_inside_the_selected_row_publishes_no_row_hover() {
     let mut app = App::default();
     let _ = app.update(Message::OpenCommandPalette);
-    let first = app.filtered_commands()[0].0.to_string();
+    let first = split_command_label(app.filtered_commands()[0].0).0;
     let mut ui = PointerUi::new();
-    let row = ui.text_bounds(&app, &first).expect("first palette row");
+    let row = ui
+        .overlay_text_bounds(&app, first)
+        .expect("first palette row");
     assert_eq!(app.overlay_selected, 0);
 
     let mut messages = ui.move_to(&app, center(row)).0;
@@ -775,8 +805,10 @@ fn moving_inside_the_selected_row_publishes_no_row_hover() {
     );
 
     // Other rows still report hovers.
-    let second = app.filtered_commands()[1].0.to_string();
-    let row = ui.text_bounds(&app, &second).expect("second palette row");
+    let second = split_command_label(app.filtered_commands()[1].0).0;
+    let row = ui
+        .overlay_text_bounds(&app, second)
+        .expect("second palette row");
     let messages = ui.move_to(&app, center(row)).0;
     assert!(has(&messages, |m| matches!(m, Message::OverlayHover(1))));
 }
@@ -1701,3 +1733,31 @@ mod list_menus;
 // --- P6: the Quick Slot context menu ----------------------------------------
 
 mod slot_menu;
+
+// --- P7: reader selection with the pointer ------------------------------------
+
+mod reader_select;
+
+// --- P7: reader affordances (copy buttons, checkboxes, scrollbar, tables) ----
+
+mod reader_affordances;
+
+// --- P7: the outline follows the reader -----------------------------------
+
+mod outline_spy;
+
+// --- P7: the sidebar divider ------------------------------------------------
+
+mod sidebar_divider;
+
+// --- P7: the Quick Slots popover --------------------------------------------
+
+mod slot_popover;
+
+// --- P7: hit targets and button states ----------------------------------------
+
+mod hit_targets;
+
+// --- P7: footer pill, shortcut sheet, palette caps, and clear buttons -----
+
+mod chrome_affordances;

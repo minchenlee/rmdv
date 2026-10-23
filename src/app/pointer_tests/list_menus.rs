@@ -207,7 +207,7 @@ fn a_command_palette_row_has_no_menu() {
     let _ = app.update(Message::OpenCommandPalette);
     let mut ui = PointerUi::new();
     let row = ui
-        .text_bounds(&app, "Toggle Sidebar  ⌘B")
+        .overlay_text_bounds(&app, "Toggle Sidebar")
         .expect("palette row");
     let _ = right_press(&mut app, &mut ui, center(row));
     assert!(app.context_menu.is_none());

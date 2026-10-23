@@ -12,6 +12,7 @@ impl App {
         let link_page = self.hovered_link.is_some().then(|| self.link_page());
         // Only while a context menu is open.
         let menu_scope = self.context_menu.is_some().then(|| self.menu_scope());
+        let outline_was_shown = self.outline_shown();
         let mut task = self.dispatch_message(msg);
         // A menu closes when what is under it changes: an overlay, a view,
         // a modal, the sidebar.
@@ -44,6 +45,21 @@ impl App {
         crate::native_swipe::set_armed(self.swipe_directions());
         self.sync_toolbar_band();
         self.sync_sidebar_peek();
+        // The pinned Quick Slots popover closes for good wherever the rail
+        // may not show (the find bar, the vault page, an unsaved Zen edit),
+        // so it does not pop back later.
+        if self.quick_slots_pinned && !self.quick_slots_rail_allowed() {
+            self.quick_slots_pinned = false;
+        }
+        if let Some(scroll) = self.sync_outline_shown(outline_was_shown) {
+            task = Task::batch([task, scroll]);
+        }
+        // The scrollbar strip goes with the document view; a strip removed
+        // under the pointer reports no exit.
+        if !self.reader_shows_document() {
+            self.reader_scroller
+                .set_hovered(false, std::time::Instant::now());
+        }
         // A folder click's double-click ends with the picker (Esc, an open,
         // another overlay). `Closed` stays for the one press it swallows.
         if self.overlay != Overlay::FolderPicker
@@ -99,8 +115,10 @@ impl App {
             && matches!(
                 msg,
                 Message::OverlayQueryChanged(_)
+                    | Message::OverlayQueryClear
                     | Message::OverlayConfirm
                     | Message::VaultQueryChanged(_)
+                    | Message::VaultQueryClear
                     | Message::VaultEnter
                     | Message::QueryChanged(_)
                     | Message::TreeRenameInput(_)
@@ -431,6 +449,26 @@ impl App {
                 }
                 Task::none()
             }
+            Message::ShortcutSheetRun(action) => {
+                // As a palette pick: close the sheet, then run the action.
+                if self.overlay == Overlay::Shortcuts {
+                    self.overlay = Overlay::None;
+                }
+                Task::done(*action)
+            }
+            Message::FooterCycleStat => {
+                self.prefs.footer_stat = self.prefs.footer_stat.next();
+                self.save_prefs();
+                Task::none()
+            }
+            Message::OverlayQueryClear => {
+                let _ = self.update(Message::OverlayQueryChanged(String::new()));
+                iced::widget::operation::focus(Self::overlay_input_id())
+            }
+            Message::VaultQueryClear => {
+                let _ = self.update(Message::VaultQueryChanged(String::new()));
+                iced::widget::operation::focus(Self::vault_input_id())
+            }
             Message::QuickSlotsModifier(held) => {
                 if held {
                     if self.quick_slots_modifier_held {
@@ -468,7 +506,15 @@ impl App {
                 }
                 Task::none()
             }
-            Message::QuickSlotActivate(index) => self.begin_quick_slot_activation(index),
+            Message::QuickSlotsPopover(open) => {
+                self.quick_slots_pinned = open && self.quick_slots_rail_allowed();
+                Task::none()
+            }
+            Message::QuickSlotActivate(index) => {
+                // Choosing a slot is what the popover was opened for.
+                self.quick_slots_pinned = false;
+                self.begin_quick_slot_activation(index)
+            }
             Message::QuickSlotAssign(index) => self.assign_quick_slot(index),
             Message::QuickSlotClear(index) => self.clear_quick_slot(index),
             Message::QuickSlotClearAll => self.clear_all_quick_slots(),
@@ -2280,6 +2326,10 @@ impl App {
             }
             Message::WindowUnfocused(id) => {
                 self.context_menu = None;
+                // A selection drag's release can go to another app; the
+                // reader must not go on scrolling in the background.
+                self.reader_autoscroll = None;
+                self.quick_slots_pinned = false;
                 self.quick_slots_modifier_held = false;
                 self.quick_slots_rail_revealed = false;
                 self.quick_slots_modifier_generation =
@@ -3460,6 +3510,7 @@ impl App {
             Message::OutlineRowClicked { index, line } => {
                 if index < self.outline_sections.len() {
                     self.outline_cursor = index;
+                    self.outline_hold = Some(index);
                 }
                 self.scroll_to_line_top(line)
             }
@@ -3467,7 +3518,12 @@ impl App {
                 let Some(s) = self.outline_sections.get(self.outline_cursor) else {
                     return Task::none();
                 };
+                self.outline_hold = Some(self.outline_cursor);
                 self.scroll_to_line_top(s.line)
+            }
+            Message::OutlineHovered(hovered) => {
+                self.outline_hovered = hovered;
+                Task::none()
             }
             Message::ScrollToLine(line) => self.scroll_to_line_top(line),
             Message::TreeToggleAtCursor => {
@@ -3522,6 +3578,22 @@ impl App {
                 let toast = self.show_toast("Path copied".into());
                 Task::batch([iced::clipboard::write::<Message>(path), toast])
             }
+            // Only the reader's own column scrolls this way; a mind map
+            // panel or a Full Mindmap preview never moves the document.
+            Message::ReaderAutoScroll(speed) => {
+                self.reader_autoscroll = speed.filter(|_| self.reader_shows_document());
+                Task::none()
+            }
+            Message::ReaderAutoScrollTick => match self.reader_autoscroll {
+                Some(dy) if self.reader_shows_document() => iced::widget::operation::scroll_by(
+                    Self::scroll_id(),
+                    iced::widget::scrollable::AbsoluteOffset { x: 0.0, y: dy },
+                ),
+                _ => {
+                    self.reader_autoscroll = None;
+                    Task::none()
+                }
+            },
             Message::ScrollBy(dy) => iced::widget::operation::scroll_by(
                 Self::scroll_id(),
                 iced::widget::scrollable::AbsoluteOffset { x: 0.0, y: dy },
@@ -3725,7 +3797,9 @@ impl App {
                     self.height_cache.clear();
                 }
                 self.body_viewport = Some(v);
-                self.last_scroll_at = Some(std::time::Instant::now());
+                let now = std::time::Instant::now();
+                self.last_scroll_at = Some(now);
+                self.reader_scroller.poke(now);
                 if self.quick_slot_body_restore.is_none() {
                     // No restore waits on this report: the viewport is
                     // where the reader is.
@@ -3761,13 +3835,16 @@ impl App {
                         Some(idx) => self.rebuild_virt_around_block(idx),
                         None => self.rebuild_virt_here(),
                     }
+                    let spy = self.update_outline_spy(anchor.is_some());
                     return Task::batch([
                         checkpoint,
                         restore.unwrap_or_else(Task::none),
                         self.measure_window_heights(),
+                        spy,
                     ]);
                 }
-                Task::batch([checkpoint, restore.unwrap_or_else(Task::none)])
+                let spy = self.update_outline_spy(anchor.is_some());
+                Task::batch([checkpoint, restore.unwrap_or_else(Task::none), spy])
             }
             Message::TableScrolled => {
                 self.last_scroll_at = Some(std::time::Instant::now());
@@ -3942,13 +4019,31 @@ impl App {
                 Task::none()
             }
             Message::SidebarDragMove(x) => {
-                if self.sidebar_drag.is_some() {
-                    self.sidebar_width = x.clamp(SIDEBAR_MIN, SIDEBAR_MAX);
+                let Some(start) = self.sidebar_drag else {
+                    return Task::none();
+                };
+                if x < SIDEBAR_COLLAPSE_X {
+                    // Past the minimum: the sidebar collapses and keeps the
+                    // width it had before the drag for the next opening.
+                    if !self.sidebar_open {
+                        return Task::none();
+                    }
+                    self.sidebar_open = false;
+                    self.sidebar_width = start;
+                    return self.restore_body_scroll();
                 }
-                Task::none()
+                self.sidebar_width = x.clamp(SIDEBAR_MIN, SIDEBAR_MAX);
+                if self.sidebar_open {
+                    return Task::none();
+                }
+                // Dragged back out during the same drag.
+                self.sidebar_open = true;
+                self.restore_body_scroll()
             }
             Message::SidebarDragEnd => {
-                self.sidebar_drag = None;
+                if self.sidebar_drag.take().is_some() {
+                    self.save_sidebar_width();
+                }
                 Task::none()
             }
             Message::SidebarResetWidth => {
@@ -3956,9 +4051,34 @@ impl App {
                 // The double click's own press started a drag; end it before
                 // jitter drags the width back.
                 self.sidebar_drag = None;
+                self.save_sidebar_width();
+                Task::none()
+            }
+            Message::ReaderScrollbarHover(hovered) => {
+                self.reader_scroller
+                    .set_hovered(hovered, std::time::Instant::now());
+                Task::none()
+            }
+            Message::CopyBlockSource(source, key) => {
+                self.copy_flash_seq = self.copy_flash_seq.wrapping_add(1);
+                let seq = self.copy_flash_seq;
+                self.copy_flash = Some((seq, key));
+                // One timer per copy; nothing ticks while the check shows.
+                Task::batch([
+                    iced::clipboard::write::<Message>(source),
+                    Task::perform(async { tokio::time::sleep(COPY_FLASH).await }, move |_| {
+                        Message::CopyFlashEnd(seq)
+                    }),
+                ])
+            }
+            Message::CopyFlashEnd(seq) => {
+                if self.copy_flash.as_ref().is_some_and(|(s, _)| *s == seq) {
+                    self.copy_flash = None;
+                }
                 Task::none()
             }
             Message::ScrollerTick => {
+                self.reader_scroller.tick(std::time::Instant::now());
                 if let Some(t) = self.last_scroll_at {
                     if t.elapsed() >= std::time::Duration::from_millis(SCROLLER_FADE_MS) {
                         self.last_scroll_at = None;

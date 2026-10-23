@@ -221,6 +221,7 @@ impl App {
                             preview_widget_generation,
                             recently_scrolled,
                             crate::render::ReadingWidth::Fill,
+                            self.copy_flash.map(|(_, key)| key),
                         )
                         .map(|message| Self::full_mindmap_preview_message(message, path, blocks));
                         let mut preview = Column::new().push(rendered);
@@ -385,6 +386,7 @@ impl App {
         match message {
             Message::TableScrolled
             | Message::CopyCode(_)
+            | Message::CopyBlockSource(..)
             | Message::DiagramZoom(_)
             | Message::OpenImageZoom(_) => message,
             Message::OpenLink(url) => Message::FullMindmapPreviewLink {

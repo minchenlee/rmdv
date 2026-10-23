@@ -60,6 +60,8 @@ pub mod ic {
     pub const MINUS: char = '\u{e11c}';
     /// Lucide "scan" — mind map Zoom to Fit.
     pub const SCAN: char = '\u{e257}';
+    /// Lucide "list-ordered" — the Quick Slots popover.
+    pub const LIST_ORDERED: char = '\u{e1d1}';
     /// Lucide "panel-left-open" — show the left sidebar.
     pub const PANEL_LEFT_OPEN: char = '\u{e21d}';
 }

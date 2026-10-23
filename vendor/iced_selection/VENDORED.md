@@ -22,6 +22,22 @@ later commits add only what rmdv needs to select across reader blocks:
   the pointer, the widget's own selected text, and whether the pointer is
   inside that selection. They read state only; a right press still changes
   no selection.
+- `word` (new) gives the word boundaries that double-click and word-drag
+  selection use. UAX #29 makes every Chinese or Japanese character its own
+  word; on macOS each such run is split again with Core Foundation's
+  `CFStringTokenizer` (`kCFStringTokenizerUnitWordBoundary`, through
+  `objc2-core-foundation`, a macOS-only dependency already in rmdv's
+  tree). Other text and other platforms keep UAX #29. Keyboard word moves
+  (Shift+Option+Arrow) keep upstream's `Value` boundaries. The words of the
+  last four lines are kept per thread and one tokenizer is reused per
+  thread, so a word drag segments its line once, not on every move.
+- `text::rich::State::dragging`, `selection_ends`, and `snap` let rmdv's
+  reader keep a double-click (word) or triple-click (line) drag whole
+  when it crosses into another block, and extend a widget's selection
+  from its anchor on Shift+click.
+- A double-click selects the word of the grapheme under the pointer (the
+  hit's affinity tells which side of the caret it is), not the words on
+  both sides of the caret.
 
 Keep changes small and listed here so a later upstream release can replace
 this copy.

@@ -8,6 +8,7 @@ mod click;
 pub mod markdown;
 pub mod selection;
 pub mod text;
+pub mod word;
 
 use iced_widget::core;
 use iced_widget::graphics::text::Paragraph;

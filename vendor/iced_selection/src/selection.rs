@@ -222,37 +222,36 @@ impl Selection {
     ) {
         let (base_word_start, base_word_end) = {
             if self.direction == Direction::Right {
-                let value = Value::new(
-                    paragraph.buffer().lines[self.start.line].text(),
-                );
-
                 let end = SelectionEnd::new(
                     self.start.line,
-                    value.next_end_of_word(self.start.index),
+                    crate::word::next_end_of_word(
+                        paragraph.buffer().lines[self.start.line].text(),
+                        self.start.index,
+                    ),
                 );
 
                 (self.start, end)
             } else {
-                let value =
-                    Value::new(paragraph.buffer().lines[self.end.line].text());
-
                 let start = SelectionEnd::new(
                     self.end.line,
-                    value.previous_start_of_word(self.end.index),
+                    crate::word::previous_start_of_word(
+                        paragraph.buffer().lines[self.end.line].text(),
+                        self.end.index,
+                    ),
                 );
 
                 (start, self.end)
             }
         };
 
-        let value = Value::new(paragraph.buffer().lines[new_end.line].text());
+        let line = paragraph.buffer().lines[new_end.line].text();
 
         let (start, end) = if new_end < self.start {
             self.direction = Direction::Left;
 
             let start = SelectionEnd::new(
                 new_end.line,
-                value.previous_start_of_word(new_end.index),
+                crate::word::previous_start_of_word(line, new_end.index),
             );
 
             (start, base_word_end)
@@ -261,21 +260,21 @@ impl Selection {
 
             let end = SelectionEnd::new(
                 new_end.line,
-                value.next_end_of_word(new_end.index),
+                crate::word::next_end_of_word(line, new_end.index),
             );
 
             (base_word_start, end)
         } else if self.direction == Direction::Right {
             let end = SelectionEnd::new(
                 new_end.line,
-                value.next_end_of_word(new_end.index),
+                crate::word::next_end_of_word(line, new_end.index),
             );
 
             (base_word_start, end.max(base_word_end))
         } else {
             let start = SelectionEnd::new(
                 new_end.line,
-                value.previous_start_of_word(new_end.index),
+                crate::word::previous_start_of_word(line, new_end.index),
             );
 
             (start.min(base_word_start), base_word_end)
@@ -336,20 +335,24 @@ impl Selection {
         self.select_range(start, end);
     }
 
-    /// Selects the word around the given grapheme position.
+    /// Selects the word (or the run of spaces) that holds the grapheme at
+    /// `index`; Chinese and Japanese words come from
+    /// [`word`](crate::word).
     pub fn select_word(
         &mut self,
         line: usize,
         index: usize,
         paragraph: &Paragraph,
     ) {
-        let value = Value::new(paragraph.buffer().lines[line].text());
+        let (start, end) = crate::word::word_around(
+            paragraph.buffer().lines[line].text(),
+            index,
+        );
 
-        let start =
-            SelectionEnd::new(line, value.previous_start_of_word(index));
-        let end = SelectionEnd::new(line, value.next_end_of_word(index));
-
-        self.select_range(start, end);
+        self.select_range(
+            SelectionEnd::new(line, start),
+            SelectionEnd::new(line, end),
+        );
     }
 
     /// Moves the active [`SelectionEnd`] to the left by one, wrapping to the previous line if

@@ -315,6 +315,30 @@ impl<Link> State<Link> {
         point: Point,
         bounds: core::Rectangle,
     ) -> Option<(usize, usize)> {
+        self.hit_grapheme(point, bounds)
+            .map(|(line, index, _)| (line, index))
+    }
+
+    /// The grapheme under `point`: its line and index. A press on the
+    /// right half of a grapheme puts the caret after it; this is still
+    /// the grapheme that was pressed.
+    fn grapheme_under(
+        &self,
+        point: Point,
+        bounds: core::Rectangle,
+    ) -> Option<(usize, usize)> {
+        self.hit_grapheme(point, bounds).map(|(line, index, after)| {
+            (line, if after { index.saturating_sub(1) } else { index })
+        })
+    }
+
+    /// The caret position nearest to `point` (line, grapheme index), and
+    /// whether it lies after the grapheme the point is over.
+    fn hit_grapheme(
+        &self,
+        point: Point,
+        bounds: core::Rectangle,
+    ) -> Option<(usize, usize, bool)> {
         let bounded_x = if point.y < bounds.y {
             bounds.x
         } else if point.y > bounds.y + bounds.height {
@@ -359,6 +383,7 @@ impl<Link> State<Link> {
                 true,
             )
             .count(),
+            cursor.affinity == cosmic_text::Affinity::Before,
         ))
     }
 
@@ -437,6 +462,50 @@ impl<Link> State<Link> {
         let mut selection = Selection::default();
         selection.select_range(a, b);
         selection.text(&self.paragraph)
+    }
+
+    /// How the widget's current drag selects (by grapheme, word, or
+    /// line); `None` when no drag is in progress.
+    pub fn dragging(&self) -> Option<Dragging> {
+        self.dragging
+    }
+
+    /// The widget's own selection as (anchor, focus): the end that stays
+    /// and the end that moves. `None` when it is empty.
+    pub fn selection_ends(&self) -> Option<(SelectionEnd, SelectionEnd)> {
+        if self.selection.is_empty() {
+            return None;
+        }
+        let Selection { start, end, .. } = self.selection;
+        let focus = self.selection.active_end();
+        Some((if focus == end { start } else { end }, focus))
+    }
+
+    /// `at` moved out to the edge of its word or line, as a word or line
+    /// drag selects: to the end when `forward`, else to the start.
+    pub fn snap(
+        &self,
+        at: SelectionEnd,
+        unit: Dragging,
+        forward: bool,
+    ) -> SelectionEnd {
+        let Some(line) = self.paragraph.buffer().lines.get(at.line) else {
+            return at;
+        };
+        let text = line.text();
+        let index = match unit {
+            Dragging::Grapheme => at.index,
+            Dragging::Word if forward => {
+                crate::word::next_end_of_word(text, at.index)
+            }
+            Dragging::Word => crate::word::previous_start_of_word(text, at.index),
+            Dragging::Line if forward => {
+                unicode_segmentation::UnicodeSegmentation::graphemes(text, true)
+                    .count()
+            }
+            Dragging::Line => 0,
+        };
+        SelectionEnd::new(at.line, index)
     }
 
     /// Whether the widget's own selection is not empty.
@@ -828,6 +897,9 @@ where
                             state.dragging = Some(Dragging::Grapheme);
                         }
                         click::Kind::Double => {
+                            let (line, index) = state
+                                .grapheme_under(position, bounds)
+                                .unwrap_or((line, index));
                             state.selection.select_word(
                                 line,
                                 index,

@@ -8,28 +8,30 @@ pub(in crate::app) fn primary_button<'a>(
 ) -> button::Button<'a, Message> {
     button(text(label).size(13))
         .padding(Padding::from([8, 14]))
-        .style(move |_, status| {
-            let bg = match status {
-                button::Status::Hovered => Color {
-                    a: 0.92,
-                    ..pal.accent
-                },
-                button::Status::Pressed => Color {
-                    a: 0.80,
-                    ..pal.accent
-                },
-                _ => pal.accent,
-            };
-            button::Style {
-                background: Some(Background::Color(bg)),
-                text_color: pal.accent_fg,
-                border: Border {
-                    radius: theme::radius::PILL.into(),
-                    ..Default::default()
-                },
+        .style(move |_, status| button::Style {
+            background: Some(Background::Color(accent_fill(status, pal))),
+            text_color: pal.accent_fg,
+            border: Border {
+                radius: theme::radius::PILL.into(),
                 ..Default::default()
-            }
+            },
+            ..Default::default()
         })
+}
+
+/// An accent button's fill: lighter on hover, lighter again while pressed.
+pub(in crate::app) fn accent_fill(status: button::Status, pal: Palette) -> Color {
+    match status {
+        button::Status::Hovered => Color {
+            a: 0.92,
+            ..pal.accent
+        },
+        button::Status::Pressed => Color {
+            a: 0.80,
+            ..pal.accent
+        },
+        _ => pal.accent,
+    }
 }
 
 /// Quiet outlined pill that sits beside a [`primary_button`] as the
@@ -57,20 +59,28 @@ pub(in crate::app) fn secondary_button<'a>(
 }
 
 pub(in crate::app) fn ghost_lu<'a>(code: char, pal: Palette) -> button::Button<'a, Message> {
+    // 5 px above and below the 14 px glyph's line: a 28 px tall target.
     button(icon::glyph(code, 14.0, pal.muted))
-        .padding(Padding::from([4, 8]))
-        .style(move |_, status| button::Style {
-            background: match status {
-                button::Status::Hovered => Some(Background::Color(pal.hover())),
-                _ => None,
-            },
-            text_color: pal.muted,
-            border: Border {
-                radius: theme::radius::PILL.into(),
-                ..Default::default()
-            },
+        .padding(Padding::from([5, 8]))
+        .style(move |_, status| ghost_style(status, pal))
+}
+
+/// A ghost icon button's colors: no fill until hovered, darker while
+/// pressed.
+pub(in crate::app) fn ghost_style(status: button::Status, pal: Palette) -> button::Style {
+    button::Style {
+        background: match status {
+            button::Status::Hovered => Some(Background::Color(pal.hover())),
+            button::Status::Pressed => Some(Background::Color(pal.active())),
+            _ => None,
+        },
+        text_color: pal.muted,
+        border: Border {
+            radius: theme::radius::PILL.into(),
             ..Default::default()
-        })
+        },
+        ..Default::default()
+    }
 }
 
 /// Tooltip for an icon button: the action's name, then its shortcut when it
@@ -222,6 +232,68 @@ pub(in crate::app) fn slim_scroll_direction_horizontal() -> scrollable::Directio
             .scroller_width(6.0)
             .margin(2.0),
     )
+}
+
+/// Width of the reader scrollbar's hit area at the window's right edge:
+/// presses, drags, and track clicks land anywhere in it.
+pub(in crate::app) const READER_SCROLLBAR_HIT: f32 = 12.0;
+
+/// The reader's vertical scrollbar: a 6 px thumb that widens to 10 px
+/// while the pointer is on its strip, in a hit area of
+/// [`READER_SCROLLBAR_HIT`] either way.
+pub(in crate::app) fn reader_scroll_direction(hovered: bool) -> scrollable::Direction {
+    let (thumb, margin) = if hovered { (10.0, 1.0) } else { (6.0, 2.0) };
+    // Hit width = max(rail, thumb) + 2 × margin.
+    let rail = READER_SCROLLBAR_HIT - 2.0 * margin;
+    scrollable::Direction::Vertical(
+        scrollable::Scrollbar::new()
+            .width(rail)
+            .scroller_width(thumb)
+            .margin(margin),
+    )
+}
+
+/// A layer over the reader that reports when the pointer enters or leaves
+/// the scrollbar's strip. It shows no cursor and takes no presses or
+/// wheel, so the scrollbar and the text below keep their events.
+pub(in crate::app) fn reader_scrollbar_strip<'a>() -> Element<'a, Message> {
+    container(
+        mouse_area(
+            Space::new()
+                .width(Length::Fixed(READER_SCROLLBAR_HIT))
+                .height(Length::Fill),
+        )
+        .on_enter(Message::ReaderScrollbarHover(true))
+        .on_exit(Message::ReaderScrollbarHover(false)),
+    )
+    .align_x(iced::alignment::Horizontal::Right)
+    .width(Length::Fill)
+    .height(Length::Fill)
+    .into()
+}
+
+/// [`sleek_scrollable_style`] for the reader: the thumb fades with
+/// `alpha` (see `ScrollerFade`) and shows in full while hovered or dragged.
+pub(in crate::app) fn reader_scrollable_style(
+    status: scrollable::Status,
+    pal: Palette,
+    alpha: f32,
+) -> scrollable::Style {
+    let mut style = sleek_scrollable_style(status, pal, true);
+    let engaged = matches!(
+        status,
+        scrollable::Status::Dragged { .. }
+            | scrollable::Status::Hovered {
+                is_vertical_scrollbar_hovered: true,
+                ..
+            }
+    );
+    if !engaged {
+        let mut color = pal.scroller_hover;
+        color.a *= alpha;
+        style.vertical_rail.scroller.background = Background::Color(color);
+    }
+    style
 }
 
 pub(crate) fn sleek_scrollable_style(

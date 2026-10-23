@@ -39,28 +39,36 @@ pub(in crate::app) fn vault_search_page<'a>(
         format!("{} matches in {} files", hits.len(), file_count)
     };
     let bar = container(
-        irow![
-            text_input("Search all files… (press Enter)", query)
-                .id(App::vault_input_id())
-                .on_input(Message::VaultQueryChanged)
-                .on_submit(Message::VaultEnter)
-                .padding(Padding::from([8, 12]))
-                .size(14)
-                .style(move |_, _| iced::widget::text_input::Style {
-                    background: Color::TRANSPARENT.into(),
-                    border: Border::default(),
-                    icon: pal.muted,
-                    placeholder: pal.subtle,
-                    value: pal.fg,
-                    selection: pal.selection,
-                }),
-            text(count_text).size(12).color(pal.subtle),
+        irow![text_input("Search all files… (press Enter)", query)
+            .id(App::vault_input_id())
+            .on_input(Message::VaultQueryChanged)
+            .on_submit(Message::VaultEnter)
+            .padding(Padding::from([8, 12]))
+            .size(14)
+            .style(move |_, _| iced::widget::text_input::Style {
+                background: Color::TRANSPARENT.into(),
+                border: Border::default(),
+                icon: pal.muted,
+                placeholder: pal.subtle,
+                value: pal.fg,
+                selection: pal.selection,
+            }),]
+        .push(query_clear_button(
+            query,
+            VAULT_QUERY_CLEAR_ID,
+            Message::VaultQueryClear,
+            pal,
+        ))
+        .push(text(count_text).size(12).color(pal.subtle))
+        .extend([
             // Pointer paths for Enter (search) and Esc (close).
             container(ghost_lu(icon::ic::SEARCH, pal).on_press(Message::VaultRunSearch))
-                .id(App::vault_search_button_id()),
+                .id(App::vault_search_button_id())
+                .into(),
             container(ghost_lu(icon::ic::X, pal).on_press(Message::VaultClose))
-                .id(App::vault_close_button_id()),
-        ]
+                .id(App::vault_close_button_id())
+                .into(),
+        ])
         .spacing(12)
         .align_y(iced::Alignment::Center),
     )

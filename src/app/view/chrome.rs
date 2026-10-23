@@ -54,30 +54,70 @@ pub(in crate::app) fn update_banner<'a>(version: &str, pal: Palette) -> Element<
         .into()
 }
 
-/// Bottom status bar: word count + estimated reading time (~200 wpm).
-pub(in crate::app) fn status_footer<'a>(words: usize, pal: Palette) -> Element<'a, Message> {
-    use iced::widget::{container, text as text_w};
-    let minutes = ((words as f32) / 200.0).ceil().max(1.0) as usize;
-    let label = format!(
-        "{} word{} · {} min read",
-        words,
-        if words == 1 { "" } else { "s" },
-        minutes
-    );
+/// The document counts the footer pill can show.
+#[derive(Debug, Clone, Copy)]
+pub(in crate::app) struct FooterCounts {
+    pub(in crate::app) words: usize,
+    pub(in crate::app) characters: usize,
+}
+
+/// The footer pill's text for `stat`. Reading time assumes ~200 wpm.
+pub(in crate::app) fn footer_label(counts: FooterCounts, stat: crate::prefs::FooterStat) -> String {
+    use crate::prefs::FooterStat;
+    let plural = |n: usize, one: &str| format!("{n} {one}{}", if n == 1 { "" } else { "s" });
+    let words = plural(counts.words, "word");
+    let minutes = ((counts.words as f32) / 200.0).ceil().max(1.0) as usize;
+    let time = format!("{minutes} min read");
+    match stat {
+        FooterStat::WordsAndTime => format!("{words} · {time}"),
+        FooterStat::Words => words,
+        FooterStat::ReadingTime => time,
+        FooterStat::Characters => plural(counts.characters, "character"),
+    }
+}
+
+/// The footer pill's id, for tests.
+pub(in crate::app) const STATUS_FOOTER_ID: &str = "status-footer";
+
+/// Bottom status pill: one document statistic. A click shows the next one
+/// (saved in prefs).
+pub(in crate::app) fn status_footer<'a>(
+    counts: FooterCounts,
+    stat: crate::prefs::FooterStat,
+    pal: Palette,
+) -> Element<'a, Message> {
+    use iced::widget::{button, container, text as text_w};
     // Translucent pill so document content remains visible scrolling behind it.
     let mut pill_bg = pal.bg;
     pill_bg.a = 0.82;
-    let pill = container(text_w(label).size(12.0).color(pal.muted))
+    let pill = button(text_w(footer_label(counts, stat)).size(12.0))
         .padding([4, 12])
-        .style(move |_| container::Style {
-            background: Some(pill_bg.into()),
-            border: iced::Border {
-                color: pal.border(),
-                width: 1.0,
-                radius: theme::radius::MD.into(),
-            },
-            ..Default::default()
+        .on_press(Message::FooterCycleStat)
+        .style(move |_, status| {
+            let (background, text_color) = match status {
+                button::Status::Hovered => (pal.hover(), pal.fg),
+                button::Status::Pressed => (pal.active(), pal.fg),
+                _ => (pill_bg, pal.muted),
+            };
+            button::Style {
+                background: Some(background.into()),
+                text_color,
+                border: iced::Border {
+                    color: pal.border(),
+                    width: 1.0,
+                    radius: theme::radius::MD.into(),
+                },
+                ..Default::default()
+            }
         });
+    let pill = container(action_tip(
+        pill,
+        "Show Next Statistic",
+        None,
+        iced::widget::tooltip::Position::Top,
+        pal,
+    ))
+    .id(STATUS_FOOTER_ID);
     // Float bottom-right over the reader; content scrolls underneath.
     container(pill)
         .width(Length::Fill)
@@ -128,6 +168,19 @@ pub(in crate::app) fn link_pill<'a>(label: &str, pal: Palette, left: f32) -> Ele
 /// Room kept on the right of the link pill for the word-count footer.
 const LINK_PILL_RIGHT_ROOM: f32 = 220.0;
 
+/// A toast's action button (Save, Undo): an accent pill.
+pub(in crate::app) fn toast_action_style(status: button::Status, pal: Palette) -> button::Style {
+    button::Style {
+        background: Some(Background::Color(accent_fill(status, pal))),
+        text_color: pal.accent_fg,
+        border: Border {
+            radius: theme::radius::PILL.into(),
+            ..Default::default()
+        },
+        ..Default::default()
+    }
+}
+
 pub(in crate::app) fn toast_overlay<'a>(toast: &Toast, pal: Palette) -> Element<'a, Message> {
     use iced::widget::{button, container, text as text_w};
     let mut content = irow![text_w(toast.text.clone()).size(13.5).color(pal.fg)]
@@ -136,15 +189,7 @@ pub(in crate::app) fn toast_overlay<'a>(toast: &Toast, pal: Palette) -> Element<
     if let Some(action) = &toast.action {
         let action_button = button(text_w(action.label.clone()).size(12.5).color(pal.accent_fg))
             .padding(Padding::from([5, 10]))
-            .style(move |_, _| button::Style {
-                background: Some(Background::Color(pal.accent)),
-                text_color: pal.accent_fg,
-                border: Border {
-                    radius: theme::radius::PILL.into(),
-                    ..Default::default()
-                },
-                ..Default::default()
-            })
+            .style(move |_, status| toast_action_style(status, pal))
             .on_press(action.message.clone());
         content = content.push(action_button);
     }
@@ -550,6 +595,78 @@ fn welcome_recent<'a>(
     Some(list.into())
 }
 
+/// Container id of the pinned Quick Slots popover.
+pub(in crate::app) const QUICK_SLOTS_POPOVER_ID: &str = "quick-slots-popover";
+
+/// Side of a Quick Slot chip: a 28 px pointer target.
+const QUICK_SLOT_CHIP: f32 = 28.0;
+
+/// Container ids of the rail's slot rows, slot 1 first.
+pub(in crate::app) const QUICK_SLOT_CHIP_IDS: [&str; crate::quick_slots::SLOT_COUNT] = [
+    "quick-slot-1",
+    "quick-slot-2",
+    "quick-slot-3",
+    "quick-slot-4",
+    "quick-slot-5",
+    "quick-slot-6",
+    "quick-slot-7",
+    "quick-slot-8",
+    "quick-slot-9",
+];
+
+/// What a Quick Slot chip shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::app) enum SlotChipLook {
+    /// The slot of the open file.
+    Active,
+    /// Holds a file.
+    Occupied,
+    /// Holds a file that no longer exists.
+    Missing,
+    /// Empty; a click assigns the open file.
+    Empty,
+    /// Empty, and there is no open file to assign.
+    Unassignable,
+}
+
+/// A Quick Slot chip's colors.
+pub(in crate::app) fn quick_slot_chip_style(
+    look: SlotChipLook,
+    status: button::Status,
+    pal: Palette,
+) -> button::Style {
+    let active = look == SlotChipLook::Active;
+    let background = if active {
+        Some(Background::Color(pal.accent))
+    } else if look == SlotChipLook::Unassignable {
+        // A slot that does nothing: an outline only, no fill or hover.
+        None
+    } else {
+        match status {
+            button::Status::Hovered => Some(Background::Color(pal.hover())),
+            button::Status::Pressed => Some(Background::Color(pal.active())),
+            _ => Some(Background::Color(pal.surface)),
+        }
+    };
+    button::Style {
+        background,
+        text_color: match look {
+            SlotChipLook::Active => pal.accent_fg,
+            SlotChipLook::Unassignable => pal.subtle,
+            _ => pal.fg,
+        },
+        border: Border {
+            color: match look {
+                SlotChipLook::Missing | SlotChipLook::Occupied => pal.accent,
+                _ => pal.border(),
+            },
+            width: 1.0,
+            radius: theme::radius::SM.into(),
+        },
+        ..Default::default()
+    }
+}
+
 /// Transient modifier-driven Quick Slot rail. It deliberately has no enclosing
 /// panel: the nine fixed controls float at the supplied left offset and inherit
 /// the current theme roles used by the rest of the application.
@@ -576,6 +693,8 @@ pub(in crate::app) fn quick_slots_rail<'a>(
                     pal.accent_fg
                 } else if missing {
                     pal.accent
+                } else if occupied.is_none() && !assignable {
+                    pal.subtle
                 } else {
                     pal.fg
                 }),
@@ -584,37 +703,23 @@ pub(in crate::app) fn quick_slots_rail<'a>(
         .height(Length::Fill)
         .align_x(iced::alignment::Horizontal::Center)
         .align_y(iced::alignment::Vertical::Center);
-        let mut slot_button = button(label)
-            .width(Length::Fixed(24.0))
-            .height(Length::Fixed(24.0))
+        let look = if active {
+            SlotChipLook::Active
+        } else if missing {
+            SlotChipLook::Missing
+        } else if occupied.is_some() {
+            SlotChipLook::Occupied
+        } else if assignable {
+            SlotChipLook::Empty
+        } else {
+            SlotChipLook::Unassignable
+        };
+        let slot_button = button(label)
+            .width(Length::Fixed(QUICK_SLOT_CHIP))
+            .height(Length::Fixed(QUICK_SLOT_CHIP))
             .padding(Padding::ZERO)
-            .style(move |_, status| {
-                let background = if active {
-                    Some(Background::Color(pal.accent))
-                } else {
-                    match status {
-                        button::Status::Hovered => Some(Background::Color(pal.hover())),
-                        button::Status::Pressed => Some(Background::Color(pal.active())),
-                        _ => Some(Background::Color(pal.surface)),
-                    }
-                };
-                button::Style {
-                    background,
-                    text_color: if active { pal.accent_fg } else { pal.fg },
-                    border: Border {
-                        color: if missing {
-                            pal.accent
-                        } else if occupied.is_some() {
-                            pal.accent
-                        } else {
-                            pal.border()
-                        },
-                        width: 1.0,
-                        radius: theme::radius::SM.into(),
-                    },
-                    ..Default::default()
-                }
-            });
+            .style(move |_, status| quick_slot_chip_style(look, status, pal));
+        let mut slot_button = slot_button;
         slot_button = if occupied.is_some() {
             slot_button.on_press(Message::QuickSlotActivate(index))
         } else if assignable {
@@ -639,7 +744,7 @@ pub(in crate::app) fn quick_slots_rail<'a>(
                     .wrapping(iced::widget::text::Wrapping::None),
             )
             .width(Length::Fixed(220.0))
-            .height(Length::Fixed(24.0))
+            .height(Length::Fixed(QUICK_SLOT_CHIP))
             .padding(Padding::from([0, 6]))
             .align_y(iced::alignment::Vertical::Center)
             .clip(true)
@@ -659,10 +764,38 @@ pub(in crate::app) fn quick_slots_rail<'a>(
         } else {
             irow![slot_button].into()
         };
-        let slot_view = mouse_area(slot_view).on_right_press(Message::QuickSlotContextMenu(index));
+        let slot_view =
+            container(mouse_area(slot_view).on_right_press(Message::QuickSlotContextMenu(index)))
+                .id(iced::widget::Id::new(QUICK_SLOT_CHIP_IDS[index]));
         controls = controls.push(slot_view);
     }
-    container(controls)
+    // Pinned from the toolbar, the rail is a popover: a panel that closes
+    // on a press outside it and keeps a press on its padding or between its
+    // chips from the reader under it. The ⌘ hold keeps the bare rail.
+    let rail: Element<'a, Message> = if app.quick_slots_pinned {
+        PressOutside::new(
+            iced::widget::opaque(
+                container(controls)
+                    .id(iced::widget::Id::new(QUICK_SLOTS_POPOVER_ID))
+                    .padding(6)
+                    .style(move |_| container::Style {
+                        background: Some(pal.surface.into()),
+                        border: Border {
+                            color: pal.border(),
+                            width: 1.0,
+                            radius: theme::radius::MD.into(),
+                        },
+                        shadow: theme::shadow::MENU,
+                        ..Default::default()
+                    }),
+            ),
+            Message::QuickSlotsPopover(false),
+        )
+        .into()
+    } else {
+        controls.into()
+    };
+    container(rail)
         .width(Length::Fill)
         .height(Length::Fill)
         .padding(Padding {

@@ -24,7 +24,7 @@ mod image_cache;
 use image_cache::IMAGE_CACHE_BYTE_BUDGET;
 pub use image_cache::{ImageCache, ImageState};
 
-const SIDEBAR_WIDTH: f32 = 280.0;
+const SIDEBAR_WIDTH: f32 = crate::prefs::SIDEBAR_WIDTH_DEFAULT;
 const QUICK_SLOTS_RAIL_GAP: f32 = 10.0;
 const QUICK_SLOTS_RAIL_REVEAL_DELAY_MS: u64 = 500;
 /// In-document search runs on every keystroke below this source size and is
@@ -51,8 +51,15 @@ const ZEN_EDITOR_OVERLAY_CLEARANCE: f32 = 2.0;
 const BODY_BOTTOM_PAD: f32 = 56.0;
 const TREE_INDENT: f32 = 14.0;
 const SCROLLER_FADE_MS: u64 = 1200;
-const SIDEBAR_MIN: f32 = 160.0;
-const SIDEBAR_MAX: f32 = 600.0;
+/// How long a block's copy button shows its check after a copy.
+const COPY_FLASH: std::time::Duration = std::time::Duration::from_millis(1500);
+const SIDEBAR_MIN: f32 = crate::prefs::SIDEBAR_WIDTH_MIN;
+/// Scroll-spy: a heading this close below the reader's top line already
+/// counts as the current section (a jump lands it a few pixels low).
+const OUTLINE_SPY_SLACK: f32 = 4.0;
+const SIDEBAR_MAX: f32 = crate::prefs::SIDEBAR_WIDTH_MAX;
+/// A divider drag left of this x collapses the sidebar.
+const SIDEBAR_COLLAPSE_X: f32 = SIDEBAR_MIN / 2.0;
 const MIND_PANEL_DEFAULT: f32 = 380.0;
 /// Container id of the document mind map panel's text area.
 const MINDMAP_PANEL_TEXT_ID: &str = "mindmap-panel-text";
@@ -174,8 +181,8 @@ use tree_ops::take_trashed_for_tests;
 use types::*;
 pub use types::{
     HistoryDir, MindmapDir, Overlay, PendingNav, PendingRefreshFile, PendingRefreshWorkspace,
-    PendingWatcherReload, ReaderHit, ReaderTarget, SidebarTab, ThemeEntry, Toast, ToastAction,
-    ToolbarView, ViewMode, ZenRestoreState,
+    PendingWatcherReload, ReaderHit, ReaderTarget, ScrollerFade, SidebarTab, ThemeEntry, Toast,
+    ToastAction, ToolbarView, ViewMode, ZenRestoreState,
 };
 use view::*;
 pub(crate) use view::{reader_tip, sleek_scrollable_style};
@@ -195,6 +202,8 @@ pub struct App {
     /// Whitespace-separated word count of `source`, refreshed on every parse
     /// so the footer never scans the whole document inside `view()`.
     source_words: usize,
+    /// Characters in `source`, for the footer pill.
+    source_chars: usize,
     pub ast: Vec<(BlockId, Block)>,
     pub theme_mode: ThemeMode,
     pub theme_preset: ThemePreset,
@@ -253,6 +262,17 @@ pub struct App {
     /// changes. Cached so the Outline sidebar (rendered every frame) and arrow
     /// nav don't re-parse the whole source per event.
     pub outline_sections: Vec<crate::ipc::sections::Section>,
+    /// Scroll-spy: the reader block at the top line when the outline mark
+    /// was last computed. The mark is recomputed only when this changes, so
+    /// a scroll inside one block costs one binary search.
+    pub outline_spy_block: Option<usize>,
+    /// An outline row the user chose (click or Enter). It keeps the mark
+    /// while its heading is on screen below the top line, as at the end of
+    /// a document where a short last section cannot reach the top.
+    pub outline_hold: Option<usize>,
+    /// The pointer is over the outline list: the scroll-spy then leaves the
+    /// list where the user put it.
+    pub outline_hovered: bool,
     pub overlay: Overlay,
     pub overlay_query: String,
     pub overlay_selected: usize,
@@ -330,6 +350,15 @@ pub struct App {
     pub body_viewport: Option<iced::widget::scrollable::Viewport>,
     pub last_body_range: std::cell::Cell<(usize, usize)>,
     pub last_scroll_at: Option<std::time::Instant>,
+    /// The reader scrollbar's fade in and out, and its hover.
+    pub reader_scroller: ScrollerFade,
+    /// The copy number and block key ([`crate::render::copy_key`]) of the
+    /// block copy button that copied last, while it shows a check.
+    pub copy_flash: Option<(u64, usize)>,
+    pub copy_flash_seq: u64,
+    /// Pixels per tick while a reader selection drag is past the viewport
+    /// edge; `None` stops the tick.
+    pub reader_autoscroll: Option<f32>,
     pub sidebar_width: f32,
     pub sidebar_drag: Option<f32>,
     pub(crate) hl_cache: crate::highlight::HlCache,
@@ -543,6 +572,8 @@ pub struct App {
     recent_store: Option<PathBuf>,
     pub quick_slots_modifier_held: bool,
     quick_slots_rail_revealed: bool,
+    /// The toolbar's Quick Slots button pinned the rail as a popover.
+    quick_slots_pinned: bool,
     quick_slots_modifier_generation: u64,
     quick_slots_persist_generation: u64,
     quick_slots_persist_pending: bool,
@@ -602,6 +633,7 @@ impl Default for App {
             file: None,
             source: String::new(),
             source_words: 0,
+            source_chars: 0,
             ast: Vec::new(),
             theme_mode: mode,
             theme_preset: preset,
@@ -665,6 +697,9 @@ impl Default for App {
             full_mindmap_request_seq: 0,
             tree_viewport: None,
             outline_viewport: None,
+            outline_spy_block: None,
+            outline_hold: None,
+            outline_hovered: false,
             window_size: None,
             window_fullscreen: false,
             window_mode_last_trigger: None,
@@ -673,7 +708,11 @@ impl Default for App {
             body_viewport: None,
             last_body_range: std::cell::Cell::new((0, 0)),
             last_scroll_at: None,
-            sidebar_width: SIDEBAR_WIDTH,
+            reader_scroller: ScrollerFade::default(),
+            copy_flash: None,
+            copy_flash_seq: 0,
+            reader_autoscroll: None,
+            sidebar_width: crate::prefs::clamp_sidebar_width(prefs.sidebar_width),
             sidebar_drag: None,
             hl_cache: crate::highlight::HlCache::default(),
             height_cache: crate::virt::HeightCache::default(),
@@ -780,6 +819,7 @@ impl Default for App {
             },
             quick_slots_modifier_held: false,
             quick_slots_rail_revealed: false,
+            quick_slots_pinned: false,
             quick_slots_modifier_generation: 0,
             quick_slots_persist_generation: 0,
             quick_slots_persist_pending: false,
@@ -962,6 +1002,28 @@ impl App {
             crate::prefs::save_to(path, &self.prefs);
         } else {
             crate::prefs::save(&self.prefs);
+        }
+    }
+
+    /// The Quick Slots rail may show: a workspace holds the slots, and no
+    /// overlay, vault page, find bar, or unsaved Zen edit takes the keys.
+    fn quick_slots_rail_allowed(&self) -> bool {
+        self.quick_slots_workspace_root().is_some()
+            && quick_slots_rail_visible(
+                true,
+                self.overlay != Overlay::None,
+                self.vault_open,
+                self.search_open,
+                self.view_mode == ViewMode::Raw && self.editor.is_some(),
+                self.dirty,
+            )
+    }
+
+    /// Remember the sidebar width for the next launch; one write per drag.
+    fn save_sidebar_width(&mut self) {
+        if self.prefs.sidebar_width != self.sidebar_width {
+            self.prefs.sidebar_width = self.sidebar_width;
+            self.save_prefs();
         }
     }
 
@@ -1278,6 +1340,8 @@ impl App {
         self.file = Some(path.clone());
         self.dirty = false;
         self.outline_cursor = 0;
+        self.outline_spy_block = None;
+        self.outline_hold = None;
         self.is_data_doc = data_lang_for(self.file.as_deref()).is_some();
         self.reader_select_all = false;
         self.mindmap_collapsed.clear();
@@ -1836,6 +1900,19 @@ impl App {
         )
     }
 
+    /// How often `ScrollerTick` runs at `now`, or `None` while nothing
+    /// fades.
+    pub(crate) fn scroller_tick_interval(
+        &self,
+        now: std::time::Instant,
+    ) -> Option<std::time::Duration> {
+        let others = self.last_scroll_at.map(|_| SCROLLER_HOLD_TICK);
+        match (self.reader_scroller.next_tick(now), others) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        }
+    }
+
     fn scroll_id() -> iced::widget::Id {
         iced::widget::Id::new("body")
     }
@@ -1916,6 +1993,97 @@ impl App {
             total,
             ROW_H,
         )
+    }
+
+    /// Scroll-spy: marks the outline section that holds the reader's top
+    /// line and, unless the pointer is over the outline, scrolls the outline
+    /// list to keep the mark in view. Runs in `update` on `BodyScrolled`,
+    /// never in `view`; `jumping` is true while a heading jump is landing.
+    fn update_outline_spy(&mut self, jumping: bool) -> Task<Message> {
+        if self.outline_sections.is_empty() || self.view_mode != ViewMode::Rendered {
+            return Task::none();
+        }
+        let offset = self.body_offset();
+        let Some(dpos) = self.virt_window.display_pos_at(offset + OUTLINE_SPY_SLACK) else {
+            return Task::none();
+        };
+        let block = self.virt_window.display[dpos];
+        if self.outline_spy_block == Some(block) && self.outline_hold.is_none() {
+            return Task::none();
+        }
+        self.outline_spy_block = Some(block);
+        let Some(&top_line) = self.block_lines.get(block) else {
+            return Task::none();
+        };
+        let at_top = self
+            .outline_sections
+            .partition_point(|section| section.line <= top_line)
+            .checked_sub(1);
+        let mark = match self.outline_hold {
+            Some(held) if jumping => Some(held),
+            Some(held) if at_top.is_none_or(|top| held > top) && self.heading_on_screen(held) => {
+                Some(held)
+            }
+            _ => {
+                self.outline_hold = None;
+                at_top
+            }
+        };
+        let Some(mark) = mark else {
+            return Task::none();
+        };
+        if mark == self.outline_cursor {
+            return Task::none();
+        }
+        self.outline_cursor = mark;
+        if self.outline_shown() && !self.outline_hovered {
+            self.scroll_outline_to_cursor()
+        } else {
+            Task::none()
+        }
+    }
+
+    /// The outline list is on screen: the sidebar, open or peeking, shows
+    /// its Outline tab.
+    fn outline_shown(&self) -> bool {
+        (self.sidebar_open || self.sidebar_peek)
+            && self.workspace.is_some()
+            && self.sidebar_tab == SidebarTab::Outline
+            && self.full_mindmap.is_none()
+    }
+
+    /// Runs after every update. A list that left the screen (the sidebar
+    /// hidden, another tab, Zen, Full Mindmap) reports no pointer exit, so
+    /// it is no longer hovered. A list shown again is a new scrollable whose
+    /// last viewport is stale, so it scrolls to the marked section, which
+    /// the spy kept moving while it was hidden.
+    pub(super) fn sync_outline_shown(&mut self, was_shown: bool) -> Option<Task<Message>> {
+        if !self.outline_shown() {
+            self.outline_hovered = false;
+            return None;
+        }
+        if was_shown {
+            return None;
+        }
+        self.outline_viewport = None;
+        Some(self.scroll_outline_to_cursor())
+    }
+
+    /// True when outline section `index`'s heading lies inside the reader's
+    /// viewport.
+    fn heading_on_screen(&self, index: usize) -> bool {
+        let Some(section) = self.outline_sections.get(index) else {
+            return false;
+        };
+        let Some(block) = crate::ipc::lines::block_for_line(section.line, &self.block_lines) else {
+            return false;
+        };
+        let Some(dpos) = self.virt_window.display_pos(block) else {
+            return false;
+        };
+        let top = self.virt_window.block_top(dpos);
+        let offset = self.body_offset();
+        top >= offset - 1.0 && top < offset + self.body_viewport_h()
     }
 
     fn scroll_outline_to_cursor(&self) -> Task<Message> {
@@ -2506,6 +2674,7 @@ impl App {
         // `mindmap_collapsed` writes in FileLoaded happen before this call.
         self.invalidate_mindmap_layout();
         self.source_words = self.source.split_whitespace().count();
+        self.source_chars = self.source.chars().count();
         if let Some(ast) = self.synthesize_data_ast() {
             self.ast = ast;
             // Data docs are one synthesized block at line 1; reset block_lines
@@ -2687,6 +2856,7 @@ impl App {
 
     fn open_overlay(&mut self, kind: Overlay) {
         self.overlay = kind;
+        self.quick_slots_pinned = false;
         self.overlay_query.clear();
         self.overlay_selected = 0;
         self.overlay_viewport = None;
@@ -2856,6 +3026,7 @@ impl App {
                         (0, 0),
                         recently_scrolled,
                         crate::render::ReadingWidth::Fill,
+                        self.copy_flash.map(|(_, key)| key),
                     ));
                     if truncated {
                         col = col.push(
@@ -3030,7 +3201,9 @@ impl App {
             .command_items()
             .into_iter()
             .filter_map(|(label, msg)| {
-                let s = picker::fuzzy_score(&self.overlay_query, label)?;
+                // Typing matches the command's name; its shortcut only shows.
+                let (name, _) = split_command_label(label);
+                let s = picker::fuzzy_score(&self.overlay_query, name)?;
                 Some((label, msg, s))
             })
             .collect();
@@ -3142,6 +3315,7 @@ impl App {
         let close_confirm_open = self.close_confirm.is_some();
         let menu_open = self.context_menu.is_some();
         let renaming = self.tree_rename.is_some();
+        let slots_popover = self.quick_slots_pinned && self.quick_slots_rail_allowed();
         let keys = iced::event::listen_with(|ev, status, _id| {
             let is_keyboard = matches!(
                 &ev,
@@ -3187,6 +3361,7 @@ impl App {
                 image_zoom_open,
                 menu_open,
                 renaming,
+                slots_popover,
             ),
         ))
         .map(
@@ -3213,6 +3388,7 @@ impl App {
                         image_zoom_open,
                         menu_open,
                         renaming,
+                        slots_popover,
                     ),
                 ),
                 (ev, reader_copied),
@@ -3305,6 +3481,9 @@ impl App {
                 }
                 if released {
                     return Message::Noop;
+                }
+                if let Some(message) = quick_slots_popover_key_message(&key, slots_popover) {
+                    return message;
                 }
                 if is_settings_key(&key, mods) && !overlay_open {
                     return Message::ToggleSettings;
@@ -3602,21 +3781,29 @@ impl App {
                 m.unwrap_or(Message::Noop)
             },
         );
-        let scroller = if self.last_scroll_at.is_some() {
-            iced::time::every(std::time::Duration::from_millis(150)).map(|_| Message::ScrollerTick)
+        let scroller = match self.scroller_tick_interval(std::time::Instant::now()) {
+            Some(every) => iced::time::every(every).map(|_| Message::ScrollerTick),
+            None => iced::Subscription::none(),
+        };
+        // While a reader selection drag is past the viewport edge: a tick
+        // that scrolls, and a release anywhere that stops it. Nothing runs
+        // otherwise, so an idle reader does not redraw.
+        let reader_autoscroll = if self.reader_autoscroll.is_some() {
+            iced::Subscription::batch([
+                iced::time::every(std::time::Duration::from_millis(16))
+                    .map(|_| Message::ReaderAutoScrollTick),
+                iced::event::listen_with(|ev, _status, _id| match ev {
+                    iced::Event::Mouse(iced::mouse::Event::ButtonReleased(
+                        iced::mouse::Button::Left,
+                    )) => Some(Message::ReaderAutoScroll(None)),
+                    _ => None,
+                }),
+            ])
         } else {
             iced::Subscription::none()
         };
         let drag = if self.sidebar_drag.is_some() && !full_mindmap {
-            iced::event::listen_with(|ev, _status, _id| match ev {
-                iced::Event::Mouse(iced::mouse::Event::CursorMoved { position }) => {
-                    Some(Message::SidebarDragMove(position.x))
-                }
-                iced::Event::Mouse(iced::mouse::Event::ButtonReleased(
-                    iced::mouse::Button::Left,
-                )) => Some(Message::SidebarDragEnd),
-                _ => None,
-            })
+            iced::event::listen_with(|ev, _status, _id| sidebar_drag_message(&ev))
         } else {
             iced::Subscription::none()
         };
@@ -3691,6 +3878,7 @@ impl App {
             theme_watcher,
             keys,
             scroller,
+            reader_autoscroll,
             drag,
             mind_drag,
             full_mind_drag,
@@ -3738,6 +3926,7 @@ impl App {
         let recently_scrolled = self
             .last_scroll_at
             .is_some_and(|t| t.elapsed() < std::time::Duration::from_millis(SCROLLER_FADE_MS));
+        let scroller_alpha = self.reader_scroller.alpha(std::time::Instant::now());
         let full_mindmap = self.full_mindmap.is_some();
         let footer_visible = !full_mindmap
             && !self.settings_open
@@ -3969,6 +4158,7 @@ impl App {
                         (0, 0),
                         recently_scrolled,
                         crate::render::ReadingWidth::Capped,
+                        self.copy_flash.map(|(_, key)| key),
                     )
                 }
             } else {
@@ -3988,6 +4178,7 @@ impl App {
                     (0, 0),
                     recently_scrolled,
                     crate::render::ReadingWidth::Capped,
+                    self.copy_flash.map(|(_, key)| key),
                 )
             };
             if self.view_mode == ViewMode::Raw || self.view_mode == ViewMode::Mindmap {
@@ -4026,8 +4217,8 @@ impl App {
                 .id(Self::scroll_id())
                 .height(Length::Fill)
                 .on_scroll(Message::BodyScrolled)
-                .direction(slim_scroll_direction())
-                .style(move |_, status| sleek_scrollable_style(status, pal, recently_scrolled));
+                .direction(reader_scroll_direction(self.reader_scroller.hovered))
+                .style(move |_, status| reader_scrollable_style(status, pal, scroller_alpha));
                 // ⌘+wheel changes the font size; the gate keeps it from
                 // also scrolling the reader. It also arms a swipe (macOS).
                 let gate = Gate::Reader {
@@ -4039,6 +4230,12 @@ impl App {
                 // own presses first.
                 let scroll: Element<'_, Message> = iced::widget::mouse_area(scroll)
                     .on_right_press(Message::ReaderContextMenu(ReaderHit::default()))
+                    .into();
+                // The scrollbar's strip reports hover so the bar widens; it
+                // takes no presses, so the scrollbar under it gets them.
+                let scroll: Element<'_, Message> = stack![scroll, reader_scrollbar_strip()]
+                    .width(Length::Fill)
+                    .height(Length::Fill)
                     .into();
                 if select_all {
                     stack![
@@ -4251,7 +4448,14 @@ impl App {
         // Status footer floats over the reader (content scrolls behind it),
         // pinned bottom-right. Shown for any open document except mindmap.
         let footer_layer: Element<'_, Message> = if footer_visible {
-            status_footer(self.source_words, pal)
+            status_footer(
+                FooterCounts {
+                    words: self.source_words,
+                    characters: self.source_chars,
+                },
+                self.prefs.footer_stat,
+                pal,
+            )
         } else {
             Space::new().into()
         };
@@ -4294,7 +4498,7 @@ impl App {
             Space::new().into()
         };
         let quick_slots_layer: Element<'_, Message> = if quick_slots_rail_visible(
-            self.quick_slots_rail_revealed,
+            self.quick_slots_rail_revealed || self.quick_slots_pinned,
             self.overlay != Overlay::None,
             self.vault_open,
             self.search_open,

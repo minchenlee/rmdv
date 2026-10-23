@@ -49,6 +49,49 @@ pub struct Prefs {
     /// When the top toolbar shows (Settings → Toolbar).
     #[serde(default, deserialize_with = "lenient_toolbar")]
     pub toolbar: ToolbarMode,
+    /// Sidebar width set by dragging its divider.
+    #[serde(
+        default = "default_sidebar_width",
+        deserialize_with = "lenient_sidebar_width"
+    )]
+    pub sidebar_width: f32,
+    /// The statistic the status footer pill shows; a click cycles it.
+    #[serde(default, deserialize_with = "lenient_footer_stat")]
+    pub footer_stat: FooterStat,
+}
+
+/// The statistic the status footer pill shows.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FooterStat {
+    /// "N words · M min read", the original pill.
+    #[default]
+    WordsAndTime,
+    Words,
+    ReadingTime,
+    Characters,
+}
+
+impl FooterStat {
+    /// The statistic a click shows next.
+    pub fn next(self) -> Self {
+        match self {
+            FooterStat::WordsAndTime => FooterStat::Words,
+            FooterStat::Words => FooterStat::ReadingTime,
+            FooterStat::ReadingTime => FooterStat::Characters,
+            FooterStat::Characters => FooterStat::WordsAndTime,
+        }
+    }
+}
+
+/// An unknown footer statistic falls back to the default instead of failing
+/// the whole file.
+fn lenient_footer_stat<'de, D>(deserializer: D) -> Result<FooterStat, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    Ok(serde_json::from_value(value).unwrap_or_default())
 }
 
 /// When the top toolbar shows.
@@ -75,6 +118,36 @@ impl ToolbarMode {
 
 fn default_true() -> bool {
     true
+}
+
+fn default_sidebar_width() -> f32 {
+    SIDEBAR_WIDTH_DEFAULT
+}
+
+/// Sidebar width limits, shared with the divider drag.
+pub const SIDEBAR_WIDTH_DEFAULT: f32 = 280.0;
+pub const SIDEBAR_WIDTH_MIN: f32 = 160.0;
+pub const SIDEBAR_WIDTH_MAX: f32 = 600.0;
+
+/// A missing or malformed sidebar width falls back to the default; an
+/// out-of-range one is clamped. Neither fails the whole file.
+fn lenient_sidebar_width<'de, D>(deserializer: D) -> Result<f32, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    Ok(clamp_sidebar_width(
+        value.as_f64().map_or(default_sidebar_width(), |v| v as f32),
+    ))
+}
+
+/// Keeps a sidebar width finite and inside the divider's range.
+pub fn clamp_sidebar_width(width: f32) -> f32 {
+    if width.is_finite() {
+        width.clamp(SIDEBAR_WIDTH_MIN, SIDEBAR_WIDTH_MAX)
+    } else {
+        default_sidebar_width()
+    }
 }
 
 fn default_glass_opacity() -> f32 {
@@ -179,6 +252,8 @@ impl Default for Prefs {
             mindmap_scroll_pans: false,
             quick_slots: crate::quick_slots::QuickSlotsStore::default(),
             toolbar: ToolbarMode::Always,
+            sidebar_width: default_sidebar_width(),
+            footer_stat: FooterStat::default(),
         }
     }
 }

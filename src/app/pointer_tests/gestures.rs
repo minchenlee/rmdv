@@ -269,7 +269,7 @@ fn trackpad_scrolls_the_editor_by_the_finger_distance() {
 
 /// A reader with a twelve-column table (wider than the reading column, so
 /// it scrolls horizontally) above a long run of paragraphs.
-fn wide_table_app() -> App {
+pub(super) fn wide_table_app() -> App {
     let cols = 12;
     let mut source = String::from("|");
     for c in 0..cols {
@@ -303,7 +303,7 @@ fn wide_table_app() -> App {
 
 /// The heights (y, every 8 px) where the probe finds a horizontal
 /// scroller under the pointer at `x`.
-fn hscroll_rows(ui: &mut PointerUi, app: &App, x: f32) -> Vec<f32> {
+pub(super) fn hscroll_rows(ui: &mut PointerUi, app: &App, x: f32) -> Vec<f32> {
     (5..100)
         .map(|i| i as f32 * 8.0)
         .filter(|y| {

@@ -1,5 +1,6 @@
 //! The top toolbar: sidebar toggle, file name with its dirty dot, the
-//! Read / Edit / Mind Map / Full Mindmap switch (icons), and Save, Find, Command Palette, Settings.
+//! Read / Edit / Mind Map / Full Mindmap switch (icons), and Save, Find, Quick Slots, Command
+//! Palette, Settings.
 //! Every action here also has a keyboard shortcut; the toolbar is the pointer
 //! path to it.
 
@@ -253,6 +254,22 @@ pub(in crate::app) fn toolbar<'a>(
             ),
             "Find",
             Some("⌘F"),
+            Position::Bottom,
+            pal,
+        ))
+        .push(action_tip(
+            // The pointer entry to the Quick Slots rail that ⌘ shows.
+            container(tool_button(
+                ic::LIST_ORDERED,
+                // Pinned only while allowed (`App::update` unpins it).
+                app.quick_slots_rail_allowed()
+                    .then_some(Message::QuickSlotsPopover(!app.quick_slots_pinned)),
+                app.quick_slots_pinned,
+                pal,
+            ))
+            .id(iced::widget::Id::new("toolbar-quick-slots")),
+            "Quick Slots",
+            Some("⌘1–9"),
             Position::Bottom,
             pal,
         ))

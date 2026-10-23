@@ -63,6 +63,7 @@ pub(in crate::app) fn settings_page<'a>(
             index,
             app.settings_cursor == index,
             settings_row_body(app, row, pal),
+            switch_toggle(row),
             pal,
         ));
     }
@@ -125,13 +126,16 @@ fn section_title(row: SettingsRow) -> &'static str {
 }
 
 /// One row: hover moves the keyboard cursor here; the cursor row is filled.
+/// A press anywhere on a switch row toggles it, as Space does; the switch
+/// itself takes its own press, so a press on it toggles once.
 fn settings_row<'a>(
     index: usize,
     cursor: bool,
     body: Element<'a, Message>,
+    toggle: Option<Message>,
     pal: Palette,
 ) -> Element<'a, Message> {
-    mouse_area(
+    let row = mouse_area(
         container(body)
             .id(App::settings_row_id(index))
             .width(Length::Fill)
@@ -145,8 +149,24 @@ fn settings_row<'a>(
                 ..Default::default()
             }),
     )
-    .on_enter(Message::SettingsCursor(index))
-    .into()
+    .on_enter(Message::SettingsCursor(index));
+    match toggle {
+        Some(toggle) => row.on_press(toggle).into(),
+        None => row.into(),
+    }
+}
+
+/// The message a switch row's switch sends; `None` for other rows.
+fn switch_toggle(row: SettingsRow) -> Option<Message> {
+    Some(match row {
+        SettingsRow::SoftSyntax => Message::ToggleSoftSyntax,
+        SettingsRow::Footer => Message::ToggleFooter,
+        SettingsRow::HiddenFiles => Message::ToggleHidden,
+        SettingsRow::MindmapAutocenter => Message::ToggleMindmapAutocenter,
+        SettingsRow::MindmapScrollPans => Message::ToggleMindmapScrollPans,
+        SettingsRow::AutoFocus => Message::ToggleAutoFocusOnNav,
+        _ => return None,
+    })
 }
 
 /// Label and one-line hint on the left, the control on the right.

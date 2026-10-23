@@ -177,6 +177,15 @@ pub(super) fn quick_slot_replace_key_message(key: &iced::keyboard::Key) -> Messa
     }
 }
 
+/// Esc closes the Quick Slots popover while it shows.
+pub(super) fn quick_slots_popover_key_message(
+    key: &iced::keyboard::Key,
+    shown: bool,
+) -> Option<Message> {
+    use iced::keyboard::{key::Named, Key};
+    (shown && matches!(key, Key::Named(Named::Escape))).then_some(Message::QuickSlotsPopover(false))
+}
+
 /// Keys while a context menu is open: Up and Down move the highlight,
 /// Enter chooses, Esc closes, and every other key is swallowed, as while a
 /// native menu tracks.
@@ -466,6 +475,22 @@ pub(super) fn reader_select_all_key(
         Key::Character("a") if cmd => Some(Message::SelectAllDocument),
         Key::Character("c") if cmd && select_all => Some(Message::CopyDocument),
         Key::Named(Named::Escape) if select_all => Some(Message::ClearSelectAll),
+        _ => None,
+    }
+}
+
+/// While the sidebar divider is dragged: pointer moves set the width and
+/// the left release ends the drag, wherever the pointer is. A release the
+/// window never saw (the next press, or the window losing focus) ends it
+/// too, so the divider never stays stuck to the pointer.
+pub(super) fn sidebar_drag_message(event: &iced::Event) -> Option<Message> {
+    use iced::mouse::{Button, Event};
+    match event {
+        iced::Event::Mouse(Event::CursorMoved { position }) => {
+            Some(Message::SidebarDragMove(position.x))
+        }
+        iced::Event::Mouse(Event::ButtonReleased(Button::Left) | Event::ButtonPressed(_))
+        | iced::Event::Window(iced::window::Event::Unfocused) => Some(Message::SidebarDragEnd),
         _ => None,
     }
 }

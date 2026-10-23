@@ -10,7 +10,7 @@ const IMAGE: &str = "https://example.com/pic.png";
 
 /// `a.md` in a workspace, open in the reader, with one element of each
 /// kind; the sidebar is closed so the reader has margins on both sides.
-fn fixture(tag: &str) -> (App, PathBuf) {
+pub(super) fn fixture(tag: &str) -> (App, PathBuf) {
     let dir = std::env::temp_dir().join(format!("rmdv-reader-menu-{tag}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(dir.join("docs")).expect("fixture dir");
@@ -42,7 +42,11 @@ fn fixture(tag: &str) -> (App, PathBuf) {
 }
 
 /// The bounds of the first top-level block that `pick` accepts.
-fn block_bounds(ui: &mut PointerUi, app: &App, pick: impl Fn(&Block) -> bool) -> Rectangle {
+pub(super) fn block_bounds(
+    ui: &mut PointerUi,
+    app: &App,
+    pick: impl Fn(&Block) -> bool,
+) -> Rectangle {
     let id = app
         .ast
         .iter()
@@ -63,7 +67,7 @@ fn block_bounds(ui: &mut PointerUi, app: &App, pick: impl Fn(&Block) -> bool) ->
     .0
 }
 
-fn paragraph(ui: &mut PointerUi, app: &App) -> Rectangle {
+pub(super) fn paragraph(ui: &mut PointerUi, app: &App) -> Rectangle {
     block_bounds(
         ui,
         app,
@@ -72,7 +76,7 @@ fn paragraph(ui: &mut PointerUi, app: &App) -> Rectangle {
 }
 
 /// A left drag inside the reader from `from` to `to`.
-fn drag(app: &mut App, ui: &mut PointerUi, from: Point, to: Point) {
+pub(super) fn drag(app: &mut App, ui: &mut PointerUi, from: Point, to: Point) {
     let _ = ui.move_to(app, from);
     let mut messages = ui
         .send(
@@ -98,7 +102,7 @@ fn drag(app: &mut App, ui: &mut PointerUi, from: Point, to: Point) {
 }
 
 /// The hit the reader reported for the last right press.
-fn hit(messages: &[Message]) -> ReaderHit {
+pub(super) fn hit(messages: &[Message]) -> ReaderHit {
     messages
         .iter()
         .find_map(|m| match m {

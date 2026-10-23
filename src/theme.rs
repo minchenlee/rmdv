@@ -858,6 +858,8 @@ pub mod shadow {
     };
     /// Dims the document behind a modal overlay.
     pub const SCRIM: Color = Color::from_rgba(0.0, 0.0, 0.0, 0.18);
+    /// The inner shade at a side where a wide table has more to scroll to.
+    pub const OVERFLOW_EDGE: Color = Color::from_rgba(0.0, 0.0, 0.0, 0.12);
 }
 
 pub fn palette_for(preset: ThemePreset) -> Palette {

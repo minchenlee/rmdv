@@ -168,6 +168,12 @@ impl HScrollProbe {
         covers(&self.rects, at)
     }
 
+    /// The horizontal scrollers found, in window coordinates.
+    #[cfg(test)]
+    pub(in crate::app) fn rects(&self) -> &[Rectangle] {
+        &self.rects
+    }
+
     fn offset(&self) -> Vector {
         self.offsets.last().copied().unwrap_or(Vector::ZERO)
     }

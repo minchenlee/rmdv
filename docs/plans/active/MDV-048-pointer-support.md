@@ -4,7 +4,7 @@ State: in progress
 Owner / accountable lead: gh-rmdv-orch
 Active writer: gh-rmdv-orch (one phase branch at a time)
 Created: 2026-10-22
-Updated: 2026-10-23
+Updated: 2026-10-24
 
 ## Outcome
 
@@ -83,6 +83,30 @@ Audit (read-only, 2026-10-22, `main@75b637c`, every item with file:line):
   row patch is the fallback if the owner sees a hitch.
 - Rename, New File, or New Folder chosen from the sidebar peek pins the
   sidebar open, as Keep Sidebar Open does, because the rename needs the tree.
+- P7 (2026-10-24): Quick Slots get a pointer entry: a toolbar button that
+  toggles the same rail as a click-pinned popover; the ⌘-hold display
+  stays.
+- P7: no document breadcrumb; the centered toolbar file name covers it.
+- P7: drag-out to Finder is deferred; it needs an `NSDraggingSource`
+  bridge.
+- P7: the Zen editor gets no drag auto-scroll or scrollbar in this phase.
+  Iced 0.14's `text_editor` reports a drag only while the pointer is inside
+  its bounds (`cursor.position_in(bounds)?`, `text_editor.rs:1311`, and
+  only for a single-click drag) and draws no scrollbar, so both need a
+  vendored `text_editor` or a wrapper that replays `Action::Scroll` and a
+  clamped `Action::Drag`; left for a later phase.
+- P7: the reader's drag auto-scroll ticks every 16 ms only while a
+  selection drag is past the viewport's top or bottom edge, by a quarter of
+  the overshoot per tick (2 to 60 px); a release anywhere stops it.
+- P7: CJK words come from the system dictionary through
+  `CFStringTokenizer`, so the split follows macOS (for example 中文 and
+  測試 are words, 分詞 may stay two). Keyboard word moves keep UAX #29.
+- P7: a block's copy button (code, math, diagram) confirms with a check
+  for 1.5 s instead of the "Copied" toast; menu copies keep the toast.
+  Reader blocks take no keyboard focus, so the button shows on hover
+  only.
+- P7: the reader scrollbar fades only in the reader; the sidebar, panel,
+  and table scrollbars keep the instant show and hide.
 
 ## Phases (one branch and PR each, stacked)
 
@@ -123,6 +147,12 @@ Per phase:
 - 2026-10-23: P5 done on `feat/pointer-p5` (stacked on P4): mind map "Scroll pans" setting (default off) and drag pan outside the canvas; rmdv image and diagram viewer (proportional zoom, pan, pinch, Fit/−/100%/+, double-click, click beside closes, sharper diagram raster); reader pinch and ⌘+scroll font size (coalesced, one prefs write per gesture); editor trackpad scroll at finger speed; macOS two-finger swipe Back/Forward through an AppKit scroll monitor (feel unverified headless); 7 review findings fixed; lib 807 passed, integration all passed.
 - 2026-10-23: P5 trial build: Release dry run 39951643772, notarized (PR #75).
 - 2026-10-24: P6 done on `feat/pointer-p6` (stacked on P5): shared in-app context menu; file tree menu with New File, New Folder, inline Rename and Move to Trash (macOS `NSFileManager`; other platforms show "not supported"); reader, Zen editor, mind map, outline, vault, finder and Quick Slot menus; tree row and sidebar divider double-click; middle click skipped (no target). 13 review findings: 12 fixed, 1 kept by decision (synchronous rescan). Trash tests clean up through a drop guard. lib 884 passed, integration all passed.
+
+- 2026-10-24: P7 reader selection on `feat/pointer-p7` (stacked on P6): a press in the margins, between blocks, or below the end starts a selection at the nearest text (I-beam there); drag past the viewport edge auto-scrolls and the selection follows across virtual window rebuilds; macOS double-click selects Chinese and Japanese dictionary words (`CFStringTokenizer`, vendored `iced_selection::word`); double/triple-click drags keep word/line granularity across blocks; Shift+click extends within and across blocks.
+- 2026-10-24: P7 reader affordances on `feat/pointer-p7`: hover-revealed copy buttons on code, math, and diagrams with a check after a copy (math click-anywhere copy removed), "Click to enlarge" on diagrams, read-only task checkboxes (not-allowed cursor, "Read-only"); reader scrollbar 150 ms fade (ticks only while fading), 6→10 px thumb on hover, 12 px hit area; wide-table edge shades. lib 909 passed, integration all passed.
+- 2026-10-24: P7 sidebar and chrome on `feat/pointer-p7`: the outline marks the section at the reader's top line (recomputed only when the top block changes) and follows it while the pointer is off the outline; sidebar divider hover line, width saved in prefs (lenient), drag below the minimum collapses and a re-open restores the width, a lost release ends the drag; a toolbar Quick Slots button pins the rail as a popover (outside press, Esc, or a choice closes it; unassignable empty slots look disabled); ghost buttons, sidebar tabs, and slot chips 28 px with pressed states, toast buttons answer hover and press, whole-row Settings switches; the footer pill cycles its statistic (saved), the shortcut sheet has an X, clickable rows, and the missing ⌘, ⌘⇧M ⌘Z j/k Space ←→ rows (checked against the palette), palette shortcuts are right-aligned key caps that typing does not match, and the palette, finder, and vault fields have clear buttons. lib 939 passed, integration all passed.
+- 2026-10-24: P7 review on `feat/pointer-p7`: 13 findings (9 distinct after duplicates), all fixed red-first: losing window focus stops the drag auto-scroll and drops the held press; a Shift press beside the text lets a copy button, image, or chevron take it first (a Shift press on text, links included, still extends); the outline scrolls to its mark when shown again and an outline or scrollbar strip removed under the pointer drops its hover (one check after every update); the pinned Quick Slots popover unpins whenever the rail may not show, and its padding takes presses (`opaque`); the wide-table shade draws in its own layer above the table (pixel test); the copy check is keyed by block, not by text; word drags keep the last four lines' segments and one `CFStringTokenizer` per thread (200 moves over a 1000-character Chinese line: 11.7 s before, under 0.1 s after). lib 949 passed, integration all passed.
+- 2026-10-24: P6 trial build: Release dry run 39991024040, notarized (PR #76). P7 verified by the orchestrator: lib 949 passed, integration all passed, release build, Linux title bar simulation 338 passed with the 1 expected macOS-only failure.
 
 ## Decision log
 

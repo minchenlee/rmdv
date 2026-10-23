@@ -385,3 +385,105 @@ pub(super) struct LinkPage {
     pub(super) vault_open: bool,
     pub(super) error: bool,
 }
+
+/// The reader scrollbar's visibility: it fades in when the reader scrolls
+/// or the pointer reaches its strip, stays while scrolling continues or
+/// the pointer rests there, and fades out after [`SCROLLER_FADE_MS`]. Ticks
+/// run only while it fades or waits to fade; a hidden or hovered bar needs
+/// none, so an idle reader does not redraw.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ScrollerFade {
+    /// When the current fade-in started (moved back while a fade-out
+    /// reverses, so the alpha continues from where it was).
+    shown_at: Option<std::time::Instant>,
+    /// The last scroll, or when the pointer left the strip.
+    active_at: Option<std::time::Instant>,
+    pub hovered: bool,
+}
+
+/// How long the reader scrollbar takes to fade in or out.
+pub const SCROLLER_FADE: std::time::Duration = std::time::Duration::from_millis(150);
+/// The tick while the scrollbar fades: one frame.
+pub const SCROLLER_FRAME: std::time::Duration = std::time::Duration::from_millis(16);
+/// The tick while the scrollbar waits to fade out.
+pub const SCROLLER_HOLD_TICK: std::time::Duration = std::time::Duration::from_millis(150);
+
+impl ScrollerFade {
+    fn hold() -> std::time::Duration {
+        std::time::Duration::from_millis(SCROLLER_FADE_MS)
+    }
+
+    /// How far the fade-in has come at `now`, 0 to 1.
+    fn faded_in(&self, now: std::time::Instant) -> f32 {
+        self.shown_at.map_or(0.0, |shown| {
+            (now.saturating_duration_since(shown).as_secs_f32() / SCROLLER_FADE.as_secs_f32())
+                .min(1.0)
+        })
+    }
+
+    /// How much of the fade-out is left at `now`, 1 to 0.
+    fn fade_out_left(&self, now: std::time::Instant) -> f32 {
+        if self.hovered {
+            return 1.0;
+        }
+        self.active_at.map_or(0.0, |active| {
+            let past = now
+                .saturating_duration_since(active)
+                .saturating_sub(Self::hold());
+            (1.0 - past.as_secs_f32() / SCROLLER_FADE.as_secs_f32()).max(0.0)
+        })
+    }
+
+    /// The scrollbar's opacity at `now`, 0 to 1.
+    pub fn alpha(&self, now: std::time::Instant) -> f32 {
+        self.faded_in(now).min(self.fade_out_left(now))
+    }
+
+    /// The reader scrolled at `now`.
+    pub fn poke(&mut self, now: std::time::Instant) {
+        // Start the fade-in where the alpha is, so a fade-out that the
+        // reader interrupts turns around instead of jumping.
+        let alpha = self.alpha(now);
+        self.shown_at = Some(now.checked_sub(SCROLLER_FADE.mul_f32(alpha)).unwrap_or(now));
+        self.active_at = Some(now);
+    }
+
+    /// The pointer entered or left the scrollbar's strip.
+    pub fn set_hovered(&mut self, hovered: bool, now: std::time::Instant) {
+        if hovered == self.hovered {
+            return;
+        }
+        // Entering shows the bar; leaving starts the wait before it fades.
+        self.poke(now);
+        self.hovered = hovered;
+    }
+
+    /// A tick at `now`: forgets a bar that has faded out.
+    pub fn tick(&mut self, now: std::time::Instant) {
+        if self.shown_at.is_some() && self.alpha(now) == 0.0 && !self.hovered {
+            self.shown_at = None;
+            self.active_at = None;
+        }
+    }
+
+    /// How often to tick at `now`, or `None` when nothing changes.
+    pub fn next_tick(&self, now: std::time::Instant) -> Option<std::time::Duration> {
+        self.shown_at?;
+        if self.faded_in(now) < 1.0 {
+            return Some(SCROLLER_FRAME);
+        }
+        if self.hovered {
+            return None;
+        }
+        let since = self.active_at.map_or(std::time::Duration::MAX, |active| {
+            now.saturating_duration_since(active)
+        });
+        if since < Self::hold() {
+            Some(SCROLLER_HOLD_TICK)
+        } else {
+            // Fading out, or faded out and waiting for the tick that
+            // forgets it.
+            Some(SCROLLER_FRAME)
+        }
+    }
+}

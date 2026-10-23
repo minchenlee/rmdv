@@ -35,7 +35,7 @@ fn fixture(tag: &str) -> (App, PathBuf) {
 /// Runs a task the way the runtime does: applies the messages it yields
 /// (and theirs) and runs its widget operations on `ui`. A timer that does
 /// not fire within a short wait (a toast's expiry) is dropped.
-fn run(app: &mut App, ui: &mut PointerUi, task: Task<Message>) {
+pub(super) fn run(app: &mut App, ui: &mut PointerUi, task: Task<Message>) {
     use iced::futures::StreamExt;
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -74,7 +74,7 @@ fn run(app: &mut App, ui: &mut PointerUi, task: Task<Message>) {
     }
 }
 
-fn send(app: &mut App, ui: &mut PointerUi, message: Message) {
+pub(super) fn send(app: &mut App, ui: &mut PointerUi, message: Message) {
     let task = app.update(message);
     run(app, ui, task);
 }
@@ -87,7 +87,7 @@ fn open(app: &mut App, ui: &mut PointerUi, path: &Path) {
 
 /// A few frames: the reader reports its viewport and a pending scroll
 /// restore lands, as it does after the runtime redraws.
-fn settle(app: &mut App, ui: &mut PointerUi) {
+pub(super) fn settle(app: &mut App, ui: &mut PointerUi) {
     for _ in 0..4 {
         let (messages, _) = ui.send(
             app,

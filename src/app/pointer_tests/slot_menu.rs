@@ -13,7 +13,7 @@ fn labels(app: &App) -> Vec<String> {
         .collect()
 }
 
-fn occupy(app: &mut App, index: usize, relative_path: &str) {
+pub(super) fn occupy(app: &mut App, index: usize, relative_path: &str) {
     assert!(app.quick_slots.set(
         index,
         crate::quick_slots::QuickSlot {
@@ -25,7 +25,7 @@ fn occupy(app: &mut App, index: usize, relative_path: &str) {
 
 /// The tree fixture with `alpha.md` open, `alpha.md` in slot 1 and
 /// `beta.md` in slot 3, and the rail shown.
-fn slots_app(tag: &str) -> (App, PathBuf) {
+pub(super) fn slots_app(tag: &str) -> (App, PathBuf) {
     let (mut app, dir) = tree_fixture(tag);
     let _ = app.update(Message::FileLoaded(Ok((
         dir.join("alpha.md"),

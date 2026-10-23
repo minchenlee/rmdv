@@ -65,6 +65,12 @@ version = "0.14"
 [dependencies.unicode-segmentation]
 version = "1.0"
 
+# rmdv: Chinese and Japanese word boundaries from `CFStringTokenizer`.
+[target.'cfg(target_os = "macos")'.dependencies.objc2-core-foundation]
+version = "0.3"
+default-features = false
+features = ["std", "CFString", "CFStringTokenizer", "CFLocale"]
+
 [lints.clippy]
 default_trait_access = "deny"
 filter_map_next = "deny"

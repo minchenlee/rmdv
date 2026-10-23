@@ -25,6 +25,8 @@ pub enum Message {
     WelcomeNeedsFile,
     CopyFilePath,
     VaultQueryChanged(String),
+    /// The vault page's clear button: empty the query and focus the field.
+    VaultQueryClear,
     /// Run the search for the current query (Enter when the query has changed).
     VaultRunSearch,
     /// Enter in the vault page: search if the query was edited, else open the hit.
@@ -51,7 +53,13 @@ pub enum Message {
     /// Apply a measured absolute scroll offset to the vault results page.
     VaultScrollTo(f32),
     ToggleShortcuts,
+    /// A shortcut-sheet row click: close the sheet, then run the row's
+    /// action.
+    ShortcutSheetRun(Box<Message>),
     /// Activate the slot addressed by its zero-based rail index.
+    /// Pin (true) or close (false) the Quick Slots popover, the toolbar's
+    /// pointer entry to the rail.
+    QuickSlotsPopover(bool),
     QuickSlotActivate(usize),
     /// Assign the current reading context to the slot. A slot that holds a
     /// different file asks for confirmation first.
@@ -118,6 +126,9 @@ pub enum Message {
     /// Picker chose a file: open it AND select its parent as workspace.
     PickerOpenFile(PathBuf),
     OverlayQueryChanged(String),
+    /// An overlay query field's clear button: empty the query and focus
+    /// the field.
+    OverlayQueryClear,
     OverlayMove(isize),
     OverlayConfirm,
     /// Pointer click on a palette or theme row: select it, then confirm
@@ -194,6 +205,8 @@ pub enum Message {
     TreeActivate,
     OutlineMove(isize),
     OutlineActivate,
+    /// The pointer entered (true) or left (false) the outline list.
+    OutlineHovered(bool),
     ScrollToLine(u32),
     TreeToggleAtCursor,
     CopyTreePath,
@@ -219,6 +232,11 @@ pub enum Message {
     /// Move this file or folder to the system Trash.
     TreeTrash(PathBuf),
     ScrollBy(f32),
+    /// A reader selection drag is past the top (negative) or bottom edge
+    /// of the viewport by this many pixels per tick, or back inside.
+    ReaderAutoScroll(Option<f32>),
+    /// One step of [`Message::ReaderAutoScroll`].
+    ReaderAutoScrollTick,
     ScrollToTop,
     ScrollToBottom,
     ToggleSearch,
@@ -237,7 +255,18 @@ pub enum Message {
     BodyScrolled(iced::widget::scrollable::Viewport),
     TableScrolled,
     ScrollerTick,
+    /// The pointer entered (`true`) or left the reader scrollbar's strip
+    /// at the right edge; the scrollbar widens while it is there.
+    ReaderScrollbarHover(bool),
     CopyCode(String),
+    /// A block's copy button: copy its source, then show a check on the
+    /// button for a moment instead of a toast. The key
+    /// ([`crate::render::copy_key`]) tells the check which block it is on,
+    /// so blocks with the same source do not all show it.
+    CopyBlockSource(String, usize),
+    /// The copy button's check timer, by copy number; a later copy keeps
+    /// its own check.
+    CopyFlashEnd(u64),
     SidebarDragStart,
     SidebarDragMove(f32),
     SidebarDragEnd,
@@ -287,6 +316,8 @@ pub enum Message {
     /// Settings → Toolbar: shown on hover or always.
     SetToolbarMode(crate::prefs::ToolbarMode),
     ToggleFooter,
+    /// A click on the status footer pill shows the next statistic.
+    FooterCycleStat,
     ToggleSoftSyntax,
     /// Window glass: off → sidebar → whole window (macOS).
     CycleGlass,
