@@ -211,6 +211,9 @@ pub struct FullMindmapState {
     pub panel_step: usize,
     pub panel_drag: Option<(f32, Option<f32>)>,
     pub pending_open: Option<PendingFullMindmapOpen>,
+    /// The heading a preview link targets, and the file it opens. It
+    /// applies only when that open is accepted; any later open clears it.
+    pub link_nav: Option<(PathBuf, PendingNav)>,
     pub pending_preview_settle: Option<PendingFullMindmapPreviewSettle>,
     pub pending_preview: Option<PendingFullMindmapPreview>,
     pub pending_workspace_load: Option<PendingFullMindmapWorkspaceLoad>,

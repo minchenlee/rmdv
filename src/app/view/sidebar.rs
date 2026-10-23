@@ -410,32 +410,50 @@ pub(in crate::app) fn outline_row<'a>(
         .into()
 }
 
-pub(in crate::app) fn mindmap_panel_resize_handle<'a>(fill: Color) -> Element<'a, Message> {
-    mouse_area(
-        container(
-            Space::new()
-                .width(Length::Fixed(crate::mindmap::PANEL_HANDLE_W))
-                .height(Length::Fill),
-        )
-        .style(move |_| container::Style {
-            background: Some(fill.into()),
-            ..Default::default()
-        })
-        .height(Length::Fill),
-    )
-    .interaction(iced::mouse::Interaction::ResizingHorizontally)
-    .on_press(Message::MindmapPanelDragStart(0.0))
-    .on_release(Message::MindmapPanelDragEnd)
+/// A mind map side panel with its close (X) button in the top-right
+/// corner. The button hides the panel as ⌘⌥B does; the selection stays.
+pub(in crate::app) fn with_panel_close<'a>(
+    panel: Element<'a, Message>,
+    on_close: Message,
+    pal: Palette,
+) -> Element<'a, Message> {
+    let close = action_tip(
+        ghost_lu(ic::X, pal).on_press(on_close),
+        "Hide Panel",
+        Some("⌘⌥B"),
+        Position::Left,
+        pal,
+    );
+    stack![
+        panel,
+        container(close)
+            .width(Length::Fill)
+            .padding(6)
+            .align_x(iced::alignment::Horizontal::Right),
+    ]
     .into()
 }
 
-pub(in crate::app) fn full_mindmap_panel_resize_handle<'a>(fill: Color) -> Element<'a, Message> {
-    mouse_area(
+/// The divider between a mind map canvas and its panel: a
+/// [`crate::mindmap::PANEL_HANDLE_W`]-wide grab area with the resize cursor
+/// that shows a hairline while the pointer is over it (Iced's `hover`
+/// redraws only when the pointer enters or leaves). A double click resets
+/// the panel to its default width.
+fn panel_divider<'a>(
+    id: &'static str,
+    fill: Color,
+    pal: Palette,
+    press: Message,
+    release: Message,
+    reset: Message,
+) -> Element<'a, Message> {
+    let area = mouse_area(
         container(
             Space::new()
                 .width(Length::Fixed(crate::mindmap::PANEL_HANDLE_W))
                 .height(Length::Fill),
         )
+        .id(iced::widget::Id::new(id))
         .style(move |_| container::Style {
             background: Some(fill.into()),
             ..Default::default()
@@ -443,9 +461,49 @@ pub(in crate::app) fn full_mindmap_panel_resize_handle<'a>(fill: Color) -> Eleme
         .height(Length::Fill),
     )
     .interaction(iced::mouse::Interaction::ResizingHorizontally)
-    .on_press(Message::FullMindmapPanelDragStart(0.0))
-    .on_release(Message::FullMindmapPanelDragEnd)
-    .into()
+    .on_press(press)
+    .on_release(release)
+    .on_double_click(reset);
+    let hairline = container(
+        container(Space::new().width(Length::Fixed(1.0)).height(Length::Fill)).style(move |_| {
+            container::Style {
+                background: Some(pal.subtle.into()),
+                ..Default::default()
+            }
+        }),
+    )
+    .width(Length::Fixed(crate::mindmap::PANEL_HANDLE_W))
+    .height(Length::Fill)
+    .center_x(Length::Fixed(crate::mindmap::PANEL_HANDLE_W));
+    iced::widget::hover(area, hairline)
+}
+
+pub(in crate::app) fn mindmap_panel_resize_handle<'a>(
+    fill: Color,
+    pal: Palette,
+) -> Element<'a, Message> {
+    panel_divider(
+        "mindmap-panel-divider",
+        fill,
+        pal,
+        Message::MindmapPanelDragStart(0.0),
+        Message::MindmapPanelDragEnd,
+        Message::MindmapPanelResetWidth,
+    )
+}
+
+pub(in crate::app) fn full_mindmap_panel_resize_handle<'a>(
+    fill: Color,
+    pal: Palette,
+) -> Element<'a, Message> {
+    panel_divider(
+        "full-mindmap-panel-divider",
+        fill,
+        pal,
+        Message::FullMindmapPanelDragStart(0.0),
+        Message::FullMindmapPanelDragEnd,
+        Message::FullMindmapPanelResetWidth,
+    )
 }
 
 pub(in crate::app) fn sidebar_resize_handle<'a>(pal: Palette) -> Element<'a, Message> {

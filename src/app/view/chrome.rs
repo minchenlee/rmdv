@@ -848,6 +848,138 @@ pub(in crate::app) fn floating_mindmap_hint<'a>(
         .into()
 }
 
+/// About how wide the mind map island is with its hints: four zoom
+/// buttons with the divider and padding, then each hint pill's key and
+/// label at 11 px. Generous, so the hints go before the buttons clip.
+fn mindmap_controls_width(items: &[(&str, &str)]) -> f32 {
+    const BUTTONS: f32 = 190.0;
+    const CHAR: f32 = 7.5;
+    // Key padding, the gap to the label, and the gap to the next pill.
+    const PILL: f32 = 12.0 + 6.0 + 12.0;
+    let pills: f32 = items
+        .iter()
+        .map(|(key, label)| (key.chars().count() + label.chars().count()) as f32 * CHAR + PILL)
+        .sum();
+    BUTTONS + 20.0 + pills
+}
+
+/// The mind map's floating island: its keyboard hints, then Zoom to Fit,
+/// Zoom Out, 100%, and Zoom In. Only the buttons take pointer input; the
+/// hints and the rest of the layer leave the canvas its events. A canvas
+/// too narrow for the hints shows the buttons alone, so they never clip.
+pub(in crate::app) fn floating_mindmap_controls<'a>(
+    items: &[(&'a str, &'a str)],
+    pal: Palette,
+) -> Element<'a, Message> {
+    let items = items.to_vec();
+    let full_width = mindmap_controls_width(&items);
+    iced::widget::responsive(move |size| {
+        mindmap_controls_island(
+            if size.width >= full_width {
+                &items
+            } else {
+                &[]
+            },
+            pal,
+        )
+    })
+    .into()
+}
+
+fn mindmap_controls_island<'a>(items: &[(&'a str, &'a str)], pal: Palette) -> Element<'a, Message> {
+    use crate::mindmap::ZoomCommand;
+    let zoom = |content: Element<'a, Message>, command: ZoomCommand| {
+        button(content)
+            .padding(Padding::from([4, 8]))
+            .style(move |_, status| button::Style {
+                background: match status {
+                    button::Status::Hovered => Some(Background::Color(pal.hover())),
+                    button::Status::Pressed => Some(Background::Color(pal.active())),
+                    _ => None,
+                },
+                text_color: pal.muted,
+                border: Border {
+                    radius: theme::radius::PILL.into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            })
+            .on_press(Message::MindmapZoom(command))
+    };
+    let glyph = |code: char| -> Element<'a, Message> { icon::glyph(code, 14.0, pal.muted).into() };
+    let buttons = irow![
+        action_tip(
+            zoom(glyph(ic::SCAN), ZoomCommand::Fit),
+            "Zoom to Fit",
+            None,
+            Position::Top,
+            pal,
+        ),
+        action_tip(
+            zoom(glyph(ic::MINUS), ZoomCommand::Out),
+            "Zoom Out",
+            Some("−"),
+            Position::Top,
+            pal,
+        ),
+        action_tip(
+            zoom(
+                text("100%").size(11).color(pal.muted).into(),
+                ZoomCommand::Reset
+            ),
+            "Actual Size",
+            Some("0"),
+            Position::Top,
+            pal,
+        ),
+        action_tip(
+            zoom(glyph(ic::PLUS), ZoomCommand::In),
+            "Zoom In",
+            Some("="),
+            Position::Top,
+            pal,
+        ),
+    ]
+    .spacing(2)
+    .align_y(iced::Alignment::Center);
+    let divider = container(Space::new().width(1).height(16)).style(move |_| container::Style {
+        background: Some(pal.border().into()),
+        ..Default::default()
+    });
+    let mut content = irow![].spacing(6).align_y(iced::Alignment::Center);
+    if !items.is_empty() {
+        content = content
+            .push(container(hint_pills(items, pal)).padding(Padding::from([0, 10])))
+            .push(divider);
+    }
+    let island = container(content.push(buttons))
+        .padding(Padding::from([4, 6]))
+        .clip(true)
+        .style(move |_| container::Style {
+            background: Some(pal.popover().into()),
+            border: Border {
+                color: pal.border(),
+                width: 1.0,
+                radius: theme::radius::MD.into(),
+            },
+            shadow: theme::shadow::HINT,
+            ..Default::default()
+        });
+
+    container(island)
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .padding(Padding {
+            top: 0.0,
+            right: 0.0,
+            bottom: 16.0,
+            left: 0.0,
+        })
+        .align_x(iced::alignment::Horizontal::Center)
+        .align_y(iced::alignment::Vertical::Bottom)
+        .into()
+}
+
 /// The frame shown while files are dragged over the window: a thin accent
 /// border around the window and a centered "Open in rmdv" label. It draws
 /// only; the pointer passes through it.

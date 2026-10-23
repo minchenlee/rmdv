@@ -51,6 +51,13 @@ Audit (read-only, 2026-10-22, `main@75b637c`, every item with file:line):
 - While the sidebar is hidden, the pointer at the left window edge reveals it
   over the content; it hides after the pointer leaves it.
 - These go on `feat/pointer-polish` (stacked on P3); P4 is rebased on it.
+- 2026-10-23 (P4 decisions):
+  - The Full Mindmap node tooltip keeps the full path.
+  - A click on the document root shows the document from the top in the
+    panel, and its chevron folds every heading. Keep both.
+  - A double click on a document mind map heading node opens the Reader at
+    that heading (the root: the Reader from the top). The JSON/YAML data map
+    and Full Mindmap keep their own double-click behavior.
 
 ## Orchestrator decisions (reversible; listed for owner review)
 
@@ -101,6 +108,9 @@ Per phase:
 - 2026-10-23: P2 done on `feat/pointer-p2` (PR #71, stacked on #70): 11 items, 7 distinct review findings fixed red-first; lib 648 passed, integration 726 passed. Trial build: Release dry run 39842358643. P3 started on `feat/pointer-p3`.
 - 2026-10-23: P2 CI fix `eff6c56` (opaque toolbar under a native title bar; runner-speed-proof double-click tests); P2 trial build: Release dry run 39845309025, notarized.
 - 2026-10-23: P3 done on `feat/pointer-p3` (stacked on P2): history (100 stops, scroll restore, dirty guard), mouse side buttons, `⌘[` `⌘]`, toolbar chevrons, link hover pill, in-app link targets and missing-file toast, linked images; 9 review findings fixed; lib 692 passed. P4 next.
+- 2026-10-23: P3 CI fix `c28498c` (history harness ignores toast expiry); P3 trial build: Release dry run 39874226453, notarized.
+- 2026-10-23: polish done on `feat/pointer-polish` (stacked on P3): owner feedback from the P3 trial (picker double-click, toolbar Always by default, icon view switch, window-centered file name, left-edge sidebar peek); 3 review findings fixed; lib 718 passed.
+- 2026-10-23: P4 done on `feat/pointer-p4` (rebased on polish): mind map pointer model (act on release, click selects, chevron folds, no jump, double-click, hover, zoom buttons, pan clamp, panel close, divider, root node, Full Mindmap preview actions, document double-click to the Reader); 10 review findings fixed; lib 732 passed before the rebase.
 
 ## Decision log
 

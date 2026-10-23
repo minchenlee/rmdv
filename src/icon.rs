@@ -55,6 +55,11 @@ pub mod ic {
     pub const PENCIL_LINE: char = '\u{e4f0}';
     /// Lucide "git-fork" — the document Mind Map view.
     pub const GIT_FORK: char = '\u{e28d}';
+    /// Lucide "plus" / "minus" — mind map Zoom In / Zoom Out.
+    pub const PLUS: char = '\u{e13d}';
+    pub const MINUS: char = '\u{e11c}';
+    /// Lucide "scan" — mind map Zoom to Fit.
+    pub const SCAN: char = '\u{e257}';
     /// Lucide "panel-left-open" — show the left sidebar.
     pub const PANEL_LEFT_OPEN: char = '\u{e21d}';
 }

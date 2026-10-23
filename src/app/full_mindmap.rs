@@ -25,6 +25,7 @@ impl App {
             panel_step: 0,
             panel_drag: None,
             pending_open: None,
+            link_nav: None,
             pending_preview_settle: None,
             pending_preview: None,
             pending_workspace_load: None,
@@ -952,6 +953,17 @@ impl App {
     /// it, and its error has a navigator-local home instead of `App::error`.
     pub(super) fn begin_full_mindmap_open(&mut self, path: PathBuf) -> Task<Message> {
         self.cancel_refresh_tracking();
+        // A preview link's heading belongs to an open of that link's file
+        // alone (a hidden-filter refresh reopens it through here).
+        if let Some(full) = self.full_mindmap.as_mut() {
+            if full
+                .link_nav
+                .as_ref()
+                .is_some_and(|(target, _)| *target != canonicalize_existing_path(path.clone()))
+            {
+                full.link_nav = None;
+            }
+        }
         if let Some(blocked) = self.block_file_open_if_dirty(&path) {
             return blocked;
         }

@@ -258,8 +258,14 @@ pub enum Message {
     /// A macOS magnification delta from the native event bridge. The shared
     /// canvas consumes the cumulative stream on its next redraw.
     MindmapNativePinch(f32),
+    /// A mind map zoom button: Fit, −, 100%, or +. It drives the canvas on
+    /// screen (the document mind map or Full Mindmap).
+    MindmapZoom(crate::mindmap::ZoomCommand),
     MindmapToggleNode(crate::ast::BlockId),
     MindmapSelectLeaf(crate::ast::BlockId),
+    /// A double click on a document mind map node: read that heading in
+    /// the Reader, or the document from its top for the root.
+    MindmapActivateNode(crate::ast::BlockId),
     MindmapDeselect,
     MindmapNavigate(MindmapDir),
     MindmapPanelSettle(u64),
@@ -267,6 +273,8 @@ pub enum Message {
     MindmapPanelDragStart(f32),
     MindmapPanelDragMove(f32),
     MindmapPanelDragEnd,
+    /// A double click on the panel divider: back to the default width.
+    MindmapPanelResetWidth,
     ToggleMindmapAutocenter,
     ToggleMindmapPanel,
     MindmapCyclePanelWidth,
@@ -292,6 +300,10 @@ pub enum Message {
     ExitFullMindmap,
     FullMindmapToggleNode(WorkspaceNodeId),
     FullMindmapSelectNode(WorkspaceNodeId),
+    /// A pointer click on a node: select it and show the panel.
+    FullMindmapPointerSelect(WorkspaceNodeId),
+    /// A double click on a node: select it, then do what Enter does.
+    FullMindmapActivateNode(WorkspaceNodeId),
     FullMindmapDeselect,
     FullMindmapNavigate(MindmapDir),
     FullMindmapDiveWorkspace(WorkspaceNodeId),
@@ -308,9 +320,16 @@ pub enum Message {
     FullMindmapPanelDragStart(f32),
     FullMindmapPanelDragMove(f32),
     FullMindmapPanelDragEnd,
+    FullMindmapPanelResetWidth,
     FullMindmapFileLoaded {
         request: PendingFullMindmapOpen,
         result: Result<(PathBuf, String), String>,
+    },
+    /// A link clicked in the Full Mindmap preview. `base` is the previewed
+    /// file, which a relative link resolves from.
+    FullMindmapPreviewLink {
+        base: std::path::PathBuf,
+        url: String,
     },
     FullMindmapPreviewSettle {
         request: PendingFullMindmapPreviewSettle,

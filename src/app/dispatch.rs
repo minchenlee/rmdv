@@ -1060,6 +1060,84 @@ impl App {
                 }
             }
             Message::FullMindmapSelectNode(id) => self.select_full_mindmap_node(id),
+            Message::FullMindmapPointerSelect(id) => {
+                // "More… (N left)" is a button: one click shows the next page.
+                let more = self
+                    .full_mindmap_graph()
+                    .and_then(|graph| graph.node(&id).map(|node| node.kind.clone()))
+                    == Some(WorkspaceNodeKind::More);
+                if more {
+                    return self.update(Message::FullMindmapShowMore(id.path().to_path_buf()));
+                }
+                // A click shows what it selected, as a document mind map
+                // click does. Keyboard selection leaves the panel as it is.
+                if let Some(full) = self.full_mindmap.as_mut() {
+                    full.panel_open = true;
+                }
+                self.select_full_mindmap_node(id)
+            }
+            Message::FullMindmapActivateNode(id) => {
+                // The first click of the pair normally selected the node
+                // already; select it here if it did not, so Enter's action
+                // runs on the node under the pointer.
+                let selected = self
+                    .full_mindmap
+                    .as_ref()
+                    .is_some_and(|full| full.selected.as_ref() == Some(&id));
+                let select = if selected {
+                    Task::none()
+                } else {
+                    self.select_full_mindmap_node(id)
+                };
+                Task::batch([select, self.update(Message::FullMindmapActivate)])
+            }
+            Message::FullMindmapPreviewLink { base, url } => {
+                // A link in the preview goes where it would from the
+                // previewed file: in-app files open as Enter on a file
+                // node does, the rest as reader links do.
+                let (target, fragment) = match url.split_once('#') {
+                    Some((t, f)) => (t, Some(f)),
+                    None => (url.as_str(), None),
+                };
+                if !target.is_empty() && is_external_link(target) {
+                    let background = cfg!(target_os = "macos") && self.quick_slots_modifier_held;
+                    self.open_externally(url, background);
+                    return Task::none();
+                }
+                let path = if target.is_empty() {
+                    Some(base.clone())
+                } else {
+                    resolve_image_path(target, Some(base.as_path()))
+                };
+                let Some(path) = path else {
+                    return Task::none();
+                };
+                if !path.exists() {
+                    let name = path
+                        .file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_else(|| target.to_string());
+                    return self.show_toast(format!("File not found: {name}"));
+                }
+                if link_opens_in_app(&path) && path.is_file() {
+                    let open = self.update(Message::OpenFileFinderPath(path.clone()));
+                    // The heading waits on the navigator until this open is
+                    // accepted, so a blocked, failed, or superseded open
+                    // cannot move a later document.
+                    if let (Some(fragment), Some(full)) = (fragment, self.full_mindmap.as_mut()) {
+                        full.link_nav = Some((
+                            canonicalize_existing_path(path),
+                            PendingNav {
+                                fragment: Some(fragment.to_string()),
+                                ..Default::default()
+                            },
+                        ));
+                    }
+                    return open;
+                }
+                self.open_externally(path.to_string_lossy().into_owned(), false);
+                Task::none()
+            }
             Message::FullMindmapDeselect => {
                 let checkpoint = self.checkpoint_active_quick_slot();
                 self.invalidate_pending_quick_slot_restore();
@@ -1316,8 +1394,12 @@ impl App {
                         match anchor {
                             None => full.panel_drag = Some((origin, Some(cursor_x))),
                             Some(anchor) => {
-                                full.panel_width =
-                                    mindmap_panel_width_for_drag(origin, anchor, cursor_x);
+                                full.panel_width = mindmap_panel_width_for_drag(
+                                    origin,
+                                    anchor,
+                                    cursor_x,
+                                    self.window_size,
+                                );
                             }
                         }
                     }
@@ -1369,6 +1451,14 @@ impl App {
                         // request was accepted preserves its dirty safety.
                         self.cancel_full_mindmap_verification();
                         self.pending_ipc_file_open = None;
+                        if let Some((_, nav)) = self
+                            .full_mindmap
+                            .as_mut()
+                            .and_then(|full| full.link_nav.take())
+                            .filter(|(target, _)| *target == request.path)
+                        {
+                            self.pending_nav = Some(nav);
+                        }
                         self.full_mindmap = None;
                         // Full Mindmap file activation always hands the file
                         // back to the document mindmap, whose normal load path
@@ -1876,11 +1966,61 @@ impl App {
                 self.mindmap_panel_open = true;
                 Task::none()
             }
+            Message::MindmapActivateNode(id) => {
+                // A double click on a heading reads it in the Reader, the
+                // way an outline row jumps to it; the root reads the
+                // document from its top.
+                if self.view_mode != ViewMode::Mindmap || self.is_data_doc {
+                    return Task::none();
+                }
+                // Resolve the heading block itself. A line lookup could land
+                // on another block that starts on the same line.
+                let heading = if id == crate::mindmap::DOC_ROOT {
+                    None
+                } else {
+                    let Some(idx) = self.ast.iter().position(|(block, node)| {
+                        *block == id && matches!(node, Block::Heading { .. })
+                    }) else {
+                        return Task::none();
+                    };
+                    Some(idx)
+                };
+                self.reader_select_all = false;
+                self.mindmap_panel_drag = None;
+                // Leaving the mind map is a stop: Back returns to it, as
+                // after a jump to a #fragment.
+                self.record_history();
+                // The jump replaces any scroll restore still waiting for the
+                // Reader's first viewport report (a Quick Slot or a Back
+                // stop); otherwise that report would scroll away from it.
+                self.quick_slot_body_restore = None;
+                self.quick_slot_preview_restore = None;
+                self.history.arriving = None;
+                let jump = match heading {
+                    Some(idx) => self.scroll_to_block_top(idx),
+                    None => {
+                        self.view_mode = ViewMode::Rendered;
+                        Task::done(Message::ScrollToTop)
+                    }
+                };
+                let checkpoint = self.checkpoint_active_quick_slot();
+                Task::batch([checkpoint, jump])
+            }
+            Message::MindmapZoom(command) => {
+                // The canvas applies the request on the redraw this
+                // message causes; see `crate::mindmap::ZoomRequest`.
+                if self.full_mindmap.is_some() {
+                    self.full_mindmap_zoom_request = self.full_mindmap_zoom_request.next(command);
+                } else {
+                    self.mindmap_zoom_request = self.mindmap_zoom_request.next(command);
+                }
+                Task::none()
+            }
             Message::MindmapDeselect => {
+                // A click on empty canvas clears the selection; the panel
+                // stays open until its X or ⌘⌥B hides it.
                 self.mindmap_selected = None;
                 self.mindmap_panel_shown = None;
-                self.mindmap_panel_open = false;
-                self.mindmap_panel_drag = None;
                 Task::none()
             }
             Message::MindmapNavigate(dir) => {
@@ -1908,13 +2048,17 @@ impl App {
                     }
                     return Task::none();
                 };
-                // The document root is represented by an unselectable node
-                // (`id == None`). Left at that boundary (including the
-                // no-selection/root semantic above) hands navigation to the
-                // current file's Full Mindmap workspace.
-                if dir == MindmapDir::Left
-                    && parents[cur_idx].map_or(true, |parent| nodes[parent].id.is_none())
-                {
+                // The document root (`DOC_ROOT`) is the boundary. Left from
+                // it, or from a top heading (including the no-selection
+                // semantic above), hands navigation to the current file's
+                // Full Mindmap workspace; Left never selects the root. A
+                // pointer click is the only way to select the root.
+                let is_doc_root = |idx: usize| {
+                    nodes[idx]
+                        .id
+                        .map_or(true, |id| id == crate::mindmap::DOC_ROOT)
+                };
+                if dir == MindmapDir::Left && parents[cur_idx].map_or(true, is_doc_root) {
                     return self.enter_full_mindmap_for_current_file();
                 }
                 let next_idx: Option<usize> = match dir {
@@ -1934,7 +2078,7 @@ impl App {
                             _ => unreachable!(),
                         }
                     })(),
-                    MindmapDir::Left => parents[cur_idx].filter(|&p| nodes[p].id.is_some()),
+                    MindmapDir::Left => parents[cur_idx].filter(|&p| !is_doc_root(p)),
                     MindmapDir::Right => {
                         let n = &nodes[cur_idx];
                         if !n.children.is_empty() {
@@ -2130,12 +2274,33 @@ impl App {
                             self.mindmap_panel_drag = Some((orig_w, Some(cursor_x)));
                         }
                         Some(ax) => {
-                            self.mindmap_panel_width =
-                                mindmap_panel_width_for_drag(orig_w, ax, cursor_x);
+                            self.mindmap_panel_width = mindmap_panel_width_for_drag(
+                                orig_w,
+                                ax,
+                                cursor_x,
+                                self.window_size,
+                            );
                         }
                     }
                 }
                 Task::none()
+            }
+            Message::MindmapPanelResetWidth => {
+                self.mindmap_panel_width = MIND_PANEL_DEFAULT;
+                self.mindmap_panel_step = 0;
+                // The double click's own press started a drag; the button is
+                // still down, so end it before jitter drags the width back.
+                self.mindmap_panel_drag = None;
+                Task::none()
+            }
+            Message::FullMindmapPanelResetWidth => {
+                if let Some(full) = self.full_mindmap.as_mut() {
+                    full.panel_width = MIND_PANEL_DEFAULT;
+                    full.panel_step = 0;
+                    // As above: end the drag the same press started.
+                    full.panel_drag = None;
+                }
+                self.refresh_full_mindmap_preview_heights()
             }
             Message::MindmapPanelDragEnd => {
                 self.mindmap_panel_drag = None;

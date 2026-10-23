@@ -12,7 +12,8 @@ pub const NODE_H: f32 = 36.0;
 pub const X_GAP: f32 = 60.0;
 pub const Y_GAP: f32 = 12.0;
 pub const PAD: f32 = 32.0;
-pub const PANEL_HANDLE_W: f32 = 5.0;
+/// Width of the canvas-to-panel divider: its whole width is the grab area.
+pub const PANEL_HANDLE_W: f32 = 9.0;
 const FONT_SIZE: f32 = 14.0;
 // Hard cap to bound the truncate scan on pathological inputs. The pixel
 // budget below will usually cut earlier; this is just a safety lid.
@@ -24,6 +25,61 @@ const ZOOM_MAX: f32 = 4.0;
 const KEYBOARD_ZOOM_FACTOR: f32 = 1.25;
 const ANIM_DURATION: Duration = Duration::from_millis(220);
 const ZOOM_ANIM_DURATION: Duration = Duration::from_millis(140);
+/// How far (screen px) the pointer may move between press and release and
+/// still count as a click. Beyond it the press becomes a pan.
+const CLICK_SLOP: f32 = 4.0;
+/// Two clicks on one node within this interval are a double click. It
+/// matches Iced's own `mouse::Click`, which the reader uses.
+const DOUBLE_CLICK: Duration = Duration::from_millis(300);
+/// World distance from a branch node's right edge to its chevron center.
+const CHEVRON_INSET: f32 = 12.0;
+/// World half-size of the drawn chevron.
+const CHEVRON_HALF: f32 = 4.0;
+/// Side of the chevron's square hit zone: world units, but never smaller
+/// than `CHEVRON_HIT_MIN` screen px, so it stays clickable zoomed out.
+const CHEVRON_HIT: f32 = 24.0;
+const CHEVRON_HIT_MIN: f32 = 16.0;
+/// Screen px of the map that a drag always leaves inside the canvas, so the
+/// content cannot be thrown fully off-screen.
+const PAN_KEEP_VISIBLE: f32 = 48.0;
+/// Screen px at the bottom of the canvas that Zoom to Fit leaves free for
+/// the floating hint and zoom buttons.
+const FIT_BOTTOM_INSET: f32 = 56.0;
+
+/// What a mind map zoom button asks the canvas to do.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ZoomCommand {
+    /// Show the whole map (never above 100%).
+    Fit,
+    In,
+    Out,
+    /// Back to 100%.
+    Reset,
+}
+
+/// The document mind map's root node: the document itself. It is
+/// selectable and foldable like a heading. The parser derives block ids
+/// from a hash, so a real block never takes this value in practice.
+pub const DOC_ROOT: BlockId = BlockId(u64::MAX);
+
+/// The latest zoom button press. The canvas keeps its own zoom, so the app
+/// bumps `generation` on each press and the canvas applies a request once,
+/// on the next redraw. A canvas that first sees a request takes it as
+/// already applied, so a newly shown map replays nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ZoomRequest {
+    pub generation: u64,
+    pub command: Option<ZoomCommand>,
+}
+
+impl ZoomRequest {
+    pub fn next(self, command: ZoomCommand) -> Self {
+        Self {
+            generation: self.generation.wrapping_add(1),
+            command: Some(command),
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy)]
 struct Anim {
@@ -128,6 +184,28 @@ fn fit_label_at(s: &str, max_width: f32, size: f32) -> (String, bool) {
     (acc, true)
 }
 
+/// Like [`fit_label_at`], but drops from the start and keeps the end, so a
+/// long path keeps its file name.
+fn fit_tail_at(s: &str, max_width: f32, size: f32) -> (String, bool) {
+    if text_width_at(s, size) <= max_width {
+        return (s.to_string(), false);
+    }
+    let budget = (max_width - glyph_advance_at('…', size)).max(0.0);
+    let mut kept = Vec::new();
+    let mut w = 0.0;
+    for c in s.chars().rev() {
+        let adv = glyph_advance_at(c, size);
+        if w + adv > budget {
+            break;
+        }
+        kept.push(c);
+        w += adv;
+    }
+    let mut out = String::from('…');
+    out.extend(kept.into_iter().rev());
+    (out, true)
+}
+
 /// Smallest label size worth drawing; below it the text is hidden.
 const LABEL_FONT_MIN: f32 = 8.0;
 
@@ -156,7 +234,7 @@ pub fn build_tree(
     let mut nodes: Vec<MNode> = Vec::new();
     let (root_label, root_trunc) = fit_label_for_node(doc_title);
     nodes.push(MNode {
-        id: None,
+        id: Some(DOC_ROOT),
         label: root_label,
         full_label: doc_title.to_string(),
         truncated: root_trunc,
@@ -166,6 +244,14 @@ pub fn build_tree(
         x: 0.0,
         y: 0.0,
     });
+    if collapsed.contains(&DOC_ROOT) {
+        // A folded root hides every heading, as a folded heading hides its
+        // subtree.
+        nodes[0].has_hidden_children = ast
+            .iter()
+            .any(|(_, block)| matches!(block, Block::Heading { .. }));
+        return nodes;
+    }
     let mut stack: Vec<(u8, usize)> = vec![(0, 0)];
     let mut skip_under: Option<u8> = None;
 
@@ -343,9 +429,22 @@ pub struct MindmapState<Id = BlockId> {
     /// A `Weak` keeps the allocation from being reused by a different list.
     anim_nodes: Option<std::sync::Weak<Vec<MNode<Id>>>>,
     hovered_idx: Option<usize>,
+    /// The node under the left-button press, and whether the press hit its
+    /// chevron. Its action runs on release, and only when the pointer did
+    /// not move past [`CLICK_SLOP`].
+    pressed: Option<(Id, bool)>,
+    /// When, on which node, and where on screen the last single click
+    /// landed, for double clicks.
+    last_click: Option<(Instant, Id, Point)>,
+    /// The node the pointer last clicked. When the app then focuses it, the
+    /// canvas keeps it where it is on screen instead of centering it. A key
+    /// press or a click on empty canvas hands focus back to centering.
+    pointer_focus: Option<Id>,
     touch_points: Vec<(touch::Finger, Point)>,
     touch_span: Option<f32>,
     native_pinch_log: Option<f64>,
+    /// The zoom request generation this canvas last applied.
+    zoom_request_seen: Option<u64>,
 }
 
 impl<Id> Default for MindmapState<Id> {
@@ -368,9 +467,13 @@ impl<Id> Default for MindmapState<Id> {
             last_layout_generation: None,
             anim_nodes: None,
             hovered_idx: None,
+            pressed: None,
+            pointer_focus: None,
+            last_click: None,
             touch_points: Vec::new(),
             touch_span: None,
             native_pinch_log: None,
+            zoom_request_seen: None,
         }
     }
 }
@@ -418,8 +521,17 @@ pub struct MindmapProgram<'a, Id, Message> {
     /// A cumulative log lets the canvas apply every queued pinch delta even
     /// when multiple native events arrive before the next redraw.
     pub native_pinch_log: f64,
+    /// The latest zoom button press; see [`ZoomRequest`].
+    pub zoom_request: ZoomRequest,
     pub on_toggle: Box<dyn Fn(Id) -> Message + 'a>,
     pub on_select: Box<dyn Fn(Id) -> Message + 'a>,
+    /// A double click on a node: what Enter does there. `None` makes a
+    /// double click two single clicks.
+    pub on_activate: Option<Box<dyn Fn(Id) -> Message + 'a>>,
+    /// Text for the hover tooltip of any node, for example a Full Mindmap
+    /// node's full path. Without it the tooltip shows only a truncated
+    /// label in full.
+    pub hover_text: Option<Box<dyn Fn(&Id) -> Option<String> + 'a>>,
     pub on_deselect: Message,
 }
 
@@ -462,6 +574,54 @@ fn keyboard_zoom(event: &iced::Event) -> Option<KeyboardZoom> {
             keyboard::Key::Character("0") => Some(KeyboardZoom::Reset),
             _ => None,
         },
+    }
+}
+
+/// The current zoom; 1 before the canvas has seen its first event.
+fn zoom_of<Id>(state: &MindmapState<Id>) -> f32 {
+    if state.initialized {
+        state.zoom
+    } else {
+        1.0
+    }
+}
+
+/// A branch node carries a chevron that folds and unfolds it. Leaves and
+/// nodes without an id have none.
+fn has_chevron<Id>(node: &MNode<Id>) -> bool {
+    node.id.is_some() && (!node.children.is_empty() || node.has_hidden_children)
+}
+
+/// How a chevron is inked; chevrons of one ink share one stroked path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ChevronInk {
+    /// A folded branch: "›".
+    Folded,
+    /// An open branch: "⌄".
+    Open,
+    /// Either glyph on the accent-filled root, in the root label's color.
+    OnRoot,
+}
+
+impl ChevronInk {
+    const ALL: [ChevronInk; 3] = [ChevronInk::Folded, ChevronInk::Open, ChevronInk::OnRoot];
+
+    fn of<Id>(node: &MNode<Id>) -> Self {
+        if node.level == 0 {
+            ChevronInk::OnRoot
+        } else if node.has_hidden_children {
+            ChevronInk::Folded
+        } else {
+            ChevronInk::Open
+        }
+    }
+
+    fn color(self, palette: &Palette) -> Color {
+        match self {
+            ChevronInk::Folded => palette.accent,
+            ChevronInk::Open => palette.muted,
+            ChevronInk::OnRoot => palette.bg,
+        }
     }
 }
 
@@ -562,6 +722,45 @@ fn animate_zoom_by<Id>(state: &mut MindmapState<Id>, anchor: Point, factor: f32)
         .map(|animation| animation.target_zoom)
         .unwrap_or(state.zoom);
     animate_zoom_to(state, anchor, base_zoom * factor)
+}
+
+/// Animate to an absolute zoom and pan, for a target that is not anchored
+/// at one point (Zoom to Fit).
+fn animate_view_to<Id>(state: &mut MindmapState<Id>, target_zoom: f32, target_pan: Vector) -> bool {
+    if !target_zoom.is_finite() || !target_pan.x.is_finite() || !target_pan.y.is_finite() {
+        return false;
+    }
+    let target_zoom = target_zoom.clamp(ZOOM_MIN, ZOOM_MAX);
+    let _ = step_zoom_animation(state);
+    if (target_zoom - state.zoom).abs() < f32::EPSILON
+        && (target_pan.x - state.pan.x).abs() < 0.5
+        && (target_pan.y - state.pan.y).abs() < 0.5
+    {
+        state.zoom_anim = None;
+        return false;
+    }
+    state.pan_anim = None;
+    state.zoom_anim = Some(ZoomAnim {
+        start_zoom: state.zoom,
+        target_zoom,
+        start_pan: state.pan,
+        target_pan,
+        start_at: Instant::now(),
+    });
+    true
+}
+
+/// Clamp one pan axis so at least [`PAN_KEEP_VISIBLE`] px (or all of a
+/// smaller map) stays inside a `view`-long canvas. A pan that is already
+/// outside the range (after a zoom) only may move back toward it.
+fn clamp_pan_axis(pan: f32, origin: f32, content: f32, view: f32) -> f32 {
+    let keep = PAN_KEEP_VISIBLE.min(content).min(view);
+    let mut lo = keep - content;
+    let mut hi = view - keep;
+    if lo > hi {
+        std::mem::swap(&mut lo, &mut hi);
+    }
+    pan.clamp(lo.min(origin), hi.max(origin))
 }
 
 fn touch_point_in_canvas(bounds: Rectangle, position: Point) -> Option<Point> {
@@ -758,6 +957,39 @@ where
         // deliberate: stale/partial graph frames cannot make a later accepted
         // materialization fall through to the workspace root.
         state.last_focus = focus.cloned();
+        if state.pointer_focus.as_ref() == Some(sel) {
+            let effective_w =
+                self.effective_width(bounds, prev_bounds_w, panel_just_opened, panel_just_closed);
+            if let Some(target) = self.keep_in_place_target(state, idx, effective_w, bounds.height)
+            {
+                // No jump on click: the node stays under the pointer. When a
+                // relayout moves it, pan along with its node animation (same
+                // start, duration, and easing) so its screen position holds.
+                if (target.x - state.pan.x).abs() < 0.5 && (target.y - state.pan.y).abs() < 0.5 {
+                    return;
+                }
+                let start_at = self.nodes[idx]
+                    .id
+                    .as_ref()
+                    .and_then(|id| state.anim.get(id))
+                    .filter(|anim| !anim.done)
+                    .map(|anim| anim.start_at);
+                match start_at {
+                    Some(start_at) => {
+                        state.pan_anim = Some(PanAnim {
+                            start: state.pan,
+                            target,
+                            start_at,
+                        });
+                    }
+                    None => {
+                        state.pan = target;
+                        state.pan_anim = None;
+                    }
+                }
+                return;
+            }
+        }
         let target = self.focus_target_for_node(
             state,
             idx,
@@ -788,12 +1020,49 @@ where
         }
     }
 
-    fn snap_focus_to_node(&self, state: &mut MindmapState<Id>, idx: usize, bounds: Rectangle) {
-        let future_open = !self.panel_open;
-        let target =
-            self.focus_target_for_node(state, idx, bounds, bounds.width, future_open, false, false);
-        state.pan = target;
-        state.pan_anim = None;
+    /// The canvas width once a panel change has landed. A panel toggle may
+    /// reach the canvas one frame before its narrower (or wider) bounds do.
+    fn effective_width(
+        &self,
+        bounds: Rectangle,
+        prev_bounds_w: f32,
+        panel_just_opened: bool,
+        panel_just_closed: bool,
+    ) -> f32 {
+        let panel_span = self.panel_width + PANEL_HANDLE_W;
+        if panel_just_opened && (bounds.width - prev_bounds_w).abs() <= 0.5 {
+            (bounds.width - panel_span).max(1.0)
+        } else if panel_just_closed && (bounds.width - prev_bounds_w).abs() <= 0.5 {
+            bounds.width + panel_span
+        } else {
+            bounds.width
+        }
+    }
+
+    /// The pan that keeps a clicked node where it is on screen while it
+    /// moves to its layout position, or `None` when it is not fully visible
+    /// in `effective_w` (for example under a panel that is opening).
+    fn keep_in_place_target(
+        &self,
+        state: &MindmapState<Id>,
+        idx: usize,
+        effective_w: f32,
+        height: f32,
+    ) -> Option<Vector> {
+        let (cx, cy) = self.pos(state, idx);
+        let z = state.zoom;
+        let sx = cx * z + state.pan.x;
+        let sy = cy * z + state.pan.y;
+        let visible =
+            sx >= 0.0 && sy >= 0.0 && sx + NODE_W * z <= effective_w && sy + NODE_H * z <= height;
+        if !visible {
+            return None;
+        }
+        let node = &self.nodes[idx];
+        Some(Vector::new(
+            state.pan.x + (cx - node.x) * z,
+            state.pan.y + (cy - node.y) * z,
+        ))
     }
 
     fn focus_target_for_node(
@@ -806,14 +1075,8 @@ where
         panel_just_closed: bool,
         prefer_layout_position: bool,
     ) -> Vector {
-        let panel_span = self.panel_width + PANEL_HANDLE_W;
-        let effective_w = if panel_just_opened && (bounds.width - prev_bounds_w).abs() <= 0.5 {
-            (bounds.width - panel_span).max(1.0)
-        } else if panel_just_closed && (bounds.width - prev_bounds_w).abs() <= 0.5 {
-            bounds.width + panel_span
-        } else {
-            bounds.width
-        };
+        let effective_w =
+            self.effective_width(bounds, prev_bounds_w, panel_just_opened, panel_just_closed);
 
         // For a rebuilt graph, use the node's final layout position. New
         // children are seeded from their parent for the 220 ms node animation;
@@ -856,6 +1119,75 @@ where
         }
     }
 
+    /// The node drawn with the hover fill.
+    /// Only clickable nodes get it, and not while a drag pans the canvas.
+    fn hover_highlight(&self, state: &MindmapState<Id>) -> Option<usize> {
+        if state.drag_origin.is_some() && state.drag_moved {
+            return None;
+        }
+        state
+            .hovered_idx
+            .filter(|&i| self.nodes.get(i).is_some_and(|n| n.id.is_some()))
+    }
+
+    /// The hover tooltip for node `idx`: the navigator's `hover_text`, or
+    /// else a truncated label in full.
+    fn tooltip_text(&self, idx: usize) -> Option<String> {
+        let n = self.nodes.get(idx)?;
+        self.hover_text
+            .as_ref()
+            .zip(n.id.as_ref())
+            .and_then(|(text, id)| text(id))
+            .or_else(|| (n.truncated && !n.full_label.is_empty()).then(|| n.full_label.clone()))
+    }
+
+    /// The node whose box contains the canvas point `pos`, at its rendered
+    /// (animated) position.
+    fn node_at(&self, state: &MindmapState<Id>, pos: Point) -> Option<usize> {
+        let z = zoom_of(state);
+        let wx = (pos.x - state.pan.x) / z;
+        let wy = (pos.y - state.pan.y) / z;
+        (0..self.nodes.len()).find(|&i| {
+            let (nx, ny) = self.pos(state, i);
+            wx >= nx && wx <= nx + NODE_W && wy >= ny && wy <= ny + NODE_H
+        })
+    }
+
+    /// Screen center of node `i`'s chevron.
+    fn chevron_center(&self, state: &MindmapState<Id>, i: usize) -> Point {
+        let (nx, ny) = self.pos(state, i);
+        let z = zoom_of(state);
+        Point::new(
+            (nx + NODE_W - CHEVRON_INSET) * z + state.pan.x,
+            (ny + NODE_H / 2.0) * z + state.pan.y,
+        )
+    }
+
+    fn on_chevron(&self, state: &MindmapState<Id>, i: usize, pos: Point) -> bool {
+        if !has_chevron(&self.nodes[i]) {
+            return false;
+        }
+        let center = self.chevron_center(state, i);
+        let half = (CHEVRON_HIT * zoom_of(state)).max(CHEVRON_HIT_MIN) / 2.0;
+        (pos.x - center.x).abs() <= half && (pos.y - center.y).abs() <= half
+    }
+
+    /// What a pointer at `pos` targets: a node, and whether it is that
+    /// node's chevron. A node's own box wins over a neighbor's chevron zone,
+    /// which may reach past its node when zoomed far out.
+    fn hit(&self, state: &MindmapState<Id>, pos: Point) -> Option<(usize, bool)> {
+        if let Some(i) = self.node_at(state, pos) {
+            return Some((i, self.on_chevron(state, i, pos)));
+        }
+        // At this zoom and closer, every chevron zone lies inside its node.
+        if zoom_of(state) * CHEVRON_HIT >= CHEVRON_HIT_MIN {
+            return None;
+        }
+        (0..self.nodes.len())
+            .find(|&i| self.on_chevron(state, i, pos))
+            .map(|i| (i, true))
+    }
+
     /// Get rendered (animated) position for a node.
     fn pos(&self, state: &MindmapState<Id>, idx: usize) -> (f32, f32) {
         let n = &self.nodes[idx];
@@ -863,6 +1195,45 @@ where
             Some(a) => (a.current_x, a.current_y),
             None => (n.x, n.y),
         }
+    }
+
+    /// Apply a zoom button press the canvas has not seen yet. Returns
+    /// whether an animation started.
+    fn sync_zoom_request(&self, state: &mut MindmapState<Id>, bounds: Rectangle) -> bool {
+        let request = self.zoom_request;
+        let Some(seen) = state.zoom_request_seen.replace(request.generation) else {
+            // A newly shown canvas takes the current request as applied.
+            return false;
+        };
+        if seen == request.generation {
+            return false;
+        }
+        let anchor = canvas_center(bounds);
+        match request.command {
+            Some(ZoomCommand::In) => animate_zoom_by(state, anchor, KEYBOARD_ZOOM_FACTOR),
+            Some(ZoomCommand::Out) => animate_zoom_by(state, anchor, 1.0 / KEYBOARD_ZOOM_FACTOR),
+            Some(ZoomCommand::Reset) => animate_zoom_to(state, anchor, 1.0),
+            Some(ZoomCommand::Fit) => {
+                let (zoom, pan) = self.fit_view(bounds);
+                animate_view_to(state, zoom, pan)
+            }
+            None => false,
+        }
+    }
+
+    /// The zoom and pan that show the whole map, centered, never above 100%.
+    fn fit_view(&self, bounds: Rectangle) -> (f32, Vector) {
+        let content_w = self.content_size.width.max(1.0);
+        let content_h = self.content_size.height.max(1.0);
+        let usable_h = (bounds.height - FIT_BOTTOM_INSET).max(bounds.height * 0.5);
+        let zoom = (bounds.width / content_w)
+            .min(usable_h / content_h)
+            .clamp(ZOOM_MIN, 1.0);
+        let pan = Vector::new(
+            (bounds.width - content_w * zoom) / 2.0,
+            (usable_h - content_h * zoom) / 2.0,
+        );
+        (zoom, pan)
     }
 
     /// Apply a macOS trackpad pinch that arrived through the native bridge.
@@ -955,6 +1326,82 @@ where
     }
 }
 
+impl<'a, Id, Message: Clone> MindmapProgram<'a, Id, Message>
+where
+    Id: Clone + Eq + std::hash::Hash,
+{
+    /// The left button came up at `now`, at `at` inside the canvas (`None`
+    /// when it came up outside). A still release on a node is its click;
+    /// `now` is a parameter so tests can time double clicks on a test clock.
+    fn release(
+        &self,
+        state: &mut MindmapState<Id>,
+        now: Instant,
+        at: Option<Point>,
+    ) -> Option<canvas::Action<Message>> {
+        let origin = state.drag_origin.take()?;
+        // A release outside the canvas, or far from the press, is not a
+        // click even when no move event came in between.
+        let moved = std::mem::take(&mut state.drag_moved)
+            || !at.is_some_and(|at| (at.x - origin.x).hypot(at.y - origin.y) <= CLICK_SLOP);
+        let pressed = state.pressed.take();
+        // Only a quick second click on the same node's body is a double
+        // click; a drag, a chevron, or empty canvas in between starts over.
+        let previous = state.last_click.take();
+        if moved {
+            // One frame to bring back the hover fill the drag hid.
+            return Some(canvas::Action::request_redraw().and_capture());
+        }
+        // A quick second click where the first one landed is a double
+        // click even when the first click moved its node away: the panel it
+        // opened can bring the node into view, so the second press finds
+        // empty canvas or another node.
+        if let (Some(activate), Some((_, first, _))) = (
+            self.on_activate.as_ref(),
+            previous.as_ref().filter(|(at, _, point)| {
+                now.saturating_duration_since(*at) <= DOUBLE_CLICK
+                    && (origin.x - point.x).hypot(origin.y - point.y) <= CLICK_SLOP
+            }),
+        ) {
+            if pressed.as_ref().map(|(id, _)| id) != Some(first)
+                && self.nodes.iter().any(|n| n.id.as_ref() == Some(first))
+            {
+                state.pointer_focus = Some(first.clone());
+                return Some(canvas::Action::publish(activate(first.clone())).and_capture());
+            }
+        }
+        let Some((id, chevron)) = pressed else {
+            // A still click on empty canvas.
+            state.pointer_focus = None;
+            if self.selected.is_some() {
+                return Some(canvas::Action::publish(self.on_deselect.clone()).and_capture());
+            }
+            return Some(canvas::Action::capture());
+        };
+        if !self.nodes.iter().any(|n| n.id.as_ref() == Some(&id)) {
+            return Some(canvas::Action::capture());
+        }
+        // The chevron folds a branch; the rest of a node selects it
+        // (and the app opens the panel), as the arrow keys do. The
+        // focus sync on the next redraw keeps the node in place, or
+        // brings it into view if the panel would cover it.
+        state.pointer_focus = Some(id.clone());
+        let msg = if chevron {
+            (self.on_toggle)(id)
+        } else if let Some(activate) = self.on_activate.as_ref().filter(|_| {
+            previous.as_ref().is_some_and(|(at, prev, _)| {
+                *prev == id && now.saturating_duration_since(*at) <= DOUBLE_CLICK
+            })
+        }) {
+            activate(id)
+        } else {
+            state.last_click = Some((now, id.clone(), origin));
+            (self.on_select)(id)
+        };
+        Some(canvas::Action::publish(msg).and_capture())
+    }
+}
+
 impl<'a, Id, Message: Clone> canvas::Program<Message, Theme, Renderer>
     for MindmapProgram<'a, Id, Message>
 where
@@ -972,6 +1419,17 @@ where
         if !state.initialized {
             state.zoom = 1.0;
             state.initialized = true;
+        }
+        if let iced::Event::Keyboard(keyboard::Event::KeyPressed { key, .. }) = event {
+            // Keyboard navigation centers its node again. Modifier keys
+            // alone (for example holding ⌘) navigate nowhere.
+            use keyboard::key::Named;
+            if !matches!(
+                key,
+                keyboard::Key::Named(Named::Shift | Named::Control | Named::Alt | Named::Super)
+            ) {
+                state.pointer_focus = None;
+            }
         }
         match event {
             iced::Event::Keyboard(_) if self.keyboard_zoom_enabled => {
@@ -1010,28 +1468,11 @@ where
                 let Some(pos) = cursor.position_in(bounds) else {
                     return None;
                 };
-                // Hit-test in world space against animated positions.
-                let wx = (pos.x - state.pan.x) / state.zoom;
-                let wy = (pos.y - state.pan.y) / state.zoom;
-                for (i, n) in self.nodes.iter().enumerate() {
-                    let (nx, ny) = self.pos(state, i);
-                    if wx >= nx && wx <= nx + NODE_W && wy >= ny && wy <= ny + NODE_H {
-                        if let Some(id) = n.id.clone() {
-                            let msg = if n.children.is_empty() && !n.has_hidden_children {
-                                if self.autocenter {
-                                    self.snap_focus_to_node(state, i, bounds);
-                                }
-                                (self.on_select)(id)
-                            } else {
-                                (self.on_toggle)(id)
-                            };
-                            return Some(canvas::Action::publish(msg).and_capture());
-                        }
-                        break;
-                    }
-                }
-                // Begin pan drag (and remember press point so a stationary release
-                // can be treated as a click-on-empty deselect).
+                // Every press may become a drag, even on a node. The node's
+                // action waits for a release without movement.
+                state.pressed = self
+                    .hit(state, pos)
+                    .and_then(|(i, chevron)| self.nodes[i].id.clone().map(|id| (id, chevron)));
                 state.drag_origin = Some(pos);
                 state.drag_pan_origin = state.pan;
                 state.drag_moved = false;
@@ -1043,31 +1484,39 @@ where
             iced::Event::Mouse(mouse::Event::CursorMoved { .. }) => {
                 if let Some(origin) = state.drag_origin {
                     let Some(pos) = cursor.position_in(bounds) else {
+                        // The press left the canvas, so it is no longer a
+                        // click. Outside the canvas nothing pans.
+                        state.drag_moved = true;
                         return None;
                     };
                     let dx = pos.x - origin.x;
                     let dy = pos.y - origin.y;
-                    if dx.abs() > 3.0 || dy.abs() > 3.0 {
-                        state.drag_moved = true;
+                    if !state.drag_moved && dx.hypot(dy) <= CLICK_SLOP {
+                        // Still a click: the canvas stays put.
+                        return Some(canvas::Action::capture());
                     }
-                    state.pan.x = state.drag_pan_origin.x + dx;
-                    state.pan.y = state.drag_pan_origin.y + dy;
+                    state.drag_moved = true;
+                    let z = zoom_of(state);
+                    let origin = state.drag_pan_origin;
+                    state.pan.x = clamp_pan_axis(
+                        origin.x + dx,
+                        origin.x,
+                        self.content_size.width * z,
+                        bounds.width,
+                    );
+                    state.pan.y = clamp_pan_axis(
+                        origin.y + dy,
+                        origin.y,
+                        self.content_size.height * z,
+                        bounds.height,
+                    );
                     return Some(canvas::Action::request_redraw().and_capture());
                 }
                 // Hover tracking: highlight the node under the cursor so we
                 // can show a tooltip for truncated labels in draw().
-                let new_hover = cursor.position_in(bounds).and_then(|pos| {
-                    let wx = (pos.x - state.pan.x) / state.zoom;
-                    let wy = (pos.y - state.pan.y) / state.zoom;
-                    self.nodes.iter().enumerate().find_map(|(i, _)| {
-                        let (nx, ny) = self.pos(state, i);
-                        if wx >= nx && wx <= nx + NODE_W && wy >= ny && wy <= ny + NODE_H {
-                            Some(i)
-                        } else {
-                            None
-                        }
-                    })
-                });
+                let new_hover = cursor
+                    .position_in(bounds)
+                    .and_then(|pos| self.node_at(state, pos));
                 if new_hover != state.hovered_idx {
                     state.hovered_idx = new_hover;
                     return Some(canvas::Action::request_redraw());
@@ -1082,22 +1531,12 @@ where
                 None
             }
             iced::Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => {
-                if state.drag_origin.is_some() {
-                    let moved = state.drag_moved;
-                    state.drag_origin = None;
-                    state.drag_moved = false;
-                    if !moved && self.selected.is_some() {
-                        return Some(
-                            canvas::Action::publish(self.on_deselect.clone()).and_capture(),
-                        );
-                    }
-                    return Some(canvas::Action::capture());
-                }
-                None
+                self.release(state, Instant::now(), cursor.position_in(bounds))
             }
             iced::Event::Window(window::Event::RedrawRequested(_)) => {
                 self.sync_anim(state);
                 let pinch_zoomed = self.sync_native_pinch(state, bounds, cursor);
+                let _ = self.sync_zoom_request(state, bounds);
                 let zoom_running = step_zoom_animation(state);
                 if !zoom_running {
                     self.sync_focus_pan(state, bounds);
@@ -1108,6 +1547,12 @@ where
                 } else {
                     false
                 };
+                // The node list, a zoom, or a pan can move a different node
+                // under a still pointer. This frame draws anyway, so the
+                // hover follows without asking for another one.
+                state.hovered_idx = cursor
+                    .position_in(bounds)
+                    .and_then(|pos| self.node_at(state, pos));
                 if node_running || pan_running || zoom_running || pinch_zoomed {
                     Some(canvas::Action::request_redraw())
                 } else {
@@ -1148,8 +1593,8 @@ where
         let s_w = NODE_W * z;
         let s_h = NODE_H * z;
         let radius = (8.0 * z).min(s_w.min(s_h) * 0.5).max(0.0);
-        let dot_r = (3.0 * z).max(1.0);
-        let dot_offset = 10.0 * z;
+        let chevron_half = (CHEVRON_HALF * z).max(2.5);
+        let chevron_inset = CHEVRON_INSET * z;
 
         // View-frustum culling: skip nodes fully outside bounds. Use a small
         // margin so partly-visible nodes still render.
@@ -1209,16 +1654,16 @@ where
             .with_color(self.palette.subtle)
             .with_width(1.0);
 
-        // One pass over nodes feeding all five paths (was five full passes).
-        // Per-path append order is preserved. Dots share the node's cull test:
-        // the dot center sits 10·z inside the right edge with radius
-        // max(3·z, 1) ≤ 10·z for all z ≥ ZOOM_MIN, so the dot always lies
-        // inside the node's AABB and culling it with the node is exact.
+        // One pass over nodes feeding all six paths. Per-path append order
+        // is preserved. Chevrons share the node's cull test: the chevron
+        // center sits 12·z inside the right edge and reaches at most
+        // max(4·z, 2.5) from it, so it lies within the 1 px cull margin.
         let mut accent_bg_b = path::Builder::new();
         let mut surface_bg_b = path::Builder::new();
         let mut accent_border_b = path::Builder::new();
         let mut subtle_border_b = path::Builder::new();
-        let mut hidden_dots_b = path::Builder::new();
+        // Folded branches show "›", open ones "⌄"; one path per ink.
+        let mut chevrons_b = ChevronInk::ALL.map(|_| path::Builder::new());
         for (i, n) in self.nodes.iter().enumerate() {
             let (nx, ny) = positions[i];
             let sx = proj_x(nx);
@@ -1226,11 +1671,21 @@ where
             if !visible(sx, sy) {
                 continue;
             }
-            if n.has_hidden_children {
-                let cx = proj_x(nx + NODE_W) - dot_offset;
-                let cy = proj_y(ny + NODE_H / 2.0);
-                hidden_dots_b.circle(Point::new(cx, cy), dot_r);
-                hidden_dots_b.close();
+            if has_chevron(n) {
+                let cx = sx + s_w - chevron_inset;
+                let cy = sy + s_h / 2.0;
+                let h = chevron_half;
+                let ink = ChevronInk::of(n);
+                let b = &mut chevrons_b[ink as usize];
+                if n.has_hidden_children {
+                    b.move_to(Point::new(cx - h / 2.0, cy - h));
+                    b.line_to(Point::new(cx + h / 2.0, cy));
+                    b.line_to(Point::new(cx - h / 2.0, cy + h));
+                } else {
+                    b.move_to(Point::new(cx - h, cy - h / 2.0));
+                    b.line_to(Point::new(cx, cy + h / 2.0));
+                    b.line_to(Point::new(cx + h, cy - h / 2.0));
+                }
             }
             if n.level == 0 {
                 append_rounded_rect(&mut accent_bg_b, sx, sy, s_w, s_h, radius);
@@ -1247,11 +1702,21 @@ where
         let surface_backgrounds = surface_bg_b.build();
         let accent_borders = accent_border_b.build();
         let subtle_borders = subtle_border_b.build();
-        let hidden_dots = hidden_dots_b.build();
+        let chevrons = chevrons_b.map(path::Builder::build);
 
         // Nodes.
         frame.fill(&surface_backgrounds, surface_fill);
         frame.fill(&accent_backgrounds, accent_fill);
+        // One extra path for the node under the pointer. Hover changes
+        // request a single redraw; a still pointer requests none.
+        if let Some(i) = self.hover_highlight(state) {
+            let (nx, ny) = positions[i];
+            let (sx, sy) = (proj_x(nx), proj_y(ny));
+            if visible(sx, sy) {
+                let hover_bg = Path::new(|b| append_rounded_rect(b, sx, sy, s_w, s_h, radius));
+                frame.fill(&hover_bg, self.palette.hover());
+            }
+        }
         frame.stroke(&subtle_borders, subtle_border_stroke);
         frame.stroke(&accent_borders, accent_border_stroke);
 
@@ -1312,50 +1777,59 @@ where
                 });
             }
         }
-        frame.fill(&hidden_dots, accent_fill);
-
-        // Tooltip: show full label only when hovering a truncated node.
-        if let Some(idx) = state.hovered_idx {
-            if let Some(n) = self.nodes.get(idx) {
-                if n.truncated && !n.full_label.is_empty() {
-                    let (nx, ny) = self.pos(state, idx);
-                    let nsx = proj_x(nx);
-                    let nsy = proj_y(ny);
-                    let tip_text = n.full_label.clone();
-                    let tip_pad_x = 8.0;
-                    let tip_pad_y = 5.0;
-                    let tip_w = (text_width_at(&tip_text, FONT_SIZE) + tip_pad_x * 2.0)
-                        .min(bounds.width - 12.0);
-                    let tip_h = FONT_SIZE + tip_pad_y * 2.0;
-                    let mut tip_x = nsx + s_w / 2.0 - tip_w / 2.0;
-                    let mut tip_y = nsy - tip_h - 6.0;
-                    if tip_y < 4.0 {
-                        tip_y = nsy + s_h + 6.0;
-                    }
-                    tip_x = tip_x.clamp(4.0, (bounds.width - tip_w - 4.0).max(4.0));
-                    let tip_radius = 6.0_f32.min(tip_h * 0.5);
-                    let tip_bg = Path::new(|b| {
-                        append_rounded_rect(b, tip_x, tip_y, tip_w, tip_h, tip_radius);
-                    });
-                    frame.fill(&tip_bg, Fill::from(self.palette.surface));
-                    let tip_border = Stroke::default()
-                        .with_color(self.palette.rule)
-                        .with_width(1.0);
-                    frame.stroke(&tip_bg, tip_border);
-                    frame.fill_text(Text {
-                        content: tip_text,
-                        position: Point::new(tip_x + tip_w / 2.0, tip_y + tip_h / 2.0),
-                        color: self.palette.fg,
-                        size: iced::Pixels(FONT_SIZE),
-                        align_x: iced::alignment::Horizontal::Center.into(),
-                        align_y: iced::alignment::Vertical::Center.into(),
-                        ..Text::default()
-                    });
-                }
-            }
+        let chevron_stroke = |color| {
+            Stroke::default()
+                .with_color(color)
+                .with_width(1.5)
+                .with_line_cap(canvas::LineCap::Round)
+                .with_line_join(canvas::LineJoin::Round)
+        };
+        for (ink, chevrons) in ChevronInk::ALL.into_iter().zip(&chevrons) {
+            frame.stroke(chevrons, chevron_stroke(ink.color(&self.palette)));
         }
 
-        let _ = self.content_size;
+        // Tooltip: the navigator's hover text, or a truncated label in full.
+        let tooltip = state
+            .hovered_idx
+            .and_then(|idx| self.tooltip_text(idx).map(|text| (idx, text)));
+        if let Some((idx, tip_text)) = tooltip {
+            let (nx, ny) = self.pos(state, idx);
+            let nsx = proj_x(nx);
+            let nsy = proj_y(ny);
+            let tip_pad_x = 8.0;
+            let tip_pad_y = 5.0;
+            // A path wider than the canvas keeps its end.
+            let max_text_w = (bounds.width - 12.0 - tip_pad_x * 2.0).max(1.0);
+            let (tip_text, _) = fit_tail_at(&tip_text, max_text_w, FONT_SIZE);
+            let tip_w =
+                (text_width_at(&tip_text, FONT_SIZE) + tip_pad_x * 2.0).min(bounds.width - 12.0);
+            let tip_h = FONT_SIZE + tip_pad_y * 2.0;
+            let mut tip_x = nsx + s_w / 2.0 - tip_w / 2.0;
+            let mut tip_y = nsy - tip_h - 6.0;
+            if tip_y < 4.0 {
+                tip_y = nsy + s_h + 6.0;
+            }
+            tip_x = tip_x.clamp(4.0, (bounds.width - tip_w - 4.0).max(4.0));
+            let tip_radius = crate::theme::radius::SM.min(tip_h * 0.5);
+            let tip_bg = Path::new(|b| {
+                append_rounded_rect(b, tip_x, tip_y, tip_w, tip_h, tip_radius);
+            });
+            frame.fill(&tip_bg, Fill::from(self.palette.surface));
+            let tip_border = Stroke::default()
+                .with_color(self.palette.rule)
+                .with_width(1.0);
+            frame.stroke(&tip_bg, tip_border);
+            frame.fill_text(Text {
+                content: tip_text,
+                position: Point::new(tip_x + tip_w / 2.0, tip_y + tip_h / 2.0),
+                color: self.palette.fg,
+                size: iced::Pixels(FONT_SIZE),
+                align_x: iced::alignment::Horizontal::Center.into(),
+                align_y: iced::alignment::Vertical::Center.into(),
+                ..Text::default()
+            });
+        }
+
         vec![frame.into_geometry()]
     }
 
@@ -1365,20 +1839,17 @@ where
         bounds: Rectangle,
         cursor: mouse::Cursor,
     ) -> mouse::Interaction {
-        if state.drag_origin.is_some() {
+        if state.drag_origin.is_some() && state.drag_moved {
             return mouse::Interaction::Grabbing;
         }
         let Some(pos) = cursor.position_in(bounds) else {
             return mouse::Interaction::default();
         };
-        let z = if state.initialized { state.zoom } else { 1.0 };
-        let wx = (pos.x - state.pan.x) / z;
-        let wy = (pos.y - state.pan.y) / z;
-        for (i, n) in self.nodes.iter().enumerate() {
-            let (nx, ny) = self.pos(state, i);
-            if n.id.is_some() && wx >= nx && wx <= nx + NODE_W && wy >= ny && wy <= ny + NODE_H {
-                return mouse::Interaction::Pointer;
-            }
+        if self
+            .hit(state, pos)
+            .is_some_and(|(i, _)| self.nodes[i].id.is_some())
+        {
+            return mouse::Interaction::Pointer;
         }
         mouse::Interaction::Grab
     }
@@ -1436,6 +1907,45 @@ mod tests {
     }
 
     #[test]
+    fn the_document_root_is_a_node_that_selects_and_folds() {
+        let ast = vec![heading(1, 1, "Top"), heading(2, 2, "Child")];
+        let nodes = build_tree(&ast, "Document", &HashSet::new());
+        assert_eq!(nodes[0].id, Some(DOC_ROOT), "the root can be selected");
+        assert!(has_chevron(&nodes[0]), "the root folds like a branch");
+
+        let folded = build_tree(&ast, "Document", &HashSet::from([DOC_ROOT]));
+        assert_eq!(folded.len(), 1, "a folded root hides every heading");
+        assert!(folded[0].has_hidden_children);
+        assert!(folded[0].children.is_empty());
+
+        // A document with no headings has nothing to fold.
+        let empty = build_tree(&[], "Document", &HashSet::from([DOC_ROOT]));
+        assert!(!empty[0].has_hidden_children);
+        assert!(!has_chevron(&empty[0]));
+    }
+
+    #[test]
+    fn the_root_chevron_contrasts_with_the_root_fill() {
+        let ast = vec![heading(1, 1, "Top"), heading(2, 2, "Child")];
+        let open = build_tree(&ast, "Document", &HashSet::new());
+        let folded = build_tree(&ast, "Document", &HashSet::from([DOC_ROOT]));
+        for palette in [Palette::ONE_DARK, Palette::ONE_LIGHT] {
+            for root in [&open[0], &folded[0]] {
+                // The root is filled with the accent, so its chevron takes
+                // the root label's color.
+                assert_eq!(ChevronInk::of(root).color(&palette), palette.bg);
+            }
+            // Other branches keep accent when folded and muted when open.
+            assert_eq!(ChevronInk::of(&open[1]).color(&palette), palette.muted);
+            let folded_child = build_tree(&ast, "Document", &HashSet::from([BlockId(1)]));
+            assert_eq!(
+                ChevronInk::of(&folded_child[1]).color(&palette),
+                palette.accent
+            );
+        }
+    }
+
+    #[test]
     fn document_tree_keeps_block_ids_and_collapse_behavior() {
         let ast = vec![
             heading(1, 1, "Top"),
@@ -1445,7 +1955,7 @@ mod tests {
         let collapsed = HashSet::from([BlockId(1)]);
         let nodes = build_tree(&ast, "Document", &collapsed);
 
-        assert_eq!(nodes[0].id, None);
+        assert_eq!(nodes[0].id, Some(DOC_ROOT));
         assert_eq!(nodes[0].children.len(), 2);
         assert_eq!(nodes[1].id, Some(BlockId(1)));
         assert!(nodes[1].has_hidden_children);
@@ -1521,8 +2031,11 @@ mod tests {
             layout_generation: Some(generation),
             keyboard_zoom_enabled: false,
             native_pinch_log: 0.0,
+            zoom_request: ZoomRequest::default(),
             on_toggle: Box::new(|_| ()),
             on_select: Box::new(|_| ()),
+            on_activate: None,
+            hover_text: None,
             on_deselect: (),
         }
     }
@@ -1900,8 +2413,11 @@ mod tests {
                 layout_generation: Some(1),
                 keyboard_zoom_enabled: false,
                 native_pinch_log: 0.0,
+                zoom_request: ZoomRequest::default(),
                 on_toggle: Box::new(|_| ()),
                 on_select: Box::new(|_| ()),
+                on_activate: None,
+                hover_text: None,
                 on_deselect: (),
             }
         };
@@ -2262,6 +2778,765 @@ mod tests {
         assert_eq!(state.zoom, 1.0);
     }
 
+    // --- Pointer model (MDV-048 P4) -------------------------------------
+
+    /// What a pointer test program publishes.
+    #[derive(Debug, Clone, PartialEq)]
+    enum Ev {
+        Toggle(PathId),
+        Select(PathId),
+        Activate(PathId),
+        Deselect,
+    }
+
+    fn pointer_program(
+        nodes: Vec<MNode<PathId>>,
+        selected: Option<PathId>,
+    ) -> MindmapProgram<'static, PathId, Ev> {
+        MindmapProgram {
+            nodes: std::sync::Arc::new(nodes),
+            content_size: Size::new(1200.0, 900.0),
+            palette: Palette::ONE_DARK,
+            background: Palette::ONE_DARK.bg,
+            selected,
+            focus: None,
+            panel_open: false,
+            panel_width: 360.0,
+            autocenter: true,
+            layout_generation: Some(1),
+            keyboard_zoom_enabled: false,
+            native_pinch_log: 0.0,
+            zoom_request: ZoomRequest::default(),
+            on_toggle: Box::new(Ev::Toggle),
+            on_select: Box::new(Ev::Select),
+            on_activate: Some(Box::new(Ev::Activate)),
+            hover_text: None,
+            on_deselect: Ev::Deselect,
+        }
+    }
+
+    const POINTER_BOUNDS: Rectangle = Rectangle {
+        x: 0.0,
+        y: 0.0,
+        width: 1000.0,
+        height: 800.0,
+    };
+
+    /// Sends one event at `at`; returns the published message.
+    fn pointer_send(
+        program: &MindmapProgram<'static, PathId, Ev>,
+        state: &mut MindmapState<PathId>,
+        event: iced::Event,
+        at: Point,
+    ) -> Option<Ev> {
+        canvas::Program::update(
+            program,
+            state,
+            &event,
+            POINTER_BOUNDS,
+            mouse::Cursor::Available(at),
+        )
+        .and_then(|action| action.into_inner().0)
+    }
+
+    fn press_at(
+        program: &MindmapProgram<'static, PathId, Ev>,
+        state: &mut MindmapState<PathId>,
+        at: Point,
+    ) -> Option<Ev> {
+        pointer_send(
+            program,
+            state,
+            iced::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)),
+            at,
+        )
+    }
+
+    fn move_at(
+        program: &MindmapProgram<'static, PathId, Ev>,
+        state: &mut MindmapState<PathId>,
+        at: Point,
+    ) -> Option<Ev> {
+        pointer_send(
+            program,
+            state,
+            iced::Event::Mouse(mouse::Event::CursorMoved { position: at }),
+            at,
+        )
+    }
+
+    fn release_at(
+        program: &MindmapProgram<'static, PathId, Ev>,
+        state: &mut MindmapState<PathId>,
+        at: Point,
+    ) -> Option<Ev> {
+        pointer_send(
+            program,
+            state,
+            iced::Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)),
+            at,
+        )
+    }
+
+    fn node_idx(program: &MindmapProgram<'static, PathId, Ev>, path: &str) -> usize {
+        program
+            .nodes
+            .iter()
+            .position(|node| node.id.as_ref().is_some_and(|id| id.0 == path))
+            .expect("node in graph")
+    }
+
+    /// Screen center of a node at zoom 1 and no pan.
+    fn node_center(program: &MindmapProgram<'static, PathId, Ev>, path: &str) -> Point {
+        let node = &program.nodes[node_idx(program, path)];
+        Point::new(node.x + NODE_W / 2.0, node.y + NODE_H / 2.0)
+    }
+
+    const DOWNLOADS: &str = "/Users/me/Downloads";
+    const DOCUMENTS: &str = "/Users/me/Documents";
+
+    fn notes_graph() -> Vec<MNode<PathId>> {
+        folder_graph(Some(PathId("/Users/me/Documents/Notes".into())))
+    }
+
+    #[test]
+    fn a_node_acts_on_release_and_a_drag_from_it_pans() {
+        let mut program = pointer_program(notes_graph(), None);
+        // Measure the pointer alone, without the focus pan.
+        program.autocenter = false;
+        let mut state = MindmapState::default();
+        let leaf = node_center(&program, DOWNLOADS);
+
+        assert_eq!(press_at(&program, &mut state, leaf), None, "press waits");
+        assert_eq!(
+            release_at(&program, &mut state, leaf),
+            Some(Ev::Select(PathId(DOWNLOADS.into()))),
+            "a still release is the click"
+        );
+
+        // A small wobble is still a click.
+        assert_eq!(press_at(&program, &mut state, leaf), None);
+        let wobble = Point::new(leaf.x + 2.0, leaf.y + 1.0);
+        assert_eq!(move_at(&program, &mut state, wobble), None);
+        assert_eq!(state.pan, Vector::ZERO, "a wobble does not pan");
+        assert!(release_at(&program, &mut state, wobble).is_some());
+
+        // A drag that starts on a node pans the canvas and clicks nothing.
+        let pan_before = state.pan;
+        assert_eq!(press_at(&program, &mut state, leaf), None);
+        let far = Point::new(leaf.x + 40.0, leaf.y + 10.0);
+        assert_eq!(move_at(&program, &mut state, far), None);
+        assert_eq!(release_at(&program, &mut state, far), None);
+        assert_eq!(
+            state.pan,
+            Vector::new(pan_before.x + 40.0, pan_before.y + 10.0)
+        );
+    }
+
+    #[test]
+    fn a_press_that_leaves_the_canvas_or_ends_far_away_is_not_a_click() {
+        let mut program = pointer_program(notes_graph(), None);
+        program.autocenter = false;
+        let mut state = live_state();
+        let leaf = node_center(&program, DOWNLOADS);
+        // Past the right edge, for example over the panel.
+        let outside = Point::new(POINTER_BOUNDS.width + 40.0, leaf.y);
+
+        // A fast move leaves the canvas before it passes the slop inside.
+        assert_eq!(press_at(&program, &mut state, leaf), None);
+        assert_eq!(move_at(&program, &mut state, outside), None);
+        assert_eq!(
+            release_at(&program, &mut state, outside),
+            None,
+            "a release outside the canvas clicks nothing"
+        );
+        assert_eq!(state.pan, Vector::ZERO, "outside the canvas nothing pans");
+
+        // Out and back to the press point: the press already left.
+        assert_eq!(press_at(&program, &mut state, leaf), None);
+        assert_eq!(move_at(&program, &mut state, outside), None);
+        let _ = move_at(&program, &mut state, leaf);
+        assert_eq!(release_at(&program, &mut state, leaf), None);
+
+        // A release far from the press with no move event in between.
+        assert_eq!(press_at(&program, &mut state, leaf), None);
+        assert_eq!(
+            release_at(&program, &mut state, Point::new(leaf.x + 40.0, leaf.y)),
+            None,
+            "a far release inside the canvas is not a click"
+        );
+        assert_eq!(press_at(&program, &mut state, leaf), None);
+        assert_eq!(release_at(&program, &mut state, outside), None);
+
+        // Empty canvas: a release outside does not deselect.
+        let selected = pointer_program(notes_graph(), Some(PathId(DOWNLOADS.into())));
+        let empty = Point::new(5.0, 5.0);
+        assert_eq!(press_at(&selected, &mut state, empty), None);
+        assert_eq!(release_at(&selected, &mut state, outside), None);
+
+        // A still click still selects.
+        assert_eq!(
+            click_at(&program, &mut state, leaf),
+            Some(Ev::Select(PathId(DOWNLOADS.into())))
+        );
+    }
+
+    /// Screen center of a branch node's chevron at zoom 1 and no pan.
+    fn chevron_point(program: &MindmapProgram<'static, PathId, Ev>, path: &str) -> Point {
+        let node = &program.nodes[node_idx(program, path)];
+        Point::new(node.x + NODE_W - CHEVRON_INSET, node.y + NODE_H / 2.0)
+    }
+
+    fn click_at(
+        program: &MindmapProgram<'static, PathId, Ev>,
+        state: &mut MindmapState<PathId>,
+        at: Point,
+    ) -> Option<Ev> {
+        assert_eq!(press_at(program, state, at), None);
+        release_at(program, state, at)
+    }
+
+    #[test]
+    fn a_click_selects_a_branch_and_its_chevron_toggles_it() {
+        let mut program = pointer_program(notes_graph(), None);
+        program.autocenter = false;
+        let mut state = MindmapState::default();
+        let documents = PathId(DOCUMENTS.into());
+
+        let body = node_center(&program, DOCUMENTS);
+        assert_eq!(
+            click_at(&program, &mut state, body),
+            Some(Ev::Select(documents.clone())),
+            "the node body selects a branch"
+        );
+        let chevron = chevron_point(&program, DOCUMENTS);
+        assert_eq!(
+            click_at(&program, &mut state, chevron),
+            Some(Ev::Toggle(documents.clone())),
+            "the chevron folds it"
+        );
+        // Leaves have no chevron: the same spot selects.
+        let leaf = chevron_point(&program, DOWNLOADS);
+        assert_eq!(
+            click_at(&program, &mut state, leaf),
+            Some(Ev::Select(PathId(DOWNLOADS.into())))
+        );
+        assert_eq!(
+            canvas::Program::mouse_interaction(
+                &program,
+                &state,
+                POINTER_BOUNDS,
+                mouse::Cursor::Available(chevron)
+            ),
+            mouse::Interaction::Pointer
+        );
+
+        // Zoomed far out, the chevron keeps a 16 px target.
+        state.zoom = ZOOM_MIN;
+        let node = &program.nodes[node_idx(&program, DOCUMENTS)];
+        let center = Point::new(
+            (node.x + NODE_W - CHEVRON_INSET) * ZOOM_MIN,
+            (node.y + NODE_H / 2.0) * ZOOM_MIN,
+        );
+        let edge = Point::new(center.x, center.y + 7.5);
+        assert_eq!(
+            click_at(&program, &mut state, edge),
+            Some(Ev::Toggle(documents))
+        );
+    }
+
+    /// A canvas state as after its first event: zoom 1, no pan.
+    fn live_state() -> MindmapState<PathId> {
+        MindmapState {
+            zoom: 1.0,
+            initialized: true,
+            ..MindmapState::default()
+        }
+    }
+
+    /// Runs the redraw-time sync and finishes every animation.
+    fn settle(
+        program: &MindmapProgram<'static, PathId, Ev>,
+        state: &mut MindmapState<PathId>,
+        bounds: Rectangle,
+    ) {
+        program.sync_anim(state);
+        program.sync_focus_pan(state, bounds);
+        let done = Instant::now() - Duration::from_millis(1000);
+        for anim in state.anim.values_mut() {
+            anim.start_at = done;
+        }
+        if let Some(pan) = state.pan_anim.as_mut() {
+            pan.start_at = done;
+        }
+        program.step_anim(state);
+        program.step_pan_anim(state);
+    }
+
+    /// The program the app builds after a click selected `selected` and
+    /// opened the panel.
+    fn after_click(
+        nodes: Vec<MNode<PathId>>,
+        selected: &str,
+        generation: u64,
+    ) -> MindmapProgram<'static, PathId, Ev> {
+        let mut program = pointer_program(nodes, Some(PathId(selected.into())));
+        program.panel_open = true;
+        program.layout_generation = Some(generation);
+        program
+    }
+
+    /// Canvas bounds once the 360 px panel and its handle take their share.
+    const NARROWED: Rectangle = Rectangle {
+        x: 0.0,
+        y: 0.0,
+        width: 1000.0 - 360.0 - PANEL_HANDLE_W,
+        height: 800.0,
+    };
+
+    fn screen_of(
+        program: &MindmapProgram<'static, PathId, Ev>,
+        state: &MindmapState<PathId>,
+        path: &str,
+    ) -> Point {
+        let (x, y) = program.pos(state, node_idx(program, path));
+        Point::new(x * state.zoom + state.pan.x, y * state.zoom + state.pan.y)
+    }
+
+    #[test]
+    fn a_click_on_a_visible_node_keeps_the_canvas_still() {
+        let before = pointer_program(notes_graph(), None);
+        let mut state = live_state();
+        settle(&before, &mut state, POINTER_BOUNDS);
+        let pan = state.pan;
+
+        let leaf = node_center(&before, DOWNLOADS);
+        assert!(click_at(&before, &mut state, leaf).is_some());
+        // The app selects the node and opens the panel, which narrows the
+        // canvas. The node stays where it was clicked.
+        let after = after_click(notes_graph(), DOWNLOADS, 1);
+        settle(&after, &mut state, NARROWED);
+        assert_eq!(state.pan, pan, "no jump on click");
+
+        // Keyboard navigation still centers its node.
+        let key = iced::Event::Keyboard(keyboard::Event::KeyPressed {
+            key: keyboard::Key::Named(keyboard::key::Named::ArrowUp),
+            modified_key: keyboard::Key::Named(keyboard::key::Named::ArrowUp),
+            physical_key: keyboard::key::Physical::Code(keyboard::key::Code::ArrowUp),
+            location: keyboard::Location::Standard,
+            modifiers: keyboard::Modifiers::NONE,
+            text: None,
+            repeat: false,
+        });
+        let _ = pointer_send(&after, &mut state, key, leaf);
+        let keyed = after_click(notes_graph(), DOCUMENTS, 1);
+        settle(&keyed, &mut state, NARROWED);
+        let center = screen_of(&keyed, &state, DOCUMENTS);
+        assert!(
+            (center.x + NODE_W / 2.0 - NARROWED.width / 2.0).abs() < 0.5,
+            "keyboard selection centers: {center:?}"
+        );
+    }
+
+    #[test]
+    fn a_click_on_a_node_the_panel_would_cover_brings_it_into_view() {
+        let before = pointer_program(notes_graph(), None);
+        let mut state = live_state();
+        settle(&before, &mut state, POINTER_BOUNDS);
+        // Push Downloads toward the right edge, where the panel opens.
+        state.pan = Vector::new(250.0, 0.0);
+        let leaf = screen_of(&before, &state, DOWNLOADS);
+        let at = Point::new(leaf.x + 20.0, leaf.y + NODE_H / 2.0);
+        assert!(click_at(&before, &mut state, at).is_some());
+        let after = after_click(notes_graph(), DOWNLOADS, 1);
+        settle(&after, &mut state, NARROWED);
+        let shown = screen_of(&after, &state, DOWNLOADS);
+        assert!(
+            shown.x >= 0.0 && shown.x + NODE_W <= NARROWED.width,
+            "the node is fully visible beside the panel: {shown:?}"
+        );
+    }
+
+    #[test]
+    fn folding_from_the_chevron_keeps_the_node_under_the_pointer() {
+        let before = pointer_program(notes_graph(), None);
+        let mut state = live_state();
+        settle(&before, &mut state, POINTER_BOUNDS);
+        let clicked = screen_of(&before, &state, DOCUMENTS);
+        let chevron = chevron_point(&before, DOCUMENTS);
+        assert_eq!(
+            click_at(&before, &mut state, chevron),
+            Some(Ev::Toggle(PathId(DOCUMENTS.into())))
+        );
+        // Folding Documents moves it in the rebuilt layout.
+        let mut folded = folder_graph(None);
+        folded[1].has_hidden_children = true;
+        let after = after_click(folded, DOCUMENTS, 2);
+        after.sync_anim(&mut state);
+        let moved = &after.nodes[node_idx(&after, DOCUMENTS)];
+        assert_ne!(moved.y, clicked.y, "the fixture must move the node");
+        settle(&after, &mut state, NARROWED);
+        let shown = screen_of(&after, &state, DOCUMENTS);
+        assert!(
+            (shown.x - clicked.x).abs() < 0.5 && (shown.y - clicked.y).abs() < 0.5,
+            "the folded node stays put: {clicked:?} -> {shown:?}"
+        );
+    }
+
+    /// A click whose release happens at `now`, so the double-click
+    /// interval is measured on a test clock, not the wall clock.
+    fn click_at_time(
+        program: &MindmapProgram<'static, PathId, Ev>,
+        state: &mut MindmapState<PathId>,
+        at: Point,
+        now: Instant,
+    ) -> Option<Ev> {
+        assert_eq!(press_at(program, state, at), None);
+        program
+            .release(state, now, Some(at))
+            .and_then(|action| action.into_inner().0)
+    }
+
+    #[test]
+    fn a_double_click_survives_the_opening_panel_moving_its_node() {
+        let before = pointer_program(notes_graph(), None);
+        let mut state = live_state();
+        settle(&before, &mut state, POINTER_BOUNDS);
+        // Downloads straddles the edge the panel opens to: its left half
+        // stays on the canvas, the right half goes under the panel.
+        let laid_out = &before.nodes[node_idx(&before, DOWNLOADS)];
+        state.pan = Vector::new(NARROWED.width - NODE_W / 2.0 - laid_out.x, 0.0);
+        let leaf = screen_of(&before, &state, DOWNLOADS);
+        let at = Point::new(leaf.x + 20.0, leaf.y + NODE_H / 2.0);
+        assert!(at.x < NARROWED.width, "the click stays on the canvas");
+        let downloads = PathId(DOWNLOADS.into());
+        let t0 = Instant::now();
+        assert_eq!(
+            click_at_time(&before, &mut state, at, t0),
+            Some(Ev::Select(downloads.clone()))
+        );
+        // The app selects it and opens the panel; the redraw brings the
+        // node into view, away from the pointer.
+        let after = after_click(notes_graph(), DOWNLOADS, 1);
+        settle(&after, &mut state, NARROWED);
+        assert_ne!(
+            after.node_at(&state, at),
+            Some(node_idx(&after, DOWNLOADS)),
+            "the fixture must move the node from under the pointer"
+        );
+        assert_eq!(
+            click_at_time(&after, &mut state, at, t0 + Duration::from_millis(150)),
+            Some(Ev::Activate(downloads.clone())),
+            "the second click where the first landed still activates"
+        );
+
+        // Too slow, it is a click on empty canvas again.
+        let t1 = t0 + Duration::from_secs(4);
+        let mut state = live_state();
+        settle(&before, &mut state, POINTER_BOUNDS);
+        state.pan = Vector::new(NARROWED.width - NODE_W / 2.0 - laid_out.x, 0.0);
+        let _ = click_at_time(&before, &mut state, at, t1);
+        settle(&after, &mut state, NARROWED);
+        assert_eq!(
+            click_at_time(
+                &after,
+                &mut state,
+                at,
+                t1 + DOUBLE_CLICK + Duration::from_millis(1)
+            ),
+            Some(Ev::Deselect)
+        );
+    }
+
+    #[test]
+    fn a_double_click_activates_and_a_slow_second_click_selects() {
+        let mut program = pointer_program(notes_graph(), None);
+        program.autocenter = false;
+        let mut state = live_state();
+        let leaf = node_center(&program, DOWNLOADS);
+        let other = node_center(&program, DOCUMENTS);
+        let downloads = PathId(DOWNLOADS.into());
+        let t0 = Instant::now();
+        let ms = Duration::from_millis;
+
+        assert_eq!(
+            click_at_time(&program, &mut state, leaf, t0),
+            Some(Ev::Select(downloads.clone()))
+        );
+        assert_eq!(
+            click_at_time(&program, &mut state, leaf, t0 + ms(150)),
+            Some(Ev::Activate(downloads.clone())),
+            "a quick second click on the same node activates it"
+        );
+        // A third quick click starts over instead of activating again.
+        assert_eq!(
+            click_at_time(&program, &mut state, leaf, t0 + ms(250)),
+            Some(Ev::Select(downloads.clone()))
+        );
+
+        // Too slow: two single clicks.
+        let t1 = t0 + ms(2_000);
+        assert_eq!(
+            click_at_time(&program, &mut state, leaf, t1),
+            Some(Ev::Select(downloads.clone()))
+        );
+        assert_eq!(
+            click_at_time(&program, &mut state, leaf, t1 + DOUBLE_CLICK + ms(1)),
+            Some(Ev::Select(downloads.clone()))
+        );
+
+        // Two different nodes: two single clicks.
+        let t2 = t1 + ms(4_000);
+        assert!(matches!(
+            click_at_time(&program, &mut state, other, t2),
+            Some(Ev::Select(_))
+        ));
+        assert_eq!(
+            click_at_time(&program, &mut state, leaf, t2 + ms(100)),
+            Some(Ev::Select(downloads.clone()))
+        );
+
+        // A chevron click never counts toward a double click.
+        let t3 = t2 + ms(4_000);
+        let chevron = chevron_point(&program, DOCUMENTS);
+        assert!(matches!(
+            click_at_time(&program, &mut state, chevron, t3),
+            Some(Ev::Toggle(_))
+        ));
+        assert!(matches!(
+            click_at_time(&program, &mut state, other, t3 + ms(100)),
+            Some(Ev::Select(_))
+        ));
+
+        // Without an activate action a double click is two selections.
+        program.on_activate = None;
+        let t4 = t3 + ms(4_000);
+        assert!(click_at_time(&program, &mut state, leaf, t4).is_some());
+        assert_eq!(
+            click_at_time(&program, &mut state, leaf, t4 + ms(100)),
+            Some(Ev::Select(downloads))
+        );
+    }
+
+    #[test]
+    fn a_double_click_activates_a_document_heading_and_the_root() {
+        #[derive(Debug, Clone, PartialEq)]
+        enum DocEv {
+            Toggle(BlockId),
+            Select(BlockId),
+            Activate(BlockId),
+            Deselect,
+        }
+        let ast = vec![heading(1, 1, "Top"), heading(2, 2, "Child")];
+        let (nodes, content_size) = build_layout(&ast, None, &HashSet::new());
+        let program = MindmapProgram {
+            nodes: std::sync::Arc::new(nodes),
+            content_size,
+            palette: Palette::ONE_DARK,
+            background: Palette::ONE_DARK.bg,
+            selected: None,
+            focus: None,
+            panel_open: false,
+            panel_width: 360.0,
+            autocenter: false,
+            layout_generation: Some(1),
+            keyboard_zoom_enabled: false,
+            native_pinch_log: 0.0,
+            zoom_request: ZoomRequest::default(),
+            on_toggle: Box::new(DocEv::Toggle),
+            on_select: Box::new(DocEv::Select),
+            on_activate: Some(Box::new(DocEv::Activate)),
+            hover_text: None,
+            on_deselect: DocEv::Deselect,
+        };
+        let mut state = MindmapState {
+            zoom: 1.0,
+            initialized: true,
+            ..MindmapState::default()
+        };
+        let mut click = |id: BlockId, now: Instant| {
+            let node = program
+                .nodes
+                .iter()
+                .find(|node| node.id == Some(id))
+                .expect("node");
+            // The label, clear of a branch's chevron.
+            let at = Point::new(node.x + 40.0, node.y + NODE_H / 2.0);
+            let pressed = canvas::Program::update(
+                &program,
+                &mut state,
+                &iced::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)),
+                POINTER_BOUNDS,
+                mouse::Cursor::Available(at),
+            );
+            assert!(pressed.is_some_and(|action| action.into_inner().0.is_none()));
+            program
+                .release(&mut state, now, Some(at))
+                .and_then(|action| action.into_inner().0)
+        };
+        let t0 = Instant::now();
+        let quick = t0 + Duration::from_millis(150);
+        let child = BlockId(2);
+        assert_eq!(click(child, t0), Some(DocEv::Select(child)));
+        assert_eq!(click(child, quick), Some(DocEv::Activate(child)));
+        let later = t0 + Duration::from_secs(5);
+        assert_eq!(click(DOC_ROOT, later), Some(DocEv::Select(DOC_ROOT)));
+        assert_eq!(
+            click(DOC_ROOT, later + Duration::from_millis(150)),
+            Some(DocEv::Activate(DOC_ROOT))
+        );
+    }
+
+    #[test]
+    fn hover_fills_a_clickable_node_and_a_still_pointer_redraws_nothing() {
+        let program = pointer_program(notes_graph(), None);
+        let mut state = live_state();
+        let leaf = node_center(&program, DOWNLOADS);
+        let hover = |state: &mut MindmapState<PathId>, at: Point| {
+            canvas::Program::update(
+                &program,
+                state,
+                &iced::Event::Mouse(mouse::Event::CursorMoved { position: at }),
+                POINTER_BOUNDS,
+                mouse::Cursor::Available(at),
+            )
+            .map(|action| action.into_inner().1)
+        };
+
+        assert_eq!(
+            hover(&mut state, leaf),
+            Some(window::RedrawRequest::NextFrame),
+            "entering a node redraws once"
+        );
+        assert_eq!(
+            program.hover_highlight(&state),
+            Some(node_idx(&program, DOWNLOADS))
+        );
+        let inside = Point::new(leaf.x + 30.0, leaf.y);
+        assert_eq!(
+            hover(&mut state, inside),
+            None,
+            "moving within it: no redraw"
+        );
+        assert_eq!(
+            hover(&mut state, inside),
+            None,
+            "a still pointer: no redraw"
+        );
+
+        // Empty canvas and the document's unselectable root get no fill.
+        assert_eq!(
+            hover(&mut state, Point::new(5.0, 5.0)),
+            Some(window::RedrawRequest::NextFrame)
+        );
+        assert_eq!(program.hover_highlight(&state), None);
+        let mut doc_nodes = notes_graph();
+        doc_nodes[0].id = None;
+        let doc = pointer_program(doc_nodes, None);
+        let mut doc_state = live_state();
+        let root = Point::new(doc.nodes[0].x + 20.0, doc.nodes[0].y + 10.0);
+        let _ = move_at(&doc, &mut doc_state, root);
+        assert_eq!(doc.hover_highlight(&doc_state), None);
+
+        // A drag shows the grab, not a hover fill.
+        let _ = move_at(&program, &mut state, leaf);
+        let _ = press_at(&program, &mut state, leaf);
+        let _ = move_at(&program, &mut state, Point::new(leaf.x + 30.0, leaf.y));
+        assert_eq!(program.hover_highlight(&state), None);
+    }
+
+    /// One redraw with the pointer at `at`; returns its redraw request.
+    fn redraw_at(
+        program: &MindmapProgram<'static, PathId, Ev>,
+        state: &mut MindmapState<PathId>,
+        at: Point,
+    ) -> Option<window::RedrawRequest> {
+        canvas::Program::update(
+            program,
+            state,
+            &iced::Event::Window(window::Event::RedrawRequested(Instant::now())),
+            POINTER_BOUNDS,
+            mouse::Cursor::Available(at),
+        )
+        .map(|action| action.into_inner().1)
+        .filter(|request| *request != window::RedrawRequest::Wait)
+    }
+
+    #[test]
+    fn the_hover_follows_the_node_under_a_still_pointer() {
+        // The node list changes under a still pointer: a folder gains
+        // children, and the node at the hovered index moves away.
+        let before = pointer_program(folder_graph(None), None);
+        let mut state = live_state();
+        settle(&before, &mut state, POINTER_BOUNDS);
+        let at = node_center(&before, DOWNLOADS);
+        let _ = move_at(&before, &mut state, at);
+        let downloads = node_idx(&before, DOWNLOADS);
+        assert_eq!(before.hover_highlight(&state), Some(downloads));
+        let mut after = pointer_program(notes_graph(), None);
+        after.autocenter = false;
+        settle(&after, &mut state, POINTER_BOUNDS);
+        let under = after.node_at(&state, at);
+        assert_ne!(under, Some(node_idx(&after, DOWNLOADS)), "it moved");
+        assert_eq!(
+            redraw_at(&after, &mut state, at),
+            None,
+            "the hover fix costs no extra frame"
+        );
+        assert_eq!(after.hover_highlight(&state), under);
+
+        // A zoom button zooms about the canvas center, not the pointer.
+        let mut program = pointer_program(notes_graph(), None);
+        program.autocenter = false;
+        let mut state = live_state();
+        settle(&program, &mut state, POINTER_BOUNDS);
+        let at = node_center(&program, DOWNLOADS);
+        let _ = move_at(&program, &mut state, at);
+        let _ = redraw_at(&program, &mut state, at);
+        for _ in 0..3 {
+            program.zoom_request = program.zoom_request.next(ZoomCommand::In);
+            let _ = redraw_at(&program, &mut state, at);
+            finish_zoom(&mut state);
+        }
+        let _ = redraw_at(&program, &mut state, at);
+        let under = program.node_at(&state, at);
+        assert_ne!(under, Some(node_idx(&program, DOWNLOADS)), "it moved");
+        assert_eq!(program.hover_highlight(&state), under);
+
+        // A drag hides the fill; its release redraws once to bring it back.
+        let _ = press_at(&program, &mut state, at);
+        let far = Point::new(at.x + 60.0, at.y);
+        let _ = move_at(&program, &mut state, far);
+        let released = canvas::Program::update(
+            &program,
+            &mut state,
+            &iced::Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)),
+            POINTER_BOUNDS,
+            mouse::Cursor::Available(far),
+        )
+        .map(|action| action.into_inner().1);
+        assert_eq!(released, Some(window::RedrawRequest::NextFrame));
+    }
+
+    #[test]
+    fn a_hover_text_tooltip_shows_for_every_node() {
+        let mut program = pointer_program(notes_graph(), None);
+        let downloads = node_idx(&program, DOWNLOADS);
+        assert_eq!(
+            program.tooltip_text(downloads),
+            None,
+            "short labels need none"
+        );
+        program.hover_text = Some(Box::new(|id: &PathId| Some(id.0.clone())));
+        assert_eq!(program.tooltip_text(downloads).as_deref(), Some(DOWNLOADS));
+
+        // A path too wide for the canvas keeps its end, where the name is.
+        let long = format!("/{}/notes.md", "very-long-folder".repeat(20));
+        let (fitted, cut) = fit_tail_at(&long, 300.0, FONT_SIZE);
+        assert!(cut && fitted.starts_with('…') && fitted.ends_with("/notes.md"));
+        assert!(text_width_at(&fitted, FONT_SIZE) <= 300.0);
+    }
+
     #[test]
     fn touch_geometry_uses_two_finger_distance_and_midpoint() {
         let points = vec![
@@ -2272,5 +3547,116 @@ mod tests {
 
         assert_eq!(span, 5.0);
         assert_eq!(center, Point::new(11.5, 22.0));
+    }
+
+    /// One redraw of the canvas, the event that applies a zoom request.
+    fn redraw(program: &MindmapProgram<'static, PathId, Ev>, state: &mut MindmapState<PathId>) {
+        let _ = canvas::Program::update(
+            program,
+            state,
+            &iced::Event::Window(window::Event::RedrawRequested(Instant::now())),
+            POINTER_BOUNDS,
+            mouse::Cursor::Unavailable,
+        );
+    }
+
+    /// Ends any zoom animation at its target.
+    fn finish_zoom(state: &mut MindmapState<PathId>) {
+        if let Some(animation) = state.zoom_anim.as_mut() {
+            animation.start_at = Instant::now() - Duration::from_secs(1);
+        }
+        step_zoom_animation(state);
+    }
+
+    fn press_zoom(
+        program: &mut MindmapProgram<'static, PathId, Ev>,
+        state: &mut MindmapState<PathId>,
+        command: ZoomCommand,
+    ) {
+        program.zoom_request = program.zoom_request.next(command);
+        redraw(program, state);
+        finish_zoom(state);
+    }
+
+    #[test]
+    fn zoom_buttons_fit_step_and_reset_the_canvas() {
+        let mut program = pointer_program(notes_graph(), None);
+        program.autocenter = false;
+        program.content_size = Size::new(2000.0, 400.0);
+        let mut state = live_state();
+
+        // A canvas that first sees a request replays nothing.
+        program.zoom_request = ZoomRequest::default().next(ZoomCommand::In);
+        redraw(&program, &mut state);
+        finish_zoom(&mut state);
+        assert_eq!(state.zoom, 1.0, "no replay on a new canvas");
+
+        press_zoom(&mut program, &mut state, ZoomCommand::Fit);
+        let fit = (1000.0f32 / 2000.0).min((800.0 - FIT_BOTTOM_INSET) / 400.0);
+        assert!((state.zoom - fit).abs() < 1e-4, "fit zoom {}", state.zoom);
+        let usable_h = 800.0 - FIT_BOTTOM_INSET;
+        assert!((state.pan.x - (1000.0 - 2000.0 * fit) / 2.0).abs() < 0.5);
+        assert!((state.pan.y - (usable_h - 400.0 * fit) / 2.0).abs() < 0.5);
+
+        // Without a new press a redraw leaves the view alone.
+        let before = (state.zoom, state.pan);
+        redraw(&program, &mut state);
+        finish_zoom(&mut state);
+        assert_eq!((state.zoom, state.pan), before);
+
+        press_zoom(&mut program, &mut state, ZoomCommand::In);
+        assert!((state.zoom - fit * KEYBOARD_ZOOM_FACTOR).abs() < 1e-4);
+        press_zoom(&mut program, &mut state, ZoomCommand::Out);
+        assert!((state.zoom - fit).abs() < 1e-4);
+        press_zoom(&mut program, &mut state, ZoomCommand::Reset);
+        assert!((state.zoom - 1.0).abs() < 1e-4);
+
+        // A small map fits at 100%, not blown up.
+        program.content_size = Size::new(300.0, 200.0);
+        press_zoom(&mut program, &mut state, ZoomCommand::Out);
+        press_zoom(&mut program, &mut state, ZoomCommand::Fit);
+        assert!((state.zoom - 1.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn a_drag_keeps_part_of_the_map_on_screen() {
+        let mut program = pointer_program(notes_graph(), None);
+        program.autocenter = false;
+        program.content_size = Size::new(600.0, 300.0);
+        let mut state = live_state();
+
+        // Up and left as far as the canvas allows.
+        let low = Point::new(990.0, 790.0);
+        let high = Point::new(10.0, 10.0);
+        assert_eq!(press_at(&program, &mut state, low), None);
+        let _ = move_at(&program, &mut state, high);
+        let _ = release_at(&program, &mut state, high);
+        assert!(
+            state.pan.x + 600.0 >= PAN_KEEP_VISIBLE - 0.01
+                && state.pan.y + 300.0 >= PAN_KEEP_VISIBLE - 0.01,
+            "the map's far corner stays on screen: {:?}",
+            state.pan
+        );
+
+        // Then down and right, twice.
+        for _ in 0..2 {
+            assert_eq!(press_at(&program, &mut state, high), None);
+            let _ = move_at(&program, &mut state, low);
+            let _ = release_at(&program, &mut state, low);
+        }
+        assert!(
+            state.pan.x <= 1000.0 - PAN_KEEP_VISIBLE + 0.01
+                && state.pan.y <= 800.0 - PAN_KEEP_VISIBLE + 0.01,
+            "the map's near corner stays on screen: {:?}",
+            state.pan
+        );
+
+        // A drag that starts out of range (after a zoom) never jumps.
+        state.pan = Vector::new(-2000.0, 0.0);
+        let from = Point::new(500.0, 400.0);
+        assert_eq!(press_at(&program, &mut state, from), None);
+        let _ = move_at(&program, &mut state, Point::new(510.0, 400.0));
+        assert_eq!(state.pan, Vector::new(-1990.0, 0.0));
+        let _ = release_at(&program, &mut state, Point::new(510.0, 400.0));
     }
 }

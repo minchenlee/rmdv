@@ -52,7 +52,12 @@ const SCROLLER_FADE_MS: u64 = 1200;
 const SIDEBAR_MIN: f32 = 160.0;
 const SIDEBAR_MAX: f32 = 600.0;
 const MIND_PANEL_DEFAULT: f32 = 380.0;
+/// Container id of the document mind map panel's text area.
+const MINDMAP_PANEL_TEXT_ID: &str = "mindmap-panel-text";
 const MIND_PANEL_MIN: f32 = 240.0;
+/// A dragged mind map panel stops at this fraction of the window width, so
+/// the canvas keeps room.
+const MIND_PANEL_MAX_FRAC: f32 = 0.8;
 /// Window-width fractions cycled by ⌘⌥W: 1/3, 1/2, 2/3.
 const MIND_PANEL_FRACS: [f32; 3] = [1.0 / 3.0, 0.5, 2.0 / 3.0];
 const MIND_PANEL_MAX_BLOCKS: usize = 80;
@@ -91,8 +96,17 @@ fn mindmap_panel_width_for_step(step: usize, window_size: Option<iced::Size>) ->
         .max(MIND_PANEL_MIN)
 }
 
-fn mindmap_panel_width_for_drag(origin: f32, anchor: f32, cursor_x: f32) -> f32 {
-    (origin + anchor - cursor_x).max(MIND_PANEL_MIN)
+fn mindmap_panel_width_for_drag(
+    origin: f32,
+    anchor: f32,
+    cursor_x: f32,
+    window_size: Option<iced::Size>,
+) -> f32 {
+    let max = window_size
+        .map(|size| size.width * MIND_PANEL_MAX_FRAC)
+        .unwrap_or(f32::INFINITY)
+        .max(MIND_PANEL_MIN);
+    (origin + anchor - cursor_x).clamp(MIND_PANEL_MIN, max)
 }
 
 fn editor_font() -> iced::Font {
@@ -368,6 +382,11 @@ pub struct App {
     /// stream. Keeping them separate prevents a mode switch from replaying a
     /// gesture into the other graph.
     pub full_mindmap_native_pinch_log: f64,
+    /// The latest zoom button press for the document mind map and for Full
+    /// Mindmap. Each canvas keeps its own zoom; see
+    /// [`crate::mindmap::ZoomRequest`].
+    pub mindmap_zoom_request: crate::mindmap::ZoomRequest,
+    pub full_mindmap_zoom_request: crate::mindmap::ZoomRequest,
     /// Cached mindmap layout, lazily rebuilt from (ast, file, mindmap_collapsed).
     /// Every mutation of those inputs must invalidate it or atomically replace
     /// it with a layout built from the new state.
@@ -652,6 +671,8 @@ impl Default for App {
             mindmap_autocenter,
             mindmap_native_pinch_log: 0.0,
             full_mindmap_native_pinch_log: 0.0,
+            mindmap_zoom_request: crate::mindmap::ZoomRequest::default(),
+            full_mindmap_zoom_request: crate::mindmap::ZoomRequest::default(),
             mindmap_layout: std::cell::RefCell::new(None),
             mindmap_layout_generation: std::cell::Cell::new(0),
             mindmap_data_panel: std::cell::RefCell::new(None),
@@ -2228,6 +2249,12 @@ impl App {
         let Some(idx) = crate::ipc::lines::block_for_line(line, &self.block_lines) else {
             return Task::none();
         };
+        self.scroll_to_block_top(idx)
+    }
+
+    /// Shows the Reader with the heading at `idx` at the top. Any other
+    /// block is a no-op.
+    fn scroll_to_block_top(&mut self, idx: usize) -> Task<Message> {
         let Some((id, Block::Heading { .. })) = self.ast.get(idx) else {
             return Task::none();
         };
@@ -2574,7 +2601,16 @@ impl App {
     fn mindmap_panel_range(&self, target: BlockId) -> Option<(usize, usize, bool)> {
         let mut start = None;
         let mut natural_end = self.ast.len();
-        for (i, (id, b)) in self.ast.iter().enumerate() {
+        if target == crate::mindmap::DOC_ROOT {
+            // The root shows the document from its top, within the same caps.
+            start = Some(0).filter(|_| !self.ast.is_empty());
+        }
+        let blocks = self
+            .ast
+            .iter()
+            .enumerate()
+            .take_while(|_| target != crate::mindmap::DOC_ROOT);
+        for (i, (id, b)) in blocks {
             if start.is_none() {
                 if *id == target && matches!(b, Block::Heading { .. }) {
                     start = Some(i);
@@ -2603,6 +2639,19 @@ impl App {
     /// subtree and render it through the shared data code-block view. The pretty
     /// string is cached in `mindmap_data_panel` so it is computed at most once
     /// per selection change (mirrors the markdown panel's settle behavior).
+    /// Padded panel text. The right side clears the panel's close button,
+    /// which floats over the top-right corner.
+    fn mindmap_panel_text_area(content: Element<'_, Message>) -> Element<'_, Message> {
+        container(container(content).id(iced::widget::Id::new(MINDMAP_PANEL_TEXT_ID)))
+            .padding(Padding {
+                top: 24.0,
+                right: 40.0,
+                bottom: 24.0,
+                left: 24.0,
+            })
+            .into()
+    }
+
     fn mindmap_data_panel_view(
         &self,
         pal: &Palette,
@@ -2646,7 +2695,7 @@ impl App {
             .into(),
         };
 
-        let scrolled = scrollable(container(content).padding(Padding::from([24, 24])))
+        let scrolled = scrollable(Self::mindmap_panel_text_area(content))
             .height(Length::Shrink)
             .direction(slim_scroll_direction())
             .style(move |_, status| sleek_scrollable_style(status, pal_c, recently_scrolled));
@@ -2676,7 +2725,7 @@ impl App {
         let pal_c = *pal;
         let content: Element<'_, Message> = match self.mindmap_panel_shown {
             None => container(
-                text("Click a leaf heading to see its content")
+                text("Click a heading to see its content")
                     .color(pal.muted)
                     .size(13),
             )
@@ -2723,7 +2772,7 @@ impl App {
         // overflows. The scrollable measures the inner column's natural height:
         // a Fill-height wrapper would clamp to the viewport and kill scrolling,
         // so instead we anchor the column and let the outer container center it.
-        let scrolled = scrollable(container(content).padding(Padding::from([24, 24])))
+        let scrolled = scrollable(Self::mindmap_panel_text_area(content))
             .height(Length::Shrink)
             .direction(slim_scroll_direction())
             .style(move |_, status| sleek_scrollable_style(status, pal_c, recently_scrolled));
@@ -3633,8 +3682,17 @@ impl App {
                         && !self.search_open
                         && !self.fold_chord_pending,
                     native_pinch_log: self.mindmap_native_pinch_log,
+                    zoom_request: self.mindmap_zoom_request,
                     on_toggle: Box::new(Message::MindmapToggleNode),
                     on_select: Box::new(Message::MindmapSelectLeaf),
+                    // A double click reads a heading in the Reader. The
+                    // JSON/YAML map has no reader position to jump to.
+                    on_activate: if self.is_data_doc {
+                        None
+                    } else {
+                        Some(Box::new(Message::MindmapActivateNode))
+                    },
+                    hover_text: None,
                     on_deselect: Message::MindmapDeselect,
                 };
                 let canvas_el: Element<'_, Message> = iced::widget::canvas(program)
@@ -3643,14 +3701,15 @@ impl App {
                     .into();
                 let canvas_with_hint: Element<'_, Message> = stack![
                     canvas_el,
-                    floating_mindmap_hint(
-                        &[("←↑→↓", "move"), ("Space", "fold"), ("= / −", "zoom"),],
-                        pal,
-                    ),
+                    floating_mindmap_controls(&[("←↑→↓", "move"), ("Space", "fold")], pal),
                 ]
                 .width(Length::Fill)
                 .height(Length::Fill)
                 .into();
+                // The canvas keeps its tree position whether or not the
+                // panel is shown, so a panel toggle keeps its zoom, pan, and
+                // pointer focus.
+                let mut body = irow![canvas_with_hint];
                 if self.mindmap_panel_open {
                     let panel = self.mindmap_panel_view(
                         &pal,
@@ -3658,11 +3717,11 @@ impl App {
                         recently_scrolled,
                         self.mindmap_panel_width,
                     );
-                    let handle = mindmap_panel_resize_handle(reader_fill);
-                    irow![canvas_with_hint, handle, panel].into()
-                } else {
-                    canvas_with_hint
+                    let panel = with_panel_close(panel, Message::ToggleMindmapPanel, pal);
+                    let handle = mindmap_panel_resize_handle(reader_fill, pal);
+                    body = body.push(handle).push(panel);
                 }
+                body.into()
             } else if self.view_mode == ViewMode::Raw {
                 if let Some(ed) = self.editor.as_ref() {
                     let editor = iced::widget::text_editor(ed)

@@ -1643,3 +1643,7 @@ mod links;
 // --- Polish: sidebar peek at the left window edge --------------------------
 
 mod sidebar_peek;
+
+// --- P4: the mind map pointer model -------------------------------------------
+
+mod mindmap;

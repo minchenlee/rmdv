@@ -319,7 +319,10 @@ impl App {
             .context
             .mindmap_selection
             .map(crate::ast::BlockId)
-            .filter(|id| self.ast.iter().any(|(block_id, _)| block_id == id));
+            .filter(|id| {
+                *id == crate::mindmap::DOC_ROOT
+                    || self.ast.iter().any(|(block_id, _)| block_id == id)
+            });
         self.mindmap_panel_shown = self.mindmap_selected;
         self.mindmap_panel_open = slot.context.mindmap_panel_open;
         self.finish_pending_quick_slot_restore();

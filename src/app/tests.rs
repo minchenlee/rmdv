@@ -2460,7 +2460,11 @@ fn document_mindmap_fold_levels_limit_visible_heading_depth_and_zero_resets() {
     let (nodes, _, _) = app.mindmap_layout();
     assert_eq!(nodes.iter().map(|node| node.level).max(), Some(1));
     assert_eq!(
-        nodes.iter().filter_map(|node| node.id).collect::<Vec<_>>(),
+        nodes
+            .iter()
+            .skip(1)
+            .filter_map(|node| node.id)
+            .collect::<Vec<_>>(),
         vec![BlockId(1), BlockId(4)]
     );
     assert!(app.folded.is_empty());
@@ -2509,21 +2513,33 @@ fn document_mindmap_fold_levels_use_structural_depth_when_headings_skip_ranks() 
     let _ = app.update(Message::FoldToLevel(1));
     let (nodes, _, _) = app.mindmap_layout();
     assert_eq!(
-        nodes.iter().filter_map(|node| node.id).collect::<Vec<_>>(),
+        nodes
+            .iter()
+            .skip(1)
+            .filter_map(|node| node.id)
+            .collect::<Vec<_>>(),
         vec![BlockId(1), BlockId(4)]
     );
 
     let _ = app.update(Message::FoldToLevel(2));
     let (nodes, _, _) = app.mindmap_layout();
     assert_eq!(
-        nodes.iter().filter_map(|node| node.id).collect::<Vec<_>>(),
+        nodes
+            .iter()
+            .skip(1)
+            .filter_map(|node| node.id)
+            .collect::<Vec<_>>(),
         vec![BlockId(1), BlockId(2), BlockId(4)]
     );
 
     let _ = app.update(Message::FoldToLevel(0));
     let (nodes, _, _) = app.mindmap_layout();
     assert_eq!(
-        nodes.iter().filter_map(|node| node.id).collect::<Vec<_>>(),
+        nodes
+            .iter()
+            .skip(1)
+            .filter_map(|node| node.id)
+            .collect::<Vec<_>>(),
         vec![BlockId(1), BlockId(2), BlockId(3), BlockId(4)]
     );
 }
@@ -5908,8 +5924,14 @@ fn mindmap_panel_width_keeps_minimum_on_narrow_windows() {
 
 #[test]
 fn mindmap_panel_drag_has_no_upper_cap() {
-    assert_eq!(mindmap_panel_width_for_drag(800.0, 400.0, 0.0), 1200.0);
-    assert_eq!(mindmap_panel_width_for_drag(400.0, 400.0, 600.0), 240.0);
+    assert_eq!(
+        mindmap_panel_width_for_drag(800.0, 400.0, 0.0, None),
+        1200.0
+    );
+    assert_eq!(
+        mindmap_panel_width_for_drag(400.0, 400.0, 600.0, None),
+        240.0
+    );
 }
 
 #[test]
