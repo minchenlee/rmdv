@@ -82,7 +82,12 @@ pub enum Message {
     PickerNavigate(PathBuf),
     PickerParent,
     PickerHome,
-    PickerSelectFolderHere,
+    /// A left press while the folder picker watches presses (it is open, or
+    /// a row click just closed it); `double` when the press completes a
+    /// double-click.
+    PickerPointerPress {
+        double: bool,
+    },
     /// Picker chose a file: open it AND select its parent as workspace.
     PickerOpenFile(PathBuf),
     OverlayQueryChanged(String),
@@ -271,6 +276,12 @@ pub enum Message {
     /// The hide delay after the pointer left the toolbar band ran out; the
     /// number is the hover generation that started it.
     ToolbarHideAfter(u64),
+    /// The pointer entered (true) or left (false) the sidebar peek: the band
+    /// at the left window edge, or the peeking sidebar itself.
+    SidebarPeek(bool),
+    /// The hide delay after the pointer left the sidebar peek ran out; the
+    /// number is the peek generation that started it.
+    SidebarPeekHideAfter(u64),
     /// A toolbar segment: show this view.
     ToolbarView(ToolbarView),
     /// A press on the toolbar's blank space or the sidebar header: move the
@@ -370,6 +381,9 @@ pub enum Message {
     CloseConfirmCancel,
     WindowUnfocused(iced::window::Id),
     RefreshWindowMode(iced::window::Id),
+    /// The window opened at this inner size (the toolbar centers the file
+    /// name on it before any resize).
+    WindowOpened(iced::window::Id, iced::Size),
     RefreshWindowModeSettled(iced::window::Id),
     WindowModeChanged(iced::window::Mode),
     /// Palette command: capture the window to a timestamped PNG on the Desktop.

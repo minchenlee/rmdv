@@ -17,6 +17,14 @@ impl App {
         // ⌘Q reads this from AppKit, outside the update loop.
         crate::macos_quit::set_unsaved(self.dirty);
         self.sync_toolbar_band();
+        self.sync_sidebar_peek();
+        // A folder click's double-click ends with the picker (Esc, an open,
+        // another overlay). `Closed` stays for the one press it swallows.
+        if self.overlay != Overlay::FolderPicker
+            && matches!(self.picker_click, PickerClick::Descended(_))
+        {
+            self.picker_click = PickerClick::Idle;
+        }
         if let Some(glass) = self.sync_glass() {
             task = Task::batch([task, glass]);
         }
@@ -861,6 +869,11 @@ impl App {
                 if generation == self.toolbar_hover_generation && !self.toolbar_hovered {
                     self.toolbar_revealed = false;
                 }
+                Task::none()
+            }
+            Message::SidebarPeek(entered) => self.sidebar_peek_hover(entered),
+            Message::SidebarPeekHideAfter(generation) => {
+                self.sidebar_peek_hide_after(generation);
                 Task::none()
             }
             Message::ToolbarView(target) => self.toolbar_view(target),
@@ -2010,6 +2023,11 @@ impl App {
                 }
                 self.refresh_window_mode_after_native_transition(id)
             }
+            Message::WindowOpened(id, size) => {
+                // A resize may already have reported a newer size.
+                self.window_size.get_or_insert(size);
+                self.update(Message::RefreshWindowMode(id))
+            }
             Message::RefreshWindowModeSettled(id) => self.window_mode_settle_fired(id),
             Message::WindowModeChanged(mode) => {
                 self.window_fullscreen = matches!(mode, iced::window::Mode::Fullscreen);
@@ -2318,7 +2336,7 @@ impl App {
             Message::PickerNavigate(p) => {
                 if let Some(pk) = self.picker.as_mut() {
                     if p.is_dir() {
-                        pk.navigate_to(p);
+                        pk.navigate_to(p.clone());
                         self.overlay_selected = 0;
                         self.list_pointer.settle();
                         // Leaf folder (no subfolders, readable): treat the
@@ -2328,8 +2346,10 @@ impl App {
                             let cwd = pk.cwd.clone();
                             self.overlay = Overlay::None;
                             self.picker = None;
+                            self.picker_click = PickerClick::Closed;
                             return Task::done(Message::OpenWorkspace(cwd));
                         }
+                        self.picker_click = PickerClick::Descended(p);
                     }
                 }
                 Task::none()
@@ -2350,15 +2370,28 @@ impl App {
                 }
                 Task::none()
             }
-            Message::PickerSelectFolderHere => {
-                if let Some(pk) = self.picker.take() {
-                    // Same close-then-open order as Enter on a folder row.
-                    self.overlay = Overlay::None;
-                    return Task::done(Message::OpenWorkspace(pk.cwd));
+            Message::PickerPointerPress { double } => {
+                // Any press consumes the last row click. Only the press that
+                // completes a double-click on the folder that click
+                // descended into opens it; the rows under the pointer have
+                // changed since.
+                let click = std::mem::take(&mut self.picker_click);
+                if let (true, PickerClick::Descended(folder)) = (double, click) {
+                    let still_there = self.overlay == Overlay::FolderPicker
+                        && self.picker.as_ref().is_some_and(|pk| pk.cwd == folder);
+                    if still_there {
+                        // Same close-then-open order as Enter on a folder row.
+                        self.overlay = Overlay::None;
+                        self.picker = None;
+                        return Task::done(Message::OpenWorkspace(folder));
+                    }
                 }
                 Task::none()
             }
             Message::PickerOpenFile(path) => {
+                if self.picker.is_some() {
+                    self.picker_click = PickerClick::Closed;
+                }
                 self.overlay = Overlay::None;
                 self.picker = None;
                 self.cancel_refresh_tracking();

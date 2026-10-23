@@ -49,6 +49,12 @@ pub mod ic {
     pub const SAVE: char = '\u{e14d}';
     /// Lucide "network" — Full Mindmap Mode.
     pub const NETWORK: char = '\u{e125}';
+    /// Lucide "book-open" — the Read view.
+    pub const BOOK_OPEN: char = '\u{e05f}';
+    /// Lucide "pencil-line" — the Edit view.
+    pub const PENCIL_LINE: char = '\u{e4f0}';
+    /// Lucide "git-fork" — the document Mind Map view.
+    pub const GIT_FORK: char = '\u{e28d}';
     /// Lucide "panel-left-open" — show the left sidebar.
     pub const PANEL_LEFT_OPEN: char = '\u{e21d}';
 }

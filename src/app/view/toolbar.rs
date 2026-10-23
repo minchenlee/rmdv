@@ -1,5 +1,5 @@
 //! The top toolbar: sidebar toggle, file name with its dirty dot, the
-//! Read / Edit / Mind Map switch, and Save, Find, Command Palette, Settings.
+//! Read / Edit / Mind Map / Full Mindmap switch (icons), and Save, Find, Command Palette, Settings.
 //! Every action here also has a keyboard shortcut; the toolbar is the pointer
 //! path to it.
 
@@ -86,39 +86,42 @@ pub(in crate::app) fn toolbar<'a>(
         ));
     }
 
-    // Middle: the file name and, while it has unsaved edits, a dot.
-    let mut name = irow![].spacing(6).align_y(iced::Alignment::Center);
-    if let Some(file) = app.file.as_deref() {
-        let label = file
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("?")
-            .to_string();
-        name = name.push(
-            text(label)
-                .size(12.5)
-                .color(pal.muted)
-                .wrapping(iced::widget::text::Wrapping::None),
-        );
-        if app.dirty {
-            name = name.push(
-                container(Space::new().width(6.0).height(6.0))
-                    .id(iced::widget::Id::new("toolbar-dirty-dot"))
-                    .style(move |_| container::Style {
-                        background: Some(pal.accent.into()),
-                        border: Border {
-                            radius: theme::radius::PILL.into(),
-                            ..Default::default()
-                        },
-                        ..Default::default()
-                    }),
-            );
+    // Middle: the file name, centered on the window, and while it has
+    // unsaved edits a dot after it. A long name is cut where the controls
+    // begin.
+    let name: Element<'a, Message> = match app.file.as_deref() {
+        Some(file) => {
+            let label = file
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("?")
+                .to_string();
+            container(
+                text(label)
+                    .size(12.5)
+                    .color(pal.muted)
+                    .wrapping(iced::widget::text::Wrapping::None),
+            )
+            .clip(true)
+            .into()
         }
-    }
-    let middle = container(name)
-        .width(Length::Fill)
-        .center_x(Length::Fill)
-        .clip(true);
+        None => Space::new().into(),
+    };
+    let dot: Element<'a, Message> = if app.file.is_some() && app.dirty {
+        container(Space::new().width(6.0).height(6.0))
+            .id(iced::widget::Id::new("toolbar-dirty-dot"))
+            .style(move |_| container::Style {
+                background: Some(pal.accent.into()),
+                border: Border {
+                    radius: theme::radius::PILL.into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            })
+            .into()
+    } else {
+        Space::new().into()
+    };
 
     // Right: the view switch, the document mind map's panel toggle, then
     // Save, Find, Command Palette, and Settings.
@@ -137,33 +140,50 @@ pub(in crate::app) fn toolbar<'a>(
         Some(ToolbarView::FullMindmap) => Some("Esc"),
         _ => None,
     };
-    let segment = |view: ToolbarView, content: Element<'a, Message>, enabled: bool| {
-        view_segment(
-            content,
-            current == Some(view),
+    // Each view is an icon; the tooltip names it and its shortcut. All four
+    // glyphs share one size, so the segments are equally wide.
+    let segment = |view: ToolbarView, enabled: bool| -> Element<'a, Message> {
+        let (code, id) = match view {
+            ToolbarView::Read => (ic::BOOK_OPEN, "view-read"),
+            ToolbarView::Edit => (ic::PENCIL_LINE, "view-edit"),
+            ToolbarView::Mindmap => (ic::GIT_FORK, "view-mindmap"),
+            ToolbarView::FullMindmap => (ic::NETWORK, "view-full-mindmap"),
+        };
+        let selected = current == Some(view);
+        let color = if selected {
+            pal.fg
+        } else if enabled {
+            pal.muted
+        } else {
+            pal.subtle
+        };
+        container(view_segment(
+            icon::glyph(code, 13.0, color).into(),
+            selected,
             enabled.then_some(Message::ToolbarView(view)),
             pal,
-        )
+        ))
+        .id(iced::widget::Id::new(id))
+        .into()
     };
-    let label = |s: &'a str| -> Element<'a, Message> { text(s).size(12).into() };
     let segments = irow![
         action_tip(
             // In Full Mindmap, Read leaves it even with no file open, as Back.
-            segment(ToolbarView::Read, label("Read"), has_file || full_mindmap),
+            segment(ToolbarView::Read, has_file || full_mindmap),
             "Read",
             read_key,
             Position::Bottom,
             pal,
         ),
         action_tip(
-            segment(ToolbarView::Edit, label("Edit"), has_file),
+            segment(ToolbarView::Edit, has_file),
             "Edit",
             Some("⌘E"),
             Position::Bottom,
             pal,
         ),
         action_tip(
-            segment(ToolbarView::Mindmap, label("Mind Map"), has_file),
+            segment(ToolbarView::Mindmap, has_file),
             "Mind Map",
             Some("⌘M"),
             Position::Bottom,
@@ -172,18 +192,6 @@ pub(in crate::app) fn toolbar<'a>(
         action_tip(
             segment(
                 ToolbarView::FullMindmap,
-                icon::glyph(
-                    ic::NETWORK,
-                    13.0,
-                    if full_mindmap {
-                        pal.fg
-                    } else if has_file || app.workspace.is_some() {
-                        pal.muted
-                    } else {
-                        pal.subtle
-                    },
-                )
-                .into(),
                 has_file || app.workspace.is_some(),
             ),
             "Full Mindmap",
@@ -270,17 +278,19 @@ pub(in crate::app) fn toolbar<'a>(
 
     let fill = look.fill;
     let radius = look.corner_radius;
+    const RIGHT_PAD: f32 = 10.0;
     let bar = container(
-        irow![left, middle, right]
-            .spacing(8)
-            .align_y(iced::Alignment::Center),
+        TitleRow::new(left, name, dot, right)
+            .gap(8.0)
+            .padding(look.left_inset, RIGHT_PAD)
+            .window_width(app.window_size.map(|size| size.width)),
     )
     .id(iced::widget::Id::new("toolbar"))
     .width(Length::Fill)
     .height(Length::Fixed(TOOLBAR_H))
     .padding(Padding {
         top: 0.0,
-        right: 10.0,
+        right: RIGHT_PAD,
         bottom: 0.0,
         left: look.left_inset,
     })

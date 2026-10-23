@@ -20,26 +20,27 @@ fn toolbar_setting_switches_between_hover_and_always_and_persists() {
     let mut app = App::default();
     let isolated = app.quick_slots_persistence_path.clone().unwrap();
     let saved = |path: &Path| crate::prefs::load_from(path).toolbar;
-    assert_eq!(app.prefs.toolbar, ToolbarMode::OnHover);
+    // A new user sees the toolbar.
+    assert_eq!(app.prefs.toolbar, ToolbarMode::Always);
 
     let _ = app.update(Message::OpenSettings);
     let _ = app.update(Message::SettingsCursor(settings_row_index(
         SettingsRow::Toolbar,
     )));
-    // → picks Always, ← picks On hover, Space flips.
-    let _ = app.update(Message::SettingsStep(1));
-    assert_eq!(app.prefs.toolbar, ToolbarMode::Always);
-    assert_eq!(saved(&isolated), ToolbarMode::Always);
-    let _ = app.update(Message::SettingsStep(1));
-    assert_eq!(app.prefs.toolbar, ToolbarMode::Always);
+    // ← picks On hover, → picks Always, Space flips.
     let _ = app.update(Message::SettingsStep(-1));
     assert_eq!(app.prefs.toolbar, ToolbarMode::OnHover);
     assert_eq!(saved(&isolated), ToolbarMode::OnHover);
-    let _ = app.update(Message::SettingsActivate);
+    let _ = app.update(Message::SettingsStep(-1));
+    assert_eq!(app.prefs.toolbar, ToolbarMode::OnHover);
+    let _ = app.update(Message::SettingsStep(1));
     assert_eq!(app.prefs.toolbar, ToolbarMode::Always);
+    assert_eq!(saved(&isolated), ToolbarMode::Always);
     let _ = app.update(Message::SettingsActivate);
     assert_eq!(app.prefs.toolbar, ToolbarMode::OnHover);
-    assert_eq!(saved(&isolated), ToolbarMode::OnHover);
+    let _ = app.update(Message::SettingsActivate);
+    assert_eq!(app.prefs.toolbar, ToolbarMode::Always);
+    assert_eq!(saved(&isolated), ToolbarMode::Always);
 }
 
 #[test]
@@ -48,26 +49,26 @@ fn toolbar_setting_row_has_a_clickable_segmented_control() {
     let _ = app.update(Message::OpenSettings);
     let mut ui = PointerUi::new();
     // Bring the row into view the way the keyboard does.
-    let mut at = ui.text_bounds(&app, "Always");
+    let mut at = ui.text_bounds(&app, "On hover");
     for _ in 0..20 {
         if at.is_some_and(|b| b.y > 40.0 && b.y + b.height < 760.0) {
             break;
         }
         let _ = ui.wheel(&app, Point::new(640.0, 400.0));
-        at = ui.text_bounds(&app, "Always");
+        at = ui.text_bounds(&app, "On hover");
     }
-    let always = at.expect("the Toolbar row shows an Always segment");
-    assert!(ui.text_bounds(&app, "On hover").is_some(), "and On hover");
-    let messages = ui.click(&app, center(always));
+    let on_hover = at.expect("the Toolbar row shows an On hover segment");
+    assert!(ui.text_bounds(&app, "Always").is_some(), "and Always");
+    let messages = ui.click(&app, center(on_hover));
     assert!(
         has(&messages, |m| matches!(
             m,
-            Message::SetToolbarMode(ToolbarMode::Always)
+            Message::SetToolbarMode(ToolbarMode::OnHover)
         )),
         "{messages:?}"
     );
     apply(&mut app, messages);
-    assert_eq!(app.prefs.toolbar, ToolbarMode::Always);
+    assert_eq!(app.prefs.toolbar, ToolbarMode::OnHover);
 }
 
 // --- 5. Window title marks unsaved edits -------------------------------------
@@ -98,6 +99,12 @@ fn always(mut app: App) -> App {
     app
 }
 
+/// The toolbar shows always by default; hover tests pick On hover.
+pub(super) fn on_hover(mut app: App) -> App {
+    let _ = app.update(Message::SetToolbarMode(ToolbarMode::OnHover));
+    app
+}
+
 fn glyph(code: char) -> String {
     code.to_string()
 }
@@ -118,11 +125,11 @@ fn always_toolbar_shows_file_name_dirty_dot_and_named_controls() {
         .id_bounds(&app, "toolbar-dirty-dot")
         .expect("a dirty dot beside the name");
     assert!(dot.x > name.x + name.width - 1.0, "after the name");
-    for label in ["Read", "Edit", "Mind Map"] {
+    for id in ["view-read", "view-edit", "view-mindmap"] {
         let bounds = ui
-            .text_bounds(&app, label)
-            .unwrap_or_else(|| panic!("{label} segment"));
-        assert!(bounds.y < TOOLBAR_H, "{label} in the top strip");
+            .id_bounds(&app, id)
+            .unwrap_or_else(|| panic!("{id} segment"));
+        assert!(bounds.y < TOOLBAR_H, "{id} in the top strip");
     }
     for code in [ic::SAVE, ic::SEARCH, ic::COMMAND, ic::SETTINGS, ic::NETWORK] {
         let bounds = glyph_at(&mut ui, &app, code).expect("toolbar icon");
@@ -189,11 +196,11 @@ fn always_toolbar_buttons_send_their_actions() {
 
     let mut ui = PointerUi::new();
     for (label, view) in [
-        ("Read", ToolbarView::Read),
-        ("Edit", ToolbarView::Edit),
-        ("Mind Map", ToolbarView::Mindmap),
+        ("view-read", ToolbarView::Read),
+        ("view-edit", ToolbarView::Edit),
+        ("view-mindmap", ToolbarView::Mindmap),
     ] {
-        let bounds = ui.text_bounds(&app, label).expect("segment");
+        let bounds = ui.id_bounds(&app, label).expect("segment");
         let messages = ui.click(&app, center(bounds));
         assert!(
             has(
@@ -233,7 +240,7 @@ fn toolbar_sidebar_toggle_shows_only_while_the_sidebar_is_hidden() {
 
 #[test]
 fn always_toolbar_reserves_its_height_without_moving_the_text() {
-    let hover = long_doc_app();
+    let hover = on_hover(long_doc_app());
     let mut ui = PointerUi::new();
     let before = ui
         .id_bounds(&hover, "reader-column")
@@ -262,7 +269,7 @@ fn hover_count(messages: &[Message], entered: bool) -> usize {
 }
 
 /// Waits for the messages a task yields, timers included.
-fn wait_outputs(task: Task<Message>) -> Vec<Message> {
+pub(super) fn wait_outputs(task: Task<Message>) -> Vec<Message> {
     use iced::futures::StreamExt;
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_time()
@@ -285,7 +292,7 @@ fn wait_outputs(task: Task<Message>) -> Vec<Message> {
 
 #[test]
 fn hover_toolbar_appears_at_the_top_edge_and_hides_after_a_delay() {
-    let mut app = long_doc_app();
+    let mut app = on_hover(long_doc_app());
     let mut ui = PointerUi::new();
     let (messages, _) = ui.move_to(&app, Point::new(640.0, 400.0));
     assert_eq!(hover_count(&messages, true), 0);
@@ -330,7 +337,7 @@ fn hover_toolbar_appears_at_the_top_edge_and_hides_after_a_delay() {
 
 #[test]
 fn returning_to_the_band_cancels_the_pending_hide() {
-    let mut app = long_doc_app();
+    let mut app = on_hover(long_doc_app());
     let _ = app.update(Message::ToolbarHover(true));
     let _ = app.update(Message::ToolbarHover(false));
     let stale = app.toolbar_hover_generation;
@@ -345,7 +352,7 @@ fn returning_to_the_band_cancels_the_pending_hide() {
 
 #[test]
 fn hidden_band_leaves_the_content_its_pointer() {
-    let app = long_doc_app();
+    let app = on_hover(long_doc_app());
     let mut ui = PointerUi::new();
     // Scroll text under the band, then probe its height.
     for _ in 0..3 {
@@ -363,7 +370,7 @@ fn hidden_band_leaves_the_content_its_pointer() {
 
 #[test]
 fn revealed_toolbar_takes_presses_on_its_blank_space() {
-    let mut app = long_doc_app();
+    let mut app = on_hover(long_doc_app());
     let mut ui = PointerUi::new();
     // Text scrolled under the band shows the text cursor there.
     for _ in 0..3 {
@@ -448,13 +455,13 @@ fn view_switch_leaves_settings_and_vault_search_to_show_the_view() {
 
 #[test]
 fn hover_toolbar_leaves_edit_mode_and_saves() {
-    let mut app = dirty_app();
+    let mut app = on_hover(dirty_app());
     let _ = app.update(Message::ToolbarHover(true));
     let mut ui = PointerUi::new();
     let save = glyph_at(&mut ui, &app, ic::SAVE).expect("Save in edit mode");
     let messages = ui.click(&app, center(save));
     assert!(has(&messages, |m| matches!(m, Message::SaveFile)));
-    let read = ui.text_bounds(&app, "Read").expect("Read segment");
+    let read = ui.id_bounds(&app, "view-read").expect("Read segment");
     let messages = ui.click(&app, center(read));
     apply(&mut app, messages);
     assert_eq!(app.view_mode, ViewMode::Rendered, "Read leaves edit mode");
@@ -463,7 +470,7 @@ fn hover_toolbar_leaves_edit_mode_and_saves() {
 
 #[test]
 fn document_mind_map_switches_back_and_toggles_its_panel_from_the_toolbar() {
-    let mut app = long_doc_app();
+    let mut app = on_hover(long_doc_app());
     let _ = app.update(Message::ToolbarView(ToolbarView::Mindmap));
     let _ = app.update(Message::ToolbarHover(true));
     let open = app.mindmap_panel_open;
@@ -479,7 +486,7 @@ fn document_mind_map_switches_back_and_toggles_its_panel_from_the_toolbar() {
     let messages = ui.click(&app, center(toggle));
     apply(&mut app, messages);
     assert_eq!(app.mindmap_panel_open, !open);
-    let read = ui.text_bounds(&app, "Read").expect("Read segment");
+    let read = ui.id_bounds(&app, "view-read").expect("Read segment");
     let messages = ui.click(&app, center(read));
     apply(&mut app, messages);
     assert_eq!(app.view_mode, ViewMode::Rendered);
@@ -487,7 +494,8 @@ fn document_mind_map_switches_back_and_toggles_its_panel_from_the_toolbar() {
 
 #[test]
 fn full_mindmap_segment_enters_and_read_leaves_it() {
-    let (mut app, dir) = full_mindmap_app("toolbar-fmm");
+    let (app, dir) = full_mindmap_app("toolbar-fmm");
+    let mut app = on_hover(app);
     let _ = app.update(Message::ToolbarHover(true));
     let mut ui = PointerUi::new();
     let back = ui.text_bounds(&app, "Back").expect("Back pill stays");
@@ -502,7 +510,7 @@ fn full_mindmap_segment_enters_and_read_leaves_it() {
         bar.y + bar.height <= back.y,
         "the toolbar does not cover Back"
     );
-    let read = ui.text_bounds(&app, "Read").expect("Read segment");
+    let read = ui.id_bounds(&app, "view-read").expect("Read segment");
     let messages = ui.click(&app, center(read));
     apply(&mut app, messages);
     assert!(app.full_mindmap.is_none(), "Read leaves Full Mindmap");
@@ -591,7 +599,7 @@ fn toolbar_screenshots() {
             WINDOW.height,
         );
         // On hover, revealed over edit mode.
-        let mut app = dirty_app();
+        let mut app = on_hover(dirty_app());
         let _ = app.update(Message::SetTheme(preset));
         let _ = app.update(Message::SetGlass(crate::macos_vibrancy::Glass::Off));
         let _ = app.update(Message::ToolbarHover(true));
@@ -622,7 +630,8 @@ fn toolbar_screenshots() {
 
 #[test]
 fn hover_band_leaves_the_vault_search_bar_its_controls() {
-    let (mut app, dir) = tree_fixture("toolbar-vault");
+    let (app, dir) = tree_fixture("toolbar-vault");
+    let mut app = on_hover(app);
     let _ = app.update(Message::OpenVaultSearch);
     assert!(app.vault_open);
     let mut ui = PointerUi::new();
@@ -674,7 +683,7 @@ fn always_toolbar_clicks_keep_the_zen_editor_focused() {
     // file name). The messages are not applied: the press alone decides
     // whether the editor keeps its focus.
     let save = glyph_at(&mut ui, &app, ic::SAVE).expect("Save");
-    let edit = ui.text_bounds(&app, "Edit").expect("Edit segment");
+    let edit = ui.id_bounds(&app, "view-edit").expect("Edit segment");
     let name = ui.text_bounds(&app, "pointer-long.md").expect("file name");
     for (what, at) in [
         ("Save", center(save)),
@@ -721,7 +730,7 @@ fn always_mode_body_offset_matches_the_reader_padding() {
 /// toolbar revealed.
 fn revealed_in_band(tag: &str) -> (App, PathBuf, PointerUi) {
     let (app, dir) = tree_fixture(tag);
-    let mut app = app;
+    let mut app = on_hover(app);
     let _ = app.update(Message::FileLoaded(Ok((
         dir.join("alpha.md"),
         "# Alpha\n".into(),
@@ -788,4 +797,154 @@ fn hover_toolbar_follows_its_band_when_the_find_bar_moves_it() {
         "a pointer on the find bar is not in the band"
     );
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+// --- Polish (MDV-048): icon view switch, window-centered file name ----------
+
+const VIEW_SEGMENTS: [&str; 4] = [
+    "view-read",
+    "view-edit",
+    "view-mindmap",
+    "view-full-mindmap",
+];
+
+#[test]
+fn view_switch_segments_are_equal_width_icons() {
+    let app = always(long_doc_app());
+    let mut ui = PointerUi::new();
+    for label in ["Read", "Edit", "Mind Map"] {
+        assert!(
+            ui.text_bounds(&app, label).is_none(),
+            "{label} is an icon, not a word"
+        );
+    }
+    let segments: Vec<Rectangle> = VIEW_SEGMENTS
+        .iter()
+        .map(|id| {
+            ui.id_bounds(&app, id)
+                .unwrap_or_else(|| panic!("{id} segment"))
+        })
+        .collect();
+    for (id, code) in
+        VIEW_SEGMENTS
+            .iter()
+            .zip([ic::BOOK_OPEN, ic::PENCIL_LINE, ic::GIT_FORK, ic::NETWORK])
+    {
+        let glyph = glyph_at(&mut ui, &app, code).unwrap_or_else(|| panic!("{id} glyph"));
+        let segment = ui.id_bounds(&app, id).unwrap();
+        assert!(
+            segment.contains(glyph.center()),
+            "{id}: glyph {glyph:?} inside {segment:?}"
+        );
+    }
+    let first = segments[0];
+    for (id, s) in VIEW_SEGMENTS.iter().zip(&segments) {
+        assert!(
+            (s.width - first.width).abs() < 0.5 && (s.height - first.height).abs() < 0.5,
+            "{id} is as large as Read: {s:?} vs {first:?}"
+        );
+    }
+    // The four glyphs are distinct, so no two modes look alike.
+    let codes = [ic::BOOK_OPEN, ic::PENCIL_LINE, ic::GIT_FORK, ic::NETWORK];
+    for (i, a) in codes.iter().enumerate() {
+        assert!(!codes[i + 1..].contains(a));
+    }
+}
+
+fn app_with_file(name: &str) -> App {
+    let mut app = App::default();
+    let _ = app.update(Message::FileLoaded(Ok((
+        PathBuf::from(format!("/tmp/{name}")),
+        "# Title\n\nBody.\n".into(),
+    ))));
+    always(app)
+}
+
+#[test]
+fn file_name_sits_at_the_window_center() {
+    let app = app_with_file("centered.md");
+    let mut ui = PointerUi::sized(Size::new(1000.0, 700.0));
+    let name = ui.text_bounds(&app, "centered.md").expect("file name");
+    assert!(
+        (name.center_x() - 500.0).abs() <= 1.0,
+        "centered on the window: {name:?}"
+    );
+}
+
+#[test]
+fn file_name_follows_the_window_center_beside_the_sidebar() {
+    let (app, dir) = tree_fixture("toolbar-center");
+    let mut app = always(app);
+    // A name the sidebar's tree does not show too.
+    let _ = app.update(Message::FileLoaded(Ok((
+        PathBuf::from("/tmp/centered-beside.md"),
+        "# Beside\n".into(),
+    ))));
+    app.window_size = Some(Size::new(1000.0, 700.0));
+    assert!(app.sidebar_open);
+    let mut ui = PointerUi::sized(Size::new(1000.0, 700.0));
+    let name = ui
+        .text_bounds(&app, "centered-beside.md")
+        .expect("file name");
+    let bar = ui.id_bounds(&app, "toolbar").expect("toolbar");
+    assert!(
+        bar.x > 100.0,
+        "the toolbar starts right of the sidebar: {bar:?}"
+    );
+    assert!(
+        (name.center_x() - 500.0).abs() <= 1.0,
+        "centered on the window, not on the toolbar: {name:?}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn long_file_name_never_covers_the_toolbar_controls() {
+    let long = format!("{}.md", "n".repeat(57));
+    assert_eq!(long.chars().count(), 60);
+    for dirty in [false, true] {
+        let mut app = app_with_file(&long);
+        if dirty {
+            app.dirty = true;
+        }
+        let mut ui = PointerUi::sized(Size::new(640.0, 600.0));
+        let name = ui.text_bounds(&app, &long).expect("file name");
+        let mut controls: Vec<(String, Rectangle)> = VIEW_SEGMENTS
+            .iter()
+            .map(|id| (id.to_string(), ui.id_bounds(&app, id).expect("segment")))
+            .collect();
+        for code in [ic::CHEVRON_LEFT, ic::CHEVRON_RIGHT] {
+            let b = glyph_at(&mut ui, &app, code).expect("chevron");
+            // The chevron's button is wider than its glyph.
+            controls.push((format!("{code:?}"), b.expand(8.0)));
+        }
+        let mut shown = vec![("name".to_string(), name)];
+        if dirty {
+            shown.push((
+                "dot".into(),
+                ui.id_bounds(&app, "toolbar-dirty-dot").expect("dirty dot"),
+            ));
+        }
+        for (what, b) in &shown {
+            assert!(b.width > 0.0, "{what} shows: {b:?}");
+            for (control, c) in &controls {
+                assert!(
+                    b.intersection(c).is_none(),
+                    "dirty={dirty}: {what} {b:?} covers {control} {c:?}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn window_size_is_known_from_the_moment_the_window_opens() {
+    // The name is centered on the window before any resize.
+    let mut app = App::default();
+    assert_eq!(app.window_size, None);
+    let _ = app.update(Message::WindowOpened(
+        iced::window::Id::unique(),
+        Size::new(900.0, 600.0),
+    ));
+    assert_eq!(app.window_size, Some(Size::new(900.0, 600.0)));
 }

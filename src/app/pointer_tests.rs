@@ -52,9 +52,24 @@ impl Operation for Find<'_> {
     }
 }
 
+/// Registers the bundled Lucide font once, as `main` does, so toolbar
+/// icons measure as they draw. Without it a glyph falls back to whatever
+/// system font covers its private-use code point, or to nothing.
+fn load_icon_font() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        let fonts = iced::advanced::graphics::text::font_system();
+        let mut fonts = fonts.write().expect("font system");
+        fonts.load_font(std::borrow::Cow::Borrowed(include_bytes!(
+            "../assets/fonts/lucide.ttf"
+        )));
+    });
+}
+
 impl PointerUi {
     fn new() -> Self {
         use iced::advanced::renderer::Headless;
+        load_icon_font();
         let renderer = iced::futures::executor::block_on(<iced::Renderer as Headless>::new(
             iced::Font::DEFAULT,
             iced::Pixels(16.0),
@@ -84,13 +99,33 @@ impl PointerUi {
         at: Point,
         events: Vec<Event>,
     ) -> (Vec<Message>, mouse::Interaction) {
+        self.send_cursor(app, mouse::Cursor::Available(at), events)
+    }
+
+    /// The pointer leaves the window: the event loop then reports no
+    /// cursor position.
+    fn leave_window(&mut self, app: &App) -> Vec<Message> {
+        self.send_cursor(
+            app,
+            mouse::Cursor::Unavailable,
+            vec![Event::Mouse(mouse::Event::CursorLeft)],
+        )
+        .0
+    }
+
+    fn send_cursor(
+        &mut self,
+        app: &App,
+        cursor: mouse::Cursor,
+        events: Vec<Event>,
+    ) -> (Vec<Message>, mouse::Interaction) {
         let cache = self.cache.take().unwrap_or_default();
         let mut ui = UserInterface::build(app.view(), self.size, cache, &mut self.renderer);
         let mut messages = Vec::new();
         let mut clipboard = iced::advanced::clipboard::Null;
         let (state, _) = ui.update(
             &events,
-            mouse::Cursor::Available(at),
+            cursor,
             &mut self.renderer,
             &mut clipboard,
             &mut messages,
@@ -462,36 +497,9 @@ fn palette_hover_moves_selection_after_pointer_motion() {
     assert_eq!(app.overlay_selected, target + 1);
 }
 
-// --- 4. Folder picker "Open This Folder" ------------------------------------
+// --- 4. Folder picker: rows click and double-click -------------------------
 
-#[test]
-fn folder_picker_open_this_folder_button_opens_workspace() {
-    let dir = std::env::temp_dir().join(format!("rmdv-pointer-picker-{}", std::process::id()));
-    std::fs::create_dir_all(dir.join("child")).unwrap();
-    std::fs::write(dir.join("child").join("a.md"), "a").unwrap();
-
-    let mut app = App::default();
-    app.overlay = Overlay::FolderPicker;
-    app.picker = Some(Picker::new(Some(dir.clone()), PickerMode::OpenAny, false));
-    let mut ui = PointerUi::new();
-    let button = ui
-        .text_bounds(&app, "Open This Folder")
-        .expect("picker footer has an Open This Folder button");
-    let messages = ui.click(&app, center(button));
-    assert!(has(&messages, |m| matches!(
-        m,
-        Message::PickerSelectFolderHere
-    )));
-    apply(&mut app, messages);
-
-    assert_eq!(app.overlay, Overlay::None);
-    assert!(app.picker.is_none());
-    assert_eq!(
-        app.workspace.as_deref(),
-        Some(canonicalize_existing_path(dir.clone()).as_path())
-    );
-    let _ = std::fs::remove_dir_all(&dir);
-}
+mod picker;
 
 // --- 5. Vault search close and search buttons --------------------------------
 
@@ -1631,3 +1639,7 @@ mod history;
 // --- P3 group 2: links --------------------------------------------------------
 
 mod links;
+
+// --- Polish: sidebar peek at the left window edge --------------------------
+
+mod sidebar_peek;

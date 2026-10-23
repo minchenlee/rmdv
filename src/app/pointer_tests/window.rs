@@ -18,7 +18,7 @@ fn always(mut app: App) -> App {
 /// of the file name, the Show Sidebar button, and Back / Forward.
 fn blank_toolbar_point(ui: &mut PointerUi, app: &App) -> Point {
     let bar = ui.id_bounds(app, "toolbar").expect("toolbar shown");
-    let read = ui.text_bounds(app, "Read").expect("Read segment");
+    let read = ui.id_bounds(app, "view-read").expect("Read segment");
     let name = ui.text_bounds(app, "pointer-long.md");
     // The Forward chevron ends the left controls.
     let left_end = ui
@@ -62,8 +62,8 @@ fn pressing_blank_toolbar_space_moves_the_window() {
 fn toolbar_buttons_do_not_move_the_window() {
     let app = always(long_doc_app());
     let mut ui = PointerUi::new();
-    for label in ["Read", "Edit"] {
-        let at = center(ui.text_bounds(&app, label).expect("segment"));
+    for label in ["view-read", "view-edit"] {
+        let at = center(ui.id_bounds(&app, label).expect("segment"));
         let messages = ui.click(&app, at);
         assert!(!drags(&messages), "{label}: {messages:?}");
     }
@@ -89,7 +89,7 @@ fn double_clicking_blank_toolbar_space_zooms_the_window() {
 
 #[test]
 fn revealed_hover_toolbar_moves_the_window() {
-    let mut app = long_doc_app();
+    let mut app = super::toolbar::on_hover(long_doc_app());
     let _ = app.update(Message::ToolbarHover(true));
     let mut ui = PointerUi::new();
     let at = blank_toolbar_point(&mut ui, &app);
@@ -490,8 +490,8 @@ fn disabled_toolbar_controls_do_not_move_or_zoom_the_window() {
     // No file: Read, Edit, and Mind Map are disabled.
     let app = always(App::default());
     let mut ui = PointerUi::new();
-    for label in ["Read", "Edit", "Mind Map"] {
-        let at = center(ui.text_bounds(&app, label).expect("segment"));
+    for label in ["view-read", "view-edit", "view-mindmap"] {
+        let at = center(ui.id_bounds(&app, label).expect("segment"));
         let messages = ui.double_click(&app, at);
         assert!(!drags(&messages), "{label}: {messages:?}");
         assert!(!zooms(&messages), "{label}: {messages:?}");

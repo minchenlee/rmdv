@@ -597,14 +597,10 @@ pub(in crate::app) fn picker_hint_footer<'a>(pal: Palette) -> Element<'a, Messag
         Space::new().width(14),
         hint("␣", "descend / open"),
         Space::new().width(14),
-        hint("↵", "open"),
+        // A click on a folder row descends; a double-click opens it, as ↵.
+        hint("↵", "open / double-click"),
         Space::new().width(Length::Fill),
         hint("⎋", "close"),
-        Space::new().width(14),
-        // The pointer path to open the current folder; rows descend on click.
-        primary_button("Open This Folder", pal)
-            .padding(Padding::from([5, 12]))
-            .on_press(Message::PickerSelectFolderHere),
     ]
     .align_y(iced::Alignment::Center);
     column![

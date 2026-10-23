@@ -119,6 +119,7 @@ mod paths;
 mod preview_worker;
 mod scroll_tasks;
 mod settings;
+mod sidebar_peek;
 mod slots;
 mod toolbar;
 mod types;
@@ -256,6 +257,8 @@ pub struct App {
     /// Keyboard cursor over `SettingsRow::visible()`.
     pub settings_cursor: usize,
     pub picker: Option<Picker>,
+    /// What the picker's last row click did; see `PickerClick`.
+    picker_click: PickerClick,
     /// Opt-in workspace navigator. Kept separate from the document's
     /// `ViewMode::Mindmap` state so entering/exiting it cannot disturb an open
     /// document mindmap or Zen editor.
@@ -320,6 +323,14 @@ pub struct App {
     toolbar_hover_generation: u64,
     /// Where the hover band last sat in the widget tree (`App::toolbar_band_slot`).
     toolbar_band_at: Option<ToolbarBandSlot>,
+    /// The hidden sidebar shows over the content, because the pointer came
+    /// to the left window edge (`App::sidebar_peek_hover`).
+    sidebar_peek: bool,
+    /// The pointer is over the peek.
+    sidebar_peek_hovered: bool,
+    /// Bumped on every peek enter and leave; a hide delay that started under
+    /// an older generation does nothing.
+    sidebar_peek_generation: u64,
     /// Last document text known to have been persisted successfully. `source`
     /// may contain an unsaved Zen edit after switching back to rendered mode.
     pub saved_source: String,
@@ -579,6 +590,7 @@ impl Default for App {
             settings_open: false,
             settings_cursor: 0,
             picker: None,
+            picker_click: PickerClick::Idle,
             full_mindmap: None,
             full_mindmap_request_seq: 0,
             tree_viewport: None,
@@ -617,6 +629,9 @@ impl Default for App {
             toolbar_revealed: false,
             toolbar_hover_generation: 0,
             toolbar_band_at: None,
+            sidebar_peek: false,
+            sidebar_peek_hovered: false,
+            sidebar_peek_generation: 0,
             saved_source: String::new(),
             dirty: false,
             edit_history: crate::history::SnapshotStack::default(),
@@ -2543,6 +2558,7 @@ impl App {
         self.overlay_selected = 0;
         self.overlay_viewport = None;
         self.list_pointer = ListPointer::default();
+        self.picker_click = PickerClick::Idle;
         if kind == Overlay::FolderPicker {
             let start = self.workspace.clone().or_else(|| {
                 self.file
@@ -3454,8 +3470,8 @@ impl App {
         let close_requests = iced::window::close_requests().map(Message::WindowCloseRequested);
         let window_events = iced::window::events().filter_map(|(id, event)| match event {
             iced::window::Event::Unfocused => Some(Message::WindowUnfocused(id)),
-            iced::window::Event::Opened { .. }
-            | iced::window::Event::Focused
+            iced::window::Event::Opened { size, .. } => Some(Message::WindowOpened(id, size)),
+            iced::window::Event::Focused
             | iced::window::Event::Moved(_)
             | iced::window::Event::Rescaled(_) => Some(Message::RefreshWindowMode(id)),
             iced::window::Event::Resized(size) => Some(Message::WindowResized(id, size)),
@@ -4067,12 +4083,26 @@ impl App {
             ),
             None => Space::new().into(),
         };
+        // The hidden sidebar peeks over the content from the left edge. The
+        // layer is always built, so its band keeps its state (a held button)
+        // across rebuilds.
+        let peek_allowed = self.sidebar_peek_allowed();
+        let peek: Element<'_, Message> = if self.sidebar_peek && peek_allowed {
+            sidebar_peek_view(self, self.palette)
+        } else {
+            Space::new().into()
+        };
+        let peek_layer: Element<'_, Message> = EdgePeek::new(peek)
+            .on_enter((peek_allowed && !self.sidebar_peek).then_some(Message::SidebarPeek(true)))
+            .top(TOOLBAR_BAND_H)
+            .into();
         let base: Element<'_, Message> = iced::widget::stack![
             Element::from(main),
             footer_layer,
             kb_button_layer,
             link_pill_layer,
             quick_slots_layer,
+            peek_layer,
             overlay_layer
         ]
         .into();
@@ -4107,7 +4137,7 @@ impl App {
             Some(u) => update_banner(&u.version, pal),
             None => Space::new().into(),
         };
-        iced::widget::stack![
+        let root = iced::widget::stack![
             base,
             slot_replace_layer,
             close_confirm_layer,
@@ -4115,8 +4145,16 @@ impl App {
             toast_layer,
             update_layer,
             drop_layer
-        ]
-        .into()
+        ];
+        // The picker's double-click: presses are reported only while the
+        // picker is open or a row click just closed it.
+        let report: fn(bool) -> Message = |double| Message::PickerPointerPress { double };
+        let watching =
+            self.overlay == Overlay::FolderPicker || self.picker_click != PickerClick::Idle;
+        PressWatch::new(root)
+            .on_press(watching.then_some(report))
+            .swallow_double(self.picker_click != PickerClick::Idle)
+            .into()
     }
 }
 

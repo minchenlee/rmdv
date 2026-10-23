@@ -52,9 +52,10 @@ pub struct Prefs {
 #[serde(rename_all = "snake_case")]
 pub enum ToolbarMode {
     /// Hidden until the pointer reaches the top edge of the window.
-    #[default]
     OnHover,
-    /// Always shown; the content sits below it.
+    /// Always shown; the content sits below it. The default, so a new user
+    /// sees the toolbar.
+    #[default]
     Always,
 }
 
@@ -125,8 +126,8 @@ where
     Ok(serde_json::from_value(value).unwrap_or_default())
 }
 
-/// An unknown toolbar mode falls back to showing on hover instead of failing
-/// the whole file.
+/// An unknown toolbar mode falls back to the default (always shown) instead
+/// of failing the whole file.
 fn lenient_toolbar<'de, D>(deserializer: D) -> Result<ToolbarMode, D::Error>
 where
     D: serde::Deserializer<'de>,
@@ -162,7 +163,7 @@ impl Default for Prefs {
             show_hidden: false,
             mindmap_autocenter: true,
             quick_slots: crate::quick_slots::QuickSlotsStore::default(),
-            toolbar: ToolbarMode::OnHover,
+            toolbar: ToolbarMode::Always,
         }
     }
 }
@@ -305,27 +306,32 @@ mod tests {
     }
 
     #[test]
-    fn toolbar_mode_defaults_to_on_hover_and_survives_bad_values() {
-        // A prefs file from before the setting existed.
+    fn toolbar_mode_defaults_to_always_and_survives_bad_values() {
+        // A prefs file from before the setting existed: a new user sees the
+        // toolbar.
         let prefs: Prefs = serde_json::from_str(r#"{"show_footer":false}"#).unwrap();
+        assert_eq!(prefs.toolbar, ToolbarMode::Always);
+        assert_eq!(Prefs::default().toolbar, ToolbarMode::Always);
+        assert_eq!(ToolbarMode::default(), ToolbarMode::Always);
+        // A saved choice still loads as saved.
+        let prefs: Prefs = serde_json::from_str(r#"{"toolbar":"on_hover"}"#).unwrap();
         assert_eq!(prefs.toolbar, ToolbarMode::OnHover);
-        assert_eq!(Prefs::default().toolbar, ToolbarMode::OnHover);
         let prefs: Prefs = serde_json::from_str(r#"{"toolbar":"always"}"#).unwrap();
         assert_eq!(prefs.toolbar, ToolbarMode::Always);
         // An unknown or malformed value must not reset other preferences.
         let prefs: Prefs =
             serde_json::from_str(r#"{"toolbar":"floating","show_footer":false}"#).unwrap();
-        assert_eq!(prefs.toolbar, ToolbarMode::OnHover);
+        assert_eq!(prefs.toolbar, ToolbarMode::Always);
         assert!(!prefs.show_footer);
         let prefs: Prefs = serde_json::from_str(r#"{"toolbar":7,"show_footer":false}"#).unwrap();
-        assert_eq!(prefs.toolbar, ToolbarMode::OnHover);
+        assert_eq!(prefs.toolbar, ToolbarMode::Always);
         assert!(!prefs.show_footer);
         let json = serde_json::to_string(&Prefs {
-            toolbar: ToolbarMode::Always,
+            toolbar: ToolbarMode::OnHover,
             ..Prefs::default()
         })
         .unwrap();
-        assert!(json.contains(r#""toolbar":"always""#), "{json}");
+        assert!(json.contains(r#""toolbar":"on_hover""#), "{json}");
     }
 
     use crate::quick_slots::{QuickSlot, SlotContext, WorkspaceSlots};

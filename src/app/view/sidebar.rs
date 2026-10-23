@@ -32,6 +32,19 @@ pub(in crate::app) fn sidebar_view<'a>(app: &'a App, pal: Palette) -> Element<'a
     )
     .width(Length::Fill)
     .clip(true);
+    let (hide_glyph, hide_action, hide_id) = if app.sidebar_peek && !app.sidebar_open {
+        (
+            ic::PANEL_LEFT_OPEN,
+            "Keep Sidebar Open",
+            iced::widget::Id::new("sidebar-keep-open"),
+        )
+    } else {
+        (
+            ic::PANEL_LEFT_CLOSE,
+            "Hide Sidebar",
+            iced::widget::Id::new("sidebar-hide"),
+        )
+    };
     let controls = irow![
         switch_tip(sidebar_tab_button(
             "Files",
@@ -59,9 +72,10 @@ pub(in crate::app) fn sidebar_view<'a>(app: &'a App, pal: Palette) -> Element<'a
             Position::Bottom,
             pal,
         ),
+        // While peeking, the same place pins the sidebar open, as ⌘B does.
         action_tip(
-            ghost_lu(ic::PANEL_LEFT_CLOSE, pal).on_press(Message::ToggleSidebar),
-            "Hide Sidebar",
+            container(ghost_lu(hide_glyph, pal).on_press(Message::ToggleSidebar)).id(hide_id),
+            hide_action,
             Some("⌘B"),
             Position::Bottom,
             pal,
@@ -103,6 +117,35 @@ pub(in crate::app) fn sidebar_view<'a>(app: &'a App, pal: Palette) -> Element<'a
             background: Some(pal.sidebar.into()),
             ..Default::default()
         })
+        .into()
+}
+
+/// The hidden sidebar shown over the content (the peek): the same sidebar,
+/// with a shadow and no divider to drag. It reports the pointer entering
+/// and leaving it, and takes every press and hover over it, so the content
+/// under it gets none.
+pub(in crate::app) fn sidebar_peek_view<'a>(
+    app: &'a App,
+    mut pal: Palette,
+) -> Element<'a, Message> {
+    // Over the content, a translucent sidebar would show the text through.
+    pal.sidebar.a = 1.0;
+    let panel = container(sidebar_view(app, pal))
+        .height(Length::Fill)
+        .style(move |_| container::Style {
+            background: Some(pal.sidebar.into()),
+            shadow: theme::shadow::PEEK,
+            ..Default::default()
+        });
+    let panel = iced::widget::opaque(
+        mouse_area(panel)
+            .on_enter(Message::SidebarPeek(true))
+            .on_exit(Message::SidebarPeek(false)),
+    );
+    container(panel)
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .align_x(iced::alignment::Horizontal::Left)
         .into()
 }
 

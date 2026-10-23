@@ -32,6 +32,21 @@ pub enum MindmapDir {
     Right,
 }
 
+/// What the folder picker's last row click did, for its double-click. The
+/// next left press always consumes it; closing the picker drops a
+/// `Descended`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(super) enum PickerClick {
+    #[default]
+    Idle,
+    /// The click descended into this folder. When the next press completes
+    /// a double-click, it opens this folder, whatever row is under it now.
+    Descended(PathBuf),
+    /// The click closed the picker (it opened a file or an empty folder).
+    /// The second press of a double-click must not reach the view below.
+    Closed,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Overlay {
     None,

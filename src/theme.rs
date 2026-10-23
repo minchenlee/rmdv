@@ -847,6 +847,13 @@ pub mod shadow {
     pub const DIALOG: Shadow = drop(0.28, 14.0, 50.0);
     /// The shortcuts sheet, the highest surface.
     pub const SHEET: Shadow = drop(0.35, 18.0, 60.0);
+    /// A panel shown over the content at the window's left edge: the
+    /// sidebar peek. It falls to the right, onto the content.
+    pub const PEEK: Shadow = Shadow {
+        color: Color::from_rgba(0.0, 0.0, 0.0, 0.22),
+        offset: Vector::new(4.0, 0.0),
+        blur_radius: 24.0,
+    };
     /// Dims the document behind a modal overlay.
     pub const SCRIM: Color = Color::from_rgba(0.0, 0.0, 0.0, 0.18);
 }

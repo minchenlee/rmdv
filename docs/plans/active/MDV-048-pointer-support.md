@@ -37,6 +37,21 @@ Audit (read-only, 2026-10-22, `main@75b637c`, every item with file:line):
   motion (`mouse_area::on_move`), the same as Settings, so a still pointer
   never steals the selection while the arrow keys scroll the list.
 
+## Owner trial feedback (2026-10-23, P3 build)
+
+- The folder picker's "Open This Folder" button goes: it looks heavy and is
+  not needed. Double-click on a folder row opens that folder, as Enter does.
+- Back to an earlier file lands on the saved position at once; that is fine.
+- No alt text under images: accepted.
+- The toolbar shows always by default, so a new user sees it; On hover stays
+  a Settings option.
+- The view switch (Read, Edit, Mind Map, Full Mindmap) uses icons; the
+  tooltips keep the names and shortcuts.
+- The file name sits at the horizontal center of the window.
+- While the sidebar is hidden, the pointer at the left window edge reveals it
+  over the content; it hides after the pointer leaves it.
+- These go on `feat/pointer-polish` (stacked on P3); P4 is rebased on it.
+
 ## Orchestrator decisions (reversible; listed for owner review)
 
 - Mind map two-finger scroll keeps zooming by default; "scroll pans" is a
