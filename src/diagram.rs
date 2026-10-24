@@ -1,6 +1,6 @@
 //! Diagram rendering core — Mermaid + Graphviz/DOT pipelines.
 //!
-//! Pure-Rust, blocking renderer plus an LRU cache. Higher layers (T3 render path,
+//! Background Mermaid.js / native DOT and math renderers plus an LRU cache. Higher layers (T3 render path,
 //! T4 app integration) wrap the blocking call in `iced::Task::perform` and feed
 //! the resulting SVG into `iced::widget::svg::Handle`.
 
@@ -255,6 +255,18 @@ fn color_to_hex(c: Color) -> String {
     format!("#{:02x}{:02x}{:02x}", r, g, b)
 }
 
+/// Flatten an sRGB overlay onto its opaque backdrop before encoding RGB.
+/// Mermaid derives other theme colors from these hex values, so preserving
+/// the visible blend is more portable than passing alpha through its themes.
+fn color_over(c: Color, backdrop: Color) -> Color {
+    let alpha = c.a.clamp(0.0, 1.0);
+    Color::from_rgb(
+        c.r * alpha + backdrop.r * (1.0 - alpha),
+        c.g * alpha + backdrop.g * (1.0 - alpha),
+        c.b * alpha + backdrop.b * (1.0 - alpha),
+    )
+}
+
 /// Build the mermaid `%%{init}%%` directive that carries our palette.
 ///
 /// Spec maps:
@@ -266,31 +278,33 @@ fn color_to_hex(c: Color) -> String {
 ///   secondaryColor     <- palette.surface_alt
 ///   tertiaryColor      <- palette.accent
 ///   fontFamily         <- caller-supplied font family
-fn mermaid_init_block(palette: &Palette, font_family: &str) -> String {
-    format!(
-        "%%{{init: {{ 'theme': 'base', 'themeVariables': {{ \
-         'background': '{bg}', \
-         'primaryColor': '{primary}', \
-         'primaryTextColor': '{text}', \
-         'primaryBorderColor': '{border}', \
-         'lineColor': '{line}', \
-         'secondaryColor': '{secondary}', \
-         'tertiaryColor': '{tertiary}', \
-         'fontFamily': '{font}' \
-         }} }}}}%%\n",
-        bg = color_to_hex(palette.bg),
-        primary = color_to_hex(palette.surface),
-        text = color_to_hex(palette.fg),
-        border = color_to_hex(palette.code_border),
-        line = color_to_hex(palette.muted),
-        secondary = color_to_hex(palette.surface_alt),
-        tertiary = color_to_hex(palette.accent),
-        font = font_family,
-    )
+fn mermaid_config(palette: &Palette, font_family: &str) -> serde_json::Value {
+    // Node strokes and labels sit over the node fill, while fills and edges
+    // sit over the document background. Do not turn a faint white/black
+    // hairline into an opaque white/black stroke by discarding its alpha.
+    let surface = color_over(palette.surface, palette.bg);
+    serde_json::json!({ "theme": "base", "fontFamily": font_family, "themeVariables": {
+        "darkMode": palette.is_dark(),
+        "background": color_to_hex(palette.bg),
+        "primaryColor": color_to_hex(surface),
+        "primaryTextColor": color_to_hex(color_over(palette.fg, surface)),
+        "textColor": color_to_hex(color_over(palette.fg, palette.bg)),
+        "nodeTextColor": color_to_hex(color_over(palette.fg, surface)),
+        "edgeLabelBackground": color_to_hex(surface),
+        "clusterBkg": color_to_hex(color_over(palette.surface_alt, palette.bg)),
+        "clusterBorder": color_to_hex(color_over(palette.code_border, surface)),
+        "titleColor": color_to_hex(palette.fg),
+        "primaryBorderColor": color_to_hex(color_over(palette.code_border, surface)),
+        "lineColor": color_to_hex(color_over(palette.muted, palette.bg)),
+        "secondaryColor": color_to_hex(color_over(palette.surface_alt, palette.bg)),
+        "tertiaryColor": color_to_hex(color_over(palette.accent, palette.bg)),
+        "fontFamily": font_family,
+    }})
 }
 
 /// True if `source` already opens with a `%%{init` directive — caller wins.
-pub(crate) fn has_user_init(source: &str) -> bool {
+#[cfg(test)]
+fn has_user_init(source: &str) -> bool {
     source.trim_start().starts_with("%%{init")
 }
 
@@ -347,6 +361,12 @@ pub async fn render_blocking_async(
         .await
         .map_err(|_| "render limit closed".to_string())?;
     tokio::task::spawn_blocking(move || -> Result<RenderOutput, String> {
+        if source.len() > MAX_SOURCE_BYTES {
+            return Err("diagram too large".into());
+        }
+        if kind == DiagramKind::Mermaid {
+            return crate::mermaid_js::render(&source, &mermaid_config(&palette, &font_family));
+        }
         let svg_string = render_blocking(kind, &source, &palette, &font_family)?;
         let svg_bytes = svg_string.into_bytes();
         let (rgba, w, h) = rasterize_for_inline(&svg_bytes)?;
@@ -431,48 +451,7 @@ pub fn render_blocking(
 }
 
 fn render_mermaid(source: &str, palette: &Palette, font_family: &str) -> Result<String, String> {
-    let prepared = if has_user_init(source) {
-        source.to_string()
-    } else {
-        let mut s = mermaid_init_block(palette, font_family);
-        s.push_str(source);
-        s
-    };
-
-    let svg = mermaid_rs_renderer::render_with_options(
-        &prepared,
-        mermaid_rs_renderer::RenderOptions::default(),
-    )
-    .map_err(|e| e.to_string())?;
-
-    // The renderer hardcodes a `<rect ... fill="#FFFFFF"/>` as the first
-    // child of <svg> for the SVG background. Strip it so the diagram is
-    // transparent and the app's container (or zoom-modal scrim) shows
-    // through. Cheap pattern match — the rect is always emitted at the
-    // start with the diagram's exact width/height.
-    Ok(strip_mermaid_white_bg(&svg))
-}
-
-fn strip_mermaid_white_bg(svg: &str) -> String {
-    // First `<rect ... fill="#FFFFFF"/>` immediately after the opening
-    // <svg ...> tag. We scan only the head to avoid touching real content.
-    let head_end = svg.find('>').map(|i| i + 1).unwrap_or(0);
-    let scan_end = (head_end + 600).min(svg.len());
-    let needle_start = "<rect ";
-    let needle_white = "fill=\"#FFFFFF\"";
-    if let Some(rel) = svg[head_end..scan_end].find(needle_start) {
-        let abs = head_end + rel;
-        if let Some(end_rel) = svg[abs..scan_end].find("/>") {
-            let abs_end = abs + end_rel + 2;
-            if svg[abs..abs_end].contains(needle_white) {
-                let mut out = String::with_capacity(svg.len() - (abs_end - abs));
-                out.push_str(&svg[..abs]);
-                out.push_str(&svg[abs_end..]);
-                return out;
-            }
-        }
-    }
-    svg.to_string()
+    crate::mermaid_js::svg(source, &mermaid_config(palette, font_family))
 }
 
 fn render_dot(source: &str, palette: &Palette, font_family: &str) -> Result<String, String> {
@@ -525,6 +504,20 @@ mod tests {
 
     fn palette() -> Palette {
         Palette::ONE_DARK
+    }
+
+    #[test]
+    fn theme_colors_composite_alpha_before_rgb_encoding() {
+        let white = Color::WHITE;
+        assert_eq!(
+            color_to_hex(color_over(Color::from_rgba(0.0, 0.0, 0.0, 0.0), white)),
+            "#ffffff"
+        );
+        assert_eq!(
+            color_to_hex(color_over(Color::from_rgba(0.0, 0.0, 0.0, 0.5), white)),
+            "#808080"
+        );
+        assert_eq!(color_to_hex(color_over(Color::BLACK, white)), "#000000");
     }
 
     #[test]

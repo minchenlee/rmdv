@@ -1,11 +1,12 @@
 # rmdv — project status
 
-Last verified: 2026-10-17 (Asia/Taipei)
+Last verified: 2026-10-24 (Asia/Taipei; local MDV-050 prototype)
 Stale after: 7 days
-Canonical repository: `~/Documents/GitHub/mdv`
-Expected branch / HEAD / PR: start new work from the live `origin/main`.
-Latest published release: `v0.10.0` → `9e876c0` (2026-10-17, Release run
-39039978898).
+Current checkout: `/Users/harry_chung/Developer/Personal/rmdv`.
+Integration base: `5e1b769`; branch: `codex/mermaid-js-integration` (PR #80).
+Remotes: owner fork `chungchihhan/rmdv` as origin; minchenlee/rmdv as upstream.
+Latest published upstream release: v0.10.1 (GitHub API, 2026-10-24).
+Historical release evidence below was not re-run.
 Authority: This is a routing snapshot. Verify Git, GitHub, runtime identity, and
 manual evidence before mutation.
 
@@ -28,8 +29,32 @@ manual evidence before mutation.
 
 ## Live workstreams
 
-No active product workstream. Pick the next task from
-[`docs/BACKLOG.md`](docs/BACKLOG.md).
+[PR #80](https://github.com/minchenlee/rmdv/pull/80) contains the official
+Mermaid.js integration, AWS/Logos icons, preview controls and reading-width
+slider ([MDV-050](docs/plans/active/MDV-050-official-mermaid-js-prototype.md),
+[MDV-051](docs/plans/active/MDV-051-reading-width-slider.md)).
+
+The owner accepted the WebKit transparency fix and authorized updating that
+same PR with [MDV-052](docs/plans/active/MDV-052-system-webkit-renderer.md).
+On macOS 14+, Mermaid uses a lazy shared native WebKit helper with embedded
+scripts/icons and idle release; Node and Chrome are no longer runtime
+requirements there. Transparent PDF capture is rasterized into cleared RGBA,
+retaining original SVG, CJK labels and icon artwork. Non-macOS retains the
+Node/Chrome worker. Memory use, cross-platform coverage, installer signing and
+CI asset provisioning remain unverified; the PR is open and ready for review; this update preserves that state.
+
+The fixed-size preview has 16px corners, an opaque theme fill and a translucent
+outside scrim. Diagram pinch zoom, trackpad pan and mouse interaction are
+independent of the modal. The theme-colored reading-width slider ends at the
+available reader width (up to 1920px); keyboard shortcuts sit left of the
+word-count/read-time pill above it. The selected width persists on release.
+The standalone Mermaid/Pele comparison is retained as development material.
+
+Local owner follow-up (2026-10-25): font fallback/readiness, ELK flowchart
+layout and foreground cluster-title painting address the ALB diagram's sibling
+subgraph overlap and clipped/crossed titles. A focused same-source WebKit PNG
+comparison passed visual inspection and the release build passed. The owner
+accepted the result and authorized committing/pushing this follow-up to PR #80.
 
 ## Human decisions / blockers
 
@@ -50,12 +75,33 @@ No active product workstream. Pick the next task from
 
 ## Next safe actions
 
-1. Pick the next task from the backlog (`MDV-042` goto offset is the smallest).
-2. Re-run the cold-start and parse perf check on a quiet machine.
+1. Draft [PR #80](https://github.com/minchenlee/rmdv/pull/80) submits the Mermaid.js
+   integration, preview controls and reading-width slider for upstream review.
+   Packaging/CI follow-up remains; merging and publication are not authorized.
+2. Resolve CI asset provisioning and native-helper signing/installer support;
+   measure resource use before making lightweight-runtime claims.
 
 ## Verification state
 
 ### Verified now
+
+- MDV-050: exported seven identical sources through the actual Rust parser and
+  SVG/RGBA path; Chrome 155 passed 26 browser checks, including both themes,
+  CJK editing, errors/recovery, export, zoom, and narrow viewport overflow.
+  No unexpected page errors, failed asset requests, or external requests were
+  observed. Desktop screenshots were inspected; mobile layout geometry passed,
+  but Chrome captures showed repeated strips, so mobile visual acceptance is
+  still pending. The comparison was opened in the app browser. Rust
+  library/application code was not changed, so the prior 627-test results below
+  are historical evidence, not a new full-suite run. Formatting and diff
+  checks pass for the new example and prototype.
+
+- MDV-049: 627 tests passed, 2 ignored; cargo check, formatting, and diff
+  checks passed. Exported light/dark PNGs were visually inspected. CJK,
+  flowchart/sequence/class/state/mindmap, palette alpha blending, user init,
+  and error/size handling passed through the SVG/RGBA path. Native-window
+  acceptance remains pending. The updated release build passed and reports
+  `rmdv 0.10.1`; no installation or publication was performed.
 
 - `v0.10.0` was tagged at `9e876c0` (owner authority, 2026-10-17); the Release
   workflow passed every job and the seven installers match `SHA256SUMS`. The

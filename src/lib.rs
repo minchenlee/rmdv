@@ -16,6 +16,9 @@ pub mod keyed_body;
 pub mod macos_open;
 pub mod macos_vibrancy;
 pub mod md_highlight;
+mod mermaid_js;
+#[cfg(target_os = "macos")]
+mod mermaid_webkit;
 pub mod mindmap;
 pub mod native_pinch;
 pub mod parser;

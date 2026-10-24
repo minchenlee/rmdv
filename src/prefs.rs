@@ -32,6 +32,12 @@ pub struct Prefs {
     /// theme's line height.
     #[serde(default, deserialize_with = "lenient_line_spacing")]
     pub line_spacing: crate::theme::LineSpacing,
+    /// Maximum reading-column width in logical pixels.
+    #[serde(
+        default = "default_reading_width",
+        deserialize_with = "lenient_reading_width"
+    )]
+    pub reading_width: f32,
     /// Show dot files and folders in the sidebar (⌘⇧.).
     #[serde(default)]
     pub show_hidden: bool,
@@ -42,6 +48,28 @@ pub struct Prefs {
     /// preferences, never inside a workspace tree.
     #[serde(default, deserialize_with = "lenient_quick_slots")]
     pub quick_slots: crate::quick_slots::QuickSlotsStore,
+}
+
+pub const READING_WIDTH_MIN: f32 = 480.0;
+pub const READING_WIDTH_MAX: f32 = 1920.0;
+fn default_reading_width() -> f32 {
+    crate::theme::READING_MAX_PX
+}
+pub fn clamp_reading_width(width: f32) -> f32 {
+    if width.is_finite() {
+        width.clamp(READING_WIDTH_MIN, READING_WIDTH_MAX)
+    } else {
+        default_reading_width()
+    }
+}
+fn lenient_reading_width<'de, D>(deserializer: D) -> Result<f32, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    Ok(clamp_reading_width(
+        value.as_f64().map_or(default_reading_width(), |v| v as f32),
+    ))
 }
 
 fn default_true() -> bool {
@@ -125,6 +153,7 @@ impl Default for Prefs {
             glass_opacity: crate::macos_vibrancy::DEFAULT_OPACITY,
             font_scale: default_font_scale(),
             line_spacing: crate::theme::LineSpacing::Default,
+            reading_width: default_reading_width(),
             show_hidden: false,
             mindmap_autocenter: true,
             quick_slots: crate::quick_slots::QuickSlotsStore::default(),

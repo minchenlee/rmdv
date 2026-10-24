@@ -797,12 +797,24 @@ impl App {
                     self.show_toast("Font reset".to_string()),
                 ])
             }
+            Message::SetReadingWidth(width) => {
+                self.prefs.reading_width = crate::prefs::clamp_reading_width(width);
+                self.height_cache.clear();
+                self.rebuild_virt_here();
+                self.measure_window_heights()
+            }
+            Message::SaveReadingWidth => {
+                self.save_prefs();
+                Task::none()
+            }
             Message::SetLineSpacing(spacing) => self.set_line_spacing(spacing),
             Message::MindmapNativePinch(delta) => {
                 // The native monitor runs for the whole app. Only forward a
                 // finite magnification delta while a graph owns the visible
                 // surface; search and overlays retain their normal input.
-                if delta.is_finite() && self.overlay == Overlay::None {
+                if delta.is_finite() && self.overlay == Overlay::ImageZoom {
+                    self.preview_pinch_log += f64::from(delta);
+                } else if delta.is_finite() && self.overlay == Overlay::None {
                     if self.full_mindmap.is_some() {
                         self.full_mindmap_native_pinch_log += f64::from(delta);
                     } else if self.view_mode == ViewMode::Mindmap && !self.search_open {

@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Mermaid 排版比較</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header><div><h1>Mermaid 排版比較</h1><p>同一段原始碼，並排比較官方 Mermaid.js 與 Pele。</p></div>
+    <button id="theme" aria-label="切換明暗主題">切換深色</button></header>
+  <main>
+    <aside>
+      <label for="sample">圖表範例</label><select id="sample" disabled></select>
+      <label for="source">Mermaid 原始碼</label>
+      <textarea id="source" spellcheck="false" aria-describedby="edit-note" disabled></textarea>
+      <p id="edit-note">可修改後按「重新繪製」，或按 ⌘ / Ctrl + Enter。</p>
+      <div class="actions"><button id="render" class="primary" disabled>重新繪製</button><button id="reset" disabled>還原範例</button></div>
+      <fieldset><legend>比較設定</legend>
+        <label for="palette">配色</label><select id="palette"><option value="official">各引擎預設配色</option><option value="rmdv">rmdv 配色</option></select>
+        <label for="layout">Mermaid<br>排版</label><select id="layout"><option value="dagre">Dagre</option><option value="elk">ELK（12.2 預設）</option></select>
+      </fieldset>
+      <details class="icon-catalog"><summary>AWS 圖示名稱</summary><p id="icon-count">載入 AWS 圖示…</p>
+        <label for="icon-search">搜尋服務名稱</label><input id="icon-search" type="search" placeholder="lambda、dynamodb…"><ul id="icon-names"></ul>
+        <p>圖示由 AWS Labs 提供。<a href="https://github.com/awslabs/aws-icons-for-plantuml" target="_blank" rel="noopener">來源與授權</a></p></details>
+    </aside>
+    <section class="comparison" aria-label="圖表比較">
+      <div class="tools"><span id="status" role="status">載入官方 Mermaid.js…</span>
+        <div><label for="zoom">顯示比例</label><select id="zoom"><option value="fit">符合寬度</option><option value="1">100%</option><option value="1.5">150%</option><option value="2">200%</option></select>
+          <label for="export-engine">匯出</label><select id="export-engine"><option value="official">Mermaid.js</option><option value="pele">Pele</option></select><button id="download" disabled>下載 SVG</button></div></div>
+      <div class="previews">
+        <section class="preview"><div class="caption"><h2>官方 Mermaid.js</h2><span>12.2.0</span></div><p class="context" id="official-note">瀏覽器直接顯示 SVG</p>
+          <div class="viewport" id="official-viewport"><div id="official"></div></div>
+          <pre class="error" id="official-error" role="alert" hidden></pre></section>
+        <section class="preview"><div class="caption"><h2>Pele</h2><span>1.9.0</span></div><p class="context" id="pele-note">Pele 獨立排版</p>
+          <div class="viewport" id="pele-viewport"><div id="pele"></div></div>
+          <pre class="error" id="pele-error" role="alert" hidden></pre></section>
+      </div>
+      <details class="native-reference"><summary>展開目前 Rust 版參考（固定圖片）</summary>
+        <section class="preview"><div class="caption"><h2>目前 Rust 版</h2><span>3726ccb</span></div><p class="context" id="native-note">rmdv 配色・原始範例的固定參考</p>
+          <div class="viewport" id="native-viewport"><img id="native" alt="目前 Rust 引擎繪製的相同範例" hidden></div>
+          <pre class="error" id="native-error" hidden></pre></section>
+      </details>
+      <p class="footnote">兩側會一起套用原始碼修改；Rust 參考保留原始範例。Mermaid 的 Dagre／ELK 選項不改變 Pele 的排版。</p>
+    </section>
+  </main>
+  <script type="module" src="app.mjs"></script>
+</body>
+</html>

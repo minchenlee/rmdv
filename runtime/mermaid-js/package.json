@@ -1,0 +1,16 @@
+{
+  "name": "rmdv-mermaid-runtime",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "scripts": {
+    "prepare:icons": "node prepare-icons.mjs"
+  },
+  "dependencies": {
+    "@iconify-json/logos": "1.2.17",
+    "mermaid": "12.2.0",
+    "playwright": "1.64.1"
+  }
+}

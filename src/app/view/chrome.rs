@@ -93,11 +93,73 @@ pub(in crate::app) fn status_footer<'a>(words: usize, pal: Palette) -> Element<'
             },
             ..Default::default()
         });
-    // Float bottom-right over the reader; content scrolls underneath.
-    container(pill)
+    pill.into()
+}
+
+/// A floating control for the main document's maximum reading width.
+pub(in crate::app) fn reading_width_slider<'a>(
+    width: f32,
+    available_width: f32,
+    pal: Palette,
+) -> Element<'a, Message> {
+    let maximum = available_width
+        .floor()
+        .clamp(1.0, crate::prefs::READING_WIDTH_MAX);
+    let minimum = crate::prefs::READING_WIDTH_MIN.min(maximum);
+    let width = width.min(maximum);
+    let control = irow![
+        text(format!("Width {:.0} px", width))
+            .size(12)
+            .color(pal.muted),
+        iced::widget::slider(minimum..=maximum, width, Message::SetReadingWidth)
+            .step(1.0_f32)
+            .on_release(Message::SaveReadingWidth)
+            .width(140)
+            .style(move |_, status| {
+                use iced::widget::slider;
+                slider::Style {
+                    rail: slider::Rail {
+                        backgrounds: (pal.accent.into(), pal.ink(0.18).into()),
+                        width: 4.0,
+                        border: Border {
+                            radius: theme::radius::PILL.into(),
+                            ..Default::default()
+                        },
+                    },
+                    handle: slider::Handle {
+                        shape: slider::HandleShape::Circle { radius: 7.0 },
+                        background: match status {
+                            slider::Status::Active => pal.accent.into(),
+                            _ => pal.fg.into(),
+                        },
+                        border_width: 1.0,
+                        border_color: pal.border_strong(),
+                    },
+                }
+            }),
+    ]
+    .spacing(12)
+    .align_y(iced::Alignment::Center);
+    let control = container(control)
+        .padding([8, 12])
+        .style(move |_| container::Style {
+            background: Some(pal.popover().into()),
+            border: Border {
+                color: pal.border(),
+                width: 1.0,
+                radius: theme::radius::MD.into(),
+            },
+            ..Default::default()
+        });
+    container(control)
         .width(Length::Fill)
         .height(Length::Fill)
-        .padding([10, 14])
+        .padding(Padding {
+            top: 0.0,
+            right: 14.0,
+            bottom: 12.0,
+            left: 0.0,
+        })
         .align_x(iced::alignment::Horizontal::Right)
         .align_y(iced::alignment::Vertical::Bottom)
         .into()
@@ -221,12 +283,14 @@ pub(in crate::app) fn full_mindmap_progress_overlay<'a>(
 pub(in crate::app) fn image_zoom_overlay<'a>(
     url: Option<&'a str>,
     diagram: Option<&iced::widget::image::Handle>,
+    pinch_log: f64,
     cache: &ImageCache,
     pal: Palette,
 ) -> Element<'a, Message> {
-    use iced::widget::image::viewer;
+    use super::super::preview_viewer::viewer;
     let mk_viewer = |h: iced::widget::image::Handle| -> Element<'a, Message> {
         viewer(h)
+            .pinch_log(pinch_log)
             .min_scale(0.25)
             .max_scale(10.0)
             .scale_step(0.18)
@@ -259,51 +323,75 @@ pub(in crate::app) fn image_zoom_overlay<'a>(
             None => text("").into(),
         }
     };
-    let scrim = container(
-        container(inner)
-            .padding(8)
-            .center_x(Length::Fill)
-            .center_y(Length::Fill),
-    )
-    .width(Length::Fill)
-    .height(Length::Fill)
-    .style(move |_| container::Style {
-        background: Some(Color { a: 0.85, ..pal.bg }.into()),
-        ..Default::default()
-    });
-    // Click background scrim → close. Pointer cursor would mislead since
-    // most of the surface is the viewer (which handles its own drags).
-    let scrim_click = mouse_area(scrim).on_press(Message::CloseOverlay);
-    // Top-right close button. Sits on its own mouse_area so a click on the
-    // X always fires CloseOverlay (independent of the scrim mouse_area
-    // beneath it in the stack).
-    let close_btn_inner = container(crate::icon::glyph(crate::icon::ic::X, 16.0, pal.fg))
+    let close = button(crate::icon::glyph(crate::icon::ic::X, 16.0, pal.fg))
         .padding(Padding::from([6, 8]))
-        .style(move |_| container::Style {
-            background: Some(
-                Color {
-                    a: 0.75,
-                    ..pal.code_bg
-                }
-                .into(),
-            ),
-            border: iced::Border {
-                color: pal.code_border,
-                width: 1.0,
+        .style(move |_, status| button::Style {
+            background: match status {
+                button::Status::Hovered | button::Status::Pressed => Some(pal.hover().into()),
+                _ => None,
+            },
+            border: Border {
                 radius: theme::radius::SM.into(),
+                ..Default::default()
             },
             ..Default::default()
-        });
-    let close_btn = mouse_area(close_btn_inner)
-        .interaction(iced::mouse::Interaction::Pointer)
+        })
         .on_press(Message::CloseOverlay);
-    let close_overlay = container(close_btn)
-        .padding(Padding::from([14, 16]))
-        .align_x(iced::alignment::Horizontal::Right)
-        .align_y(iced::alignment::Vertical::Top)
-        .width(Length::Fill)
-        .height(Length::Fill);
-    stack![scrim_click, close_overlay].into()
+    let header = irow![
+        text(if diagram.is_some() {
+            "Diagram preview"
+        } else {
+            "Image preview"
+        })
+        .size(14)
+        .color(pal.fg),
+        Space::new().width(Length::Fill),
+        text("Pinch to zoom · Drag to pan")
+            .size(12)
+            .color(pal.muted),
+        close,
+    ]
+    .spacing(12)
+    .align_y(iced::Alignment::Center);
+    // An opaque, theme-matched panel keeps transparent diagram pixels from
+    // revealing the document. Paint the rounded fill on this container itself
+    // so a square child background cannot cover the corners.
+    let panel = container(
+        column![header, container(inner).padding(12).height(Length::Fill)]
+            .spacing(8)
+            .height(Length::Fill),
+    )
+    .padding(16)
+    .width(Length::Fill)
+    .height(Length::Fill)
+    .max_width(1100.0)
+    .max_height(760.0)
+    .clip(true)
+    .style(move |_| container::Style {
+        background: Some(Color { a: 1.0, ..pal.bg }.into()),
+        border: Border {
+            color: pal.border(),
+            width: 1.0,
+            radius: theme::radius::LG.into(),
+        },
+        shadow: theme::shadow::DIALOG,
+        ..Default::default()
+    });
+    let scrim = mouse_area(
+        container(Space::new().width(Length::Fill).height(Length::Fill))
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .style(|_| container::Style {
+                background: Some(Color::from_rgba(0.0, 0.0, 0.0, 0.45).into()),
+                ..Default::default()
+            }),
+    )
+    .on_press(Message::CloseOverlay);
+    let centered = container(mouse_area(panel).on_press(Message::Noop))
+        .padding(40)
+        .center_x(Length::Fill)
+        .center_y(Length::Fill);
+    stack![scrim, centered].into()
 }
 
 pub(in crate::app) fn welcome_view<'a>(pal: Palette) -> Element<'a, Message> {
