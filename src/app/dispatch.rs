@@ -237,25 +237,7 @@ impl App {
                     self.load_file_unless_dirty(p)
                 }
             }
-            Message::OpenWorkspace(p) => {
-                self.cancel_refresh_tracking();
-                // A workspace selected through Full Mindmap Mode should not
-                // silently alter the hidden sidebar's open/closed preference.
-                if self.full_mindmap.is_some() {
-                    let exit_after_refresh = self.pending_ipc_file_open.is_some();
-                    self.begin_full_mindmap_workspace_load(
-                        p,
-                        false,
-                        None,
-                        false,
-                        false,
-                        exit_after_refresh,
-                    )
-                } else {
-                    self.set_workspace(p, true);
-                    Task::none()
-                }
-            }
+            Message::OpenWorkspace(p) => self.open_workspace(p, true),
             Message::OpenFolderPicker => {
                 self.open_overlay(Overlay::FolderPicker);
                 Task::none()

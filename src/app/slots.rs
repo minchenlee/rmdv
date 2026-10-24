@@ -480,7 +480,8 @@ impl App {
     }
 
     /// Slot `index` is from another workspace: open that workspace the way
-    /// Open Folder does, then activate the slot there
+    /// Open Folder does, but without showing the sidebar, then activate the
+    /// slot there
     /// ([`Self::resume_quick_slot_switch`]). A slot whose workspace or file
     /// is gone shows as missing, and nothing opens.
     fn begin_quick_slot_workspace_switch(
@@ -506,7 +507,8 @@ impl App {
         let checkpoint = self.checkpoint_active_quick_slot();
         self.invalidate_pending_quick_slot_restore();
         self.pending_quick_slot_switch = Some(PendingQuickSlotSwitch { index, slot });
-        let open = self.update(Message::OpenWorkspace(root));
+        // The switch keeps the sidebar as it is.
+        let open = self.open_workspace(root, false);
         Task::batch([checkpoint, open])
     }
 

@@ -180,6 +180,7 @@ Audit (read-only, 2026-10-22, `main@75b637c`, every item with file:line):
 | P7 | `feat/pointer-p7` | H and I: selection from margins, auto-scroll, CJK words, outline scroll-spy, Quick Slot pointer entry, hit targets, divider persistence |
 | P8 | `feat/pointer-p8` | C: native menu bar |
 | P8b | `feat/pointer-p8b` | P8 trial feedback: Full Mindmap actions in the toolbar, global Quick Slots |
+| P8c | `feat/pointer-p8c` | P8b trial feedback: sidebar peek hides at once and matches the docked sidebar; a Quick Slot switch keeps the sidebar |
 
 ## Acceptance evidence
 
@@ -221,6 +222,7 @@ Per phase:
 - 2026-10-24: P8b on `feat/pointer-p8b` (stacked on P8): the Full Mindmap nav island is gone; Open Parent Folder and the panel toggle are toolbar buttons while Full Mindmap shows, and Read leaves it, in both toolbar modes. Quick Slots are one global bank: a slot of another workspace opens that workspace, then its file with its context; seeded once from the most recent workspace's old bank, which stays unchanged.
 - 2026-10-24: P8b review: 7 findings, all fixed red-first: the superseded-switch test starts with no active slot (the stale marker came from the assignment); a newer slot action cancels a waiting cross-workspace slot; the Quick Slots popover opens with no workspace; the replace confirmation names the old slot's workspace; Full Mindmap's toolbar buttons hide under Settings; Read names Esc only when Esc returns to Read; `QuickSlot::in_workspace` compares keys without canonicalizing. lib 1013 passed.
 - 2026-10-24: P8 trial build: Release dry run 40040570298, all four platforms built, macOS aarch64 notarized (PR #78). P8b verified by the orchestrator: lib 1013 passed, integration all passed, release build, Linux title bar simulation 365 passed with the 1 expected macOS-only failure; the real prefs file was not written by the tests.
+- 2026-10-25: P8c on `feat/pointer-p8c` (stacked on P8b), from the P8b trial: leaving the sidebar peek hides it at once (the delay stays only after a band entry the peek never confirms); the peek uses the docked sidebar's palette, no heavy shadow, and under glass an opaque tint of the sidebar over the reader color; a Quick Slot of another workspace opens it without showing the sidebar. Verified: lib 1014 passed, integration all passed, `--no-default-features` check, release build, Linux title bar simulation 366 passed with the 1 expected macOS-only failure; the real prefs file was not written.
 
 ## Decision log
 

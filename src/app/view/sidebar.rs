@@ -120,25 +120,15 @@ pub(in crate::app) fn sidebar_view<'a>(app: &'a App, pal: Palette) -> Element<'a
         .into()
 }
 
-/// The hidden sidebar shown over the content (the peek): the same sidebar,
-/// with a shadow and no divider to drag. It reports the pointer entering
-/// and leaving it, and takes every press and hover over it, so the content
-/// under it gets none.
-pub(in crate::app) fn sidebar_peek_view<'a>(
-    app: &'a App,
-    mut pal: Palette,
-) -> Element<'a, Message> {
-    // Over the content, a translucent sidebar would show the text through.
-    pal.sidebar.a = 1.0;
-    let panel = container(sidebar_view(app, pal))
-        .height(Length::Fill)
-        .style(move |_| container::Style {
-            background: Some(pal.sidebar.into()),
-            shadow: theme::shadow::PEEK,
-            ..Default::default()
-        });
+/// The hidden sidebar shown over the content (the peek): the same sidebar
+/// as the docked one, with no divider to drag. It reports the pointer
+/// entering and leaving it, and takes every press and hover over it, so the
+/// content under it gets none.
+pub(in crate::app) fn sidebar_peek_view<'a>(app: &'a App) -> Element<'a, Message> {
+    let mut pal = app.chrome_palette();
+    pal.sidebar = sidebar_peek_fill(app.palette, app.glass(), app.glass_opacity());
     let panel = iced::widget::opaque(
-        mouse_area(panel)
+        mouse_area(sidebar_view(app, pal))
             .on_enter(Message::SidebarPeek(true))
             .on_exit(Message::SidebarPeek(false)),
     );
@@ -147,6 +137,21 @@ pub(in crate::app) fn sidebar_peek_view<'a>(
         .height(Length::Fill)
         .align_x(iced::alignment::Horizontal::Left)
         .into()
+}
+
+/// The peek's fill. Over the content a translucent sidebar would show the
+/// text through, so the fill is opaque. With glass, the docked sidebar is
+/// its tint over the blur, as the reader beside it is; the peek paints that
+/// tint over the reader's color, so it stands out from the reader as much as
+/// the docked sidebar does.
+pub(in crate::app) fn sidebar_peek_fill(pal: Palette, glass: Glass, opacity: f32) -> Color {
+    match glass {
+        Glass::Off => Color {
+            a: 1.0,
+            ..pal.sidebar
+        },
+        Glass::Sidebar | Glass::Window => theme::mix(pal.bg, pal.sidebar, opacity),
+    }
 }
 
 pub(in crate::app) fn sidebar_tab_button<'a>(

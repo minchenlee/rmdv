@@ -101,6 +101,8 @@ fn a_slot_from_another_workspace_opens_that_workspace_then_its_file() {
     app.view_mode = ViewMode::Rendered;
     app.mindmap_panel_open = false;
     open(&mut app, &b.join("b.md"));
+    let _ = app.update(Message::ToggleSidebar);
+    assert!(!app.sidebar_open, "the sidebar is hidden before the switch");
 
     let _ = app.update(Message::QuickSlotActivate(0));
 
@@ -110,7 +112,7 @@ fn a_slot_from_another_workspace_opens_that_workspace_then_its_file() {
         "the slot's workspace opens first ({:?})",
         toast(&app)
     );
-    assert!(app.sidebar_open, "as Open Folder does");
+    assert!(!app.sidebar_open, "a slot switch keeps the sidebar hidden");
     let pending = app
         .pending_quick_slot_restore
         .clone()
@@ -124,6 +126,7 @@ fn a_slot_from_another_workspace_opens_that_workspace_then_its_file() {
     assert_eq!(app.file.as_deref(), Some(a_md.as_path()));
     assert_eq!(app.view_mode, ViewMode::Mindmap, "with its saved context");
     assert!(app.mindmap_panel_open);
+    assert!(!app.sidebar_open, "the sidebar stays hidden");
     assert_eq!(app.quick_slots.active, Some(0));
     cleanup(&app, &a);
 }

@@ -1,11 +1,12 @@
 //! Sidebar peek (MDV-048 polish): while the sidebar is hidden, the pointer at
 //! the left window edge shows it over the content, without moving the
-//! reader. It hides a short delay after the pointer leaves it. A peek never
+//! reader. It hides as soon as the pointer leaves it. A peek never
 //! changes `sidebar_open`, so the keyboard keeps going where it went before.
 
 use super::*;
 
-/// How long the peek stays after the pointer leaves it.
+/// How long a peek the band showed stays without the peek confirming the
+/// pointer on it.
 pub(super) const SIDEBAR_PEEK_HIDE_DELAY: std::time::Duration = TOOLBAR_HIDE_DELAY;
 
 impl App {
@@ -24,13 +25,13 @@ impl App {
 
     /// The pointer entered or left the peek (its edge band or the peeking
     /// sidebar). Entering the band shows the peek at once; leaving the peek
-    /// hides it after a short delay, which a return cancels.
+    /// hides it at once.
     ///
     /// Only the peek itself confirms the hover. A new peek reports the
     /// pointer on its first event, and it reports a leave only after that,
     /// so a pointer that leaves the window across the band never produces
-    /// a leave. The band's entry therefore already starts the hide delay,
-    /// which the peek's own report cancels.
+    /// a leave. The band's entry therefore starts a hide delay, which the
+    /// peek's own report cancels.
     pub(super) fn sidebar_peek_hover(&mut self, entered: bool) -> Task<Message> {
         if !self.sidebar_peek_allowed() {
             return Task::none();
@@ -46,7 +47,12 @@ impl App {
         self.sidebar_peek_generation = self.sidebar_peek_generation.wrapping_add(1);
         if from_band {
             self.sidebar_peek = true;
-        } else if entered || !self.sidebar_peek {
+        } else {
+            // A leave from the peek hides it now; the new generation drops
+            // the band's pending hide.
+            if !entered {
+                self.sidebar_peek = false;
+            }
             return Task::none();
         }
         let generation = self.sidebar_peek_generation;

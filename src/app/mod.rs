@@ -1787,13 +1787,40 @@ impl App {
         Task::batch(tasks)
     }
 
+    /// Open Folder: open `path` as the workspace. Outside Full Mindmap it
+    /// shows the sidebar when `open_sidebar` is set; a Quick Slot switch
+    /// keeps the sidebar as it is.
+    pub(super) fn open_workspace(&mut self, path: PathBuf, open_sidebar: bool) -> Task<Message> {
+        self.cancel_refresh_tracking();
+        // A workspace selected through Full Mindmap Mode should not
+        // silently alter the hidden sidebar's open/closed preference.
+        if self.full_mindmap.is_some() {
+            let exit_after_refresh = self.pending_ipc_file_open.is_some();
+            self.begin_full_mindmap_workspace_load(
+                path,
+                false,
+                None,
+                false,
+                false,
+                exit_after_refresh,
+            )
+        } else {
+            self.load_workspace(path, true, open_sidebar);
+            Task::none()
+        }
+    }
+
     fn set_workspace(&mut self, path: PathBuf, open_sidebar: bool) {
+        self.load_workspace(path, open_sidebar, open_sidebar);
+    }
+
+    /// Index `path` and show it as the workspace. A folder opened on purpose
+    /// (`remember`, not a file's implied parent) joins the recent folders.
+    fn load_workspace(&mut self, path: PathBuf, remember: bool, open_sidebar: bool) {
         let path = canonicalize_existing_path(path);
         match tree::build_workspace(&path, self.show_hidden) {
             Ok(snapshot) => {
-                // A folder opened on purpose (not a file's implied parent)
-                // joins the recent folders.
-                if open_sidebar {
+                if remember {
                     self.remember_recent_folder(&path);
                 }
                 self.apply_workspace_snapshot(path, snapshot, open_sidebar)
@@ -2282,7 +2309,7 @@ impl App {
         }
     }
 
-    fn glass_opacity(&self) -> f32 {
+    pub(in crate::app) fn glass_opacity(&self) -> f32 {
         crate::macos_vibrancy::clamp_opacity(self.prefs.glass_opacity)
     }
 
@@ -2339,7 +2366,7 @@ impl App {
     /// The palette for the sidebar column. With sidebar glass, the sidebar
     /// paints no fill (the ground behind it carries the tint); with
     /// whole-window glass it paints its own translucent tint.
-    fn chrome_palette(&self) -> Palette {
+    pub(in crate::app) fn chrome_palette(&self) -> Palette {
         let mut pal = self.palette;
         match self.glass() {
             Glass::Off => {}
@@ -4139,7 +4166,7 @@ impl App {
         // across rebuilds.
         let peek_allowed = self.sidebar_peek_allowed();
         let peek: Element<'_, Message> = if self.sidebar_peek && peek_allowed {
-            sidebar_peek_view(self, self.palette)
+            sidebar_peek_view(self)
         } else {
             Space::new().into()
         };

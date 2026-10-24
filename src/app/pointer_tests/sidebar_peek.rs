@@ -1,6 +1,6 @@
 //! Sidebar peek (MDV-048 polish): while the sidebar is hidden, the pointer at
-//! the left window edge shows it over the content; it hides a short delay
-//! after the pointer leaves it.
+//! the left window edge shows it over the content; it hides as soon as the
+//! pointer leaves it.
 
 use super::group3::{assert_tips, full_mindmap_app, tips, tree_fixture};
 use super::toolbar::wait_outputs;
@@ -118,7 +118,7 @@ fn left_edge_reveals_the_sidebar_over_the_content() {
 }
 
 #[test]
-fn leaving_the_peek_hides_it_after_the_delay() {
+fn leaving_the_peek_hides_it_at_once() {
     let (mut app, dir) = peek_app("leave");
     let mut ui = PointerUi::new();
     reveal(&mut app, &mut ui);
@@ -126,23 +126,18 @@ fn leaving_the_peek_hides_it_after_the_delay() {
 
     let (messages, _) = ui.move_to(&app, READER);
     assert_eq!(peek_count(&messages, false), 1, "{messages:?}");
-    let mut hide = Vec::new();
+    let mut after = Vec::new();
     for message in messages {
-        hide.extend(wait_outputs(app.update(message)));
+        after.extend(wait_outputs(app.update(message)));
     }
+    assert!(!app.sidebar_peek, "hidden without a delay");
     assert!(
-        ui.text_bounds(&app, "beta.md").is_some(),
-        "stays during the delay"
+        !has(&after, |m| matches!(m, Message::SidebarPeekHideAfter(_))),
+        "no hide is scheduled: {after:?}"
     );
-    assert!(
-        has(&hide, |m| matches!(m, Message::SidebarPeekHideAfter(_))),
-        "the delay ends in a hide message: {hide:?}"
-    );
-    apply(&mut app, hide);
-    assert!(!app.sidebar_peek);
     assert!(
         ui.text_bounds(&app, "beta.md").is_none(),
-        "hidden after the delay"
+        "the reader is clear at once"
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -179,19 +174,44 @@ fn the_peek_hides_when_the_pointer_leaves_the_window_across_the_band() {
 }
 
 #[test]
-fn returning_to_the_peek_cancels_the_pending_hide() {
+fn the_peek_confirming_the_pointer_cancels_the_bands_hide() {
     let (mut app, dir) = peek_app("stale");
+    // The band's entry shows the peek and schedules the safety hide.
     let _ = app.update(Message::SidebarPeek(true));
-    let _ = app.update(Message::SidebarPeek(false));
     let stale = app.sidebar_peek_generation;
+    // The peek then reports the pointer on it.
     let _ = app.update(Message::SidebarPeek(true));
     let _ = app.update(Message::SidebarPeekHideAfter(stale));
     assert!(app.sidebar_peek, "a stale hide does nothing");
     let _ = app.update(Message::SidebarPeek(false));
-    let current = app.sidebar_peek_generation;
-    let _ = app.update(Message::SidebarPeekHideAfter(current));
-    assert!(!app.sidebar_peek);
+    assert!(!app.sidebar_peek, "leaving the peek hides it at once");
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn the_peek_looks_like_the_docked_sidebar() {
+    let pal = crate::theme::Palette::DRACULA;
+    // Without glass, both paint the sidebar color.
+    let fill = sidebar_peek_fill(pal, Glass::Off, 0.6);
+    assert_eq!(
+        fill,
+        Color {
+            a: 1.0,
+            ..pal.sidebar
+        }
+    );
+    // With glass, the docked sidebar is a tint over the blur. The peek must
+    // hide the text under it, so it paints that tint over the reader's
+    // color: it differs from the reader as much as the docked sidebar does.
+    for glass in [Glass::Sidebar, Glass::Window] {
+        let fill = sidebar_peek_fill(pal, glass, 0.6);
+        assert_eq!(fill.a, 1.0, "{glass:?}: opaque over the text");
+        assert_eq!(
+            fill,
+            crate::theme::mix(pal.bg, pal.sidebar, 0.6),
+            "{glass:?}"
+        );
+    }
 }
 
 #[test]

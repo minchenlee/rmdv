@@ -849,13 +849,6 @@ pub mod shadow {
     pub const SHEET: Shadow = drop(0.35, 18.0, 60.0);
     /// Context menus: a small surface right under the pointer.
     pub const MENU: Shadow = drop(0.26, 6.0, 20.0);
-    /// A panel shown over the content at the window's left edge: the
-    /// sidebar peek. It falls to the right, onto the content.
-    pub const PEEK: Shadow = Shadow {
-        color: Color::from_rgba(0.0, 0.0, 0.0, 0.22),
-        offset: Vector::new(4.0, 0.0),
-        blur_radius: 24.0,
-    };
     /// Dims the document behind a modal overlay.
     pub const SCRIM: Color = Color::from_rgba(0.0, 0.0, 0.0, 0.18);
     /// The inner shade at a side where a wide table has more to scroll to.
