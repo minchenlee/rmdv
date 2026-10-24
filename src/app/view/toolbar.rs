@@ -1,6 +1,7 @@
 //! The top toolbar: sidebar toggle, file name with its dirty dot, the
-//! Read / Edit / Mind Map / Full Mindmap switch (icons), and Save, Find, Quick Slots, Command
-//! Palette, Settings.
+//! Read / Edit / Mind Map / Full Mindmap switch (icons), Full Mindmap's
+//! parent folder and panel toggle while it shows, and Save, Find, Quick
+//! Slots, Command Palette, Settings.
 //! Every action here also has a keyboard shortcut; the toolbar is the pointer
 //! path to it.
 
@@ -124,8 +125,9 @@ pub(in crate::app) fn toolbar<'a>(
         Space::new().into()
     };
 
-    // Right: the view switch, the document mind map's panel toggle, then
-    // Save, Find, Command Palette, and Settings.
+    // Right: the view switch, Full Mindmap's parent folder and panel toggle
+    // or the document mind map's panel toggle, then Save, Find, Quick Slots,
+    // Command Palette, and Settings.
     let current = if full_mindmap {
         Some(ToolbarView::FullMindmap)
     } else {
@@ -138,7 +140,9 @@ pub(in crate::app) fn toolbar<'a>(
     let read_key = match current {
         Some(ToolbarView::Edit) => Some("Esc"),
         Some(ToolbarView::Mindmap) => Some("⌘M"),
-        Some(ToolbarView::FullMindmap) => Some("Esc"),
+        // Esc leaves Full Mindmap to the view it was entered from; Read
+        // names it only when that view is Read.
+        Some(ToolbarView::FullMindmap) if app.view_mode == ViewMode::Rendered => Some("Esc"),
         _ => None,
     };
     // Each view is an icon; the tooltip names it and its shortcut. All four
@@ -216,6 +220,36 @@ pub(in crate::app) fn toolbar<'a>(
         });
 
     let mut right = irow![segments].spacing(2).align_y(iced::Alignment::Center);
+    // Settings covers Full Mindmap: its actions hide, as the island did.
+    if let Some(full) = app.full_mindmap.as_ref().filter(|_| !app.settings_open) {
+        // Full Mindmap's own actions: the workspace's parent folder
+        // (disabled at the filesystem root) and the preview panel.
+        let has_parent = app.workspace.as_deref().and_then(Path::parent).is_some();
+        right = right.push(action_tip(
+            tool_button(
+                ic::FOLDER_UP,
+                has_parent.then_some(Message::FullMindmapWorkspaceParent),
+                false,
+                pal,
+            ),
+            "Open Parent Folder",
+            None,
+            Position::Bottom,
+            pal,
+        ));
+        let (glyph, action) = if full.panel_open {
+            (ic::PANEL_RIGHT_CLOSE, "Hide Panel")
+        } else {
+            (ic::PANEL_RIGHT_OPEN, "Show Panel")
+        };
+        right = right.push(action_tip(
+            tool_button(glyph, Some(Message::FullMindmapTogglePanel), false, pal),
+            action,
+            Some("⌘⌥B"),
+            Position::Bottom,
+            pal,
+        ));
+    }
     if !full_mindmap && has_file && app.view_mode == ViewMode::Mindmap {
         let (glyph, action) = if app.mindmap_panel_open {
             (ic::PANEL_RIGHT_CLOSE, "Hide Panel")

@@ -456,14 +456,18 @@ impl App {
         self.rewire_quick_slots(old, new);
     }
 
+    /// A slot under `old` follows it to `new`. Each slot is matched inside
+    /// its own workspace root, so a slot from another workspace with the
+    /// same relative path stays as it is.
     fn rewire_quick_slots(&mut self, old: &Path, new: &Path) {
-        let Some(root) = self.quick_slots_workspace_root().map(Path::to_path_buf) else {
-            return;
-        };
-        let (Ok(old), Ok(new)) = (old.strip_prefix(&root), new.strip_prefix(&root)) else {
-            return;
-        };
         let rewire = |slot: &mut crate::quick_slots::QuickSlot| {
+            if slot.root.is_empty() {
+                return false;
+            }
+            let root = Path::new(&slot.root);
+            let (Ok(old), Ok(new)) = (old.strip_prefix(root), new.strip_prefix(root)) else {
+                return false;
+            };
             let moved = crate::quick_slots::normalize_relative_path(&slot.relative_path)
                 .and_then(|relative| rewire_path(Path::new(&relative), old, new));
             match moved {

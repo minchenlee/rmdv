@@ -678,11 +678,8 @@ pub(in crate::app) fn quick_slots_rail<'a>(
     let mut controls = Column::new().spacing(6).align_x(iced::Alignment::Start);
     for index in 0..crate::quick_slots::SLOT_COUNT {
         let occupied = app.quick_slots.occupied(index);
-        let missing = occupied.is_some_and(|slot| {
-            app.quick_slots_workspace_root()
-                .and_then(|root| crate::quick_slots::resolve_path(root, &slot.relative_path))
-                .map_or(true, |path| !path.is_file())
-        });
+        let missing =
+            occupied.is_some_and(|slot| slot.resolve().map_or(true, |path| !path.is_file()));
         let active = app.quick_slots.active == Some(index);
         let assignable = app.current_quick_slot_context().is_some();
         let label = container(
@@ -731,11 +728,7 @@ pub(in crate::app) fn quick_slots_rail<'a>(
             let filename = if missing {
                 format!("Missing: {}", slot.relative_path)
             } else {
-                std::path::Path::new(&slot.relative_path)
-                    .file_name()
-                    .and_then(|name| name.to_str())
-                    .map(str::to_owned)
-                    .unwrap_or_else(|| slot.relative_path.clone())
+                slot.file_name()
             };
             let details = container(
                 text(filename)
@@ -757,6 +750,18 @@ pub(in crate::app) fn quick_slots_rail<'a>(
                 },
                 ..Default::default()
             });
+            // A slot from another workspace names it in its tooltip; the
+            // title stays the file name.
+            let details: Element<'a, Message> = if app.quick_slot_in_workspace(slot) {
+                details.into()
+            } else {
+                label_tip(
+                    details,
+                    format!("{} — {}", slot.file_name(), slot.workspace_name()),
+                    iced::widget::tooltip::Position::Right,
+                    pal,
+                )
+            };
             irow![slot_button, details]
                 .spacing(6)
                 .align_y(iced::Alignment::Center)
@@ -886,88 +891,6 @@ pub(in crate::app) fn search_bar_view<'a>(
     })
     .width(Length::Fill)
     .into()
-}
-
-/// Full Mindmap's pointer exit and navigation: Back (as Esc), the parent
-/// folder, and the panel toggle, in an island at the top-left. Only the
-/// buttons take pointer input; the rest of the layer leaves the canvas its
-/// events.
-pub(in crate::app) fn full_mindmap_nav<'a>(
-    panel_open: bool,
-    top: f32,
-    pal: Palette,
-) -> Element<'a, Message> {
-    let back = button(
-        irow![
-            icon::glyph(ic::ARROW_LEFT, 14.0, pal.muted),
-            text("Back").size(12).color(pal.fg),
-        ]
-        .spacing(6)
-        .align_y(iced::Alignment::Center),
-    )
-    .padding(Padding::from([4, 10]))
-    .style(move |_, status| button::Style {
-        background: match status {
-            button::Status::Hovered => Some(Background::Color(pal.hover())),
-            button::Status::Pressed => Some(Background::Color(pal.active())),
-            _ => None,
-        },
-        text_color: pal.fg,
-        border: Border {
-            radius: theme::radius::PILL.into(),
-            ..Default::default()
-        },
-        ..Default::default()
-    })
-    .on_press(Message::ExitFullMindmap);
-    let (panel_glyph, panel_action) = if panel_open {
-        (ic::PANEL_RIGHT_CLOSE, "Hide Panel")
-    } else {
-        (ic::PANEL_RIGHT_OPEN, "Show Panel")
-    };
-    let buttons = irow![
-        action_tip(back, "Back to Reader", Some("Esc"), Position::Bottom, pal),
-        action_tip(
-            ghost_lu(ic::FOLDER_UP, pal).on_press(Message::FullMindmapWorkspaceParent),
-            "Parent Folder",
-            None,
-            Position::Bottom,
-            pal,
-        ),
-        action_tip(
-            ghost_lu(panel_glyph, pal).on_press(Message::FullMindmapTogglePanel),
-            panel_action,
-            Some("⌘⌥B"),
-            Position::Bottom,
-            pal,
-        ),
-    ]
-    .spacing(2)
-    .align_y(iced::Alignment::Center);
-    let island = container(buttons)
-        .padding(4)
-        .style(move |_| container::Style {
-            background: Some(pal.popover().into()),
-            border: Border {
-                color: pal.border(),
-                width: 1.0,
-                radius: theme::radius::PILL.into(),
-            },
-            shadow: theme::shadow::HINT,
-            ..Default::default()
-        });
-    container(island)
-        .width(Length::Fill)
-        .height(Length::Fill)
-        .padding(Padding {
-            top,
-            right: 0.0,
-            bottom: 0.0,
-            left: 16.0,
-        })
-        .align_x(iced::alignment::Horizontal::Left)
-        .align_y(iced::alignment::Vertical::Top)
-        .into()
 }
 
 /// Floating mind map keyboard hint. It sits over the canvas so side panels

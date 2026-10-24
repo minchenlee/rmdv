@@ -77,6 +77,11 @@ impl App {
         if let Some(glass) = self.sync_glass() {
             task = Task::batch([task, glass]);
         }
+        // A slot from another workspace activates once that workspace is
+        // open (MDV-048 P8b).
+        if self.pending_quick_slot_switch.is_some() {
+            task = Task::batch([task, self.resume_quick_slot_switch()]);
+        }
         if (self.workspace_epoch, self.expanded.len()) == before {
             return task;
         }
@@ -558,7 +563,6 @@ impl App {
                 } else {
                     0
                 }) as isize;
-                let root = self.quick_slots_workspace_root().map(PathBuf::from);
                 let steps: Vec<usize> = if active.is_some() {
                     (1..=crate::quick_slots::SLOT_COUNT).collect()
                 } else {
@@ -572,13 +576,10 @@ impl App {
                             as usize
                     })
                     .find(|&index| {
-                        self.quick_slots.occupied(index).is_some_and(|slot| {
-                            root.as_ref()
-                                .and_then(|root| {
-                                    crate::quick_slots::resolve_path(root, &slot.relative_path)
-                                })
-                                .is_some_and(|path| path.is_file())
-                        })
+                        self.quick_slots
+                            .occupied(index)
+                            .and_then(crate::quick_slots::QuickSlot::resolve)
+                            .is_some_and(|path| path.is_file())
                     });
                 match next {
                     Some(index) => self.begin_quick_slot_activation(index),
@@ -614,9 +615,7 @@ impl App {
                 }
                 match result {
                     Ok((path, source)) => {
-                        let expected = self.quick_slots_workspace_root().and_then(|root| {
-                            crate::quick_slots::resolve_path(root, &slot.relative_path)
-                        });
+                        let expected = slot.resolve();
                         if expected.as_ref() != Some(&path) {
                             self.invalidate_pending_quick_slot_restore();
                             return Task::none();

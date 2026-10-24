@@ -1,4 +1,11 @@
-//! Persistent, workspace-scoped Quick Slot data.
+//! Persistent Quick Slot data: one global bank of nine slots.
+//!
+//! Each slot keeps the workspace root it was assigned in (as
+//! [`workspace_key`] writes it) and its path relative to that root, so a
+//! slot opens from any workspace and renames inside its workspace still
+//! update it. The older per-workspace banks ([`QuickSlotsStore`]) stay in
+//! the preferences file unchanged so a downgrade still finds them; the
+//! global bank is seeded once from one of them ([`seed_global`]).
 //!
 //! The UI owns navigation and Iced state; this module deliberately contains
 //! only bounded serializable data and path/context helpers so it can be tested
@@ -58,8 +65,13 @@ impl SlotContext {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct QuickSlot {
-    /// Path relative to the bank's workspace root. Absolute paths are rejected
-    /// by [`relative_path`] and never written by the application.
+    /// The workspace root the slot was assigned in, as [`workspace_key`]
+    /// wrote it. Every slot of the global bank has one; slots of the older
+    /// per-workspace banks have none (their bank's key is their root).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub root: String,
+    /// Path relative to `root`. Absolute paths are rejected by
+    /// [`relative_path`] and never written by the application.
     #[serde(default)]
     pub relative_path: String,
     #[serde(default)]
@@ -69,8 +81,43 @@ pub struct QuickSlot {
 impl QuickSlot {
     pub fn normalized(mut self) -> Option<Self> {
         self.relative_path = normalize_relative_path(&self.relative_path)?;
+        if !self.root.is_empty() && !Path::new(&self.root).is_absolute() {
+            return None;
+        }
         self.context = self.context.normalized();
         Some(self)
+    }
+
+    /// The slot's file, resolved inside its own workspace root.
+    pub fn resolve(&self) -> Option<PathBuf> {
+        if self.root.is_empty() {
+            return None;
+        }
+        resolve_path(Path::new(&self.root), &self.relative_path)
+    }
+
+    /// Whether the slot was assigned in workspace `root`, which must be
+    /// canonical as [`workspace_key`] writes it (the app's open workspace
+    /// is). It runs on the menu, view, and scroll paths, so it compares the
+    /// saved key and never asks the filesystem.
+    pub fn in_workspace(&self, root: &Path) -> bool {
+        !self.root.is_empty() && Path::new(&self.root) == root
+    }
+
+    /// The slot's title: its file name.
+    pub fn file_name(&self) -> String {
+        Path::new(&self.relative_path)
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_else(|| self.relative_path.clone())
+    }
+
+    /// The name of the workspace folder the slot was assigned in.
+    pub fn workspace_name(&self) -> String {
+        Path::new(&self.root)
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_else(|| self.root.clone())
     }
 }
 
@@ -111,6 +158,17 @@ impl WorkspaceSlots {
         self
     }
 
+    /// Normalize the global bank: as [`Self::normalized`], and a slot
+    /// without an absolute workspace root is dropped (it cannot be opened).
+    pub fn normalized_global(mut self) -> Self {
+        for slot in self.slots.iter_mut() {
+            if slot.as_ref().is_some_and(|slot| slot.root.is_empty()) {
+                *slot = None;
+            }
+        }
+        self.normalized()
+    }
+
     pub fn occupied(&self, index: usize) -> Option<&QuickSlot> {
         self.slots.get(index).and_then(Option::as_ref)
     }
@@ -149,6 +207,9 @@ impl WorkspaceSlots {
     }
 }
 
+/// The older per-workspace banks, by [`workspace_key`]. Since the global
+/// bank they are only read once, to seed it, and are never written, so an
+/// older build still finds them.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct QuickSlotsStore {
     #[serde(default)]
@@ -176,6 +237,31 @@ impl QuickSlotsStore {
     pub fn put_bank(&mut self, root: &Path, bank: WorkspaceSlots) {
         self.banks.insert(workspace_key(root), bank.normalized());
     }
+}
+
+/// The global bank seeded from the older per-workspace banks: the bank of
+/// the first workspace in `roots` (most recent first) that holds a slot,
+/// each slot given that workspace as its root. Banks are never merged; with
+/// no such workspace the global bank starts empty.
+pub fn seed_global<'a>(
+    store: &QuickSlotsStore,
+    roots: impl IntoIterator<Item = &'a Path>,
+) -> WorkspaceSlots {
+    for root in roots {
+        let key = workspace_key(root);
+        let Some(bank) = store.banks.get(&key) else {
+            continue;
+        };
+        let mut bank = bank.clone().normalized();
+        if bank.slots.iter().all(Option::is_none) {
+            continue;
+        }
+        for slot in bank.slots.iter_mut().flatten() {
+            slot.root = key.clone();
+        }
+        return bank.normalized_global();
+    }
+    WorkspaceSlots::default()
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -318,6 +404,7 @@ mod tests {
         assert!(bank.set(
             8,
             QuickSlot {
+                root: String::new(),
                 relative_path: "README.md".into(),
                 context: SlotContext::default(),
             }
@@ -407,6 +494,7 @@ mod tests {
         assert!(normalize_relative_path("../today.md").is_none());
         assert!(normalize_relative_path("/tmp/today.md").is_none());
         let slot = QuickSlot {
+            root: String::new(),
             relative_path: "./notes/./today.md".into(),
             context: SlotContext::default(),
         }
@@ -421,6 +509,7 @@ mod tests {
         bank.set(
             0,
             QuickSlot {
+                root: String::new(),
                 relative_path: "a.md".into(),
                 context: SlotContext::default(),
             },
@@ -435,5 +524,103 @@ mod tests {
         };
         bank.set(undo.index, undo.slot);
         assert!(bank.occupied(0).is_some());
+    }
+
+    fn legacy(relative_path: &str) -> QuickSlot {
+        QuickSlot {
+            root: String::new(),
+            relative_path: relative_path.into(),
+            context: SlotContext::default(),
+        }
+    }
+
+    #[test]
+    fn seeding_takes_the_first_workspace_with_slots_and_never_merges() {
+        let mut store = QuickSlotsStore::default();
+        let (empty, first, second) = (
+            test_root("seed-empty"),
+            test_root("seed-first"),
+            test_root("seed-second"),
+        );
+        store.put_bank(&empty, WorkspaceSlots::default());
+        let mut bank = WorkspaceSlots::default();
+        bank.set(1, legacy("a.md"));
+        bank.active = Some(1);
+        store.put_bank(&first, bank);
+        let mut bank = WorkspaceSlots::default();
+        bank.set(2, legacy("b.md"));
+        store.put_bank(&second, bank);
+        let before = store.clone();
+
+        let missing = test_root("seed-missing");
+        let seeded = seed_global(
+            &store,
+            [
+                missing.as_path(),
+                empty.as_path(),
+                first.as_path(),
+                second.as_path(),
+            ],
+        );
+
+        let slot = seeded.occupied(1).expect("first bank with a slot");
+        assert_eq!(slot.relative_path, "a.md");
+        assert_eq!(slot.root, workspace_key(&first));
+        assert_eq!(seeded.active, Some(1));
+        assert!(seeded.occupied(2).is_none(), "banks are never merged");
+        assert_eq!(store, before, "seeding reads the old banks only");
+        assert_eq!(
+            seed_global(&store, [missing.as_path()]),
+            WorkspaceSlots::default()
+        );
+    }
+
+    #[test]
+    fn a_slot_resolves_in_its_own_root_only() {
+        let root = test_root("own-root");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("a.md"), "a").unwrap();
+        let slot = QuickSlot {
+            root: workspace_key(&root),
+            ..legacy("a.md")
+        };
+        let canonical = std::fs::canonicalize(&root).unwrap();
+        assert_eq!(slot.resolve(), Some(canonical.join("a.md")));
+        assert!(slot.in_workspace(&canonical));
+        assert!(!slot.in_workspace(&test_root("other-root")));
+        assert_eq!(slot.file_name(), "a.md");
+        assert_eq!(
+            slot.workspace_name(),
+            canonical.file_name().unwrap().to_string_lossy()
+        );
+        assert_eq!(legacy("a.md").resolve(), None, "no root: nothing to open");
+        assert!(QuickSlot {
+            root: "relative/root".into(),
+            ..legacy("a.md")
+        }
+        .normalized()
+        .is_none());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// `in_workspace` runs on the menu, view, and scroll paths, so it
+    /// compares the saved key with the (canonical) open workspace and never
+    /// asks the filesystem: an alias of the root does not match.
+    #[cfg(unix)]
+    #[test]
+    fn in_workspace_compares_the_saved_key_without_resolving_aliases() {
+        let root = test_root("key-only");
+        std::fs::create_dir_all(&root).unwrap();
+        let canonical = std::fs::canonicalize(&root).unwrap();
+        let alias = test_root("key-only-alias");
+        std::os::unix::fs::symlink(&canonical, &alias).unwrap();
+        let slot = QuickSlot {
+            root: workspace_key(&root),
+            ..legacy("a.md")
+        };
+        assert!(slot.in_workspace(&canonical));
+        assert!(!slot.in_workspace(&alias), "the alias is not canonicalized");
+        std::fs::remove_file(alias).unwrap();
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

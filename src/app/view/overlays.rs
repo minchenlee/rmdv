@@ -891,9 +891,13 @@ pub(in crate::app) fn quick_slot_replace_overlay<'a>(
         .size(15)
         .font(title_font)
         .color(pal.fg);
+    // A slot of another workspace names it, as the rail tooltip does.
+    let current = match pending.current_workspace.as_deref() {
+        Some(workspace) => format!("{} — {workspace}", file_name(&pending.current)),
+        None => file_name(&pending.current),
+    };
     let body = text(format!(
-        "Slot {slot} holds {}. Replace it with {}?",
-        file_name(&pending.current),
+        "Slot {slot} holds {current}. Replace it with {}?",
         file_name(&pending.incoming)
     ))
     .size(13)

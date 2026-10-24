@@ -786,18 +786,18 @@ impl App {
         }
     }
 
-    /// The Quick Slot titles now, by tag: a slot names its file.
+    /// The Quick Slot titles now, by tag: a slot names its file, and the
+    /// workspace folder when it is from another workspace ("b.md — notes").
     pub(super) fn menu_titles(&self) -> Vec<(u32, String)> {
         (0..crate::quick_slots::SLOT_COUNT as u8)
             .map(|index| {
                 let base = SLOT_TITLES[usize::from(index)];
                 let title = match self.quick_slots.occupied(usize::from(index)) {
+                    Some(slot) if self.quick_slot_in_workspace(slot) => {
+                        format!("{base}: {}", slot.file_name())
+                    }
                     Some(slot) => {
-                        let name = Path::new(&slot.relative_path)
-                            .file_name()
-                            .map(|name| name.to_string_lossy().into_owned())
-                            .unwrap_or_else(|| slot.relative_path.clone());
-                        format!("{base}: {name}")
+                        format!("{base}: {} — {}", slot.file_name(), slot.workspace_name())
                     }
                     None => base.to_string(),
                 };
@@ -1486,6 +1486,12 @@ mod tests {
     fn slot_titles_name_their_files() {
         let mut app = reader_app();
         app.quick_slots.slots[1] = Some(crate::quick_slots::QuickSlot {
+            root: app
+                .workspace
+                .as_deref()
+                .unwrap()
+                .to_string_lossy()
+                .into_owned(),
             relative_path: "notes/b.md".into(),
             context: Default::default(),
         });
@@ -1522,6 +1528,12 @@ mod tests {
         let _ = app.update(Message::ToggleSidebar);
         assert_eq!(app.menu_pushed.pushes, [2, 1, 1], "only the state changed");
         app.quick_slots.slots[0] = Some(crate::quick_slots::QuickSlot {
+            root: app
+                .workspace
+                .as_deref()
+                .unwrap()
+                .to_string_lossy()
+                .into_owned(),
             relative_path: "a.md".into(),
             context: Default::default(),
         });

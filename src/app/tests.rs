@@ -336,6 +336,7 @@ fn quick_slot_activation_rejects_older_generic_load_and_refresh() {
     app.quick_slots.set(
         0,
         crate::quick_slots::QuickSlot {
+            root: crate::quick_slots::workspace_key(app.workspace.as_deref().unwrap()),
             relative_path: "new.md".into(),
             context: crate::quick_slots::SlotContext::default(),
         },
@@ -394,6 +395,7 @@ fn occupy_slot(app: &mut App, index: usize, relative_path: &str) {
     assert!(app.quick_slots.set(
         index,
         crate::quick_slots::QuickSlot {
+            root: crate::quick_slots::workspace_key(app.workspace.as_deref().unwrap()),
             relative_path: relative_path.into(),
             context: crate::quick_slots::SlotContext::default(),
         },
@@ -493,6 +495,7 @@ fn assign_same_file_skips_confirmation() {
     app.view_mode = ViewMode::Mindmap;
     // A legacy CurDir segment still names the same file.
     app.quick_slots.slots[0] = Some(crate::quick_slots::QuickSlot {
+        root: crate::quick_slots::workspace_key(app.workspace.as_deref().unwrap()),
         relative_path: "./old.md".into(),
         context: crate::quick_slots::SlotContext::default(),
     });
@@ -548,6 +551,7 @@ fn deferred_full_preview_restore_for_workspace(
         .and_then(|full| full.pending_folder_loads.get(&folder).cloned())
         .expect("deferred folder should own a materialization request");
     let slot = crate::quick_slots::QuickSlot {
+        root: crate::quick_slots::workspace_key(app.workspace.as_deref().unwrap()),
         relative_path: "notes/note.md".into(),
         context: crate::quick_slots::SlotContext {
             mode: crate::quick_slots::SlotMode::FullMindmap,
@@ -651,6 +655,7 @@ fn symlink_workspace_open_uses_canonical_full_preview_identity() {
 fn clearing_during_inflight_slot_restore_drops_stale_completion() {
     let (mut app, _old_file, _new_file) = quick_slot_restore_test_app("stale-clear");
     let old_slot = crate::quick_slots::QuickSlot {
+        root: crate::quick_slots::workspace_key(app.workspace.as_deref().unwrap()),
         relative_path: "old.md".into(),
         context: crate::quick_slots::SlotContext::default(),
     };
@@ -673,6 +678,7 @@ fn clearing_during_inflight_slot_restore_drops_stale_completion() {
 fn overwriting_during_inflight_slot_restore_drops_stale_completion() {
     let (mut app, _old_file, new_file) = quick_slot_restore_test_app("stale-overwrite");
     let old_slot = crate::quick_slots::QuickSlot {
+        root: crate::quick_slots::workspace_key(app.workspace.as_deref().unwrap()),
         relative_path: "old.md".into(),
         context: crate::quick_slots::SlotContext::default(),
     };
@@ -714,6 +720,7 @@ fn stale_watcher_completion_cannot_supersede_pending_slot_restore() {
         .expect("watcher should own the old reload");
 
     let slot = crate::quick_slots::QuickSlot {
+        root: crate::quick_slots::workspace_key(app.workspace.as_deref().unwrap()),
         relative_path: "new.md".into(),
         context: crate::quick_slots::SlotContext::default(),
     };
@@ -745,6 +752,7 @@ fn slot_completion_wins_over_pending_watcher_reload() {
         .expect("watcher should own the old reload");
 
     let slot = crate::quick_slots::QuickSlot {
+        root: crate::quick_slots::workspace_key(app.workspace.as_deref().unwrap()),
         relative_path: "new.md".into(),
         context: crate::quick_slots::SlotContext::default(),
     };
@@ -775,6 +783,7 @@ fn same_current_watcher_reload_applies_without_changing_slot_identity() {
     app.quick_slots.set(
         0,
         crate::quick_slots::QuickSlot {
+            root: crate::quick_slots::workspace_key(app.workspace.as_deref().unwrap()),
             relative_path: "old.md".into(),
             context: crate::quick_slots::SlotContext::default(),
         },
@@ -824,6 +833,7 @@ fn clean_close_window_persists_active_slot_before_close_task() {
     app.quick_slots.set(
         0,
         crate::quick_slots::QuickSlot {
+            root: crate::quick_slots::workspace_key(app.workspace.as_deref().unwrap()),
             relative_path: "old.md".into(),
             context: crate::quick_slots::SlotContext::default(),
         },
@@ -832,7 +842,10 @@ fn clean_close_window_persists_active_slot_before_close_task() {
     let _ = app.close_quick_slot_window();
     let isolated = app.quick_slots_persistence_path.clone().unwrap();
     let stored = crate::prefs::load_from(&isolated);
-    assert_eq!(stored.quick_slots.bank(&root).active, Some(0));
+    assert_eq!(
+        stored.global_quick_slots.clone().unwrap_or_default().active,
+        Some(0)
+    );
     let _ = std::fs::remove_file(isolated);
     let _ = std::fs::remove_dir_all(root);
 }
@@ -842,6 +855,7 @@ fn full_preview_restore_guard_rejects_overwrite() {
     let (mut app, _old_file, _new_file) = quick_slot_restore_test_app("stale-preview");
     let root = app.workspace.clone().unwrap();
     let old_slot = crate::quick_slots::QuickSlot {
+        root: crate::quick_slots::workspace_key(app.workspace.as_deref().unwrap()),
         relative_path: "old.md".into(),
         context: crate::quick_slots::SlotContext {
             mode: crate::quick_slots::SlotMode::FullMindmap,
@@ -862,6 +876,7 @@ fn full_preview_restore_guard_rejects_overwrite() {
     app.quick_slots.set(
         0,
         crate::quick_slots::QuickSlot {
+            root: crate::quick_slots::workspace_key(app.workspace.as_deref().unwrap()),
             relative_path: "new.md".into(),
             context: crate::quick_slots::SlotContext::default(),
         },
@@ -900,6 +915,7 @@ fn deferred_full_preview_source_reparse_preserves_current_slot_restore() {
         .expect("deferred folder should own a materialization request");
 
     let slot = crate::quick_slots::QuickSlot {
+        root: crate::quick_slots::workspace_key(app.workspace.as_deref().unwrap()),
         relative_path: "notes/note.md".into(),
         context: crate::quick_slots::SlotContext {
             mode: crate::quick_slots::SlotMode::FullMindmap,
@@ -948,6 +964,7 @@ fn deferred_full_preview_source_reparse_preserves_current_slot_restore() {
     app.quick_slots.set(
         0,
         crate::quick_slots::QuickSlot {
+            root: crate::quick_slots::workspace_key(app.workspace.as_deref().unwrap()),
             relative_path: "notes/other.md".into(),
             context: crate::quick_slots::SlotContext::default(),
         },
@@ -982,6 +999,7 @@ fn clean_zen_activation_leaves_editor_and_restores_active_reader_slot() {
     let (mut app, old_file, _new_file) = quick_slot_restore_test_app("clean-zen-activate");
     let old_file = std::fs::canonicalize(old_file).unwrap();
     let slot = crate::quick_slots::QuickSlot {
+        root: crate::quick_slots::workspace_key(app.workspace.as_deref().unwrap()),
         relative_path: "old.md".into(),
         context: crate::quick_slots::SlotContext::default(),
     };
@@ -1022,8 +1040,8 @@ fn clean_zen_activation_leaves_editor_and_restores_active_reader_slot() {
 #[test]
 fn clean_zen_full_mindmap_activation_does_not_revive_editor_on_exit() {
     let (mut app, old_file, _new_file) = quick_slot_restore_test_app("clean-zen-full-mindmap");
-    let root = app.workspace.clone().unwrap();
     let slot = crate::quick_slots::QuickSlot {
+        root: crate::quick_slots::workspace_key(app.workspace.as_deref().unwrap()),
         relative_path: "old.md".into(),
         context: crate::quick_slots::SlotContext {
             mode: crate::quick_slots::SlotMode::FullMindmap,
@@ -1048,10 +1066,24 @@ fn clean_zen_full_mindmap_activation_does_not_revive_editor_on_exit() {
     assert!(app.editor.is_none());
     assert!(app.zen_restore.is_none());
     assert_eq!(app.quick_slots.occupied(0), Some(&slot));
-    assert_eq!(app.prefs.quick_slots.bank(&root).occupied(0), Some(&slot));
+    assert_eq!(
+        app.prefs
+            .global_quick_slots
+            .clone()
+            .unwrap_or_default()
+            .occupied(0),
+        Some(&slot)
+    );
     let isolated = app.quick_slots_persistence_path.clone().unwrap();
     let stored = crate::prefs::load_from(&isolated);
-    assert_eq!(stored.quick_slots.bank(&root).occupied(0), Some(&slot));
+    assert_eq!(
+        stored
+            .global_quick_slots
+            .clone()
+            .unwrap_or_default()
+            .occupied(0),
+        Some(&slot)
+    );
 
     let _ = app.update(Message::QuickSlotRestorePending);
     let _ = app.exit_full_mindmap(false);
@@ -1066,8 +1098,8 @@ fn clean_zen_full_mindmap_activation_does_not_revive_editor_on_exit() {
 #[test]
 fn clean_zen_document_mindmap_activation_preserves_slot_context_in_bank_and_prefs() {
     let (mut app, old_file, _new_file) = quick_slot_restore_test_app("clean-zen-document-mindmap");
-    let root = app.workspace.clone().unwrap();
     let slot = crate::quick_slots::QuickSlot {
+        root: crate::quick_slots::workspace_key(app.workspace.as_deref().unwrap()),
         relative_path: "old.md".into(),
         context: crate::quick_slots::SlotContext {
             mode: crate::quick_slots::SlotMode::DocumentMindmap,
@@ -1089,10 +1121,24 @@ fn clean_zen_document_mindmap_activation_preserves_slot_context_in_bank_and_pref
 
     let _ = app.begin_quick_slot_activation(0);
     assert_eq!(app.quick_slots.occupied(0), Some(&slot));
-    assert_eq!(app.prefs.quick_slots.bank(&root).occupied(0), Some(&slot));
+    assert_eq!(
+        app.prefs
+            .global_quick_slots
+            .clone()
+            .unwrap_or_default()
+            .occupied(0),
+        Some(&slot)
+    );
     let isolated = app.quick_slots_persistence_path.clone().unwrap();
     let stored = crate::prefs::load_from(&isolated);
-    assert_eq!(stored.quick_slots.bank(&root).occupied(0), Some(&slot));
+    assert_eq!(
+        stored
+            .global_quick_slots
+            .clone()
+            .unwrap_or_default()
+            .occupied(0),
+        Some(&slot)
+    );
 
     let _ = app.update(Message::QuickSlotFileLoaded {
         index: 0,
@@ -1126,6 +1172,7 @@ fn document_mindmap_slot_activation_from_full_mindmap_exits_navigator() {
     app.quick_slots.set(
         0,
         crate::quick_slots::QuickSlot {
+            root: crate::quick_slots::workspace_key(app.workspace.as_deref().unwrap()),
             relative_path: "old.md".into(),
             context: crate::quick_slots::SlotContext {
                 mode: crate::quick_slots::SlotMode::DocumentMindmap,
@@ -1175,6 +1222,7 @@ fn selecting_full_mindmap_parent_does_not_rewrite_document_slot_mode() {
     app.view_mode = ViewMode::Mindmap;
     app.load_ast_from_source();
     let slot = crate::quick_slots::QuickSlot {
+        root: crate::quick_slots::workspace_key(app.workspace.as_deref().unwrap()),
         relative_path: "old.md".into(),
         context: crate::quick_slots::SlotContext {
             mode: crate::quick_slots::SlotMode::DocumentMindmap,
@@ -1212,12 +1260,13 @@ fn selecting_full_mindmap_parent_does_not_rewrite_document_slot_mode() {
 #[test]
 fn switching_quick_slots_checkpoints_outgoing_context_before_restore() {
     let (mut app, old_file, _new_file) = quick_slot_restore_test_app("switch-checkpoints-outgoing");
-    let root = app.workspace.clone().unwrap();
     let outgoing = crate::quick_slots::QuickSlot {
+        root: crate::quick_slots::workspace_key(app.workspace.as_deref().unwrap()),
         relative_path: "old.md".into(),
         context: crate::quick_slots::SlotContext::default(),
     };
     let incoming = crate::quick_slots::QuickSlot {
+        root: crate::quick_slots::workspace_key(app.workspace.as_deref().unwrap()),
         relative_path: "new.md".into(),
         context: crate::quick_slots::SlotContext::default(),
     };
@@ -1242,7 +1291,7 @@ fn switching_quick_slots_checkpoints_outgoing_context_before_restore() {
     assert!(checkpointed.context.mindmap_panel_open);
     let isolated = app.quick_slots_persistence_path.clone().unwrap();
     let stored = crate::prefs::load_from(&isolated);
-    let stored_bank = stored.quick_slots.bank(&root);
+    let stored_bank = stored.global_quick_slots.clone().unwrap_or_default();
     let persisted = stored_bank.occupied(0).expect("persisted outgoing slot");
     assert_eq!(
         persisted.context.mode,
@@ -1266,6 +1315,7 @@ fn picker_file_navigation_checkpoints_active_slot_before_load() {
     app.quick_slots.set(
         0,
         crate::quick_slots::QuickSlot {
+            root: crate::quick_slots::workspace_key(app.workspace.as_deref().unwrap()),
             relative_path: "old.md".into(),
             context: crate::quick_slots::SlotContext::default(),
         },
@@ -1288,8 +1338,7 @@ fn picker_file_navigation_checkpoints_active_slot_before_load() {
     assert_eq!(app.quick_slots.active, None);
     let isolated = app.quick_slots_persistence_path.clone().unwrap();
     let stored = crate::prefs::load_from(&isolated);
-    let root = app.workspace.as_ref().expect("workspace root");
-    let persisted = stored.quick_slots.bank(root);
+    let persisted = stored.global_quick_slots.clone().unwrap_or_default();
     assert_eq!(persisted.active, None);
     assert_eq!(
         persisted.occupied(0).map(|slot| slot.context.mode),
@@ -1317,6 +1366,7 @@ fn ipc_file_navigation_checkpoints_active_slot_before_load() {
     app.quick_slots.set(
         0,
         crate::quick_slots::QuickSlot {
+            root: crate::quick_slots::workspace_key(app.workspace.as_deref().unwrap()),
             relative_path: "old.md".into(),
             context: crate::quick_slots::SlotContext::default(),
         },
@@ -1355,6 +1405,7 @@ fn active_full_mindmap_slot_reactivates_after_manual_navigation() {
     let (mut app, _old_file, new_file) =
         quick_slot_restore_test_app("active-full-mindmap-manual-nav");
     let slot = crate::quick_slots::QuickSlot {
+        root: crate::quick_slots::workspace_key(app.workspace.as_deref().unwrap()),
         relative_path: "old.md".into(),
         context: crate::quick_slots::SlotContext {
             mode: crate::quick_slots::SlotMode::FullMindmap,
@@ -1385,6 +1436,7 @@ fn active_full_mindmap_slot_reactivates_after_manual_navigation() {
 fn active_rendered_slot_reactivates_after_manual_navigation() {
     let (mut app, _old_file, new_file) = quick_slot_restore_test_app("active-rendered-manual-nav");
     let slot = crate::quick_slots::QuickSlot {
+        root: crate::quick_slots::workspace_key(app.workspace.as_deref().unwrap()),
         relative_path: "old.md".into(),
         context: crate::quick_slots::SlotContext::default(),
     };
@@ -1412,6 +1464,7 @@ fn active_document_mindmap_slot_reactivates_when_mode_differs() {
     let (mut app, old_file, _new_file) =
         quick_slot_restore_test_app("active-document-mindmap-mode-mismatch");
     let slot = crate::quick_slots::QuickSlot {
+        root: crate::quick_slots::workspace_key(app.workspace.as_deref().unwrap()),
         relative_path: "old.md".into(),
         context: crate::quick_slots::SlotContext {
             mode: crate::quick_slots::SlotMode::DocumentMindmap,
@@ -1448,6 +1501,7 @@ fn full_mindmap_activation_of_content_slots_exits_to_saved_content_mode() {
         let (mut app, old_file, new_file) =
             quick_slot_restore_test_app(&format!("full-to-content-{label}"));
         let slot = crate::quick_slots::QuickSlot {
+            root: crate::quick_slots::workspace_key(app.workspace.as_deref().unwrap()),
             relative_path: "new.md".into(),
             context: crate::quick_slots::SlotContext {
                 mode,
@@ -1476,40 +1530,6 @@ fn full_mindmap_activation_of_content_slots_exits_to_saved_content_mode() {
         let _ = std::fs::remove_file(app.quick_slots_persistence_path.clone().unwrap());
         let _ = std::fs::remove_dir_all(app.workspace.take().unwrap());
     }
-}
-
-#[test]
-fn quick_slot_workspace_banks_restore_by_canonical_root() {
-    let first = full_mindmap_test_dir("quick-slot-bank-a");
-    let second = full_mindmap_test_dir("quick-slot-bank-b");
-    std::fs::create_dir_all(&first).unwrap();
-    std::fs::create_dir_all(&second).unwrap();
-    std::fs::write(first.join("a.md"), "# A\n").unwrap();
-    std::fs::write(second.join("b.md"), "# B\n").unwrap();
-
-    let mut app = App::default();
-    let mut bank = crate::quick_slots::WorkspaceSlots::default();
-    bank.set(
-        0,
-        crate::quick_slots::QuickSlot {
-            relative_path: "a.md".into(),
-            context: crate::quick_slots::SlotContext::default(),
-        },
-    );
-    app.prefs.quick_slots.put_bank(&first, bank);
-    app.set_workspace(first.clone(), false);
-    assert!(app.quick_slots.occupied(0).is_some());
-    app.set_workspace(second.clone(), false);
-    assert!(app.quick_slots.occupied(0).is_none());
-    app.set_workspace(first.clone(), false);
-    assert_eq!(
-        app.quick_slots
-            .occupied(0)
-            .map(|slot| slot.relative_path.as_str()),
-        Some("a.md")
-    );
-    let _ = std::fs::remove_dir_all(first);
-    let _ = std::fs::remove_dir_all(second);
 }
 
 #[test]
@@ -3944,6 +3964,7 @@ fn full_mindmap_picker_file_checkpoints_active_preview_before_index() {
     app.quick_slots.set(
         0,
         crate::quick_slots::QuickSlot {
+            root: crate::quick_slots::workspace_key(app.workspace.as_deref().unwrap()),
             relative_path: "old.md".into(),
             context: crate::quick_slots::SlotContext {
                 mode: crate::quick_slots::SlotMode::FullMindmap,
@@ -4004,6 +4025,7 @@ fn full_mindmap_workspace_navigation_checkpoints_active_preview_before_index() {
     app.quick_slots.set(
         0,
         crate::quick_slots::QuickSlot {
+            root: crate::quick_slots::workspace_key(app.workspace.as_deref().unwrap()),
             relative_path: "old.md".into(),
             context: crate::quick_slots::SlotContext {
                 mode: crate::quick_slots::SlotMode::FullMindmap,
@@ -4057,6 +4079,7 @@ fn full_mindmap_toggle_folder_checkpoints_and_clears_active_slot() {
     app.quick_slots.set(
         0,
         crate::quick_slots::QuickSlot {
+            root: crate::quick_slots::workspace_key(app.workspace.as_deref().unwrap()),
             relative_path: "old.md".into(),
             context: crate::quick_slots::SlotContext {
                 mode: crate::quick_slots::SlotMode::FullMindmap,
@@ -4081,7 +4104,7 @@ fn full_mindmap_toggle_folder_checkpoints_and_clears_active_slot() {
     assert_eq!(app.quick_slots.active, None);
     let isolated = app.quick_slots_persistence_path.clone().unwrap();
     let stored = crate::prefs::load_from(&isolated);
-    let persisted = stored.quick_slots.bank(&root);
+    let persisted = stored.global_quick_slots.clone().unwrap_or_default();
     assert_eq!(persisted.active, None);
     assert_eq!(persisted.occupied(0), Some(checkpointed));
 
@@ -4092,13 +4115,13 @@ fn full_mindmap_toggle_folder_checkpoints_and_clears_active_slot() {
 #[test]
 fn full_mindmap_deselect_checkpoints_and_clears_active_slot() {
     let (mut app, old_file, _new_file) = quick_slot_restore_test_app("deselect-checkpoint");
-    let root = app.workspace.clone().expect("workspace root");
     let mut full = App::new_full_mindmap_state();
     full.selected = Some(WorkspaceNodeId::File(old_file));
     app.full_mindmap = Some(full);
     app.quick_slots.set(
         0,
         crate::quick_slots::QuickSlot {
+            root: crate::quick_slots::workspace_key(app.workspace.as_deref().unwrap()),
             relative_path: "old.md".into(),
             context: crate::quick_slots::SlotContext {
                 mode: crate::quick_slots::SlotMode::FullMindmap,
@@ -4122,7 +4145,10 @@ fn full_mindmap_deselect_checkpoints_and_clears_active_slot() {
     assert_eq!(app.full_mindmap.as_ref().unwrap().selected, None);
     let isolated = app.quick_slots_persistence_path.clone().unwrap();
     let stored = crate::prefs::load_from(&isolated);
-    assert_eq!(stored.quick_slots.bank(&root).active, None);
+    assert_eq!(
+        stored.global_quick_slots.clone().unwrap_or_default().active,
+        None
+    );
 
     let _ = std::fs::remove_file(isolated);
     let _ = std::fs::remove_dir_all(app.workspace.take().unwrap());
@@ -4851,6 +4877,7 @@ fn document_mindmap_root_left_checkpoints_active_slot_before_full_mindmap() {
     app.quick_slots.set(
         0,
         crate::quick_slots::QuickSlot {
+            root: crate::quick_slots::workspace_key(app.workspace.as_deref().unwrap()),
             relative_path: "old.md".into(),
             context: crate::quick_slots::SlotContext::default(),
         },
@@ -5352,6 +5379,7 @@ fn full_mindmap_return_to_files_checkpoints_active_preview_before_exit() {
     app.quick_slots.set(
         0,
         crate::quick_slots::QuickSlot {
+            root: crate::quick_slots::workspace_key(app.workspace.as_deref().unwrap()),
             relative_path: "old.md".into(),
             context: crate::quick_slots::SlotContext {
                 mode: crate::quick_slots::SlotMode::FullMindmap,

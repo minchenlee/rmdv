@@ -9,33 +9,17 @@ impl App {
     /// Full-window workspace navigator. It deliberately reads only
     /// `full_mindmap` and `workspace_mindmap` state; document mindmap layout,
     /// collapse, selection, and preview state stay untouched underneath.
-    /// The Back/parent/panel island floats over every state, so the pointer
-    /// can always leave.
+    /// Its pointer exit (the Read segment), the parent folder, and the panel
+    /// toggle are toolbar buttons, so they show over every state.
     pub(super) fn full_mindmap_view(
         &self,
         pal: Palette,
         recently_scrolled: bool,
     ) -> Element<'_, Message> {
-        let Some(full) = self.full_mindmap.as_ref() else {
+        if self.full_mindmap.is_none() {
             return Space::new().into();
-        };
-        stack![
-            self.full_mindmap_body(pal, recently_scrolled),
-            full_mindmap_nav(full.panel_open, self.full_mindmap_nav_top(), pal),
-        ]
-        .width(Length::Fill)
-        .height(Length::Fill)
-        .into()
-    }
-
-    /// Top offset of the Back island. The Always toolbar already keeps the
-    /// content below the traffic lights; the hover toolbar's band must not
-    /// cover the island, or reaching for Back would reveal the toolbar over it.
-    fn full_mindmap_nav_top(&self) -> f32 {
-        match self.prefs.toolbar {
-            crate::prefs::ToolbarMode::Always => 10.0,
-            crate::prefs::ToolbarMode::OnHover => TOOLBAR_BAND_H + 6.0,
         }
+        self.full_mindmap_body(pal, recently_scrolled)
     }
 
     fn full_mindmap_body(&self, pal: Palette, recently_scrolled: bool) -> Element<'_, Message> {

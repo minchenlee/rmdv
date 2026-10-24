@@ -498,18 +498,10 @@ fn full_mindmap_segment_enters_and_read_leaves_it() {
     let mut app = on_hover(app);
     let _ = app.update(Message::ToolbarHover(true));
     let mut ui = PointerUi::new();
-    let back = ui.text_bounds(&app, "Back").expect("Back pill stays");
-    assert!(
-        back.y >= TOOLBAR_BAND_H,
-        "the Back island sits below the hover band: {back:?}"
-    );
     let bar = ui
         .id_bounds(&app, "toolbar")
         .expect("toolbar over Full Mindmap");
-    assert!(
-        bar.y + bar.height <= back.y,
-        "the toolbar does not cover Back"
-    );
+    assert!(bar.y < TOOLBAR_BAND_H, "at the top: {bar:?}");
     let read = ui.id_bounds(&app, "view-read").expect("Read segment");
     let messages = ui.click(&app, center(read));
     apply(&mut app, messages);
@@ -532,6 +524,241 @@ fn full_mindmap_segment_enters_and_read_leaves_it() {
         ViewMode::Mindmap,
         "Mind Map leaves to the document mind map"
     );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+// --- P8b: Full Mindmap's actions live in the toolbar ----------------------------
+
+/// Every place `code` is drawn.
+fn glyphs(ui: &mut PointerUi, app: &App, code: char) -> Vec<Rectangle> {
+    struct All {
+        text: String,
+        found: Vec<Rectangle>,
+    }
+    impl Operation for All {
+        fn traverse(&mut self, operate: &mut dyn FnMut(&mut dyn Operation)) {
+            operate(self);
+        }
+        fn text(&mut self, _id: Option<&Id>, bounds: Rectangle, text: &str) {
+            if text == self.text {
+                self.found.push(bounds);
+            }
+        }
+    }
+    let mut all = All {
+        text: glyph(code),
+        found: Vec::new(),
+    };
+    ui.operate(app, &mut all);
+    all.found
+}
+
+/// The one place `code` is drawn, which is the toolbar strip.
+fn only_in_toolbar(ui: &mut PointerUi, app: &App, code: char) -> Rectangle {
+    let found = glyphs(ui, app, code);
+    assert_eq!(found.len(), 1, "{code:?} is drawn once: {found:?}");
+    assert!(found[0].y < TOOLBAR_H, "in the toolbar: {found:?}");
+    found[0]
+}
+
+/// `app` with its toolbar showing in `mode` (On hover: the pointer is in
+/// the band).
+fn toolbar_shown(app: App, mode: ToolbarMode) -> App {
+    let mut app = match mode {
+        ToolbarMode::Always => always(app),
+        ToolbarMode::OnHover => on_hover(app),
+    };
+    if mode == ToolbarMode::OnHover {
+        let _ = app.update(Message::ToolbarHover(true));
+    }
+    app
+}
+
+#[test]
+fn full_mindmap_has_no_floating_nav_island() {
+    for mode in [ToolbarMode::Always, ToolbarMode::OnHover] {
+        let (app, dir) = full_mindmap_app(&format!("p8b-no-island-{mode:?}"));
+        let app = match mode {
+            ToolbarMode::Always => always(app),
+            // The hover toolbar stays hidden: nothing else draws the buttons.
+            ToolbarMode::OnHover => on_hover(app),
+        };
+        let mut ui = PointerUi::new();
+        assert!(
+            ui.text_bounds(&app, "Back").is_none(),
+            "no Back pill ({mode:?})"
+        );
+        let tips = tips(&mut ui, &app);
+        assert!(
+            !tips.iter().any(|tip| tip.starts_with("Back to Reader")),
+            "{tips:?}"
+        );
+        match mode {
+            ToolbarMode::Always => {
+                only_in_toolbar(&mut ui, &app, ic::FOLDER_UP);
+                only_in_toolbar(&mut ui, &app, ic::PANEL_RIGHT_OPEN);
+            }
+            ToolbarMode::OnHover => {
+                assert!(glyphs(&mut ui, &app, ic::FOLDER_UP).is_empty());
+                assert!(glyphs(&mut ui, &app, ic::PANEL_RIGHT_OPEN).is_empty());
+            }
+        }
+        // A click where the island's Back and parent buttons were (16 px
+        // from the left, 10 px under the Always toolbar or 6 px under the
+        // hover band) reaches the canvas, not a nav action.
+        for probe in [Point::new(40.0, 56.0), Point::new(100.0, 56.0)] {
+            let messages = ui.click(&app, probe);
+            assert!(
+                !has(&messages, |m| matches!(
+                    m,
+                    Message::ExitFullMindmap
+                        | Message::FullMindmapWorkspaceParent
+                        | Message::FullMindmapTogglePanel
+                )),
+                "{probe:?} ({mode:?}): {messages:?}"
+            );
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[test]
+fn full_mindmap_toolbar_opens_the_parent_folder_toggles_the_panel_and_reads() {
+    for mode in [ToolbarMode::Always, ToolbarMode::OnHover] {
+        let (app, dir) = full_mindmap_app(&format!("p8b-toolbar-{mode:?}"));
+        let mut app = toolbar_shown(app, mode);
+        let mut ui = PointerUi::new();
+        assert_tips(
+            &tips(&mut ui, &app),
+            &["Read  Esc", "Open Parent Folder", "Show Panel  ⌘⌥B"],
+        );
+
+        let parent = only_in_toolbar(&mut ui, &app, ic::FOLDER_UP);
+        let messages = ui.click(&app, center(parent));
+        assert!(
+            has(&messages, |m| matches!(
+                m,
+                Message::FullMindmapWorkspaceParent
+            )),
+            "{mode:?}: {messages:?}"
+        );
+
+        let show = only_in_toolbar(&mut ui, &app, ic::PANEL_RIGHT_OPEN);
+        let messages = ui.click(&app, center(show));
+        assert!(has(&messages, |m| matches!(
+            m,
+            Message::FullMindmapTogglePanel
+        )));
+        apply(&mut app, messages);
+        assert!(app.full_mindmap.as_ref().unwrap().panel_open, "{mode:?}");
+        assert_tips(&tips(&mut ui, &app), &["Hide Panel  ⌘⌥B"]);
+        let hide = only_in_toolbar(&mut ui, &app, ic::PANEL_RIGHT_CLOSE);
+        let messages = ui.click(&app, center(hide));
+        apply(&mut app, messages);
+        assert!(!app.full_mindmap.as_ref().unwrap().panel_open, "{mode:?}");
+
+        // Back is the Read segment.
+        let read = ui.id_bounds(&app, "view-read").expect("Read segment");
+        let messages = ui.click(&app, center(read));
+        apply(&mut app, messages);
+        assert!(
+            app.full_mindmap.is_none(),
+            "Read leaves Full Mindmap ({mode:?})"
+        );
+        // The reader's toolbar has no parent-folder button.
+        assert!(glyphs(&mut ui, &app, ic::FOLDER_UP).is_empty(), "{mode:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[test]
+fn full_mindmap_toolbar_parent_is_disabled_at_the_filesystem_root() {
+    let (app, dir) = full_mindmap_app("p8b-parent-root");
+    let mut app = always(app);
+    let root = PathBuf::from("/");
+    assert!(root.parent().is_none());
+    app.workspace = Some(root);
+    let mut ui = PointerUi::new();
+    let parent = only_in_toolbar(&mut ui, &app, ic::FOLDER_UP);
+    let messages = ui.click(&app, center(parent));
+    assert!(
+        !has(&messages, |m| matches!(
+            m,
+            Message::FullMindmapWorkspaceParent
+        )),
+        "{messages:?}"
+    );
+    assert!(
+        !has(&messages, |m| matches!(
+            m,
+            Message::WindowDrag | Message::WindowTitlebarDoubleClick
+        )),
+        "the disabled button takes the press: {messages:?}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn full_mindmap_read_segment_leaves_without_a_graph() {
+    for mode in [ToolbarMode::Always, ToolbarMode::OnHover] {
+        // Indexing, or the index failed: no graph to draw.
+        let (app, dir) = tree_fixture(&format!("p8b-read-no-graph-{mode:?}"));
+        let mut app = toolbar_shown(app, mode);
+        let _ = app.update(Message::ToggleFullMindmap);
+        assert!(app.full_mindmap.is_some());
+        app.workspace_tree = None;
+        *app.full_mindmap.as_ref().unwrap().layout_cache.borrow_mut() = None;
+        assert!(app.full_mindmap_graph().is_none());
+        if mode == ToolbarMode::OnHover {
+            let _ = app.update(Message::ToolbarHover(true));
+        }
+        let mut ui = PointerUi::new();
+        let read = ui.id_bounds(&app, "view-read").expect("Read segment");
+        let messages = ui.click(&app, center(read));
+        apply(&mut app, messages);
+        assert!(app.full_mindmap.is_none(), "{mode:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[test]
+fn full_mindmap_toolbar_buttons_hide_under_settings() {
+    let (app, dir) = full_mindmap_app("p8b-settings");
+    let mut app = always(app);
+    let _ = app.update(Message::OpenSettings);
+    assert!(app.settings_open && app.full_mindmap.is_some());
+    let mut ui = PointerUi::new();
+    // As the island did: Settings covers Full Mindmap, so its actions are
+    // not offered behind the page.
+    assert!(glyphs(&mut ui, &app, ic::FOLDER_UP).is_empty());
+    assert!(glyphs(&mut ui, &app, ic::PANEL_RIGHT_OPEN).is_empty());
+    let _ = app.update(Message::CloseSettings);
+    assert!(!app.settings_open);
+    only_in_toolbar(&mut ui, &app, ic::FOLDER_UP);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn full_mindmap_read_names_esc_only_when_esc_returns_to_read() {
+    let (app, dir) = full_mindmap_app("p8b-read-esc");
+    let mut app = always(app);
+    let mut ui = PointerUi::new();
+    assert_eq!(app.view_mode, ViewMode::Rendered);
+    assert_tips(&tips(&mut ui, &app), &["Read  Esc"]);
+    // Entered from the document mind map or the editor, Esc goes back
+    // there, not to Read.
+    for mode in [ViewMode::Mindmap, ViewMode::Raw] {
+        app.view_mode = mode;
+        let tips = tips(&mut ui, &app);
+        assert_tips(&tips, &["Read"]);
+        assert!(
+            !tips.iter().any(|tip| tip == "Read  Esc"),
+            "{mode:?}: {tips:?}"
+        );
+    }
+    app.view_mode = ViewMode::Mindmap;
+    let _ = app.update(Message::ExitFullMindmap);
+    assert_eq!(app.view_mode, ViewMode::Mindmap, "Esc's target");
     let _ = std::fs::remove_dir_all(&dir);
 }
 

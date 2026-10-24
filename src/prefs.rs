@@ -42,10 +42,19 @@ pub struct Prefs {
     /// zooming it (Settings → Scroll pans the mind map).
     #[serde(default, deserialize_with = "lenient_off")]
     pub mindmap_scroll_pans: bool,
-    /// Workspace-scoped Quick Slot banks live alongside the existing user
-    /// preferences, never inside a workspace tree.
+    /// The older workspace-scoped Quick Slot banks. Kept as they were and
+    /// no longer written, so a downgrade still finds them; the global bank
+    /// is seeded from one of them once.
     #[serde(default, deserialize_with = "lenient_quick_slots")]
     pub quick_slots: crate::quick_slots::QuickSlotsStore,
+    /// The global Quick Slot bank. `None` until it is seeded; each slot
+    /// names the workspace root it was assigned in.
+    #[serde(
+        default,
+        deserialize_with = "lenient_global_quick_slots",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub global_quick_slots: Option<crate::quick_slots::WorkspaceSlots>,
     /// When the top toolbar shows (Settings → Toolbar).
     #[serde(default, deserialize_with = "lenient_toolbar")]
     pub toolbar: ToolbarMode,
@@ -257,6 +266,25 @@ where
     Ok(serde_json::from_value(value).unwrap_or_default())
 }
 
+/// A malformed global bank becomes an empty one (it was seeded already, so
+/// it is not seeded again) instead of failing the whole file.
+fn lenient_global_quick_slots<'de, D>(
+    deserializer: D,
+) -> Result<Option<crate::quick_slots::WorkspaceSlots>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    if value.is_null() {
+        return Ok(None);
+    }
+    Ok(Some(
+        serde_json::from_value::<crate::quick_slots::WorkspaceSlots>(value)
+            .unwrap_or_default()
+            .normalized_global(),
+    ))
+}
+
 impl Default for Prefs {
     fn default() -> Self {
         Prefs {
@@ -272,6 +300,7 @@ impl Default for Prefs {
             mindmap_autocenter: true,
             mindmap_scroll_pans: false,
             quick_slots: crate::quick_slots::QuickSlotsStore::default(),
+            global_quick_slots: None,
             toolbar: ToolbarMode::Always,
             sidebar_width: default_sidebar_width(),
             footer_stat: FooterStat::default(),
@@ -312,6 +341,9 @@ pub fn load_from(path: &std::path::Path) -> Prefs {
         .and_then(|s| serde_json::from_str::<Prefs>(&s).ok())
         .map(|mut prefs| {
             prefs.quick_slots = prefs.quick_slots.normalized();
+            prefs.global_quick_slots = prefs
+                .global_quick_slots
+                .map(|bank| bank.normalized_global());
             prefs
         })
         .unwrap_or_default()
@@ -321,6 +353,9 @@ pub fn save_to(path: &std::path::Path, prefs: &Prefs) {
     let prefs = {
         let mut prefs = prefs.clone();
         prefs.quick_slots = prefs.quick_slots.normalized();
+        prefs.global_quick_slots = prefs
+            .global_quick_slots
+            .map(|bank| bank.normalized_global());
         prefs
     };
     let result = serde_json::to_string_pretty(&prefs)
@@ -531,6 +566,7 @@ mod tests {
         bank.set(
             0,
             QuickSlot {
+                root: String::new(),
                 relative_path: "notes/today.md".into(),
                 context: SlotContext::default(),
             },
@@ -545,6 +581,89 @@ mod tests {
             .bank(std::path::Path::new("/workspace"))
             .occupied(0)
             .is_some());
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn malformed_global_quick_slots_keep_other_preferences_and_count_as_seeded() {
+        let prefs: Prefs = serde_json::from_str(
+            r#"{"show_footer":false,"global_quick_slots":42,"quick_slots":{"banks":{"/w":{"slots":[{"relative_path":"a.md"}]}}}}"#,
+        )
+        .expect("other preferences must still load");
+        assert!(!prefs.show_footer);
+        assert_eq!(
+            prefs.global_quick_slots,
+            Some(WorkspaceSlots::default()),
+            "a broken bank is empty, not seeded again"
+        );
+        assert!(prefs
+            .quick_slots
+            .bank(std::path::Path::new("/w"))
+            .occupied(0)
+            .is_some());
+        let absent: Prefs = serde_json::from_str("{}").unwrap();
+        assert_eq!(absent.global_quick_slots, None, "absent: not seeded yet");
+        let null: Prefs = serde_json::from_str(r#"{"global_quick_slots":null}"#).unwrap();
+        assert_eq!(null.global_quick_slots, None);
+    }
+
+    #[test]
+    fn the_global_bank_round_trips_beside_the_untouched_old_banks() {
+        static NEXT: AtomicU64 = AtomicU64::new(1);
+        let path = std::env::temp_dir().join(format!(
+            "rmdv-prefs-global-test-{}-{}.json",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        let mut prefs = Prefs::default();
+        let mut old = WorkspaceSlots::default();
+        old.set(
+            0,
+            QuickSlot {
+                root: String::new(),
+                relative_path: "old.md".into(),
+                context: SlotContext::default(),
+            },
+        );
+        prefs
+            .quick_slots
+            .put_bank(std::path::Path::new("/old"), old);
+        let mut global = WorkspaceSlots::default();
+        global.set(
+            3,
+            QuickSlot {
+                root: "/work/notes".into(),
+                relative_path: "b.md".into(),
+                context: SlotContext::default(),
+            },
+        );
+        // A global slot without a workspace root cannot open; it is dropped.
+        global.set(
+            4,
+            QuickSlot {
+                root: String::new(),
+                relative_path: "lost.md".into(),
+                context: SlotContext::default(),
+            },
+        );
+        global.active = Some(3);
+        prefs.global_quick_slots = Some(global);
+        save_to(&path, &prefs);
+        let json = std::fs::read_to_string(&path).unwrap();
+        let loaded = load_from(&path);
+        let global = loaded.global_quick_slots.expect("saved global bank");
+        assert_eq!(
+            global.occupied(3).map(|slot| slot.root.as_str()),
+            Some("/work/notes")
+        );
+        assert_eq!(global.active, Some(3));
+        assert!(global.occupied(4).is_none(), "{json}");
+        assert_eq!(loaded.quick_slots, prefs.quick_slots, "old banks unchanged");
+        // The old banks keep their older shape: no root field.
+        let raw: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert!(raw["quick_slots"]["banks"]["/old"]["slots"][0]
+            .get("root")
+            .is_none());
         let _ = std::fs::remove_file(path);
     }
 }

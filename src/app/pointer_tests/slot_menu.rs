@@ -17,6 +17,7 @@ pub(super) fn occupy(app: &mut App, index: usize, relative_path: &str) {
     assert!(app.quick_slots.set(
         index,
         crate::quick_slots::QuickSlot {
+            root: crate::quick_slots::workspace_key(app.workspace.as_deref().unwrap()),
             relative_path: relative_path.into(),
             context: crate::quick_slots::SlotContext::default(),
         },

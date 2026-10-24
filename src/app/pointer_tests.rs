@@ -442,6 +442,7 @@ fn clicking_quick_slot_confirm_card_keeps_it_open() {
     app.quick_slot_replace = Some(QuickSlotReplace {
         index: 0,
         current: "a.md".into(),
+        current_workspace: None,
         incoming: "b.md".into(),
         path: None,
     });
@@ -1497,7 +1498,7 @@ mod group3 {
         )));
     }
 
-    // --- 5. Full Mindmap Back, parent-folder, and panel buttons ----------------
+    // --- 5. Full Mindmap fixture -----------------------------------------------
 
     /// The tree fixture in Full Mindmap with its workspace graph loaded.
     pub(super) fn full_mindmap_app(tag: &str) -> (App, PathBuf) {
@@ -1519,92 +1520,8 @@ mod group3 {
         (app, dir)
     }
 
-    #[test]
-    fn full_mindmap_back_pill_exits_with_and_without_a_graph() {
-        // Before any graph exists (indexing, or the index failed).
-        let (mut app, dir) = tree_fixture("fmm-back-no-graph");
-        let _ = app.update(Message::ToggleFullMindmap);
-        assert!(app.full_mindmap.is_some());
-        app.workspace_tree = None;
-        *app.full_mindmap.as_ref().unwrap().layout_cache.borrow_mut() = None;
-        assert!(app.full_mindmap_graph().is_none(), "no graph to draw");
-        let mut ui = PointerUi::new();
-        let back = ui
-            .text_bounds(&app, "Back")
-            .expect("Back pill without a graph");
-        let messages = ui.click(&app, center(back));
-        assert!(has(&messages, |m| matches!(m, Message::ExitFullMindmap)));
-        apply(&mut app, messages);
-        assert!(app.full_mindmap.is_none(), "Back leaves Full Mindmap");
-        let _ = std::fs::remove_dir_all(&dir);
-
-        // With the graph drawn.
-        let (mut app, dir) = full_mindmap_app("fmm-back-ready");
-        let mut ui = PointerUi::new();
-        let back = ui.text_bounds(&app, "Back").expect("Back pill");
-        assert!(
-            back.x < 200.0 && back.y < 120.0,
-            "the pill sits top-left: {back:?}"
-        );
-        let messages = ui.click(&app, center(back));
-        apply(&mut app, messages);
-        assert!(app.full_mindmap.is_none());
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn full_mindmap_parent_and_panel_buttons_send_their_messages() {
-        let (mut app, dir) = full_mindmap_app("fmm-buttons");
-        let mut ui = PointerUi::new();
-        assert_tips(
-            &tips(&mut ui, &app),
-            &["Back to Reader  Esc", "Parent Folder", "Show Panel  ⌘⌥B"],
-        );
-
-        let parent = ui
-            .text_bounds(&app, &glyph(crate::icon::ic::FOLDER_UP))
-            .expect("parent folder button");
-        let messages = ui.click(&app, center(parent));
-        assert!(
-            has(&messages, |m| matches!(
-                m,
-                Message::FullMindmapWorkspaceParent
-            )),
-            "{messages:?}"
-        );
-
-        let panel = ui
-            .text_bounds(&app, &glyph(crate::icon::ic::PANEL_RIGHT_OPEN))
-            .expect("panel toggle button");
-        let messages = ui.click(&app, center(panel));
-        apply(&mut app, messages);
-        assert!(app.full_mindmap.as_ref().unwrap().panel_open);
-        assert_tips(&tips(&mut ui, &app), &["Hide Panel  ⌘⌥B"]);
-        assert!(ui
-            .text_bounds(&app, &glyph(crate::icon::ic::PANEL_RIGHT_CLOSE))
-            .is_some());
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn full_mindmap_nav_layer_leaves_the_canvas_its_events() {
-        let (app, dir) = full_mindmap_app("fmm-pass-through");
-        let mut ui = PointerUi::new();
-        let back = ui.text_bounds(&app, "Back").expect("Back pill");
-        // Beside and below the pill, over blank canvas.
-        for probe in [
-            Point::new(back.x + 260.0, back.center_y()),
-            Point::new(back.x, back.y + 80.0),
-        ] {
-            let (_, cursor) = ui.move_to(&app, probe);
-            assert_eq!(
-                cursor,
-                mouse::Interaction::Grab,
-                "the canvas still owns {probe:?}"
-            );
-        }
-        let _ = std::fs::remove_dir_all(&dir);
-    }
+    // Back, the parent folder, and the panel toggle are toolbar buttons in
+    // Full Mindmap (P8b); their tests live in `pointer_tests/toolbar.rs`.
 
     // --- Review fixes ------------------------------------------------------
 
@@ -1765,3 +1682,7 @@ mod chrome_affordances;
 // --- P8: window frame persistence ------------------------------------------
 
 mod window_frame;
+
+// --- P8b: global Quick Slots -------------------------------------------------
+
+mod global_slots;

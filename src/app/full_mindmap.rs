@@ -1116,7 +1116,7 @@ impl App {
             };
             self.quick_slots
                 .occupied(index)
-                .is_some_and(|slot| slot.relative_path == relative)
+                .is_some_and(|slot| slot.in_workspace(root) && slot.relative_path == relative)
         });
         if self.quick_slots.active.is_some() && !active_matches {
             // Manual canvas navigation is no longer viewing the active slot's
@@ -1319,12 +1319,7 @@ impl App {
                 .as_ref()
                 .is_some_and(|guard| {
                     self.quick_slot_restore_is_current(guard)
-                        && self
-                            .quick_slots_workspace_root()
-                            .and_then(|root| {
-                                crate::quick_slots::resolve_path(root, &guard.slot.relative_path)
-                            })
-                            .is_some_and(|target| target == path)
+                        && guard.slot.resolve().is_some_and(|target| target == path)
                 });
         if !keep_quick_slot_restore {
             // Source reparses for a different/stale identity must invalidate

@@ -94,8 +94,26 @@ pub(crate) fn action_tip<'a>(
 ) -> Element<'a, Message> {
     tip(
         content,
-        action,
+        action.into(),
         shortcut,
+        position,
+        std::time::Duration::ZERO,
+        pal,
+    )
+}
+
+/// [`action_tip`] whose text is built at view time and has no shortcut
+/// (a Quick Slot from another workspace: "b.md — notes").
+pub(crate) fn label_tip<'a>(
+    content: impl Into<Element<'a, Message>>,
+    label: String,
+    position: iced::widget::tooltip::Position,
+    pal: Palette,
+) -> Element<'a, Message> {
+    tip(
+        content,
+        label.into(),
+        None,
         position,
         std::time::Duration::ZERO,
         pal,
@@ -115,19 +133,26 @@ pub(crate) fn reader_tip<'a>(
     position: iced::widget::tooltip::Position,
     pal: Palette,
 ) -> Element<'a, Message> {
-    tip(content, action, None, position, READER_TIP_DELAY, pal)
+    tip(
+        content,
+        action.into(),
+        None,
+        position,
+        READER_TIP_DELAY,
+        pal,
+    )
 }
 
 fn tip<'a>(
     content: impl Into<Element<'a, Message>>,
-    action: &'a str,
+    action: std::borrow::Cow<'a, str>,
     shortcut: Option<&'a str>,
     position: iced::widget::tooltip::Position,
     delay: std::time::Duration,
     pal: Palette,
 ) -> Element<'a, Message> {
     #[cfg(test)]
-    tip_log::record(action, shortcut, delay);
+    tip_log::record(&action, shortcut, delay);
     let mut label = irow![text(action).size(11).color(pal.fg)]
         .spacing(8)
         .align_y(iced::Alignment::Center);

@@ -563,12 +563,15 @@ pub struct App {
     pub(crate) nav_anchor: Option<usize>,
     /// User preferences (persisted to `~/.config/rmdv/prefs.json`).
     pub prefs: crate::prefs::Prefs,
-    /// The currently selected workspace bank. It is normalized to nine slots
-    /// at every workspace boundary and persisted back into `prefs.json`.
+    /// The global Quick Slot bank: nine slots for every workspace, each
+    /// naming the workspace root it was assigned in. Persisted into
+    /// `prefs.json` as `global_quick_slots`.
     pub quick_slots: crate::quick_slots::WorkspaceSlots,
     /// What the app pushed to the native menu bar last (MDV-048 P8).
     menu_pushed: menu_bar::MenuPushed,
-    quick_slots_root: Option<PathBuf>,
+    /// A slot from another workspace waits for that workspace to open
+    /// (MDV-048 P8b); it is then activated as a slot of this workspace.
+    pending_quick_slot_switch: Option<PendingQuickSlotSwitch>,
     quick_slots_undo: Option<crate::quick_slots::ClearUndo>,
     /// Open "replace slot?" confirmation; it owns the keyboard while set.
     quick_slot_replace: Option<QuickSlotReplace>,
@@ -644,7 +647,7 @@ impl Default for App {
         let glass_capable = crate::macos_vibrancy::launch_transparent(prefs.glass);
         let font_scale = crate::prefs::clamp_font_scale(prefs.font_scale);
         let (show_hidden, mindmap_autocenter) = (prefs.show_hidden, prefs.mindmap_autocenter);
-        Self {
+        let mut app = Self {
             file: None,
             source: String::new(),
             source_words: 0,
@@ -807,10 +810,10 @@ impl Default for App {
             pending_screenshot: None,
             virt_window: crate::virt::VirtWindow::default(),
             nav_anchor: None,
+            quick_slots: prefs.global_quick_slots.clone().unwrap_or_default(),
             prefs,
-            quick_slots: crate::quick_slots::WorkspaceSlots::default(),
             menu_pushed: menu_bar::MenuPushed::default(),
-            quick_slots_root: None,
+            pending_quick_slot_switch: None,
             quick_slots_undo: None,
             quick_slot_replace: None,
             close_confirm: None,
@@ -868,7 +871,11 @@ impl Default for App {
             glass_capable,
             glass_window: None,
             glass_applied: None,
-        }
+        };
+        // Launch seeds the global Quick Slot bank once from the most
+        // recently opened workspace that has slots.
+        app.seed_global_quick_slots();
+        app
     }
 }
 
@@ -1025,18 +1032,19 @@ impl App {
         }
     }
 
-    /// The Quick Slots rail may show: a workspace holds the slots, and no
-    /// overlay, vault page, find bar, or unsaved Zen edit takes the keys.
+    /// The Quick Slots rail may show: no overlay, vault page, find bar, or
+    /// unsaved Zen edit takes the keys. The bank is global, so it shows with
+    /// no workspace open too (a slot opens its own workspace); only
+    /// assigning needs one.
     fn quick_slots_rail_allowed(&self) -> bool {
-        self.quick_slots_workspace_root().is_some()
-            && quick_slots_rail_visible(
-                true,
-                self.overlay != Overlay::None,
-                self.vault_open,
-                self.search_open,
-                self.view_mode == ViewMode::Raw && self.editor.is_some(),
-                self.dirty,
-            )
+        quick_slots_rail_visible(
+            true,
+            self.overlay != Overlay::None,
+            self.vault_open,
+            self.search_open,
+            self.view_mode == ViewMode::Raw && self.editor.is_some(),
+            self.dirty,
+        )
     }
 
     /// Remember the sidebar width for the next launch; one write per drag.
@@ -1309,12 +1317,7 @@ impl App {
         let pending_candidate = self.pending_quick_slot_restore.clone();
         let pending_slot_restore = pending_candidate.clone().filter(|pending| {
             self.quick_slot_restore_is_current(pending)
-                && self
-                    .quick_slots_workspace_root()
-                    .and_then(|root| {
-                        crate::quick_slots::resolve_path(root, &pending.slot.relative_path)
-                    })
-                    .is_some_and(|target| target == path)
+                && pending.slot.resolve().is_some_and(|target| target == path)
         });
         if pending_candidate.is_some() && pending_slot_restore.is_none() {
             self.invalidate_pending_quick_slot_restore();
@@ -1438,9 +1441,7 @@ impl App {
         self.workspace_truncated = snapshot.listing_truncated;
         self.begin_workspace_epoch();
         self.workspace = Some(path);
-        if let Some(root) = self.workspace.clone() {
-            self.load_quick_slots_for_workspace(&root);
-        }
+        self.seed_global_quick_slots_from_workspace();
     }
 
     fn begin_workspace_epoch(&mut self) {
