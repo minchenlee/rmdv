@@ -802,7 +802,9 @@ impl App {
                 // The native monitor runs for the whole app. Only forward a
                 // finite magnification delta while a graph owns the visible
                 // surface; search and overlays retain their normal input.
-                if delta.is_finite() && self.overlay == Overlay::None {
+                if delta.is_finite() && self.overlay == Overlay::ImageZoom {
+                    self.preview_pinch_log += f64::from(delta);
+                } else if delta.is_finite() && self.overlay == Overlay::None {
                     if self.full_mindmap.is_some() {
                         self.full_mindmap_native_pinch_log += f64::from(delta);
                     } else if self.view_mode == ViewMode::Mindmap && !self.search_open {

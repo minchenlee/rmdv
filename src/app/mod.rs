@@ -21,6 +21,7 @@ use std::sync::{
 };
 
 mod image_cache;
+mod preview_viewer;
 use image_cache::IMAGE_CACHE_BYTE_BUDGET;
 pub use image_cache::{ImageCache, ImageState};
 
@@ -271,6 +272,7 @@ pub struct App {
     pub theme_id: crate::theme::ThemeId,
     pub image_cache: ImageCache,
     pub zoom_url: Option<String>,
+    preview_pinch_log: f64,
     pub view_mode: ViewMode,
     pub editor: Option<iced::widget::text_editor::Content>,
     /// `editor`'s text as read right after the last edit action. The next edit
@@ -542,6 +544,7 @@ impl Default for App {
             theme_id: crate::theme::ThemeId::Preset(preset),
             image_cache: ImageCache::default(),
             zoom_url: None,
+            preview_pinch_log: 0.0,
             view_mode: ViewMode::Rendered,
             editor: None,
             editor_text: None,
@@ -3626,6 +3629,7 @@ impl App {
             Overlay::ImageZoom => image_zoom_overlay(
                 self.zoom_url.as_deref(),
                 self.zoom_diagram.as_ref(),
+                self.preview_pinch_log,
                 &self.image_cache,
                 pal,
             ),
