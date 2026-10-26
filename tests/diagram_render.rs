@@ -65,6 +65,84 @@ fn inject_skipped_when_user_has_init() {
     assert!(svg.contains("<svg"));
 }
 
+#[tokio::test]
+async fn mermaid_families_render_through_the_app_raster_pipeline() {
+    use rmdv::diagram::render_blocking_async;
+
+    let cases = [
+        ("flowchart", "flowchart LR\n A[開始] -->|確認| B{完成？}\n B --> C[結束]"),
+        ("sequence", "sequenceDiagram\n Alice->>Bob: Hello\n Bob-->>Alice: Done"),
+        ("class", "classDiagram\n Animal <|-- Duck\n Animal : +int age"),
+        ("state", "stateDiagram-v2\n [*] --> Ready\n Ready --> Done\n Done --> [*]"),
+        ("mindmap", "mindmap\n root((Project))\n  Plan\n  Build"),
+        ("user-init", "%%{init: {\"theme\":\"base\",\"themeVariables\":{\"primaryColor\":\"#123456\"}}}%%\nflowchart LR\n A[Custom] --> B[Theme]"),
+    ];
+    for palette in [Palette::ONE_LIGHT, Palette::ONE_DARK] {
+        for (name, source) in cases {
+            let output = render_blocking_async(
+                DiagramKind::Mermaid,
+                source.to_owned(),
+                palette,
+                "sans-serif".to_owned(),
+            )
+            .await
+            .unwrap_or_else(|error| panic!("{name}: {error}"));
+            let svg = std::str::from_utf8(&output.svg).unwrap();
+            assert!(!svg.contains("<foreignObject"), "HTML labels in {name}");
+            assert!(svg.contains("<text"), "missing SVG labels in {name}");
+            if name == "flowchart" {
+                assert!(svg.contains("開始"), "missing CJK label");
+            }
+            if name == "user-init" {
+                assert!(svg.contains("#123456"), "lost user theme override");
+            }
+            assert!(output.w > 0 && output.h > 0, "empty raster for {name}");
+            assert_eq!(output.rgba.len(), output.w as usize * output.h as usize * 4);
+            assert!(output.rgba.chunks_exact(4).any(|p| p[3] != 0));
+        }
+    }
+}
+
+#[test]
+fn mermaid_svg_uses_the_application_palette() {
+    let source = "flowchart LR\n A[Start] --> B[Done]";
+    let light = render_blocking(
+        DiagramKind::Mermaid,
+        source,
+        &Palette::ONE_LIGHT,
+        "sans-serif",
+    )
+    .unwrap();
+    let dark = render_blocking(
+        DiagramKind::Mermaid,
+        source,
+        &Palette::ONE_DARK,
+        "sans-serif",
+    )
+    .unwrap();
+    assert_ne!(light, dark);
+    for (svg, palette) in [(&light, Palette::ONE_LIGHT), (&dark, Palette::ONE_DARK)] {
+        let color = palette.surface;
+        let hex = format!(
+            "#{:02x}{:02x}{:02x}",
+            (color.r * 255.0).round() as u8,
+            (color.g * 255.0).round() as u8,
+            (color.b * 255.0).round() as u8
+        );
+        assert!(svg.contains(&hex), "missing palette fill {hex}");
+    }
+    // White at 8% over #21252b; black at 10.8% over white. These must
+    // remain subtle borders, rather than becoming #ffffff / #000000.
+    assert!(
+        dark.contains("stroke:#33363c"),
+        "dark border lost its alpha blend"
+    );
+    assert!(
+        light.contains("stroke:#e3e3e3"),
+        "light border lost its alpha blend"
+    );
+}
+
 #[test]
 fn cup_handle_math_renders_via_pipeline() {
     use rmdv::ast::DiagramKind;
