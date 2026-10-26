@@ -1,10 +1,10 @@
 # MDV-048 — Smooth pointer (mouse and trackpad) support
 
-State: in progress
+State: done (merged to `main` at `8d8b9eb`, 2026-10-26; not released)
 Owner / accountable lead: gh-rmdv-orch
 Active writer: gh-rmdv-orch (one phase branch at a time)
 Created: 2026-10-22
-Updated: 2026-10-24
+Updated: 2026-10-26
 
 ## Outcome
 
