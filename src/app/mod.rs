@@ -35,7 +35,6 @@ const SEARCH_DEBOUNCE_MS: u64 = 80;
 const FILE_FINDER_RESULT_CAP: usize = 200;
 /// Rows the file finder renders; keyboard selection stays within them.
 const FILE_FINDER_ROW_CAP: usize = 80;
-const READING_MAX: f32 = theme::READING_MAX_PX;
 /// The Zen editor's line height, relative to its font size.
 const EDITOR_LINE_HEIGHT: f32 = 1.55;
 /// Radius of the reader panel's top-left corner next to the sidebar.
@@ -955,6 +954,14 @@ impl App {
     }
 
     /// Rebuild `typography` from the theme base, font zoom, and line spacing.
+    /// The reading column's cap: the Reading width setting at the current
+    /// body size, so a font zoom keeps the characters per line.
+    fn reading_max_width(&self) -> f32 {
+        self.prefs
+            .reading_width
+            .max_width(self.typography.body_size)
+    }
+
     fn rebuild_typography(&mut self) {
         self.typography = self
             .typography_base
@@ -3150,6 +3157,8 @@ impl App {
             ("Increase Font Size  ⌘+", Message::FontSizeUp),
             ("Decrease Font Size  ⌘-", Message::FontSizeDown),
             ("Reset Font Size  ⌘0", Message::FontSizeReset),
+            ("Narrower Reading Width  ⌘⌥[", Message::ReadingWidthStep(-1)),
+            ("Wider Reading Width  ⌘⌥]", Message::ReadingWidthStep(1)),
             ("Toggle Status Footer", Message::ToggleFooter),
             ("Toggle Soft Syntax Colors", Message::ToggleSoftSyntax),
             ("Toggle Mindmap  ⌘M", Message::ToggleMindmap),
@@ -3744,7 +3753,7 @@ impl App {
                             container(editor)
                                 .width(Length::Fill)
                                 .height(Length::Fill)
-                                .max_width(READING_MAX),
+                                .max_width(self.reading_max_width()),
                         )
                         .width(Length::Fill)
                         .height(Length::Fill)
@@ -3763,7 +3772,7 @@ impl App {
                     container(
                         container(fallback)
                             .width(Length::Fill)
-                            .max_width(READING_MAX),
+                            .max_width(self.reading_max_width()),
                     )
                     .width(Length::Fill)
                     .height(Length::Fill)
@@ -3789,7 +3798,7 @@ impl App {
                         true,
                         (0, 0),
                         recently_scrolled,
-                        crate::render::ReadingWidth::Capped,
+                        crate::render::ReadingWidth::Fill,
                         self.copy_flash.map(|(_, key)| key),
                     )
                 }
@@ -3809,7 +3818,7 @@ impl App {
                     true,
                     (0, 0),
                     recently_scrolled,
-                    crate::render::ReadingWidth::Capped,
+                    crate::render::ReadingWidth::Fill,
                     self.copy_flash.map(|(_, key)| key),
                 )
             };
@@ -3829,7 +3838,7 @@ impl App {
                 let select_all = self.reader_select_all && self.reader_shows_document();
                 let column = container(body)
                     .id(iced::widget::Id::new("reader-column"))
-                    .max_width(READING_MAX)
+                    .max_width(self.reading_max_width())
                     .width(Length::Fill)
                     .style(move |_| container::Style {
                         background: select_all.then(|| pal.selection.into()),

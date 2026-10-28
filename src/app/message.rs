@@ -313,6 +313,10 @@ pub enum Message {
     ReaderZoomSave(u64),
     /// Settings → Line spacing.
     SetLineSpacing(crate::theme::LineSpacing),
+    /// Settings → Reading width.
+    SetReadingWidth(crate::theme::ReadingWidth),
+    /// ⌘⌥[ / ⌘⌥]: one Reading width step narrower (-1) or wider (1).
+    ReadingWidthStep(i32),
     /// Settings → Toolbar: shown on hover or always.
     SetToolbarMode(crate::prefs::ToolbarMode),
     ToggleFooter,

@@ -809,6 +809,58 @@ impl LineSpacing {
     }
 }
 
+/// The Reading width setting: the reading column's cap in ems of the body
+/// size, so a font zoom keeps the characters per line. Default is
+/// `READING_MAX_PX` at the default 16 px body size.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ReadingWidth {
+    Narrow,
+    #[default]
+    Default,
+    Wide,
+    Full,
+}
+
+impl ReadingWidth {
+    pub const ALL: [ReadingWidth; 4] = [
+        ReadingWidth::Narrow,
+        ReadingWidth::Default,
+        ReadingWidth::Wide,
+        ReadingWidth::Full,
+    ];
+
+    /// The column cap in ems; `None` fills the reader.
+    pub fn ems(self) -> Option<f32> {
+        match self {
+            ReadingWidth::Narrow => Some(38.0),
+            ReadingWidth::Default => Some(READING_MAX_PX / 16.0),
+            ReadingWidth::Wide => Some(60.0),
+            ReadingWidth::Full => None,
+        }
+    }
+
+    /// The column cap in pixels at `body_size`.
+    pub fn max_width(self, body_size: f32) -> f32 {
+        self.ems().map_or(f32::INFINITY, |ems| ems * body_size)
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            ReadingWidth::Narrow => "Narrow",
+            ReadingWidth::Default => "Default",
+            ReadingWidth::Wide => "Wide",
+            ReadingWidth::Full => "Full",
+        }
+    }
+
+    /// One step toward Full (`dir` > 0) or Narrow, without wrapping.
+    pub fn step(self, dir: i32) -> ReadingWidth {
+        let i = Self::ALL.iter().position(|w| *w == self).unwrap_or(1) as i32;
+        Self::ALL[(i + dir.signum()).clamp(0, 3) as usize]
+    }
+}
+
 /// Corner radii shared by the app chrome and the renderer: one ladder of
 /// 6 / 10 / 16 plus a glyph-sized step, a table step, and fully rounded ends.
 /// Call sites name a step, so a visual pass retunes radii here in one place.
@@ -1055,6 +1107,20 @@ mod tests {
         // Font zoom scales the space with the heading.
         let big = t.scaled(2.0);
         assert!((big.heading_space_above(1) - 60.0 * 1.08).abs() < 1e-3);
+    }
+
+    #[test]
+    fn reading_width_scales_with_the_body_size() {
+        assert_eq!(ReadingWidth::default(), ReadingWidth::Default);
+        assert_eq!(ReadingWidth::Default.max_width(16.0), READING_MAX_PX);
+        assert_eq!(ReadingWidth::Default.max_width(20.0), 900.0);
+        assert_eq!(ReadingWidth::Narrow.max_width(16.0), 608.0);
+        assert_eq!(ReadingWidth::Wide.max_width(16.0), 960.0);
+        assert!(ReadingWidth::Full.max_width(16.0).is_infinite());
+        assert_eq!(ReadingWidth::Default.step(1), ReadingWidth::Wide);
+        assert_eq!(ReadingWidth::Full.step(1), ReadingWidth::Full);
+        assert_eq!(ReadingWidth::Default.step(-1), ReadingWidth::Narrow);
+        assert_eq!(ReadingWidth::Narrow.step(-1), ReadingWidth::Narrow);
     }
 
     #[test]
