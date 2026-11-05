@@ -961,6 +961,14 @@ impl App {
                     self.show_toast("Font reset".to_string()),
                 ])
             }
+            Message::SetReadingWidth(width) => self.set_reading_width(width),
+            Message::ReadingWidthStep(dir) => {
+                let width = self.prefs.reading_width.step(dir);
+                Task::batch([
+                    self.set_reading_width(width),
+                    self.show_toast(format!("Reading width: {}", width.label())),
+                ])
+            }
             Message::SetLineSpacing(spacing) => self.set_line_spacing(spacing),
             Message::SetToolbarMode(mode) => self.set_toolbar_mode(mode),
             Message::ToolbarHover(entered) => self.toolbar_hover(entered),

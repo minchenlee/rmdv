@@ -14,6 +14,7 @@ pub enum SettingsRow {
     FontSize,
     LineSpacing,
     Toolbar,
+    ReadingWidth,
     Footer,
     HiddenFiles,
     MindmapAutocenter,
@@ -37,6 +38,7 @@ impl SettingsRow {
             FontSize,
             LineSpacing,
             Toolbar,
+            ReadingWidth,
             Footer,
             HiddenFiles,
             MindmapAutocenter,
@@ -120,6 +122,9 @@ impl App {
             SettingsRow::Glass => Message::SetGlass(self.prefs.glass.next()),
             SettingsRow::FontSize => Message::FontSizeReset,
             SettingsRow::LineSpacing => Message::SetLineSpacing(crate::theme::LineSpacing::Default),
+            SettingsRow::ReadingWidth => {
+                Message::SetReadingWidth(crate::theme::ReadingWidth::Default)
+            }
             SettingsRow::Toolbar => Message::SetToolbarMode(self.prefs.toolbar.toggled()),
             SettingsRow::Footer => Message::ToggleFooter,
             SettingsRow::HiddenFiles => Message::ToggleHidden,
@@ -134,8 +139,8 @@ impl App {
         self.update(message)
     }
 
-    /// ← / →: step a theme, glass mode, opacity, font size, or line spacing; set a switch
-    /// off (←) or on (→).
+    /// ← / →: step a theme, glass mode, opacity, font size, line spacing, or
+    /// reading width; set a switch off (←) or on (→).
     pub(super) fn settings_step(&mut self, dir: i32) -> Task<Message> {
         let forward = dir > 0;
         let switch = |on: bool, toggle: Message| (on != forward).then_some(toggle);
@@ -169,6 +174,10 @@ impl App {
             SettingsRow::LineSpacing => {
                 let next = self.line_spacing.step(dir);
                 (next != self.line_spacing).then_some(Message::SetLineSpacing(next))
+            }
+            SettingsRow::ReadingWidth => {
+                let next = self.prefs.reading_width.step(dir);
+                (next != self.prefs.reading_width).then_some(Message::SetReadingWidth(next))
             }
             SettingsRow::Toolbar => {
                 let next = if forward {
@@ -223,6 +232,18 @@ impl App {
         self.rebuild_virt_here();
         let preview_measure = self.refresh_full_mindmap_preview_heights();
         Task::batch([self.measure_window_heights(), preview_measure])
+    }
+
+    pub(super) fn set_reading_width(&mut self, width: crate::theme::ReadingWidth) -> Task<Message> {
+        if self.prefs.reading_width == width {
+            return Task::none();
+        }
+        self.prefs.reading_width = width;
+        self.save_prefs();
+        // Every measured block height changed with the column width.
+        self.height_cache.clear();
+        self.rebuild_virt_here();
+        self.measure_window_heights()
     }
 
     pub(super) fn set_toolbar_mode(&mut self, mode: crate::prefs::ToolbarMode) -> Task<Message> {

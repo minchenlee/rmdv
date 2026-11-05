@@ -288,6 +288,7 @@ pub(in crate::app) fn shortcut_sheet_groups() -> Vec<(&'static str, Vec<SheetRow
                 sheet_action("⌘⇧.", "Toggle Hidden Files", Message::ToggleHidden),
                 sheet_row("⌘+ ⌘-", "Reader Font Size Up / Down"),
                 sheet_action("⌘0", "Reset Reader Font Size", Message::FontSizeReset),
+                sheet_row("⌘⌥[ ⌘⌥]", "Reading Width Narrower / Wider"),
             ],
         ),
         (

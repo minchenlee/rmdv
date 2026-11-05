@@ -61,6 +61,27 @@ pub(super) fn reader_font_size_shortcut(
     Some(reader_action)
 }
 
+/// ⌘⌥[ narrows and ⌘⌥] widens the reading column (Ctrl+Alt off macOS).
+/// The physical bracket keys match too: ⌥ changes the character macOS
+/// reports for them.
+pub(super) fn reading_width_key_message(
+    key: &iced::keyboard::Key,
+    physical: iced::keyboard::key::Physical,
+    modifiers: iced::keyboard::Modifiers,
+) -> Option<Message> {
+    use iced::keyboard::key::{Code, Physical};
+    let primary = modifiers.command() || modifiers.control();
+    if !primary || !modifiers.alt() || modifiers.shift() {
+        return None;
+    }
+    let dir = match (key.as_ref(), physical) {
+        (iced::keyboard::Key::Character("["), _) | (_, Physical::Code(Code::BracketLeft)) => -1,
+        (iced::keyboard::Key::Character("]"), _) | (_, Physical::Code(Code::BracketRight)) => 1,
+        _ => return None,
+    };
+    Some(Message::ReadingWidthStep(dir))
+}
+
 /// The image viewer's plain zoom keys: `=` (or `+`) zooms in, `-` out,
 /// and `0` shows 100%. With ⌘ or Ctrl they stay the reader's font keys.
 pub(super) fn image_zoom_key_message(
@@ -709,6 +730,9 @@ pub(super) fn key_message(context: KeyContext, ev: iced::Event, reader_copied: b
     }
     if reader_font_shortcuts_enabled(full_mindmap, mindmap, overlay_open, focused, fold_chord) {
         if let Some(message) = reader_font_size_shortcut(&modified_key, mods) {
+            return message;
+        }
+        if let Some(message) = reading_width_key_message(&key, physical, mods) {
             return message;
         }
     }

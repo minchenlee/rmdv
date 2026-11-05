@@ -112,6 +112,8 @@ pub(super) enum MenuCommand {
     FontUp,
     FontDown,
     FontReset,
+    NarrowerReading,
+    WiderReading,
     CycleTheme,
     PickTheme,
     CommandPalette,
@@ -160,7 +162,7 @@ const CMD: Mods = Mods {
 };
 
 impl MenuCommand {
-    pub(super) const ALL: [MenuCommand; 46] = [
+    pub(super) const ALL: [MenuCommand; 48] = [
         MenuCommand::Settings,
         MenuCommand::OpenFolder,
         MenuCommand::FindFile,
@@ -189,6 +191,8 @@ impl MenuCommand {
         MenuCommand::FontUp,
         MenuCommand::FontDown,
         MenuCommand::FontReset,
+        MenuCommand::NarrowerReading,
+        MenuCommand::WiderReading,
         MenuCommand::CycleTheme,
         MenuCommand::PickTheme,
         MenuCommand::CommandPalette,
@@ -311,6 +315,14 @@ impl MenuCommand {
             }),
             C::FontReset => keyed(p("Reset Font Size"), Shortcut::cmd('0'), |m| {
                 matches!(m, Message::FontSizeReset)
+            }),
+            C::NarrowerReading => keyed(
+                p("Narrower Reading Width"),
+                Shortcut::cmd_option('['),
+                |m| matches!(m, Message::ReadingWidthStep(-1)),
+            ),
+            C::WiderReading => keyed(p("Wider Reading Width"), Shortcut::cmd_option(']'), |m| {
+                matches!(m, Message::ReadingWidthStep(1))
             }),
             C::CycleTheme => keyed(p("Cycle Theme"), Shortcut::cmd('t'), |m| {
                 matches!(m, Message::ToggleTheme)
@@ -553,6 +565,8 @@ impl App {
                 item(C::FontUp),
                 item(C::FontDown),
                 item(C::FontReset),
+                item(C::NarrowerReading),
+                item(C::WiderReading),
                 Entry::Separator,
                 item(C::CycleTheme),
                 item(C::PickTheme),

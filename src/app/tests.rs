@@ -8796,6 +8796,56 @@ fn settings_rows_change_the_same_state_as_their_commands_and_persist() {
     assert_eq!(saved(&isolated).line_spacing, LineSpacing::Default);
     assert_eq!(app.typography.line_height, 1.5);
 
+    // Reading width: → / ← step the presets and save; Space resets. The cap
+    // follows the font size, and ⌘⌥] / ⌘⌥[ step it too.
+    use crate::theme::ReadingWidth;
+    assert_eq!(app.reading_max_width(), 720.0);
+    at(
+        &mut app,
+        SettingsRow::ReadingWidth,
+        Message::SettingsStep(1),
+    );
+    assert_eq!(app.prefs.reading_width, ReadingWidth::Wide);
+    assert_eq!(saved(&isolated).reading_width, ReadingWidth::Wide);
+    assert_eq!(app.reading_max_width(), 960.0);
+    let _ = app.update(Message::FontSizeUp);
+    assert!((app.reading_max_width() - 1056.0).abs() < 1e-3);
+    let _ = app.update(Message::FontSizeReset);
+    at(
+        &mut app,
+        SettingsRow::ReadingWidth,
+        Message::SettingsStep(1),
+    );
+    assert!(app.reading_max_width().is_infinite());
+    at(
+        &mut app,
+        SettingsRow::ReadingWidth,
+        Message::SettingsActivate,
+    );
+    assert_eq!(saved(&isolated).reading_width, ReadingWidth::Default);
+    let mods = iced::keyboard::Modifiers::COMMAND | iced::keyboard::Modifiers::ALT;
+    let bracket = |c: &str, code| {
+        super::keys::reading_width_key_message(
+            &iced::keyboard::Key::Character(c.into()),
+            iced::keyboard::key::Physical::Code(code),
+            mods,
+        )
+    };
+    use iced::keyboard::key::Code;
+    assert!(matches!(
+        bracket("“", Code::BracketLeft),
+        Some(Message::ReadingWidthStep(-1))
+    ));
+    assert!(matches!(
+        bracket("]", Code::BracketRight),
+        Some(Message::ReadingWidthStep(1))
+    ));
+    let _ = app.update(Message::ReadingWidthStep(-1));
+    assert_eq!(saved(&isolated).reading_width, ReadingWidth::Narrow);
+    let _ = app.update(Message::ReadingWidthStep(-1));
+    assert_eq!(app.prefs.reading_width, ReadingWidth::Narrow);
+    let _ = app.update(Message::SetReadingWidth(ReadingWidth::Default));
+
     // Theme: → switches to the next card and saves it; ← stops at the first.
     let start = app
         .theme_entries()

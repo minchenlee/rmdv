@@ -3,7 +3,7 @@
 use super::*;
 // Explicit import: the `column!` macro is otherwise ambiguous between the glob
 // import and iced's exported macro.
-use crate::theme::LineSpacing;
+use crate::theme::{LineSpacing, ReadingWidth};
 use iced::widget::column;
 
 /// Theme cards per line on the Theme row.
@@ -116,7 +116,8 @@ fn section_title(row: SettingsRow) -> &'static str {
         | SettingsRow::FontSize
         | SettingsRow::LineSpacing
         | SettingsRow::Toolbar => "Appearance",
-        SettingsRow::Footer
+        SettingsRow::ReadingWidth
+        | SettingsRow::Footer
         | SettingsRow::HiddenFiles
         | SettingsRow::MindmapAutocenter
         | SettingsRow::MindmapScrollPans => "Reading",
@@ -274,6 +275,12 @@ fn settings_row_body<'a>(app: &'a App, row: SettingsRow, pal: Palette) -> Elemen
                 }),
                 pal,
             ),
+            pal,
+        ),
+        SettingsRow::ReadingWidth => labeled(
+            "Reading width",
+            "Width of the text column. It grows with the font size. ⌘⌥[ and ⌘⌥] step it.".into(),
+            reading_width_control(app.prefs.reading_width, pal),
             pal,
         ),
         SettingsRow::Footer => labeled(
@@ -545,6 +552,19 @@ fn line_spacing_control<'a>(current: LineSpacing, pal: Palette) -> Element<'a, M
                 spacing.label(),
                 spacing == current,
                 Message::SetLineSpacing(spacing),
+            )
+        }),
+        pal,
+    )
+}
+
+fn reading_width_control<'a>(current: ReadingWidth, pal: Palette) -> Element<'a, Message> {
+    segmented(
+        ReadingWidth::ALL.map(|width| {
+            (
+                width.label(),
+                width == current,
+                Message::SetReadingWidth(width),
             )
         }),
         pal,
