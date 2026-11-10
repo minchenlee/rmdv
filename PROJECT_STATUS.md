@@ -1,6 +1,6 @@
 # rmdv — project status
 
-Last verified: 2026-10-19 (Asia/Taipei)
+Last verified: 2026-10-26 (Asia/Taipei)
 Stale after: 7 days
 Canonical repository: `~/Documents/GitHub/mdv`
 Expected branch / HEAD / PR: start new work from the live `origin/main`.
@@ -30,11 +30,23 @@ manual evidence before mutation.
   folder's direct files and folders up to 10,000 items, and a folder with more
   than 2,000 items opens in pages of 2,000 behind a `More (N left)` node.
   Notes: [`docs/releases/v0.10.1-release-notes.md`](docs/releases/v0.10.1-release-notes.md).
+- `MDV-048` pointer support is on `main`, not released: PRs #70–#79 and #81
+  merged with merge commits on 2026-10-26 (owner authority after the P8c
+  trial); `main` is `8d8b9eb`. It covers overlays, the toolbar and window
+  drag, close protection, Back/Forward, link hover, the mind map pointer
+  model, gestures and the rmdv image viewer, context menus and file
+  operations, reader selection, the sidebar peek, global Quick Slots, the
+  native menu bar, and window frame persistence. Plan:
+  [`docs/plans/completed/MDV-048-pointer-support.md`](docs/plans/completed/MDV-048-pointer-support.md).
 
 ## Live workstreams
 
-No active product workstream. Pick the next task from
-[`docs/BACKLOG.md`](docs/BACKLOG.md).
+- `MDV-049` Mermaid: external PR #82 (Merman, dagre only) conflicts with
+  `8d8b9eb` in `src/diagram.rs`; we rebase it for the author.
+- `MDV-050` reading width: external PR #84 conflicts in `message.rs`,
+  `mod.rs`, `chrome.rs`; we rebase it for the author.
+- External PR #83 (preview modal) overlaps the merged MDV-048 image viewer;
+  the owner decides after a comparison.
 
 ## Human decisions / blockers
 
@@ -56,8 +68,10 @@ No active product workstream. Pick the next task from
 
 ## Next safe actions
 
-1. Pick the next task from the backlog (`MDV-042` goto offset is the smallest).
-2. Re-run the cold-start and parse perf check on a quiet machine.
+1. Rebase PRs #82 and #84 onto `main` and get their CI green.
+2. Prepare `v0.11.0` (MDV-048, and MDV-049 if it lands) when the owner
+   authorizes a release.
+3. Re-run the cold-start and parse perf check on a quiet machine.
 
 ## Verification state
 
