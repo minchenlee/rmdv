@@ -2944,7 +2944,7 @@ mod tests {
 
     #[test]
     fn reading_width_caps_main_area_and_fills_panels() {
-        assert_eq!(reading_max_width(ReadingWidth::Capped), 720.0);
+        assert_eq!(reading_max_width(ReadingWidth::Capped), 832.0);
         assert!(reading_max_width(ReadingWidth::Fill) > 10_000.0);
     }
 
