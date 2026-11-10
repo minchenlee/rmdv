@@ -4938,7 +4938,7 @@ dependencies = [
 
 [[package]]
 name = "rmdv"
-version = "0.10.1"
+version = "0.11.0"
 dependencies = [
  "anyhow",
  "block2 0.6.2",
