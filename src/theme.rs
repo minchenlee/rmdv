@@ -685,8 +685,9 @@ pub fn contrast_ratio(a: Color, b: Color) -> f32 {
     (la.max(lb) + 0.05) / (la.min(lb) + 0.05)
 }
 
-/// Reading column cap for the main document area: Notion's 720 px page width.
-pub const READING_MAX_PX: f32 = 720.0;
+/// Reading column cap for the main document area at the default 16 px body
+/// size: 52 em, a little wider than Notion's 720 px page.
+pub const READING_MAX_PX: f32 = 832.0;
 
 /// Heading line height. Fixed: the Line spacing setting changes body text only.
 pub const HEADING_LINE_HEIGHT: f32 = 1.3;
@@ -1093,7 +1094,7 @@ mod tests {
         assert_eq!(t.h3_size, 20.0);
         assert!((t.h4_size - 18.4).abs() < 1e-4);
         assert!((t.code_size - 13.6).abs() < 1e-4);
-        assert_eq!(READING_MAX_PX, 720.0);
+        assert_eq!(READING_MAX_PX, 832.0);
         assert_eq!(HEADING_LINE_HEIGHT, 1.3);
     }
 
@@ -1113,7 +1114,7 @@ mod tests {
     fn reading_width_scales_with_the_body_size() {
         assert_eq!(ReadingWidth::default(), ReadingWidth::Default);
         assert_eq!(ReadingWidth::Default.max_width(16.0), READING_MAX_PX);
-        assert_eq!(ReadingWidth::Default.max_width(20.0), 900.0);
+        assert_eq!(ReadingWidth::Default.max_width(20.0), 1040.0);
         assert_eq!(ReadingWidth::Narrow.max_width(16.0), 608.0);
         assert_eq!(ReadingWidth::Wide.max_width(16.0), 960.0);
         assert!(ReadingWidth::Full.max_width(16.0).is_infinite());

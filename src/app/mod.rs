@@ -3140,6 +3140,10 @@ impl App {
         } else {
             Message::MindmapCyclePanelWidth
         };
+        let toolbar = match self.prefs.toolbar {
+            crate::prefs::ToolbarMode::Always => "Toolbar: Show on Hover Only",
+            crate::prefs::ToolbarMode::OnHover => "Toolbar: Always Show",
+        };
         let mut items = vec![
             ("Open Settings  ⌘,", Message::OpenSettings),
             ("Open Folder…  ⌘O", Message::OpenFolderPicker),
@@ -3160,6 +3164,10 @@ impl App {
             ("Narrower Reading Width  ⌘⌥[", Message::ReadingWidthStep(-1)),
             ("Wider Reading Width  ⌘⌥]", Message::ReadingWidthStep(1)),
             ("Toggle Status Footer", Message::ToggleFooter),
+            (
+                toolbar,
+                Message::SetToolbarMode(self.prefs.toolbar.toggled()),
+            ),
             ("Toggle Soft Syntax Colors", Message::ToggleSoftSyntax),
             ("Toggle Mindmap  ⌘M", Message::ToggleMindmap),
             ("Toggle Full Mindmap Mode  ⌘⇧M", Message::ToggleFullMindmap),
@@ -3967,7 +3975,9 @@ impl App {
                         fill: Color::TRANSPARENT,
                         left_inset: toolbar_left_inset(!sidebar_visible, self.window_fullscreen),
                         corner_radius: 0.0,
-                        hairline: false,
+                        // A rule under the bar so it reads apart from the
+                        // content, which shares its fill.
+                        hairline: true,
                     },
                 ),
             ]

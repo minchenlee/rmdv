@@ -2656,6 +2656,30 @@ fn fold_level_shortcut_accepts_document_depths_zero_through_six() {
 }
 
 #[test]
+fn command_palette_switches_the_toolbar_mode() {
+    use crate::prefs::ToolbarMode;
+    let mut app = App::default();
+    let isolated = app.quick_slots_persistence_path.clone().unwrap();
+    let saved = |path: &Path| crate::prefs::load_from(path);
+    let toolbar_command = |app: &App| {
+        app.command_items()
+            .into_iter()
+            .find(|(label, _)| label.starts_with("Toolbar:"))
+            .expect("palette has a toolbar command")
+    };
+    assert_eq!(app.prefs.toolbar, ToolbarMode::Always);
+    let (label, msg) = toolbar_command(&app);
+    assert_eq!(label, "Toolbar: Show on Hover Only");
+    let _ = app.update(msg);
+    assert_eq!(app.prefs.toolbar, ToolbarMode::OnHover);
+    assert_eq!(saved(&isolated).toolbar, ToolbarMode::OnHover);
+    let (label, msg) = toolbar_command(&app);
+    assert_eq!(label, "Toolbar: Always Show");
+    let _ = app.update(msg);
+    assert_eq!(app.prefs.toolbar, ToolbarMode::Always);
+}
+
+#[test]
 fn command_palette_exposes_node_depths_only_in_document_mindmap() {
     let depth_commands = |app: &App| {
         app.command_items()
@@ -8799,7 +8823,7 @@ fn settings_rows_change_the_same_state_as_their_commands_and_persist() {
     // Reading width: → / ← step the presets and save; Space resets. The cap
     // follows the font size, and ⌘⌥] / ⌘⌥[ step it too.
     use crate::theme::ReadingWidth;
-    assert_eq!(app.reading_max_width(), 720.0);
+    assert_eq!(app.reading_max_width(), 832.0);
     at(
         &mut app,
         SettingsRow::ReadingWidth,
@@ -9119,13 +9143,15 @@ fn dragging_across_paragraphs_copies_the_text_in_between() {
         &mut renderer,
     );
 
-    // The reading column is centred (max 720 px) under a 56 px top padding;
-    // paragraphs are 24 px lines with an 8 px gap. Start inside the first
-    // paragraph, end inside the third.
-    // x = 281 is on the left half of the "a" in "alpha", so the copy starts
-    // before it (285 lands after it).
-    let start = Point::new(281.0, 66.0);
-    let end = Point::new(330.0, 66.0 + 2.0 * 32.0);
+    // The reading column is centred (max `READING_MAX_PX`) under a 56 px top
+    // padding; paragraphs are 24 px lines with an 8 px gap. Start inside the
+    // first paragraph, end inside the third.
+    // With a 720 px column, x = 281 is on the left half of the "a" in
+    // "alpha", so the copy starts before it (285 lands after it). A wider
+    // column moves the text left by half the difference.
+    let shift = (crate::theme::READING_MAX_PX - 720.0) / 2.0;
+    let start = Point::new(281.0 - shift, 66.0);
+    let end = Point::new(330.0 - shift, 66.0 + 2.0 * 32.0);
     let mut send = |at: Point, events: Vec<Event>| {
         let _ = ui.update(
             &events,
