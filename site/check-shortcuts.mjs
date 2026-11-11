@@ -14,6 +14,11 @@ function readRustTree(dir) {
 }
 const appSource = readRustTree(new URL('../src/app/', import.meta.url));
 const html = fs.readFileSync(new URL('index.html', import.meta.url), 'utf8');
+// A call fragment such as `("⌘P", "Find File in Workspace")` also matches when
+// the native call passes more arguments after those two (an action message).
+const hasNative = (fragment) =>
+  appSource.includes(fragment) ||
+  (fragment.endsWith(')') && appSource.includes(`${fragment.slice(0, -1)},`));
 const browserLayer = fs.readFileSync(new URL('app.js', import.meta.url), 'utf8');
 
 const contracts = [
@@ -102,7 +107,7 @@ for (const contract of contracts) {
     if (!row.includes(fragment)) failures.push(`${contract.id}: website row is missing ${fragment}`);
   }
   for (const fragment of contract.native) {
-    if (!appSource.includes(fragment)) failures.push(`${contract.id}: native binding is missing ${fragment}`);
+    if (!hasNative(fragment)) failures.push(`${contract.id}: native binding is missing ${fragment}`);
   }
 }
 
@@ -168,7 +173,7 @@ for (const fragment of [
   'return Message::ToggleShortcuts',
   '("⌘/", "Show Shortcuts")',
 ]) {
-  if (!appSource.includes(fragment)) failures.push(`native auxiliary binding is missing ${fragment}`);
+  if (!hasNative(fragment)) failures.push(`native auxiliary binding is missing ${fragment}`);
 }
 for (const feature of [
   'Fuzzy file finder (Cmd+P)',

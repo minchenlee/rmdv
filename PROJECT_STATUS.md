@@ -4,8 +4,10 @@ Last verified: 2026-10-26 (Asia/Taipei)
 Stale after: 7 days
 Canonical repository: `~/Documents/GitHub/mdv`
 Expected branch / HEAD / PR: start new work from the live `origin/main`.
-Latest published release: `v0.10.1` → `09d6394` (2026-10-19, Release run
-39197195676).
+Latest published release: `v0.11.0` → `ff1520d` (2026-11-11, Release run
+42962700100). It shipped MDV-048 pointer support, #82 (Merman Mermaid
+renderer) and #84 (reading width presets); notes:
+[`docs/releases/v0.11.0-release-notes.md`](docs/releases/v0.11.0-release-notes.md).
 Authority: This is a routing snapshot. Verify Git, GitHub, runtime identity, and
 manual evidence before mutation.
 
