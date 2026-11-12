@@ -1070,7 +1070,7 @@ acquire shallow counted children through branch-local bounded background
 discovery, while exact-empty subtrees are omitted.
 
 The implementation is recorded in
-`docs/superpowers/specs/2026-07-10-full-mindmap-mode-design.md` and covers
+`docs/specs/2026-07-10-full-mindmap-mode-design.md` and covers
 activation/exit UX, path-based workspace nodes, keyboard and panel behavior,
 dirty and late-async protection, shared-canvas adapter boundaries, fallback
 picker/tree/file-finder paths, and focused tests.

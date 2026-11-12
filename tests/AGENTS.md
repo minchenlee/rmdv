@@ -63,5 +63,3 @@ CLI/IPC behavior, and hot-reload behavior; it does not contain product logic.
 ## Status and handoff
 
 - [Current status](../PROJECT_STATUS.md)
-- [CLI and IPC design](../docs/superpowers/specs/2026-05-17-cli-agent-control-design.md)
-- [Full Mindmap design](../docs/superpowers/specs/2026-07-10-full-mindmap-mode-design.md)
