@@ -120,8 +120,6 @@ manual evidence before mutation.
 - Release records: [`docs/releases/`](docs/releases/)
 - Status history: [`docs/status-history/`](docs/status-history/)
 - Module map: [`src/AGENTS.md`](src/AGENTS.md)
-- Full Mindmap design: [`docs/superpowers/specs/2026-07-10-full-mindmap-mode-design.md`](docs/superpowers/specs/2026-07-10-full-mindmap-mode-design.md)
-- CLI and IPC design: [`docs/superpowers/specs/2026-05-17-cli-agent-control-design.md`](docs/superpowers/specs/2026-05-17-cli-agent-control-design.md)
 
 ## Update contract
 

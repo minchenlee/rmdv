@@ -62,6 +62,3 @@
 - [Current status](PROJECT_STATUS.md)
 - [Project backlog](docs/BACKLOG.md)
 - [Product contract](PRODUCT.md)
-- [Full Mindmap design](docs/superpowers/specs/2026-07-10-full-mindmap-mode-design.md)
-- [CLI and IPC design](docs/superpowers/specs/2026-05-17-cli-agent-control-design.md)
-- [Zen edit-mode design](docs/superpowers/specs/2026-07-06-zen-edit-mode-design.md)

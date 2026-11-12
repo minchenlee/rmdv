@@ -28,7 +28,7 @@ and measured-height behavior—against their current owning code and branch.
 ## Owned and excluded surfaces
 
 - Owned: the Zoom status statement that calls `46e3a6b` uncommitted,
-  `docs/superpowers/specs/2026-06-14-kb-hints-custom-themes-design.md`,
+  `docs/specs/2026-06-14-kb-hints-custom-themes-design.md`,
   `docs/performance.md`/the actual benchmark owner, and routing notes.
 - Excluded: Zoom integration itself (MDV-009), fullscreen implementation,
   virtual-scroll redesign, and broad documentation cleanup.

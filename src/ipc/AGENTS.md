@@ -17,7 +17,6 @@ lookup. It does not own Iced view state or document rendering.
 - [`client.rs`](client.rs) and [`server.rs`](server.rs) — one-line socket round trips and request forwarding
 - [`sections.rs`](sections.rs) — heading paths and source-line lookup
 - [`../cli.rs`](../cli.rs) — Clap command parsing and request construction
-- [`../../docs/superpowers/specs/2026-05-17-cli-agent-control-design.md`](../../docs/superpowers/specs/2026-05-17-cli-agent-control-design.md) — protocol and testing contract
 
 ## Architecture and boundaries
 
@@ -50,7 +49,7 @@ lookup. It does not own Iced view state or document rendering.
   cross-platform `cfg` path with a Unix-only API.
 - Route app behavior through `Message::Ipc`; do not add a second UI-control
   path inside `client.rs`, `server.rs`, or `sections.rs`.
-- Update [`../../docs/superpowers/specs/2026-05-17-cli-agent-control-design.md`](../../docs/superpowers/specs/2026-05-17-cli-agent-control-design.md) and the relevant tests when the public protocol changes.
+- Update the relevant tests when the public protocol changes.
 
 ## Verification
 
@@ -62,4 +61,3 @@ lookup. It does not own Iced view state or document rendering.
 ## Status and handoff
 
 - [Current status](../../PROJECT_STATUS.md)
-- [CLI and IPC design](../../docs/superpowers/specs/2026-05-17-cli-agent-control-design.md)

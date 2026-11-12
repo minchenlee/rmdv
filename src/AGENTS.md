@@ -25,7 +25,6 @@ library exposes parsers, renderers, workspace models, and the IPC boundary;
 - [`theme.rs`](theme.rs) — palettes plus the `radius` and `shadow` tokens; use them instead of literal radii and shadows
 - [`parser.rs`](parser.rs) and [`render.rs`](render.rs) — document AST and widget materialization
 - [`tree.rs`](tree.rs) and [`workspace_mindmap.rs`](workspace_mindmap.rs) — bounded filesystem graph and workspace nodes
-- [`../docs/superpowers/specs/2026-07-10-full-mindmap-mode-design.md`](../docs/superpowers/specs/2026-07-10-full-mindmap-mode-design.md) — current workspace-navigation contracts
 
 ## Architecture and boundaries
 
@@ -79,4 +78,3 @@ library exposes parsers, renderers, workspace models, and the IPC boundary;
 ## Status and handoff
 
 - [Current status](../PROJECT_STATUS.md)
-- [Full Mindmap design](../docs/superpowers/specs/2026-07-10-full-mindmap-mode-design.md)

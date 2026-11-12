@@ -5,7 +5,6 @@
 .idea/
 .vscode/
 Cargo.lock.bak
-.superpowers/
 
 # Local agent/tooling state — not part of the project
 CLAUDE.md
