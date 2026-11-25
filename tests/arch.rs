@@ -60,10 +60,10 @@ fn strip_non_code(src: &str) -> String {
             continue;
         }
         // raw string: r"..", r#".."#, br#".."#
-        if (ch == 'r' || (ch == 'b' && i + 1 < n && c[i + 1] == 'r'))
+        if (ch == 'r' || ((ch == 'b' || ch == 'c') && i + 1 < n && c[i + 1] == 'r'))
             && (i == 0 || !(c[i - 1].is_alphanumeric() || c[i - 1] == '_'))
         {
-            let mut j = i + if ch == 'b' { 2 } else { 1 };
+            let mut j = i + if ch == 'r' { 1 } else { 2 };
             let mut hashes = 0;
             while j < n && c[j] == '#' {
                 hashes += 1;
@@ -141,44 +141,87 @@ fn is_ident(ch: char) -> bool {
 
 /// Return (line, message) for each forbidden reference in `src`.
 fn violations(src: &str) -> Vec<(usize, String)> {
-    let code = strip_non_code(src);
-    let mut found = Vec::new();
-    for (idx, line) in code.lines().enumerate() {
-        let chars: Vec<char> = line.chars().collect();
-        // `iced` or `iced_*` as a whole identifier.
-        let mut start = 0;
-        while start < chars.len() {
-            if is_ident(chars[start]) && (start == 0 || !is_ident(chars[start - 1])) {
-                let mut end = start;
-                while end < chars.len() && is_ident(chars[end]) {
-                    end += 1;
-                }
-                let word: String = chars[start..end].iter().collect();
-                if word == "iced" || word.starts_with("iced_") {
-                    found.push((idx + 1, format!("references `{word}`")));
-                }
-                start = end;
-            } else {
-                start += 1;
-            }
+    let code: Vec<char> = strip_non_code(src).chars().collect();
+    let n = code.len();
+    let line_at = |pos: usize| code[..pos].iter().filter(|&&c| c == '\n').count() + 1;
+    let skip_ws = |mut p: usize| {
+        while p < n && code[p].is_whitespace() {
+            p += 1;
         }
-        // `crate::app` (whitespace tolerant)
-        let squashed: String = line.split_whitespace().collect::<Vec<_>>().join(" ");
-        let mut rest = squashed.as_str();
-        while let Some(pos) = rest.find("crate") {
-            let before_ok = rest[..pos].chars().last().map_or(true, |p| !is_ident(p));
-            let after = rest[pos + 5..].trim_start();
-            if before_ok {
-                if let Some(a) = after.strip_prefix("::") {
-                    if let Some(t) = a.trim_start().strip_prefix("app") {
-                        if !t.chars().next().map_or(false, is_ident) {
-                            found.push((idx + 1, "references `crate::app`".to_string()));
+        p
+    };
+    // Position after an identifier (a raw `r#` prefix is allowed), if `word` is next.
+    let ident_at = |p: usize, word: &str| -> Option<usize> {
+        let mut p = p;
+        if p + 1 < n && code[p] == 'r' && code[p + 1] == '#' {
+            p += 2;
+        }
+        let w: Vec<char> = word.chars().collect();
+        if p + w.len() <= n
+            && code[p..p + w.len()] == w[..]
+            && !(p + w.len() < n && is_ident(code[p + w.len()]))
+        {
+            Some(p + w.len())
+        } else {
+            None
+        }
+    };
+    let mut found = Vec::new();
+    let mut i = 0;
+    while i < n {
+        if !(is_ident(code[i]) && (i == 0 || !is_ident(code[i - 1]))) {
+            i += 1;
+            continue;
+        }
+        let mut end = i;
+        while end < n && is_ident(code[end]) {
+            end += 1;
+        }
+        let word: String = code[i..end].iter().collect();
+        // `iced` or `iced_*` as a whole identifier.
+        if word == "iced" || word.starts_with("iced_") {
+            found.push((line_at(i), format!("references `{word}`")));
+        }
+        // `crate::app`, `crate::{app::X}`, `crate::{a, app::X}`, raw `r#app`; any whitespace.
+        if word == "crate" {
+            let p = skip_ws(end);
+            if p + 1 < n && code[p] == ':' && code[p + 1] == ':' {
+                let p = skip_ws(p + 2);
+                let mut hit = ident_at(p, "app").is_some();
+                if !hit && p < n && code[p] == '{' {
+                    // Scan the group: items at depth 1 start after `{` or `,`.
+                    let (mut depth, mut q, mut item_start) = (0usize, p, true);
+                    while q < n {
+                        match code[q] {
+                            '{' => {
+                                depth += 1;
+                                item_start = depth == 1;
+                            }
+                            '}' => {
+                                depth -= 1;
+                                if depth == 0 {
+                                    break;
+                                }
+                            }
+                            ',' => item_start = depth == 1,
+                            c if c.is_whitespace() => {}
+                            _ => {
+                                if item_start && depth == 1 && ident_at(q, "app").is_some() {
+                                    hit = true;
+                                    break;
+                                }
+                                item_start = false;
+                            }
                         }
+                        q += 1;
                     }
                 }
+                if hit {
+                    found.push((line_at(i), "references `crate::app`".to_string()));
+                }
             }
-            rest = &rest[pos + 5..];
         }
+        i = end;
     }
     found
 }
@@ -238,6 +281,10 @@ fn scanner_catches_iced_subcrate_and_app() {
     assert_eq!(violations("fn f() {}\nuse iced_core::Color;\n")[0].0, 2);
     assert_eq!(violations("use crate::app::App;\n").len(), 1);
     assert_eq!(violations("use crate :: app::App;\n").len(), 1);
+    assert_eq!(violations("use crate\n    ::app::App;\n").len(), 1);
+    assert_eq!(violations("use crate::{app::App};\n").len(), 1);
+    assert_eq!(violations("use crate::{parser, app::App};\n").len(), 1);
+    assert_eq!(violations("use crate::r#app::App;\n").len(), 1);
     assert_eq!(violations("let x: iced::Color;\n").len(), 1);
 }
 
@@ -245,6 +292,7 @@ fn scanner_catches_iced_subcrate_and_app() {
 fn scanner_ignores_comments_strings_and_lookalikes() {
     let src = "/// uses iced_math here\n// use iced::x;\n/* crate::app /* nested iced */ */\n\
                let s = \"use iced::widget;\";\nlet r = r#\"crate::app\"#;\nlet c = '\\'';\n\
-               fn f<'a>(x: &'a str) {}\nuse crate::application::X;\nlet serviced = 1;\n";
+               fn f<'a>(x: &'a str) {}\nuse crate::application::X;\nlet serviced = 1;\n\
+               let k = cr#\"a\" iced \"b\"#;\nuse crate::{parser::P, ast::{app_like}};\n";
     assert!(violations(src).is_empty(), "{:?}", violations(src));
 }

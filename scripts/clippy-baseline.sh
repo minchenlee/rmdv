@@ -48,7 +48,7 @@ for raw in open(sys.argv[1]):
     if not code.startswith("clippy::"):
         continue
     span = next((s for s in msg.get("spans", []) if s.get("is_primary")), None)
-    key = (code, span["file_name"], span["line_start"], span["column_start"]) if span else (code, msg["message"])
+    key = (code, span["file_name"], span["line_start"], span["column_start"], span["line_end"], span["column_end"]) if span else (code, msg["message"])
     if key in seen:  # the lib is checked twice (lib and lib test)
         continue
     seen.add(key)
