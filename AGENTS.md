@@ -49,6 +49,17 @@
 - Do not push, merge, tag, release, publish, or deploy without explicit owner
   authority.
 
+## Merge flow
+
+- Every change reaches `main` through a pull request. Do not push to `main`
+  directly; a GitHub ruleset rejects it, with no bypass for anyone.
+- Flow: branch from `origin/main`, push the branch, open a PR, wait until the
+  required checks pass, then merge the PR.
+- Required checks: `Tests / Linux tests`, `Tests / macOS tests`,
+  `Linux x86_64`, `Windows check`, `Clippy baseline`. `cargo audit
+  (report-only)` is not required.
+- The merge itself still needs owner authority (see Global invariants).
+
 ## Repository checks
 
 - `cargo check`
