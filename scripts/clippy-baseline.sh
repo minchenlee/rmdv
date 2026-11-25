@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Clippy baseline gate.
 #
-# Runs `cargo clippy --all-targets` (default features), counts clippy warnings
+# Runs `cargo clippy --all-targets` (default features, lints capped at warn), counts clippy warnings
 # per lint, and compares with clippy-baseline.txt ("<lint> <count>" per line).
 # Fails when any lint count grows. Prints a hint when a count shrinks.
 #
@@ -23,7 +23,9 @@ CUR="$(mktemp)"
 trap 'rm -f "$JSON" "$CUR"' EXIT
 
 set +e
-cargo clippy --all-targets --message-format=json >"$JSON"
+# --cap-lints warn: deny-by-default lints with old hits must not stop the build;
+# they are counted like any other warning.
+cargo clippy --all-targets --message-format=json -- --cap-lints warn >"$JSON"
 STATUS=$?
 set -e
 
