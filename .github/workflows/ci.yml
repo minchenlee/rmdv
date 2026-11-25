@@ -160,6 +160,32 @@ jobs:
           path: dist/*.AppImage
           if-no-files-found: error
 
+  clippy:
+    name: Clippy baseline
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: clippy
+
+      - name: Install system deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-3-dev libxkbcommon-dev libwayland-dev \
+            libssl-dev pkg-config
+
+      # Fails when any lint count grows past clippy-baseline.txt.
+      - name: Clippy baseline
+        run: scripts/clippy-baseline.sh
+
   windows:
     name: Windows check
     runs-on: windows-latest

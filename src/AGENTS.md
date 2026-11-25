@@ -41,7 +41,7 @@ library exposes parsers, renderers, workspace models, and the IPC boundary;
 - `cli.rs` and the nested [`ipc/AGENTS.md`](ipc/AGENTS.md) guide the
   process-control boundary. IPC requests are handled by `App`, not by direct
   rendering or filesystem mutations in transport code.
-- New parser/model code should remain independent of `App` and Iced. Preserve
+- New parser/model code should remain independent of `App` and Iced (checked by `tests/arch.rs`). Preserve
   the existing render-to-app cache/message seam, and keep large preview reads,
   parses, and measurements off the Iced update thread.
 - Any async completion that can outlive a selection, workspace, preview range,

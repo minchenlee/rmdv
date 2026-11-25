@@ -99,6 +99,13 @@ harness = false
 name = "window_frame_appkit"
 harness = false
 
+[lints.clippy]
+# Hard bans, currently 0 violations. Older clippy warnings are frozen in
+# clippy-baseline.txt and checked by scripts/clippy-baseline.sh.
+dbg_macro = "deny"
+todo = "deny"
+unimplemented = "deny"
+
 [package.metadata.packager]
 product-name = "rmdv"
 identifier = "com.minchenlee.rmdv"
