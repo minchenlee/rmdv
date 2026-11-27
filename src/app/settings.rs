@@ -15,6 +15,7 @@ pub enum SettingsRow {
     LineSpacing,
     Toolbar,
     ReadingWidth,
+    DiagramWidth,
     Footer,
     HiddenFiles,
     MindmapAutocenter,
@@ -39,6 +40,7 @@ impl SettingsRow {
             LineSpacing,
             Toolbar,
             ReadingWidth,
+            DiagramWidth,
             Footer,
             HiddenFiles,
             MindmapAutocenter,
@@ -125,6 +127,9 @@ impl App {
             SettingsRow::ReadingWidth => {
                 Message::SetReadingWidth(crate::theme::ReadingWidth::Default)
             }
+            SettingsRow::DiagramWidth => {
+                Message::SetDiagramWidth(crate::prefs::DiagramWidth::default())
+            }
             SettingsRow::Toolbar => Message::SetToolbarMode(self.prefs.toolbar.toggled()),
             SettingsRow::Footer => Message::ToggleFooter,
             SettingsRow::HiddenFiles => Message::ToggleHidden,
@@ -178,6 +183,10 @@ impl App {
             SettingsRow::ReadingWidth => {
                 let next = self.prefs.reading_width.step(dir);
                 (next != self.prefs.reading_width).then_some(Message::SetReadingWidth(next))
+            }
+            SettingsRow::DiagramWidth => {
+                let next = self.prefs.diagram_width.step(dir);
+                (next != self.prefs.diagram_width).then_some(Message::SetDiagramWidth(next))
             }
             SettingsRow::Toolbar => {
                 let next = if forward {
@@ -241,6 +250,19 @@ impl App {
         self.prefs.reading_width = width;
         self.save_prefs();
         // Every measured block height changed with the column width.
+        self.height_cache.clear();
+        self.rebuild_virt_here();
+        self.measure_window_heights()
+    }
+
+    /// Settings → Diagram width. Only the figure size changes, but a diagram's
+    /// measured height feeds the virt window, so remeasure like a width change.
+    pub(super) fn set_diagram_width(&mut self, width: crate::prefs::DiagramWidth) -> Task<Message> {
+        if self.prefs.diagram_width == width {
+            return Task::none();
+        }
+        self.prefs.diagram_width = width;
+        self.save_prefs();
         self.height_cache.clear();
         self.rebuild_virt_here();
         self.measure_window_heights()

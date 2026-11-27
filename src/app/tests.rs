@@ -6628,6 +6628,8 @@ fn full_mindmap_preview_duplicate_diagram_completion_cannot_overwrite_ready() {
         rgba: vec![255, 0, 0, 255],
         w: 1,
         h: 1,
+        svg_w: 1.0,
+        svg_h: 1.0,
     };
     let _ = app.update(Message::FullMindmapPreviewDiagramRendered {
         identity: identity.clone(),
@@ -8869,6 +8871,41 @@ fn settings_rows_change_the_same_state_as_their_commands_and_persist() {
     let _ = app.update(Message::ReadingWidthStep(-1));
     assert_eq!(app.prefs.reading_width, ReadingWidth::Narrow);
     let _ = app.update(Message::SetReadingWidth(ReadingWidth::Default));
+
+    // Diagram width: → / ← step the four modes and save; Space resets to the
+    // default (window wide). The reader column only loosens for the modes that
+    // let a figure outgrow it.
+    use crate::prefs::DiagramWidth;
+    assert_eq!(app.prefs.diagram_width, DiagramWidth::WindowWide);
+    assert!(app.diagrams_may_exceed_column());
+    at(
+        &mut app,
+        SettingsRow::DiagramWidth,
+        Message::SettingsStep(1),
+    );
+    assert_eq!(app.prefs.diagram_width, DiagramWidth::FigureFull);
+    assert_eq!(saved(&isolated).diagram_width, DiagramWidth::FigureFull);
+    at(
+        &mut app,
+        SettingsRow::DiagramWidth,
+        Message::SettingsStep(-1),
+    );
+    assert_eq!(app.prefs.diagram_width, DiagramWidth::WindowWide);
+    for _ in 0..2 {
+        at(
+            &mut app,
+            SettingsRow::DiagramWidth,
+            Message::SettingsStep(1),
+        );
+    }
+    assert_eq!(app.prefs.diagram_width, DiagramWidth::Auto);
+    assert!(!app.diagrams_may_exceed_column());
+    at(
+        &mut app,
+        SettingsRow::DiagramWidth,
+        Message::SettingsActivate,
+    );
+    assert_eq!(saved(&isolated).diagram_width, DiagramWidth::WindowWide);
 
     // Theme: → switches to the next card and saves it; ← stops at the first.
     let start = app

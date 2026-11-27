@@ -122,6 +122,81 @@ const fn rgba(r: u8, g: u8, b: u8, a: f32) -> Color {
     Color::from_rgba(r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0, a)
 }
 
+/// Per-theme diagram colors, set by a custom theme's `[diagram]` table.
+///
+/// Every field is optional and `None` means "derive this role from the
+/// surrounding [`Palette`]", which is what all built-in presets do. A theme
+/// fills individual fields in only when the derived color is not what it
+/// wants. Roles are named after what they paint rather than after Mermaid's
+/// `themeVariables` keys, so one table can drive both Mermaid and DOT:
+///
+/// * `text` — node/actor/note label text and DOT label fill
+/// * `node_fill` — flowchart node and actor bodies, DOT `fillcolor`
+/// * `node_border` — node/actor outlines, DOT node `color`
+/// * `line` — edges, arrows, sequence lifelines, DOT edge `color`
+/// * `cluster_fill` / `cluster_border` — subgraph panels
+/// * `note_fill` / `note_border` / `note_text` — sequence and state notes
+/// * `background` — the canvas behind the diagram
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct DiagramTheme {
+    pub background: Option<Color>,
+    pub text: Option<Color>,
+    pub node_fill: Option<Color>,
+    pub node_border: Option<Color>,
+    pub line: Option<Color>,
+    pub cluster_fill: Option<Color>,
+    pub cluster_border: Option<Color>,
+    pub note_fill: Option<Color>,
+    pub note_border: Option<Color>,
+    pub note_text: Option<Color>,
+}
+
+impl DiagramTheme {
+    /// No overrides: every role derives from the palette.
+    pub const NONE: DiagramTheme = DiagramTheme {
+        background: None,
+        text: None,
+        node_fill: None,
+        node_border: None,
+        line: None,
+        cluster_fill: None,
+        cluster_border: None,
+        note_fill: None,
+        note_border: None,
+        note_text: None,
+    };
+
+    pub fn is_none(&self) -> bool {
+        *self == Self::NONE
+    }
+
+    /// Fold the set roles into a hasher so a diagram cache key changes when a
+    /// theme overrides a color. Unset roles contribute nothing.
+    pub fn hash_into<H: std::hash::Hasher>(&self, h: &mut H) {
+        use std::hash::Hash;
+        for (name, c) in [
+            ("background", self.background),
+            ("text", self.text),
+            ("node_fill", self.node_fill),
+            ("node_border", self.node_border),
+            ("line", self.line),
+            ("cluster_fill", self.cluster_fill),
+            ("cluster_border", self.cluster_border),
+            ("note_fill", self.note_fill),
+            ("note_border", self.note_border),
+            ("note_text", self.note_text),
+        ] {
+            if let Some(c) = c {
+                name.hash(h);
+                c.r.to_bits().hash(h);
+                c.g.to_bits().hash(h);
+                c.b.to_bits().hash(h);
+                c.a.to_bits().hash(h);
+            }
+        }
+    }
+}
+
 impl SyntaxPalette {
     // Atom One Dark — atom/one-dark-syntax
     pub const ONE_DARK: SyntaxPalette = SyntaxPalette {

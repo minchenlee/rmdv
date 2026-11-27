@@ -315,6 +315,8 @@ pub enum Message {
     SetLineSpacing(crate::theme::LineSpacing),
     /// Settings → Reading width.
     SetReadingWidth(crate::theme::ReadingWidth),
+    /// Settings → Diagram width: how Mermaid/DOT figures are sized.
+    SetDiagramWidth(crate::prefs::DiagramWidth),
     /// ⌘⌥[ / ⌘⌥]: one Reading width step narrower (-1) or wider (1).
     ReadingWidthStep(i32),
     /// Settings → Toolbar: shown on hover or always.

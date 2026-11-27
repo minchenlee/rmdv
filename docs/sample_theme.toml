@@ -1,0 +1,170 @@
+# rmdv sample theme file
+#
+# Copy this file into your themes directory and edit it:
+#
+#   Windows  %APPDATA%\rmdv\themes\
+#   macOS    ~/Library/Application Support/rmdv/themes/
+#   Linux    ~/.config/rmdv/themes/
+#
+# (.toml in that folder; `dirs::config_dir()` decides the exact path.)
+# The file stem becomes the theme's slug, then it appears in the theme picker.
+#
+# Every key below is optional. With `extends` set, anything you omit is
+# inherited from that preset. Without `extends`, the base is `one-dark`.
+#
+# Colors accept "#rgb", "#rrggbb" or "#rrggbbaa" (8-digit adds alpha).
+#
+# Valid `extends` values:
+#   one-dark, one-light, github-dark, github-light, solarized-dark,
+#   solarized-light, gruvbox-dark, nord, dracula, tokyo-night
+#
+# The [diagram] table is documented at the bottom; that is the part that
+# controls Mermaid and Graphviz/DOT output. Everything above it is chrome.
+
+name = "My Theme"
+dark = true
+extends = "one-dark"
+
+
+[ui]
+bg = "#282c34"
+surface = "#21252b"
+surface_alt = "#2f343d"
+sidebar = "#21252b"
+fg = "#dcdfe4"
+muted = "#969ca7"
+subtle = "#646a75"
+accent = "#e5a06b"
+accent_fg = "#1a120c"
+code_bg = "#30333b"
+code_border = "#ffffff14"
+rule = "#ffffff12"
+selection = "#e5a06b59"
+match_bg = "#e5c07b73"
+match_current_bg = "#e58232d9"
+scroller = "#ffffff00"
+scroller_hover = "#ffffff38"
+indent_guide = "#ffffff0f"
+tree_selected_bg = "#e5a06b24"
+tree_selected_border = "#e5a06b"
+
+
+[syntax]
+keyword = "#c678dd"
+type_ = "#e5c07b"
+function = "#61afef"
+string = "#98c379"
+number = "#d19a66"
+comment = "#5c6370"
+operator = "#56b6c2"
+constant = "#d19a66"
+variable = "#e06c75"
+punctuation = "#abb2bf"
+
+
+[typography]
+body_size = 16.0
+line_height = 1.55
+code_size = 14.0
+# Not shown above: measure_ch (default 74) and h1_size..h6_size. Omitting a
+# typography key keeps its Typography::DEFAULT value, not the `extends` preset's,
+# so set them explicitly if you change body_size and want headings to scale.
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# [diagram] — Mermaid + Graphviz/DOT colors
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# These ten roles drive every diagram, and they are *roles*, not Mermaid
+# variable names, so one setting covers both Mermaid and DOT.
+#
+# Every key is optional. A key you leave out is derived from [ui] as noted.
+# Leave the whole table out (or all keys empty) to keep pure palette-derived
+# diagrams — that is what all built-in presets do.
+#
+# Precedence: a diagram may still override everything itself by starting its
+# source with a `%%{init: {...}}%%` directive. rmdv detects that and injects
+# nothing, so the document always wins.
+#
+# Tip: to check contrast, diagram text is painted over the fill it sits on
+# (node text over `node_fill`, note text over `note_fill`, DOT labels over
+# `node_fill`), so keep each text/fill pair readable.
+#
+# The values below are exactly what rmdv derives from the [ui] block above, so
+# this sample renders the same as leaving the table out. Edit them to taste.
+
+[diagram]
+
+# Mermaid's own `background` theme variable. Only diagram kinds that paint a
+# canvas rect use it (state diagrams do; flowcharts, sequence, class, ER,
+# gantt, pie, journey and mindmap emit none). It is also the backdrop that
+# `edgeLabelBackground` is flattened over below.
+# Mermaid:  background
+# Default:  [ui] bg
+# NOTE: the visible panel behind a diagram is the reader card, which uses
+#       [ui] code_bg. Set that, not this, to change the surrounding panel.
+background = "#282c34"
+
+# Label text everywhere: flowchart nodes, sequence actors, notes, edge labels.
+# Applies to DOT node and edge labels too.
+# Mermaid:  primaryTextColor, textColor, titleColor, nodeTextColor,
+#           actorTextColor, signalTextColor, labelTextColor, loopTextColor
+# DOT:      <text> fill (layout-rs emits no fill, so rmdv sets it here)
+# Default:  [ui] fg composited over `node_fill`
+text = "#dcdfe4"
+
+# Body fill of flowchart nodes, sequence participants, and DOT nodes.
+# Mermaid:  primaryColor, mainBkg, actorBkg, labelBoxBkgColor
+# DOT:      node [fillcolor="..."]
+# Default:  [ui] surface composited over [ui] bg
+node_fill = "#21252b"
+
+# Outline of nodes, actor boxes, and activation bars.
+# Mermaid:  primaryBorderColor, nodeBorder, actorBorder, actorLineColor,
+#           labelBoxBorderColor, activationBorderColor
+# DOT:      node [color="..."]
+# Default:  [ui] code_border composited over `node_fill` (so the faint
+#           translucent hairline stays faint instead of becoming opaque)
+node_border = "#33363c"
+
+# Edges, arrows, and sequence lifelines / signals.
+# Mermaid:  lineColor, signalColor
+# DOT:      edge [color="..."]
+# Default:  [ui] muted composited over [ui] bg
+line = "#969ca7"
+
+# Subgraph (cluster) panels — the box drawn around a `subgraph` block, and
+# sequence `alt`/`loop`/`opt` block backgrounds.
+# Mermaid:  secondaryColor, clusterBkg, activationBkgColor
+# Default:  [ui] surface_alt composited over [ui] bg
+# NOTE: Mermaid would otherwise derive clusterBkg from a hue-shifted
+#       tertiaryColor, which shows up as an unrelated saturated panel.
+cluster_fill = "#2f343d"
+
+# Subgraph panel outline.
+# Mermaid:  tertiaryColor, clusterBorder
+# Default:  [ui] code_border composited over `cluster_fill`
+cluster_border = "#40444d"
+
+# Sequence / state note background.
+# Mermaid:  noteBkgColor
+# Default:  `cluster_fill`
+# NOTE: Mermaid hardcodes noteBkgColor to a light yellow (#fff5ad) and never
+#       derives it from the theme, so set it if you want notes to match.
+note_fill = "#2f343d"
+
+# Sequence / state note outline.
+# Mermaid:  noteBorderColor
+# Default:  [ui] code_border composited over `note_fill`
+note_border = "#40444d"
+
+# Sequence / state note text.
+# Mermaid:  noteTextColor
+# Default:  [ui] fg composited over `note_fill`
+note_text = "#dcdfe4"
+
+# Not settable here:
+#   • Edge-label background (Mermaid `edgeLabelBackground`) follows
+#     [ui] code_bg over the diagram background. Change `code_bg` for that.
+#   • The diagram font stays the app editor font ("JetBrains Mono").
+#   • DOT-only shapes keep layout-rs geometry; only the colors above apply.

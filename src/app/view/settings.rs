@@ -117,6 +117,7 @@ fn section_title(row: SettingsRow) -> &'static str {
         | SettingsRow::LineSpacing
         | SettingsRow::Toolbar => "Appearance",
         SettingsRow::ReadingWidth
+        | SettingsRow::DiagramWidth
         | SettingsRow::Footer
         | SettingsRow::HiddenFiles
         | SettingsRow::MindmapAutocenter
@@ -281,6 +282,21 @@ fn settings_row_body<'a>(app: &'a App, row: SettingsRow, pal: Palette) -> Elemen
             "Reading width",
             "Width of the text column. It grows with the font size. ⌘⌥[ and ⌘⌥] step it.".into(),
             reading_width_control(app.prefs.reading_width, pal),
+            pal,
+        ),
+        SettingsRow::DiagramWidth => labeled(
+            "Diagram width",
+            "How Mermaid and Graphviz figures are sized in the reader.".into(),
+            segmented(
+                crate::prefs::DiagramWidth::ALL.map(|width| {
+                    (
+                        width.label(),
+                        width == app.prefs.diagram_width,
+                        Message::SetDiagramWidth(width),
+                    )
+                }),
+                pal,
+            ),
             pal,
         ),
         SettingsRow::Footer => labeled(

@@ -1708,6 +1708,7 @@ impl App {
         let mut blocked = false;
         let theme_id = self.diagram_theme_id;
         let palette = self.palette;
+        let diagram_theme = self.diagram_theme;
         let asset_identity = FullMindmapPreviewAssetIdentity {
             preview: identity.clone(),
             range,
@@ -1821,10 +1822,11 @@ impl App {
                     }
                     let task_identity = identity.clone();
                     tasks.push(Task::perform(
-                        crate::diagram::render_blocking_async(
+                        crate::diagram::render_blocking_async_with(
                             kind,
                             source,
                             palette,
+                            diagram_theme,
                             "JetBrains Mono".into(),
                         ),
                         move |result| Message::FullMindmapPreviewDiagramRendered {

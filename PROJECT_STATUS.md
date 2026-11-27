@@ -95,8 +95,17 @@ manual evidence before mutation.
 - Before the tag, the cross-block tree (`d53f0a3`) passed `cargo fmt --check`, `cargo check
   --all-targets` with no warnings, 536 library tests, and all integration
   suites in release mode.
-- v0.9.0 release evidence is in the v0.9.0 content pack; v0.10.0 notes are in
+- `v0.9.0` release evidence is in the v0.9.0 content pack; v0.10.0 notes are in
   [`docs/releases/v0.10.0-release-notes.md`](docs/releases/v0.10.0-release-notes.md).
+- Uncommitted Windows console fix in `src/main.rs`: release builds now carry
+  the `windows` subsystem (checked PE subsystem = 2 on the local
+  `cargo build --release --no-default-features` binary), so an Explorer or
+  shortcut launch opens no console, and `list-sections`, `theme dir`,
+  `theme bogus`, `--help`, `--bogus`, and an IPC request against a running
+  instance still print and exit with the right status from cmd.exe after the
+  process re-attaches to the caller's console. `cargo check
+  --no-default-features`, `cargo fmt --all --check`, `cargo test
+  --no-default-features --test ipc_e2e`, and `git diff --check` pass.
 
 ### Not verified / follow-up
 

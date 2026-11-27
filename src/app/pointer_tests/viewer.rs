@@ -32,6 +32,8 @@ fn diagram_viewer_app() -> App {
                 br#"<svg xmlns="http://www.w3.org/2000/svg" width="100" height="50"/>"#.to_vec(),
             ),
             device_w: W,
+            figure_w: 100.0,
+            figure_h: 50.0,
         },
     );
     let _ = app.update(Message::DiagramZoom(HASH));

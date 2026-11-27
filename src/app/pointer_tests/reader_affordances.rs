@@ -44,6 +44,8 @@ fn seed_diagram(app: &mut App, kind: DiagramKind) -> (u64, String) {
             inline: iced::widget::image::Handle::from_rgba(w, h, vec![90; (w * h * 4) as usize]),
             source_bytes: Arc::new(Vec::new()),
             device_w: w,
+            figure_w: w as f32 / crate::diagram::RASTER_SCALE,
+            figure_h: h as f32 / crate::diagram::RASTER_SCALE,
         },
     );
     (hash, source)
@@ -251,6 +253,150 @@ fn diagrams_say_a_click_enlarges_them() {
         .expect("diagram copy button");
     let messages = ui.click(&app, center(copy));
     assert_eq!(copied(&messages).as_deref(), Some(source.as_str()));
+}
+
+// --- Diagram sizing -----------------------------------------------------------
+
+/// A document with one narrow diagram and prose around it. The seeded figure is
+/// `120x30` logical px, narrower than every reading column, so each mode's
+/// choice shows up as a different card width.
+fn diagram_sizing_app(tag: &str) -> (App, u64) {
+    let mut app = doc_app(
+        tag,
+        "Intro text.\n\n```mermaid\ngraph TD; A-->B\n```\n\nOutro text.\n",
+    );
+    let (hash, _) = seed_diagram(&mut app, DiagramKind::Mermaid);
+    (app, hash)
+}
+
+fn diagram_card_bounds(ui: &mut PointerUi, app: &App, hash: u64) -> Rectangle {
+    let id = crate::render::diagram_card_id(hash);
+    ui.find(
+        app,
+        Find {
+            text: None,
+            contains: None,
+            id: Some(id),
+            found: None,
+            found_text: None,
+        },
+    )
+    .expect("the diagram card is on screen")
+    .0
+}
+
+#[test]
+fn diagram_width_setting_sizes_the_figure_in_the_reader() {
+    use crate::prefs::DiagramWidth;
+    let (mut app, hash) = diagram_sizing_app("diagram-sizing");
+    let mut ui = PointerUi::new();
+    let column = ui.id_bounds(&app, "reader-column").expect("reader column");
+    let prose = block_bounds(&mut ui, &app, |b| matches!(b, Block::Paragraph(_)));
+    // A paragraph row keeps the reading column's line length in every mode.
+    let prose_width = prose.width;
+
+    // Default (window wide): the figure fills the reading area, which is wider
+    // than the default reading column and stays centred with the prose in it.
+    assert_eq!(app.prefs.diagram_width, DiagramWidth::WindowWide);
+    let wide = diagram_card_bounds(&mut ui, &app, hash);
+    assert!(
+        wide.width > prose_width + 100.0,
+        "window wide grows past the column: figure {wide:?}, prose {prose_width}"
+    );
+    assert!(wide.height > 60.0, "it keeps the aspect ratio: {wide:?}");
+    assert!(column.width >= wide.width, "never past the reading area");
+
+    // Figure wide: the figure's own 120x30 size, so the card hugs it.
+    app.prefs.diagram_width = DiagramWidth::FigureWide;
+    let figure = diagram_card_bounds(&mut ui, &app, hash);
+    assert!(
+        (figure.width - (120.0 + 2.0 * 10.0)).abs() < 1.0,
+        "figure wide keeps the natural width: {figure:?}"
+    );
+    assert!(
+        (figure.height - (30.0 + 2.0 * 10.0)).abs() < 1.0,
+        "and its natural height: {figure:?}"
+    );
+    assert!(
+        (block_bounds(&mut ui, &app, |b| matches!(b, Block::Paragraph(_))).width - prose_width)
+            .abs()
+            < 1.0,
+        "prose keeps its line length"
+    );
+
+    // Auto: the original narrow column with the same figure, so it is narrower
+    // than window wide and no wider than the reading column.
+    app.prefs.diagram_width = DiagramWidth::Auto;
+    let auto = diagram_card_bounds(&mut ui, &app, hash);
+    assert!(
+        auto.width <= 832.0 + 1.0,
+        "auto fits the reading column: {auto:?}"
+    );
+    assert!(
+        auto.width < wide.width - 1.0,
+        "auto is narrower than window wide: {auto:?} vs {wide:?}"
+    );
+
+    // Figure full: the natural size again, but the column no longer caps it.
+    app.prefs.diagram_width = DiagramWidth::FigureFull;
+    let full = diagram_card_bounds(&mut ui, &app, hash);
+    assert!(
+        (full.width - (120.0 + 2.0 * 10.0)).abs() < 1.0,
+        "full size keeps the natural width: {full:?}"
+    );
+}
+
+#[test]
+fn a_figure_wider_than_the_reading_area_scrolls_only_in_full_size() {
+    use crate::prefs::DiagramWidth;
+    let (mut app, hash) = diagram_sizing_app("diagram-scroll");
+    // A wide figure: 4000x200 logical px, far past any reading area.
+    let key = (hash, app.diagram_theme_id);
+    let (w, h) = (240u32, 12u32);
+    app.diagram_cache.put(
+        key,
+        crate::diagram::DiagramState::Ready {
+            inline: iced::widget::image::Handle::from_rgba(w, h, vec![90; (w * h * 4) as usize]),
+            source_bytes: Arc::new(Vec::new()),
+            device_w: w,
+            figure_w: 4000.0,
+            figure_h: 200.0,
+        },
+    );
+    let mut ui = PointerUi::new();
+    let column = ui.id_bounds(&app, "reader-column").expect("reader column");
+
+    // Full size keeps 4000 px of figure, so the card is wider than the reader
+    // and a horizontal scroller appears over it.
+    app.prefs.diagram_width = DiagramWidth::FigureFull;
+    let full = diagram_card_bounds(&mut ui, &app, hash);
+    assert!(
+        full.width > column.width,
+        "natural size overflows: {full:?}"
+    );
+    let rows = hscroll_rows(&mut ui, &app, column.center_x());
+    assert!(
+        !rows.is_empty(),
+        "a horizontally scrolling figure is under the pointer"
+    );
+
+    // Every other mode fits it, so nothing scrolls sideways.
+    for mode in [
+        DiagramWidth::FigureWide,
+        DiagramWidth::WindowWide,
+        DiagramWidth::Auto,
+    ] {
+        app.prefs.diagram_width = mode;
+        let fitted = diagram_card_bounds(&mut ui, &app, hash);
+        assert!(
+            fitted.width <= column.width + 1.0,
+            "{mode:?} fits the reading area: {fitted:?}"
+        );
+        assert!(
+            hscroll_rows(&mut ui, &app, column.center_x()).is_empty(),
+            "{mode:?} does not scroll sideways"
+        );
+    }
 }
 
 // --- Task checkboxes ---------------------------------------------------------

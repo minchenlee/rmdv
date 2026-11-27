@@ -17,6 +17,13 @@
 //!
 //! [typography]                  # optional
 //! body_size = 16.0
+//!
+//! [diagram]                     # optional; absent keys derive from [ui]
+//! text = "#dcdfe4"
+//! node_fill = "#21252b"
+//! line = "#969ca7"
+//! # also: background, node_border, cluster_fill, cluster_border,
+//! #       note_fill, note_border, note_text
 //! ```
 
 use crate::theme::{palette_for, preset_by_slug, Palette, SyntaxPalette, ThemePreset, Typography};
@@ -31,6 +38,9 @@ pub struct CustomTheme {
     pub dark: bool,
     pub palette: Palette,
     pub typography: Typography,
+    /// Optional `[diagram]` overrides; `DiagramTheme::NONE` derives everything
+    /// from `palette`.
+    pub diagram: crate::theme::DiagramTheme,
     pub path: PathBuf,
     pub bundled: bool,
 }
@@ -46,6 +56,8 @@ struct ThemeFile {
     syntax: SyntaxSection,
     #[serde(default)]
     typography: TypographySection,
+    #[serde(default)]
+    diagram: DiagramSection,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -99,6 +111,22 @@ struct TypographySection {
     h5_size: Option<f32>,
     h6_size: Option<f32>,
     code_size: Option<f32>,
+}
+
+/// `[diagram]` — optional per-role diagram colors. Every key is optional; an
+/// absent key keeps deriving that role from the `[ui]` palette.
+#[derive(Debug, Default, Deserialize)]
+struct DiagramSection {
+    background: Option<String>,
+    text: Option<String>,
+    node_fill: Option<String>,
+    node_border: Option<String>,
+    line: Option<String>,
+    cluster_fill: Option<String>,
+    cluster_border: Option<String>,
+    note_fill: Option<String>,
+    note_border: Option<String>,
+    note_text: Option<String>,
 }
 
 /// Returns the canonical themes directory. Created lazily on first write — read
@@ -169,6 +197,7 @@ pub fn load_file(path: &Path) -> Result<CustomTheme, String> {
     let dark = file.dark.unwrap_or(base_dark);
     let palette = apply_overrides(base_palette, &file.ui, &file.syntax)?;
     let typography = apply_typography(Typography::DEFAULT, &file.typography);
+    let diagram = apply_diagram(&file.diagram)?;
 
     Ok(CustomTheme {
         slug,
@@ -176,6 +205,7 @@ pub fn load_file(path: &Path) -> Result<CustomTheme, String> {
         dark,
         palette,
         typography,
+        diagram,
         path: path.to_path_buf(),
         bundled: false,
     })
@@ -222,12 +252,14 @@ fn toml_to_custom(text: &str, stem: &str) -> Result<CustomTheme, String> {
     let dark = file.dark.unwrap_or(base_dark);
     let palette = apply_overrides(base_palette, &file.ui, &file.syntax)?;
     let typography = apply_typography(Typography::DEFAULT, &file.typography);
+    let diagram = apply_diagram(&file.diagram)?;
     Ok(CustomTheme {
         slug,
         name,
         dark,
         palette,
         typography,
+        diagram,
         path: PathBuf::from(format!("<bundled:{stem}>")),
         bundled: true,
     })
@@ -284,6 +316,31 @@ fn apply_overrides(
     set_sx!(variable);
     set_sx!(punctuation);
     Ok(pal)
+}
+
+/// Parse the optional `[diagram]` table into a [`DiagramTheme`]. Only colors
+/// that are actually present become overrides; everything else stays derived.
+fn apply_diagram(src: &DiagramSection) -> Result<crate::theme::DiagramTheme, String> {
+    macro_rules! role {
+        ($field:ident) => {
+            match &src.$field {
+                Some(s) => Some(parse_color(s)?),
+                None => None,
+            }
+        };
+    }
+    Ok(crate::theme::DiagramTheme {
+        background: role!(background),
+        text: role!(text),
+        node_fill: role!(node_fill),
+        node_border: role!(node_border),
+        line: role!(line),
+        cluster_fill: role!(cluster_fill),
+        cluster_border: role!(cluster_border),
+        note_fill: role!(note_fill),
+        note_border: role!(note_border),
+        note_text: role!(note_text),
+    })
 }
 
 fn apply_typography(mut t: Typography, src: &TypographySection) -> Typography {
@@ -488,5 +545,43 @@ mod tests {
         assert_eq!(loaded.name, "Dracula Clone");
         assert!(loaded.dark);
         let _ = std::fs::remove_file(&dir);
+    }
+
+    /// A `[diagram]` table with only some roles set must override exactly those
+    /// and leave the rest derived (`None`). `DiagramTheme` is sentinel-compared,
+    /// so this also proves absent keys do not become opaque defaults.
+    #[test]
+    fn parses_the_diagram_section() {
+        let txt = r##"
+name = "Diagrammed"
+extends = "one-dark"
+
+[diagram]
+text = "#ff0000"
+line = "#00ff00"
+"##;
+        let t = toml_to_custom(txt, "diagrammed").unwrap();
+        assert_eq!(t.diagram.text, Some(parse_color("#ff0000").unwrap()));
+        assert_eq!(t.diagram.line, Some(parse_color("#00ff00").unwrap()));
+        // Untouched roles stay None so they keep deriving from the palette.
+        assert_eq!(t.diagram.node_fill, None);
+        assert_eq!(t.diagram.note_fill, None);
+        assert!(!t.diagram.is_none());
+        // The base palette is untouched by `[diagram]`.
+        assert_eq!(t.palette, palette_for(ThemePreset::OneDark));
+    }
+
+    #[test]
+    fn a_theme_without_a_diagram_table_derives_everything() {
+        let txt = "name = \"Plain\"\nextends = \"one-light\"\n";
+        let t = toml_to_custom(txt, "plain").unwrap();
+        assert!(t.diagram.is_none());
+    }
+
+    #[test]
+    fn a_bad_diagram_color_is_reported() {
+        let txt = "name = \"Bad\"\n[diagram]\ntext = \"nope\"\n";
+        let err = toml_to_custom(txt, "bad").unwrap_err();
+        assert!(err.contains('#'), "unexpected error: {err}");
     }
 }

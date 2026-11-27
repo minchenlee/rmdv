@@ -158,7 +158,13 @@ Two-stage:
 └─────────────────────────────────────┘
 ```
 
-- SVG sized to its `viewBox` aspect, clamped to body content width and to `MAX_HEIGHT = 600` px.
+- SVG proportioned from its `viewBox` aspect; the box is chosen by the
+  `DiagramWidth` setting (`Settings → Reading → Diagram width`):
+  - `Figure wide`: the figure's own width, capped to the reading area; no height cap.
+  - `Window wide` (default): the reading area (content width, sidebar excluded); no height cap.
+  - `Figure full`: the figure's natural size, even past the reading area, where the row scrolls sideways; no height cap.
+  - `Auto`: the reading column, clamped to `MAX_HEIGHT = 600` px (the original behavior, with click-to-enlarge).
+  Every mode keeps the SVG's aspect ratio; the raster is capped at 1600 device px.
 - Top-right hover icons use the existing `mouse_area(container(icon))` pattern from the code-block copy button. `Message::CopyDiagramSource(String)` reuses the existing toast machinery.
 - Click body of the diagram → `Message::DiagramZoom(hash)`.
 

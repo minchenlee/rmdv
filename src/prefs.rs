@@ -35,6 +35,10 @@ pub struct Prefs {
     /// Settings → Reading width: the reading column's cap.
     #[serde(default, deserialize_with = "lenient_reading_width")]
     pub reading_width: crate::theme::ReadingWidth,
+    /// Settings → Diagram width: how a Mermaid/DOT figure is sized in the
+    /// reader.
+    #[serde(default, deserialize_with = "lenient_diagram_width")]
+    pub diagram_width: DiagramWidth,
     /// Show dot files and folders in the sidebar (⌘⇧.).
     #[serde(default)]
     pub show_hidden: bool,
@@ -147,6 +151,64 @@ impl ToolbarMode {
             ToolbarMode::Always => ToolbarMode::OnHover,
         }
     }
+}
+
+/// How a rendered Mermaid/DOT diagram is sized inside the reader. Every mode
+/// keeps the diagram's aspect ratio; they differ in the width the figure may
+/// use and whether its height is capped.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DiagramWidth {
+    /// Use the figure's own width, clamped to the reading area, with no height
+    /// cap. A narrow diagram keeps its natural size and a wide one scales down
+    /// to fit.
+    FigureWide,
+    /// Fill the whole reading area (the content width, sidebar excluded), with
+    /// no height cap. Narrow diagrams grow to that width. The default.
+    #[default]
+    WindowWide,
+    /// Draw at the figure's natural size with neither a width nor a height cap;
+    /// a figure wider than the reading area scrolls sideways.
+    FigureFull,
+    /// The original behavior: fit the reading column and contain within
+    /// `DIAGRAM_AUTO_MAX_HEIGHT`, so a big figure needs a click to enlarge.
+    Auto,
+}
+
+impl DiagramWidth {
+    pub const ALL: [DiagramWidth; 4] = [
+        DiagramWidth::FigureWide,
+        DiagramWidth::WindowWide,
+        DiagramWidth::FigureFull,
+        DiagramWidth::Auto,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            DiagramWidth::FigureWide => "Figure wide",
+            DiagramWidth::WindowWide => "Window wide",
+            DiagramWidth::FigureFull => "Figure full",
+            DiagramWidth::Auto => "Auto",
+        }
+    }
+
+    /// One step forward (`dir` > 0) or back, wrapping around. The list is short
+    /// and the setting is a 4-way choice, so wrapping beats stopping.
+    pub fn step(self, dir: i32) -> DiagramWidth {
+        let i = Self::ALL.iter().position(|w| *w == self).unwrap_or(1) as i32;
+        let n = Self::ALL.len() as i32;
+        Self::ALL[(i + dir.signum()).rem_euclid(n) as usize]
+    }
+}
+
+/// An unknown or malformed diagram width falls back to the default instead of
+/// failing the whole file.
+fn lenient_diagram_width<'de, D>(deserializer: D) -> Result<DiagramWidth, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    Ok(serde_json::from_value(value).unwrap_or_default())
 }
 
 fn default_true() -> bool {
@@ -310,6 +372,7 @@ impl Default for Prefs {
             font_scale: default_font_scale(),
             line_spacing: crate::theme::LineSpacing::Default,
             reading_width: crate::theme::ReadingWidth::Default,
+            diagram_width: DiagramWidth::default(),
             show_hidden: false,
             mindmap_autocenter: true,
             mindmap_scroll_pans: false,
@@ -457,6 +520,61 @@ mod tests {
         })
         .unwrap();
         assert!(json.contains(r#""reading_width":"narrow""#), "{json}");
+    }
+
+    #[test]
+    fn diagram_width_defaults_and_round_trips() {
+        use crate::prefs::DiagramWidth;
+        // A prefs file from before the setting existed.
+        let prefs: Prefs = serde_json::from_str(r#"{"show_footer":false}"#).unwrap();
+        assert_eq!(prefs.diagram_width, DiagramWidth::WindowWide);
+        assert!(!prefs.show_footer);
+        assert_eq!(Prefs::default().diagram_width, DiagramWidth::WindowWide);
+
+        for (name, expected) in [
+            ("figure_wide", DiagramWidth::FigureWide),
+            ("window_wide", DiagramWidth::WindowWide),
+            ("figure_full", DiagramWidth::FigureFull),
+            ("auto", DiagramWidth::Auto),
+        ] {
+            let prefs: Prefs =
+                serde_json::from_str(&format!(r#"{{"diagram_width":"{name}"}}"#)).unwrap();
+            assert_eq!(prefs.diagram_width, expected, "{name}");
+        }
+
+        // An unknown value, a number, or a casing mistake never fails the file.
+        for raw in [r#""huge""#, "3.5", r#""WindowWide""#] {
+            let prefs: Prefs =
+                serde_json::from_str(&format!(r#"{{"diagram_width":{raw},"show_footer":false}}"#))
+                    .unwrap();
+            assert_eq!(prefs.diagram_width, DiagramWidth::WindowWide, "{raw}");
+            assert!(!prefs.show_footer);
+        }
+
+        let json = serde_json::to_string(&Prefs {
+            diagram_width: DiagramWidth::FigureFull,
+            ..Prefs::default()
+        })
+        .unwrap();
+        assert!(json.contains(r#""diagram_width":"figure_full""#), "{json}");
+    }
+
+    #[test]
+    fn diagram_width_steps_wrap_around_the_four_modes() {
+        use crate::prefs::DiagramWidth;
+        assert_eq!(DiagramWidth::ALL.len(), 4);
+        // Forward from the default reaches every mode and wraps back.
+        let mut mode = DiagramWidth::FigureWide;
+        let mut seen = Vec::new();
+        for _ in 0..4 {
+            seen.push(mode);
+            mode = mode.step(1);
+        }
+        assert_eq!(mode, DiagramWidth::FigureWide);
+        assert_eq!(seen, DiagramWidth::ALL.to_vec());
+        // Backward is the other direction.
+        assert_eq!(DiagramWidth::FigureWide.step(-1), DiagramWidth::Auto);
+        assert_eq!(DiagramWidth::WindowWide.step(-1), DiagramWidth::FigureWide);
     }
 
     #[test]

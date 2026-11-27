@@ -970,6 +970,7 @@ impl App {
                 ])
             }
             Message::SetLineSpacing(spacing) => self.set_line_spacing(spacing),
+            Message::SetDiagramWidth(width) => self.set_diagram_width(width),
             Message::SetToolbarMode(mode) => self.set_toolbar_mode(mode),
             Message::ToolbarHover(entered) => self.toolbar_hover(entered),
             Message::ToolbarHideAfter(generation) => {
@@ -3953,12 +3954,21 @@ impl App {
                 }
                 let state = match result {
                     Ok(out) => {
-                        let crate::diagram::RenderOutput { svg, rgba, w, h } = out;
+                        let crate::diagram::RenderOutput {
+                            svg,
+                            rgba,
+                            w,
+                            h,
+                            svg_w,
+                            svg_h,
+                        } = out;
                         let inline = iced::widget::image::Handle::from_rgba(w, h, rgba);
                         crate::diagram::DiagramState::Ready {
                             inline,
                             source_bytes: std::sync::Arc::new(svg),
                             device_w: w,
+                            figure_w: svg_w,
+                            figure_h: svg_h,
                         }
                     }
                     Err(msg) => crate::diagram::DiagramState::Err(msg),
@@ -4023,11 +4033,20 @@ impl App {
                 }
                 let state = match result {
                     Ok(out) => {
-                        let crate::diagram::RenderOutput { svg, rgba, w, h } = out;
+                        let crate::diagram::RenderOutput {
+                            svg,
+                            rgba,
+                            w,
+                            h,
+                            svg_w,
+                            svg_h,
+                        } = out;
                         crate::diagram::DiagramState::Ready {
                             inline: iced::widget::image::Handle::from_rgba(w, h, rgba),
                             source_bytes: std::sync::Arc::new(svg),
                             device_w: w,
+                            figure_w: svg_w,
+                            figure_h: svg_h,
                         }
                     }
                     Err(msg) => crate::diagram::DiagramState::Err(msg),

@@ -44,6 +44,121 @@ fn reading_max_width(width: ReadingWidth) -> f32 {
     }
 }
 
+/// Height cap of `DiagramWidth::Auto`: the original behavior, where a taller
+/// diagram needs a click to enlarge.
+pub const DIAGRAM_AUTO_MAX_HEIGHT: f32 = 600.0;
+
+/// Space between a diagram's figure and its card edge.
+const DIAGRAM_PANEL_PAD: f32 = 10.0;
+
+/// The box a diagram occupies, in logical pixels, plus whether its row has to
+/// scroll sideways to show a figure wider than the reading area.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DiagramFit {
+    /// The width the figure is drawn at.
+    pub width: f32,
+    /// Its height at that width, keeping the figure's aspect ratio.
+    pub height: f32,
+    /// The figure is wider than `available`, so its row must scroll.
+    pub scrolls: bool,
+}
+
+/// Size a diagram for the reading mode, given the width `available` to it.
+///
+/// `figure` is the SVG's own size (its natural size). Every mode keeps the
+/// aspect ratio; only `Auto` caps the height.
+pub fn diagram_fit(
+    mode: crate::prefs::DiagramWidth,
+    figure: (f32, f32),
+    available: f32,
+) -> DiagramFit {
+    use crate::prefs::DiagramWidth as W;
+    // A layout may hand a widget an infinite or collapsed width (a horizontal
+    // scroller, a zero-size probe). Fall back to the reading column only for
+    // the unbounded case; a collapsed row gets a correspondingly tiny figure.
+    let available = if available.is_finite() {
+        available.max(1.0)
+    } else {
+        READING_MAX
+    };
+    let (fw, fh) = figure;
+    if fw <= 0.0 || fh <= 0.0 {
+        return DiagramFit {
+            width: available,
+            height: 0.0,
+            scrolls: false,
+        };
+    }
+    let width = match mode {
+        // The figure's own width, up to the reading area. A narrow figure keeps
+        // its natural size; a wide one shrinks to fit.
+        W::FigureWide => fw.min(available),
+        // The reading area, whether the figure is narrower (it grows) or wider
+        // (it shrinks).
+        W::WindowWide => available,
+        // Natural size, even past the reading area.
+        W::FigureFull => fw,
+        // The box it was always given: fill the reading column, then cap the
+        // height. A narrow figure grows into the column exactly as before.
+        W::Auto => available,
+    };
+    let width = width.max(1.0);
+    let natural_height = fh * (width / fw);
+    // `Auto` is the only mode that caps the height, so a big figure still needs
+    // a click to see it whole. The others show it in full and scroll instead.
+    // Capping the height shrinks the width with it, keeping the aspect ratio.
+    let (width, height) = if mode == W::Auto && natural_height > DIAGRAM_AUTO_MAX_HEIGHT {
+        (fw * (DIAGRAM_AUTO_MAX_HEIGHT / fh), DIAGRAM_AUTO_MAX_HEIGHT)
+    } else {
+        (width, natural_height)
+    };
+    DiagramFit {
+        width,
+        height,
+        scrolls: mode == W::FigureFull && width > available + 0.5,
+    }
+}
+
+/// How diagrams in one `render` call are sized.
+#[derive(Debug, Clone, Copy)]
+pub struct DiagramMetrics {
+    pub mode: crate::prefs::DiagramWidth,
+    /// The reading column's cap. A figure may exceed it; prose rows cap
+    /// themselves at it when the column is loose.
+    pub column: f32,
+    /// True when the surrounding column no longer caps its content, so prose
+    /// rows have to cap themselves at `column` (a figure still may not).
+    pub loose: bool,
+}
+
+impl DiagramMetrics {
+    /// Metrics for the reader. `Auto` keeps the original narrow column; the
+    /// other modes let a figure grow to the width the reading area offers.
+    pub fn reader(mode: crate::prefs::DiagramWidth, column: f32) -> Self {
+        DiagramMetrics {
+            mode,
+            column,
+            loose: mode != crate::prefs::DiagramWidth::Auto,
+        }
+    }
+
+    /// Metrics for a side panel, which fills its own width: nothing exceeds the
+    /// column there, so prose keeps the surrounding container's cap.
+    pub fn panel(mode: crate::prefs::DiagramWidth, width: f32) -> Self {
+        DiagramMetrics {
+            mode,
+            column: width,
+            loose: false,
+        }
+    }
+}
+
+/// Render the document body.
+///
+/// `metrics` says how a diagram is sized: `Auto` keeps the original narrow
+/// reading column with a height cap, while the other modes let a figure grow to
+/// the width the reading area offers.
+#[allow(clippy::too_many_arguments)]
 pub fn render<'a>(
     blocks: &'a [(BlockId, Block)],
     pal: &Palette,
@@ -60,6 +175,7 @@ pub fn render<'a>(
     keyed_widget_generation: (u64, u64),
     recently_scrolled: bool,
     reading_width: ReadingWidth,
+    metrics: DiagramMetrics,
     copied: Option<usize>,
 ) -> Element<'a, Message> {
     let img_ctx = ImgCtx {
@@ -67,6 +183,7 @@ pub fn render<'a>(
         current_file,
         diagram_cache,
         diagram_theme_id,
+        diagram_width: metrics.mode,
         recently_scrolled,
         copied,
     };
@@ -89,7 +206,22 @@ pub fn render<'a>(
     // changes. That keeps the tag-checked boundary while avoiding state reuse
     // across rapid preview transitions.
     let mut keys: Vec<RowKey> = Vec::with_capacity(end - start + 2);
-    let mut col = Column::with_capacity(end - start + 2).spacing(crate::virt::BLOCK_GAP_PX);
+    // Prose rows cap themselves at the reading column so a figure can be wider
+    // than that while text keeps its line length. A panel, or the original
+    // narrow column, leaves the cap to the surrounding container.
+    let row_cap = metrics.column;
+    let loose = metrics.loose;
+    let mut col = Column::with_capacity(end - start + 2)
+        .spacing(crate::virt::BLOCK_GAP_PX)
+        // A loose column fills the reading area so a `responsive` diagram can
+        // measure it at layout time. A tight one keeps shrinking to its content
+        // so a narrow document stays left-aligned in the column.
+        .width(if loose { Length::Fill } else { Length::Shrink })
+        .align_x(if loose {
+            iced::Alignment::Center
+        } else {
+            iced::Alignment::Start
+        });
     if let Some(h) = virt.and_then(|w| w.top_spacer()) {
         keys.push(RowKey::TopSpacer);
         col = col.push(Space::new().height(h));
@@ -102,6 +234,10 @@ pub fn render<'a>(
         } else {
             None
         };
+        // A non-math diagram is a figure: in a loose column it may fill the
+        // whole reading area, while every other row caps itself at the column.
+        let is_figure =
+            matches!(b, Block::Diagram { kind, .. } if *kind != crate::ast::DiagramKind::Math);
         let el: Element<'a, Message> = if let Block::Heading { level, .. } = b {
             let is_folded = folded.contains(id);
             let show_chev = is_folded || hovered_heading == Some(*id);
@@ -132,6 +268,15 @@ pub fn render<'a>(
                 .id(block_anchor_id(*id))
                 .into()
         };
+        // A loose column spans the reading area so a figure can fill it. Every
+        // other row caps itself at the reading column (left-aligned inside it)
+        // and the centred column places that row in the wider area, so prose
+        // keeps its line length; a figure keeps the full width.
+        let el: Element<'a, Message> = if loose && !is_figure && row_cap.is_finite() {
+            container(el).max_width(row_cap).width(Length::Fill).into()
+        } else {
+            el
+        };
         keys.push(RowKey::Block(id.0));
         col = col.push(crate::select_scope::BlockMark::new(idx, el));
     }
@@ -140,15 +285,21 @@ pub fn render<'a>(
         col = col.push(Space::new().height(h));
     }
 
-    // Reading column cap: READING_MAX_PX (theme.rs).
+    // Reading column cap: READING_MAX_PX (theme.rs). A loosened column instead
+    // caps each prose row and lets a figure grow to the reading area.
     let _ = typ.measure_ch;
     let body: Element<'a, Message> = if keyed_widget_reuse {
         KeyedBody::new(keys, col).into()
     } else {
         KeyedBody::new_fresh(keys, col, keyed_widget_generation).into()
     };
+    let cap = if loose {
+        f32::INFINITY
+    } else {
+        reading_max_width(reading_width)
+    };
     container(crate::select_scope::SelectScope::new(blocks, folded, body))
-        .max_width(reading_max_width(reading_width))
+        .max_width(cap)
         .into()
 }
 
@@ -173,6 +324,7 @@ pub(crate) fn render_heading_with_chevron<'a>(
         current_file: None,
         diagram_cache: dcache,
         diagram_theme_id: 0,
+        diagram_width: crate::prefs::DiagramWidth::default(),
         recently_scrolled: false,
         copied: None,
     };
@@ -595,6 +747,8 @@ struct ImgCtx<'a> {
     current_file: Option<&'a Path>,
     diagram_cache: &'a DiagramCache,
     diagram_theme_id: u32,
+    /// How the reading mode sizes a diagram (Settings → Diagram width).
+    diagram_width: crate::prefs::DiagramWidth,
     recently_scrolled: bool,
     /// The key ([`copy_key`]) of the block whose copy button copied last,
     /// while its check shows.
@@ -1308,6 +1462,12 @@ fn render_math_block<'a>(
     }
 }
 
+/// Widget id of the card around a diagram's figure, so a test can address the
+/// laid-out box of one diagram instead of hunting for its blocks.
+pub fn diagram_card_id(hash: u64) -> iced::widget::Id {
+    iced::widget::Id::from(format!("diagram-card-{hash}"))
+}
+
 /// Render a `Block::Diagram`. Looks up `(hash, theme_id)` in the cache.
 ///
 /// - `Ready` → `iced::svg` with a hover overlay (zoom + copy icons).
@@ -1326,28 +1486,79 @@ fn render_diagram<'a>(
     let state = img.diagram_cache.peek(&key);
 
     match state {
-        Some(DiagramState::Ready { inline, .. }) => {
+        Some(DiagramState::Ready {
+            inline,
+            figure_w,
+            figure_h,
+            ..
+        }) => {
             let pal_c = *pal;
-            // Use the pre-rasterized RGBA handle for inline display. This
-            // bypasses iced_wgpu's per-redraw SVG parse step that the old
-            // `svg::Handle::from_memory` path triggered.
-            let inline_el = image_widget(inline.clone())
-                .width(Length::Fill)
-                .height(Length::Shrink)
-                .content_fit(iced::ContentFit::Contain);
-            let body = container(inline_el)
-                .padding(Padding::from(10))
-                .max_height(600.0)
-                .width(Length::Fill)
-                .style(move |_| container::Style {
-                    background: Some(pal_c.code_bg.into()),
-                    border: iced::Border {
-                        color: pal_c.code_border,
-                        width: 1.0,
-                        radius: crate::theme::radius::MD.into(),
-                    },
-                    ..Default::default()
-                });
+            let figure = (*figure_w, *figure_h);
+            let mode = img.diagram_width;
+            let panel_style = container::Style {
+                background: Some(pal_c.code_bg.into()),
+                border: iced::Border {
+                    color: pal_c.code_border,
+                    width: 1.0,
+                    radius: crate::theme::radius::MD.into(),
+                },
+                ..Default::default()
+            };
+            // The figure is drawn at the width its row offers. `responsive`
+            // reports that width at layout time, so the figure can fill the
+            // reading area exactly (sidebar excluded) without the app having to
+            // track the reader's geometry itself.
+            let inline_handle = inline.clone();
+            let card_id = diagram_card_id(hash);
+            let auto = mode == crate::prefs::DiagramWidth::Auto;
+            let sized: Element<'_, Message> = iced::widget::responsive(move |size| {
+                let fit = diagram_fit(mode, figure, size.width - 2.0 * DIAGRAM_PANEL_PAD);
+                let card_width = fit.width + 2.0 * DIAGRAM_PANEL_PAD;
+                let image = image_widget(inline_handle.clone())
+                    .width(Length::Fixed(fit.width))
+                    .height(Length::Fixed(fit.height))
+                    .content_fit(iced::ContentFit::Fill);
+                let panel = container(image)
+                    .id(card_id.clone())
+                    .padding(Padding::from(DIAGRAM_PANEL_PAD))
+                    // `Auto` is the reading column's own card: it spans the
+                    // column and the (height-capped) figure is centred inside
+                    // it, as it always was. The other modes hug the figure.
+                    .width(if auto {
+                        Length::Fill
+                    } else {
+                        Length::Fixed(card_width)
+                    })
+                    .align_x(if auto {
+                        iced::alignment::Horizontal::Center
+                    } else {
+                        iced::alignment::Horizontal::Left
+                    })
+                    .style(move |_| panel_style);
+                // A figure drawn at its natural size may be wider than the
+                // reading area: its row scrolls sideways instead of clipping it.
+                let card: Element<'_, Message> = if fit.scrolls {
+                    scrollable(panel)
+                        .width(Length::Fill)
+                        .height(Length::Shrink)
+                        .direction(scrollable::Direction::Horizontal(
+                            scrollable::Scrollbar::new()
+                                .width(6.0)
+                                .scroller_width(6.0)
+                                .margin(2.0),
+                        ))
+                        .into()
+                } else {
+                    panel.into()
+                };
+                container(card)
+                    .width(Length::Fill)
+                    .align_x(iced::alignment::Horizontal::Center)
+                    .into()
+            })
+            .height(Length::Shrink)
+            .into();
+            let body = sized;
             // Whole-area click → zoom (mirrors image click-to-zoom UX).
             let clickable = crate::app::reader_tip(
                 mouse_area(body)
@@ -2850,9 +3061,9 @@ pub(crate) mod draw_log {
 #[cfg(test)]
 mod tests {
     use super::{
-        adaptive_table_cell_width, fit_table_columns, for_text_runs, is_cjk_fallback_char,
-        paragraph_line_height, push_styled_runs, reading_max_width, ReadingWidth, Style,
-        TableStyle,
+        adaptive_table_cell_width, diagram_fit, fit_table_columns, for_text_runs,
+        is_cjk_fallback_char, paragraph_line_height, push_styled_runs, reading_max_width,
+        DiagramMetrics, ReadingWidth, Style, TableStyle, DIAGRAM_AUTO_MAX_HEIGHT,
     };
     use crate::theme::{radius, Palette};
     use iced::advanced::layout;
@@ -2946,6 +3157,69 @@ mod tests {
     fn reading_width_caps_main_area_and_fills_panels() {
         assert_eq!(reading_max_width(ReadingWidth::Capped), 832.0);
         assert!(reading_max_width(ReadingWidth::Fill) > 10_000.0);
+    }
+
+    /// A `300x150` figure in a `1000` px reading area: the four modes differ
+    /// only in the width they use and the height they cap.
+    #[test]
+    fn diagram_modes_size_the_figure_from_its_own_size() {
+        use crate::prefs::DiagramWidth as W;
+        let figure = (300.0, 150.0);
+        let available = 1000.0;
+
+        // Figure wide: natural size, never stretched or shrunk below it.
+        let fit = diagram_fit(W::FigureWide, figure, available);
+        assert_eq!((fit.width, fit.height), (300.0, 150.0));
+        assert!(!fit.scrolls);
+
+        // Window wide: the full reading area, keeping the aspect ratio.
+        let fit = diagram_fit(W::WindowWide, figure, available);
+        assert_eq!((fit.width, fit.height), (1000.0, 500.0));
+        assert!(!fit.scrolls);
+
+        // Figure full: natural size even past the reading area, and its row
+        // scrolls when it does not fit.
+        let fit = diagram_fit(W::FigureFull, figure, 200.0);
+        assert_eq!((fit.width, fit.height), (300.0, 150.0));
+        assert!(fit.scrolls);
+        assert!(!diagram_fit(W::FigureFull, figure, available).scrolls);
+
+        // Auto: fills the area as it always did, and caps a tall figure, scaling
+        // the width down with the height.
+        let fit = diagram_fit(W::Auto, figure, 200.0);
+        assert_eq!((fit.width, fit.height), (200.0, 100.0));
+        let narrow = diagram_fit(W::Auto, (100.0, 50.0), available);
+        assert_eq!(
+            (narrow.width, narrow.height),
+            (1000.0, 500.0),
+            "auto still fills the column with a narrow figure"
+        );
+        let tall = diagram_fit(W::Auto, (100.0, 5000.0), 200.0);
+        assert_eq!(tall.height, DIAGRAM_AUTO_MAX_HEIGHT);
+        assert!(
+            tall.width < 100.0,
+            "the cap shrinks the width too: {tall:?}"
+        );
+
+        // Half a figure, or no area, never panics or returns a zero box.
+        let fit = diagram_fit(W::WindowWide, (0.0, 0.0), available);
+        assert_eq!(fit.height, 0.0);
+        assert!(fit.width >= 1.0);
+        let fit = diagram_fit(W::FigureWide, figure, f32::INFINITY);
+        assert_eq!(fit.width, 300.0);
+    }
+
+    #[test]
+    fn diagram_metrics_keep_auto_in_the_narrow_column() {
+        use crate::prefs::DiagramWidth as W;
+        // Auto keeps the reading column capped; every other mode lets a figure
+        // grow to the reading area, so the column must loosen for it.
+        assert!(!DiagramMetrics::reader(W::Auto, 832.0).loose);
+        for mode in [W::FigureWide, W::WindowWide, W::FigureFull] {
+            assert!(DiagramMetrics::reader(mode, 832.0).loose, "{mode:?}");
+        }
+        // A side panel is never loosened, whatever the default mode is.
+        assert!(!DiagramMetrics::panel(W::Auto, 380.0).loose);
     }
 
     #[test]

@@ -205,6 +205,7 @@ impl App {
                             preview_widget_generation,
                             recently_scrolled,
                             crate::render::ReadingWidth::Fill,
+                            self.panel_diagram_metrics(panel_width),
                             self.copy_flash.map(|(_, key)| key),
                         )
                         .map(|message| Self::full_mindmap_preview_message(message, path, blocks));

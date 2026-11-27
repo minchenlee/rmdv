@@ -515,6 +515,9 @@ pub struct App {
     /// so the diagram cache (keyed on `(hash, theme_id)`) is invalidated for
     /// the new palette automatically.
     pub diagram_theme_id: u32,
+    /// The active theme's optional `[diagram]` color overrides. Empty for every
+    /// built-in preset; only custom theme files can set it.
+    pub diagram_theme: crate::theme::DiagramTheme,
     /// Pre-rasterized image::Handle of the diagram currently shown in the
     /// zoom overlay. `None` when overlay shows a normal raster/svg image.
     /// Using image::Handle lets diagrams and images share one viewer
@@ -800,6 +803,7 @@ impl Default for App {
             file_finder_memo: std::cell::RefCell::new(None),
             diagram_cache: crate::diagram::DiagramCache::new(64),
             diagram_theme_id: 0,
+            diagram_theme: crate::theme::DiagramTheme::NONE,
             zoom_diagram: None,
             block_lines: Vec::new(),
             pending_nav: None,
@@ -953,7 +957,6 @@ impl App {
         self.rebuild_typography();
     }
 
-    /// Rebuild `typography` from the theme base, font zoom, and line spacing.
     /// The reading column's cap: the Reading width setting at the current
     /// body size, so a font zoom keeps the characters per line.
     fn reading_max_width(&self) -> f32 {
@@ -962,6 +965,25 @@ impl App {
             .max_width(self.typography.body_size)
     }
 
+    /// How diagrams in the reader are sized.
+    fn diagram_metrics(&self) -> crate::render::DiagramMetrics {
+        crate::render::DiagramMetrics::reader(self.prefs.diagram_width, self.reading_max_width())
+    }
+
+    /// How diagrams in a side panel are sized: the panel fills its own width, so
+    /// a figure never exceeds the column there and prose keeps the panel's cap.
+    fn panel_diagram_metrics(&self, width: f32) -> crate::render::DiagramMetrics {
+        crate::render::DiagramMetrics::panel(self.prefs.diagram_width, width)
+    }
+
+    /// True when Settings → Diagram width lets a figure grow past the reading
+    /// column, so the reader column has to stop capping its content and prose
+    /// blocks cap themselves instead.
+    fn diagrams_may_exceed_column(&self) -> bool {
+        self.diagram_metrics().loose
+    }
+
+    /// Rebuild `typography` from the theme base, font zoom, and line spacing.
     fn rebuild_typography(&mut self) {
         self.typography = self
             .typography_base
@@ -1011,9 +1033,24 @@ impl App {
     }
 
     /// Install a theme's palette. Every theme change goes through here so the
-    /// Soft syntax option is never skipped.
+    /// Soft syntax option and the `[diagram]` overrides are never skipped.
     fn apply_palette(&mut self, palette: Palette) {
         self.palette = palette.with_soft_syntax(self.prefs.soft_syntax);
+        self.diagram_theme = self.active_diagram_theme();
+    }
+
+    /// The `[diagram]` overrides of whichever theme is current. Presets have
+    /// none; a custom theme may supply some.
+    fn active_diagram_theme(&self) -> crate::theme::DiagramTheme {
+        match &self.theme_id {
+            theme::ThemeId::Custom(slug) => self
+                .custom_themes
+                .iter()
+                .find(|t| &t.slug == slug)
+                .map(|t| t.diagram)
+                .unwrap_or(crate::theme::DiagramTheme::NONE),
+            theme::ThemeId::Preset(_) => crate::theme::DiagramTheme::NONE,
+        }
     }
 
     /// The current theme's palette before the Soft syntax option.
@@ -2813,6 +2850,7 @@ impl App {
     fn prime_diagram_cache(&mut self) -> Task<Message> {
         let theme_id = self.diagram_theme_id;
         let palette = self.palette;
+        let diagram_theme = self.diagram_theme;
         // Editor font carries through to mermaid/dot output for visual parity.
         let font_family = "JetBrains Mono".to_string();
         // Dedupe by hash so duplicate diagram blocks share a single task.
@@ -2862,7 +2900,13 @@ impl App {
                 .put((hash, theme_id), crate::diagram::DiagramState::Pending);
             let ff = font_family.clone();
             tasks.push(Task::perform(
-                crate::diagram::render_blocking_async(kind, source, palette, ff),
+                crate::diagram::render_blocking_async_with(
+                    kind,
+                    source,
+                    palette,
+                    diagram_theme,
+                    ff,
+                ),
                 move |result| Message::DiagramRendered {
                     hash,
                     theme_id,
@@ -2882,7 +2926,7 @@ impl App {
     /// `prime_diagram_cache` when this returns false — palette unchanged
     /// means existing cache entries are still valid.
     fn refresh_diagram_theme_id(&mut self) -> bool {
-        let new_id = crate::diagram::theme_id(&self.palette);
+        let new_id = crate::diagram::theme_id_with(&self.palette, &self.diagram_theme);
         if new_id == self.diagram_theme_id {
             false
         } else {
@@ -3081,6 +3125,7 @@ impl App {
                         (0, 0),
                         recently_scrolled,
                         crate::render::ReadingWidth::Fill,
+                        self.panel_diagram_metrics(panel_width),
                         self.copy_flash.map(|(_, key)| key),
                     ));
                     if truncated {
@@ -3807,6 +3852,7 @@ impl App {
                         (0, 0),
                         recently_scrolled,
                         crate::render::ReadingWidth::Fill,
+                        self.diagram_metrics(),
                         self.copy_flash.map(|(_, key)| key),
                     )
                 }
@@ -3827,6 +3873,7 @@ impl App {
                     (0, 0),
                     recently_scrolled,
                     crate::render::ReadingWidth::Fill,
+                    self.diagram_metrics(),
                     self.copy_flash.map(|(_, key)| key),
                 )
             };
@@ -3844,9 +3891,18 @@ impl App {
                 // the reading column, plus a hint. Cheaper than highlighting
                 // each block, and it covers off-screen blocks as they scroll in.
                 let select_all = self.reader_select_all && self.reader_shows_document();
+                // A diagram may be wider than the reading column (Settings →
+                // Diagram width), so the column then lets its content grow:
+                // prose blocks cap themselves at the reading width, while a
+                // wide figure keeps the size it asked for.
+                let loosen_column = self.diagrams_may_exceed_column();
                 let column = container(body)
                     .id(iced::widget::Id::new("reader-column"))
-                    .max_width(self.reading_max_width())
+                    .max_width(if loosen_column {
+                        f32::INFINITY
+                    } else {
+                        self.reading_max_width()
+                    })
                     .width(Length::Fill)
                     .style(move |_| container::Style {
                         background: select_all.then(|| pal.selection.into()),

@@ -87,7 +87,10 @@ action. This creates `~/.local/bin/rmdv`, pointing to the AppImage. Keep
 
 Requires Rust 1.95+. On Windows, build with `cargo build --release
 --no-default-features`; PDF text extraction is currently available on macOS and
-Linux only.
+Linux only. Release Windows binaries are built for the Windows GUI subsystem,
+so launching from Explorer or the Start Menu shortcut does not open a console
+window, while `rmdv list-sections …` and `rmdv theme …` still print to the
+calling cmd/PowerShell console.
 
 ## CLI / agent control
 

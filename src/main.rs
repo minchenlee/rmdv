@@ -1,8 +1,122 @@
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
+
 use rmdv::app::App;
 use rmdv::cli::{parse_from, ParsedCli, Stateless};
 use rmdv::ipc;
 use std::path::PathBuf;
 use std::time::Instant;
+
+// Windows launches rmdv as a console-subsystem process, so Explorer and the
+// NSIS shortcut open a console window that stays on screen for the whole GUI
+// session. Release builds are marked windows-subsystem (the crate attribute at
+// the top of this file), which has no console to inherit. Stateless CLI
+// requests started from cmd/PowerShell still have to answer on the caller's
+// stdout/stderr, so they re-attach to that console before printing.
+//
+// The module compiles on every Windows build, not only release ones, so the
+// PR-time `cargo check --no-default-features` job type-checks the FFI; in a
+// console-subsystem debug build `attach()` sees the inherited handles and
+// returns without doing anything.
+#[cfg(windows)]
+mod win_console {
+    use core::ffi::c_void;
+
+    type Handle = *mut c_void;
+
+    const ATTACH_PARENT_PROCESS: u32 = u32::MAX;
+    const STD_INPUT_HANDLE: u32 = -10i32 as u32;
+    const STD_OUTPUT_HANDLE: u32 = -11i32 as u32;
+    const STD_ERROR_HANDLE: u32 = -12i32 as u32;
+    const INVALID_HANDLE_VALUE: Handle = -1isize as Handle;
+    const GENERIC_READ: u32 = 0x8000_0000;
+    const GENERIC_WRITE: u32 = 0x4000_0000;
+    const FILE_SHARE_READ: u32 = 0x1;
+    const FILE_SHARE_WRITE: u32 = 0x2;
+    const OPEN_EXISTING: u32 = 3;
+
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn AttachConsole(process_id: u32) -> i32;
+        fn GetStdHandle(std_handle: u32) -> Handle;
+        fn SetStdHandle(std_handle: u32, handle: Handle) -> i32;
+        fn CreateFileW(
+            file_name: *const u16,
+            desired_access: u32,
+            share_mode: u32,
+            security_attributes: *const c_void,
+            creation_disposition: u32,
+            flags_and_attributes: u32,
+            template_file: Handle,
+        ) -> Handle;
+    }
+
+    /// Mirror the standard handles onto `CONIN$`/`CONOUT$`.
+    ///
+    /// `AttachConsole` alone leaves the std handles null, because a
+    /// windows-subsystem process is not given them at launch, so Rust's
+    /// `println!`/`eprintln!` would drop their output.
+    unsafe fn bind_device(name: &[u16], access: u32) -> Handle {
+        CreateFileW(
+            name.as_ptr(),
+            access,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            core::ptr::null(),
+            OPEN_EXISTING,
+            0,
+            core::ptr::null_mut(),
+        )
+    }
+
+    fn to_wide(name: &str) -> Vec<u16> {
+        name.encode_utf16().chain(std::iter::once(0)).collect()
+    }
+
+    pub fn attach() {
+        // Redirected stdout/stderr (a pipe or file) already has a valid
+        // handle; keep it instead of replacing it with the console device.
+        let stdout_missing = {
+            let handle = unsafe { GetStdHandle(STD_OUTPUT_HANDLE) };
+            handle.is_null() || handle == INVALID_HANDLE_VALUE
+        };
+        if !stdout_missing {
+            return;
+        }
+
+        // Fails when Explorer or another console-less parent launched us;
+        // there is nothing to attach to and output is simply discarded.
+        if unsafe { AttachConsole(ATTACH_PARENT_PROCESS) } == 0 {
+            return;
+        }
+
+        let input_name = to_wide("CONIN$");
+        let output_name = to_wide("CONOUT$");
+        unsafe {
+            let input = bind_device(&input_name, GENERIC_READ | GENERIC_WRITE);
+            if !input.is_null() && input != INVALID_HANDLE_VALUE {
+                SetStdHandle(STD_INPUT_HANDLE, input);
+            }
+            let output = bind_device(&output_name, GENERIC_READ | GENERIC_WRITE);
+            if !output.is_null() && output != INVALID_HANDLE_VALUE {
+                SetStdHandle(STD_OUTPUT_HANDLE, output);
+                SetStdHandle(STD_ERROR_HANDLE, output);
+            }
+        }
+    }
+}
+
+/// Reborrow the console this process was started from, if any.
+///
+/// Called only on Windows stateless CLI paths, after argument parsing has
+/// established that this process will print and exit rather than open the
+/// reader. A windows-subsystem process never gets console handles from its
+/// parent, so without this `println!`/`eprintln!` would silently drop output.
+#[cfg(windows)]
+fn attach_caller_console() {
+    win_console::attach();
+}
+
+#[cfg(not(windows))]
+fn attach_caller_console() {}
 
 fn main() -> iced::Result {
     let t0 = Instant::now();
@@ -11,13 +125,19 @@ fn main() -> iced::Result {
     let parsed = match parse_from(std::env::args_os()) {
         Ok(p) => p,
         Err(e) => {
+            // clap writes `--help`, `--version`, and usage errors here.
+            attach_caller_console();
             e.exit();
         }
     };
 
     match parsed {
-        ParsedCli::Theme(args) => std::process::exit(run_theme_cmd(&args)),
+        ParsedCli::Theme(args) => {
+            attach_caller_console();
+            std::process::exit(run_theme_cmd(&args));
+        }
         ParsedCli::Stateless(Stateless::ListSections { file, pretty }) => {
+            attach_caller_console();
             std::process::exit(run_list_sections(&file, pretty));
         }
         ParsedCli::Empty => {
@@ -42,6 +162,7 @@ fn main() -> iced::Result {
             let result = rt.block_on(ipc::client::try_send(&req));
             match result {
                 Ok(Some(resp)) => {
+                    attach_caller_console();
                     print_response(&resp, false);
                     std::process::exit(if resp.ok { 0 } else { 1 });
                 }
@@ -49,6 +170,7 @@ fn main() -> iced::Result {
                     return launch_instance(Some(req));
                 }
                 Err(e) => {
+                    attach_caller_console();
                     eprintln!("{}", serde_json::json!({ "error": e.to_string() }));
                     std::process::exit(2);
                 }

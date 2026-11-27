@@ -16,18 +16,64 @@ use iced::widget::image;
 use iced::Color;
 use tokio::sync::Semaphore;
 
-/// System font database used by `usvg` when rasterizing diagram SVGs.
-/// Lazy because `load_system_fonts()` takes ~200-300ms on macOS and we
-/// don't want to pay it until the first diagram renders. Shared via Arc
-/// so each `usvg::Options` clones a cheap handle.
+/// Borrows one bundled font out of the static table so it can go into the
+/// font database without copying the bytes. Only the Windows branch registers
+/// bundled faces; macOS resolves through its system fonts.
+#[cfg(windows)]
+struct BundledFont(&'static [u8]);
+
+#[cfg(windows)]
+impl AsRef<[u8]> for BundledFont {
+    fn as_ref(&self) -> &[u8] {
+        self.0
+    }
+}
+
+/// Font database used by `usvg` when rasterizing diagram SVGs.
+///
+/// Lazy because `load_system_fonts()` takes ~200-300ms on macOS and we don't
+/// want to pay it until the first diagram renders. Shared via Arc so each
+/// `usvg::Options` clones a cheap handle.
+///
+/// Diagram SVGs ask for the app's editor font ("JetBrains Mono"), which Iced
+/// registers but the OS does not have. How that gets resolved is
+/// platform-specific, because `fontdb` treats an unknown family as "no face at
+/// all": `query` returns `None`, usvg then retries its single last-resort
+/// family (`Family::Serif`), and if *that* also misses, the whole `<text>`
+/// element is dropped and the label renders as nothing while its shape still
+/// draws.
+///
+/// macOS ships Helvetica/Times/Menlo, so naming them as the generic families
+/// is enough for that fallback chain to land on a real face. Windows has none
+/// of the three, so there the chain would die and every label would vanish;
+/// Windows instead registers the bundled faces and points the generics at
+/// them. Keep the macOS branch as-is — it is the shipping behavior there.
 static USVG_FONTDB: LazyLock<Arc<resvg::usvg::fontdb::Database>> = LazyLock::new(|| {
     let mut db = resvg::usvg::fontdb::Database::new();
     db.load_system_fonts();
-    // Sensible defaults so mermaid/dot's generic family names resolve
-    // even on systems where 'system-ui' / 'sans-serif' aren't registered.
-    db.set_sans_serif_family("Helvetica");
-    db.set_serif_family("Times");
-    db.set_monospace_family("Menlo");
+
+    #[cfg(windows)]
+    {
+        // Bundled after the system faces so the app's own type wins ties and
+        // diagram text matches the reader even when the host has no
+        // "JetBrains Mono"/"Inter" installed.
+        for bytes in crate::fonts::BUNDLED {
+            let source: Arc<dyn AsRef<[u8]> + Send + Sync> = Arc::new(BundledFont(bytes));
+            db.load_font_source(resvg::usvg::fontdb::Source::Binary(source));
+        }
+        db.set_sans_serif_family("Inter");
+        db.set_serif_family("Times New Roman");
+        db.set_monospace_family("JetBrains Mono");
+    }
+
+    #[cfg(not(windows))]
+    {
+        // macOS generics: all three are system faces there.
+        db.set_sans_serif_family("Helvetica");
+        db.set_serif_family("Times");
+        db.set_monospace_family("Menlo");
+    }
+
     Arc::new(db)
 });
 
@@ -64,8 +110,15 @@ pub const RASTER_SCALE: f32 = 2.0;
 pub struct RenderOutput {
     pub svg: Vec<u8>,
     pub rgba: Vec<u8>,
+    /// Device-pixel size of the raster in `rgba`.
     pub w: u32,
     pub h: u32,
+    /// The SVG's own CSS size (its `viewBox`), i.e. the size the Mermaid or
+    /// Graphviz layout chose. The raster used to be exactly this at
+    /// [`RASTER_SCALE`], but it is capped, so the reading modes need this to
+    /// know the figure's natural width even for a very wide diagram.
+    pub svg_w: f32,
+    pub svg_h: f32,
 }
 
 /// State of a diagram in the cache.
@@ -86,8 +139,13 @@ pub enum DiagramState {
         /// Device-pixel width of the rasterized image. Math display divides by
         /// [`RASTER_SCALE`] to recover the intended logical width (the inline
         /// raster is 2× for retina crispness; iced would otherwise draw it at
-        /// 2× logical size). Diagrams ignore this — they fill the column.
+        /// 2× logical size).
         device_w: u32,
+        /// The figure's natural size in logical pixels, from the SVG. The
+        /// raster can be smaller (it is capped), so a reading mode sizes the
+        /// figure from this rather than from the raster.
+        figure_w: f32,
+        figure_h: f32,
     },
     /// Render failed — held so we don't retry on every redraw.
     Err(String),
@@ -209,6 +267,13 @@ impl Default for DiagramCache {
 /// Stable `u32` digest of a palette. Used as a cache-bust key so theme changes
 /// invalidate cached SVGs without explicit pruning.
 pub fn theme_id(palette: &Palette) -> u32 {
+    theme_id_with(palette, &crate::theme::DiagramTheme::NONE)
+}
+
+/// [`theme_id`] for a palette plus a custom theme's `[diagram]` overrides. A
+/// color override must bust the cache just as a palette change does, otherwise
+/// editing `[diagram]` in a theme file would keep showing the old render.
+pub fn theme_id_with(palette: &Palette, theme: &crate::theme::DiagramTheme) -> u32 {
     let mut h = DefaultHasher::new();
     // Hash every color-bearing field. We only need monotonic determinism — the
     // exact mixing isn't load-bearing.
@@ -236,6 +301,7 @@ pub fn theme_id(palette: &Palette) -> u32 {
     ] {
         hash_color(&c, &mut h);
     }
+    theme.hash_into(&mut h);
     let full = h.finish();
     (full ^ (full >> 32)) as u32
 }
@@ -267,40 +333,126 @@ fn color_over(c: Color, backdrop: Color) -> Color {
     )
 }
 
+/// Concrete diagram colors for one render: every `[diagram]` override applied
+/// over the palette-derived default. Keeping this in one place means Mermaid
+/// and DOT cannot drift, and "what color is a node" has a single answer.
+struct ResolvedDiagram {
+    background: Color,
+    text: Color,
+    node_fill: Color,
+    node_border: Color,
+    line: Color,
+    cluster_fill: Color,
+    cluster_border: Color,
+    note_fill: Color,
+    note_border: Color,
+    note_text: Color,
+}
+
+impl ResolvedDiagram {
+    fn new(palette: &Palette, theme: &crate::theme::DiagramTheme) -> Self {
+        // Shapes and edges sit over the document; labels sit over whatever fill
+        // is behind them. Composite translucent palette entries onto the right
+        // backdrop before encoding, because Mermaid derives further colors from
+        // these hex values and layout-rs drops alpha entirely.
+        let node_fill = theme
+            .node_fill
+            .unwrap_or_else(|| color_over(palette.surface, palette.bg));
+        let cluster_fill = theme
+            .cluster_fill
+            .unwrap_or_else(|| color_over(palette.surface_alt, palette.bg));
+        let note_fill = theme.note_fill.unwrap_or(cluster_fill);
+        let background = theme.background.unwrap_or(palette.bg);
+
+        Self {
+            background,
+            text: theme
+                .text
+                .unwrap_or_else(|| color_over(palette.fg, node_fill)),
+            node_fill,
+            node_border: theme
+                .node_border
+                .unwrap_or_else(|| color_over(palette.code_border, node_fill)),
+            line: theme
+                .line
+                .unwrap_or_else(|| color_over(palette.muted, palette.bg)),
+            cluster_fill,
+            cluster_border: theme
+                .cluster_border
+                .unwrap_or_else(|| color_over(palette.code_border, cluster_fill)),
+            note_fill,
+            note_border: theme
+                .note_border
+                .unwrap_or_else(|| color_over(palette.code_border, note_fill)),
+            note_text: theme
+                .note_text
+                .unwrap_or_else(|| color_over(palette.fg, note_fill)),
+        }
+    }
+}
+
 /// Build the mermaid `%%{init}%%` directive that carries our palette.
 ///
-/// Spec maps:
-///   background         <- palette.bg
-///   primaryColor       <- palette.surface
-///   primaryTextColor   <- palette.fg          (Palette has `fg`, not `text`)
-///   primaryBorderColor <- palette.code_border (closest analogue to `border`)
-///   lineColor          <- palette.muted
-///   secondaryColor     <- palette.surface_alt
-///   tertiaryColor      <- palette.accent
-///   fontFamily         <- caller-supplied font family
-fn mermaid_init_block(palette: &Palette, font_family: &str) -> String {
-    // Node strokes and labels sit over the node fill, while fills and edges
-    // sit over the document background. Do not turn a faint white/black
-    // hairline into an opaque white/black stroke by discarding its alpha.
-    let surface = color_over(palette.surface, palette.bg);
+/// The roles come from [`ResolvedDiagram`], so a `[diagram]` override reaches
+/// Mermaid without further mapping. Besides the obvious flowchart variables the
+/// block pins the ones Mermaid would otherwise derive into colors that ignore
+/// the theme: `clusterBkg`/`clusterBorder` default to a hue-shifted
+/// `tertiaryColor` (a saturated panel on a dark ground), and `noteBkgColor` is
+/// a hardcoded light yellow that is never derived from `primaryColor` at all.
+fn mermaid_init_block(
+    palette: &Palette,
+    theme: &crate::theme::DiagramTheme,
+    font_family: &str,
+) -> String {
+    let pal = ResolvedDiagram::new(palette, theme);
+    // Edge labels paint their background behind text, so give them a panel the
+    // foreground actually contrasts against rather than the subgraph fill.
+    let edge_label_bg = color_over(palette.code_bg, pal.background);
     format!(
         "%%{{init: {{ 'theme': 'base', 'themeVariables': {{ \
          'background': '{bg}', \
-         'primaryColor': '{primary}', \
+         'primaryColor': '{node_fill}', \
          'primaryTextColor': '{text}', \
-         'primaryBorderColor': '{border}', \
+         'primaryBorderColor': '{node_border}', \
          'lineColor': '{line}', \
-         'secondaryColor': '{secondary}', \
-         'tertiaryColor': '{tertiary}', \
+         'secondaryColor': '{cluster_fill}', \
+         'tertiaryColor': '{cluster_border}', \
+         'textColor': '{text}', \
+         'titleColor': '{text}', \
+         'nodeTextColor': '{text}', \
+         'nodeBorder': '{node_border}', \
+         'mainBkg': '{node_fill}', \
+         'clusterBkg': '{cluster_fill}', \
+         'clusterBorder': '{cluster_border}', \
+         'edgeLabelBackground': '{edge_label_bg}', \
+         'noteBkgColor': '{note_fill}', \
+         'noteBorderColor': '{note_border}', \
+         'noteTextColor': '{note_text}', \
+         'actorBkg': '{node_fill}', \
+         'actorBorder': '{node_border}', \
+         'actorTextColor': '{text}', \
+         'actorLineColor': '{node_border}', \
+         'signalColor': '{line}', \
+         'signalTextColor': '{text}', \
+         'labelBoxBkgColor': '{node_fill}', \
+         'labelBoxBorderColor': '{node_border}', \
+         'labelTextColor': '{text}', \
+         'loopTextColor': '{text}', \
+         'activationBkgColor': '{cluster_fill}', \
+         'activationBorderColor': '{node_border}', \
          'fontFamily': '{font}' \
          }} }}}}%%\n",
-        bg = color_to_hex(palette.bg),
-        primary = color_to_hex(surface),
-        text = color_to_hex(color_over(palette.fg, surface)),
-        border = color_to_hex(color_over(palette.code_border, surface)),
-        line = color_to_hex(color_over(palette.muted, palette.bg)),
-        secondary = color_to_hex(color_over(palette.surface_alt, palette.bg)),
-        tertiary = color_to_hex(color_over(palette.accent, palette.bg)),
+        bg = color_to_hex(pal.background),
+        node_fill = color_to_hex(pal.node_fill),
+        text = color_to_hex(pal.text),
+        node_border = color_to_hex(pal.node_border),
+        line = color_to_hex(pal.line),
+        cluster_fill = color_to_hex(pal.cluster_fill),
+        cluster_border = color_to_hex(pal.cluster_border),
+        edge_label_bg = color_to_hex(edge_label_bg),
+        note_fill = color_to_hex(pal.note_fill),
+        note_border = color_to_hex(pal.note_border),
+        note_text = color_to_hex(pal.note_text),
         font = font_family,
     )
 }
@@ -312,16 +464,25 @@ pub(crate) fn has_user_init(source: &str) -> bool {
 
 /// Build the DOT preamble that injects our palette as default graph/node/edge
 /// attributes. Inserted immediately after the user's opening `{`.
-fn dot_preamble(palette: &Palette, font_family: &str) -> String {
+///
+/// Alpha is flattened onto the backdrop first. `code_border`/`rule` are
+/// translucent hairlines; layout-rs only understands opaque hex, and a
+/// discarded alpha would turn a faint hairline into a solid black or white
+/// ring around every node.
+fn dot_preamble(
+    palette: &Palette,
+    theme: &crate::theme::DiagramTheme,
+    font_family: &str,
+) -> String {
+    let pal = ResolvedDiagram::new(palette, theme);
     format!(
         "  graph [bgcolor=\"transparent\" fontname=\"{font}\"];\n  \
-         node  [fontcolor=\"{text}\" color=\"{border}\" fillcolor=\"{fill}\" fontname=\"{font}\"];\n  \
+         node  [color=\"{border}\" fillcolor=\"{fill}\" fontname=\"{font}\"];\n  \
          edge  [color=\"{edge}\" fontname=\"{font}\"];\n",
         font = font_family,
-        text = color_to_hex(palette.fg),
-        border = color_to_hex(palette.code_border),
-        fill = color_to_hex(palette.surface),
-        edge = color_to_hex(palette.muted),
+        border = color_to_hex(pal.node_border),
+        fill = color_to_hex(pal.node_fill),
+        edge = color_to_hex(pal.line),
     )
 }
 
@@ -355,6 +516,24 @@ pub async fn render_blocking_async(
     palette: Palette,
     font_family: String,
 ) -> Result<RenderOutput, String> {
+    render_blocking_async_with(
+        kind,
+        source,
+        palette,
+        crate::theme::DiagramTheme::NONE,
+        font_family,
+    )
+    .await
+}
+
+/// [`render_blocking_async`] with a custom theme's `[diagram]` overrides.
+pub async fn render_blocking_async_with(
+    kind: DiagramKind,
+    source: String,
+    palette: Palette,
+    theme: crate::theme::DiagramTheme,
+    font_family: String,
+) -> Result<RenderOutput, String> {
     // Acquire a permit before spawning the blocking job. The permit drops at
     // the end of this future, which is also after the blocking task has been
     // awaited — so the cap really gates blocking-pool occupancy.
@@ -363,14 +542,16 @@ pub async fn render_blocking_async(
         .await
         .map_err(|_| "render limit closed".to_string())?;
     tokio::task::spawn_blocking(move || -> Result<RenderOutput, String> {
-        let svg_string = render_blocking(kind, &source, &palette, &font_family)?;
+        let svg_string = render_blocking_with(kind, &source, &palette, &theme, &font_family)?;
         let svg_bytes = svg_string.into_bytes();
-        let (rgba, w, h) = rasterize_for_inline(&svg_bytes)?;
+        let (rgba, w, h, svg_w, svg_h) = rasterize_for_inline(&svg_bytes)?;
         Ok(RenderOutput {
             svg: svg_bytes,
             rgba,
             w,
             h,
+            svg_w,
+            svg_h,
         })
     })
     .await
@@ -414,7 +595,7 @@ pub async fn rasterize_zoom(svg: Arc<Vec<u8>>, width: u32) -> Result<image::Hand
         .await
         .map_err(|_| "render limit closed".to_string())?;
     tokio::task::spawn_blocking(move || {
-        let (rgba, w, h) = rasterize_scaled(&svg, |_| width as f32)?;
+        let (rgba, w, h, _, _) = rasterize_scaled(&svg, |_| width as f32)?;
         Ok(image::Handle::from_rgba(w, h, rgba))
     })
     .await
@@ -426,17 +607,21 @@ pub async fn rasterize_zoom(svg: Arc<Vec<u8>>, width: u32) -> Result<image::Hand
 /// The rasterization target is `min(viewbox_width * 2.0, 1600.0)` px wide,
 /// preserving aspect. This gives a crisp display up to ~800px wide UI
 /// without ballooning memory on absurdly wide diagrams.
-fn rasterize_for_inline(svg_bytes: &[u8]) -> Result<(Vec<u8>, u32, u32), String> {
+///
+/// Returns the raster plus the SVG's own size so the reading modes can keep a
+/// figure that was too wide to raster at full retina scale crisp and still know
+/// its natural width.
+fn rasterize_for_inline(svg_bytes: &[u8]) -> Result<(Vec<u8>, u32, u32, f32, f32), String> {
     const MAX_WIDTH: f32 = 1600.0;
     rasterize_scaled(svg_bytes, |w| (w * RASTER_SCALE).min(MAX_WIDTH))
 }
 
 /// Rasterize an SVG `target(intrinsic width)` pixels wide, keeping its
-/// aspect.
+/// aspect. Returns `(pixels, width, height, svg_width, svg_height)`.
 fn rasterize_scaled(
     svg_bytes: &[u8],
     target: impl FnOnce(f32) -> f32,
-) -> Result<(Vec<u8>, u32, u32), String> {
+) -> Result<(Vec<u8>, u32, u32, f32, f32), String> {
     use resvg::tiny_skia;
     use resvg::usvg;
 
@@ -458,15 +643,37 @@ fn rasterize_scaled(
         tiny_skia::Transform::from_scale(scale, scale),
         &mut pixmap.as_mut(),
     );
-    Ok((pixmap.take(), pw, ph))
+    Ok((pixmap.take(), pw, ph, w, h))
 }
 
-/// Blocking renderer. Wraps the inner work in `catch_unwind` so a panic in a
-/// third-party crate doesn't take down the UI thread.
+/// Blocking renderer with the palette-derived diagram colors. Thin wrapper over
+/// [`render_blocking_with`] for callers that need no `[diagram]` overrides.
 pub fn render_blocking(
     kind: DiagramKind,
     source: &str,
     palette: &Palette,
+    font_family: &str,
+) -> Result<String, String> {
+    render_blocking_with(
+        kind,
+        source,
+        palette,
+        &crate::theme::DiagramTheme::NONE,
+        font_family,
+    )
+}
+
+/// Blocking renderer. Wraps the inner work in `catch_unwind` so a panic in a
+/// third-party crate doesn't take down the UI thread.
+///
+/// `theme` carries a custom theme's `[diagram]` overrides; pass
+/// [`crate::theme::DiagramTheme::NONE`] to derive every diagram color from
+/// `palette`.
+pub fn render_blocking_with(
+    kind: DiagramKind,
+    source: &str,
+    palette: &Palette,
+    theme: &crate::theme::DiagramTheme,
     font_family: &str,
 ) -> Result<String, String> {
     if source.len() > MAX_SOURCE_BYTES {
@@ -476,12 +683,13 @@ pub fn render_blocking(
     // Clone inputs we need inside the unwind boundary.
     let source = source.to_string();
     let palette = *palette;
+    let theme = *theme;
     let font_family = font_family.to_string();
 
     let result = std::panic::catch_unwind(move || -> Result<String, String> {
         match kind {
-            DiagramKind::Mermaid => render_mermaid(&source, &palette, &font_family),
-            DiagramKind::Dot => render_dot(&source, &palette, &font_family),
+            DiagramKind::Mermaid => render_mermaid(&source, &palette, &theme, &font_family),
+            DiagramKind::Dot => render_dot(&source, &palette, &theme, &font_family),
             DiagramKind::Math => render_math(&source, &palette),
         }
     });
@@ -499,11 +707,16 @@ pub fn render_blocking(
     Ok(svg)
 }
 
-fn render_mermaid(source: &str, palette: &Palette, font_family: &str) -> Result<String, String> {
+fn render_mermaid(
+    source: &str,
+    palette: &Palette,
+    theme: &crate::theme::DiagramTheme,
+    font_family: &str,
+) -> Result<String, String> {
     let prepared = if has_user_init(source) {
         source.to_string()
     } else {
-        let mut s = mermaid_init_block(palette, font_family);
+        let mut s = mermaid_init_block(palette, theme, font_family);
         s.push_str(source);
         s
     };
@@ -524,8 +737,13 @@ fn render_mermaid(source: &str, palette: &Palette, font_family: &str) -> Result<
     }
 }
 
-fn render_dot(source: &str, palette: &Palette, font_family: &str) -> Result<String, String> {
-    let preamble = dot_preamble(palette, font_family);
+fn render_dot(
+    source: &str,
+    palette: &Palette,
+    theme: &crate::theme::DiagramTheme,
+    font_family: &str,
+) -> Result<String, String> {
+    let preamble = dot_preamble(palette, theme, font_family);
     let prepared = inject_dot_preamble(source, &preamble);
 
     use layout::backends::svg::SVGWriter;
@@ -540,7 +758,72 @@ fn render_dot(source: &str, palette: &Palette, font_family: &str) -> Result<Stri
 
     let mut svg = SVGWriter::new();
     vg.do_it(false, false, false, &mut svg);
-    Ok(svg.finalize())
+    Ok(theme_dot_svg(&svg.finalize(), palette, theme, font_family))
+}
+
+/// Make layout-rs' SVG honour our palette, and on Windows our font.
+///
+/// layout-rs' `SVGWriter` reads `color`/`fillcolor` from the DOT attributes but
+/// ignores `fontcolor` entirely: every `<text>` it emits has no `fill`, so
+/// labels paint with the SVG default (black). That is wrong in every theme —
+/// black labels disappear on a dark ground — on every platform, so the fill
+/// rule below is unconditional.
+///
+/// The font family is different. `SVGWriter` hardcodes
+/// `font-family: Times, serif`, which macOS resolves through its system Times
+/// and renders. Rewriting it to the app's editor font blindly would replace a
+/// working family with one the OS lacks, so that half is Windows-only, where
+/// the raster font database now carries those bundled faces; it is also where
+/// the hardcoded serif would otherwise need a *different* real face anyway.
+/// See the "post-process the SVG output" note in
+/// `docs/superpowers/specs/2026-05-16-diagrams-design.md`.
+fn theme_dot_svg(
+    svg: &str,
+    palette: &Palette,
+    theme: &crate::theme::DiagramTheme,
+    font_family: &str,
+) -> String {
+    // layout-rs writes no label fill at all, so this is the only place the
+    // label color is decided.
+    let label = color_to_hex(ResolvedDiagram::new(palette, theme).text);
+
+    #[cfg(windows)]
+    let mut out = {
+        let family = css_font_family(font_family);
+        svg.replace(
+            "font-family: Times, serif;",
+            &format!("font-family: {family};"),
+        )
+    };
+    #[cfg(not(windows))]
+    let mut out = {
+        let _ = font_family;
+        svg.to_owned()
+    };
+
+    // A type selector beats a presentation attribute and the `font-color`-less
+    // class rule, so this is the one place that decides label colour. A
+    // `<textPath>` inherits from its parent, but name it too so an edge label
+    // in a `<text>` that sets its own fill cannot win.
+    let rule = format!("<style>text,textPath{{fill:{label};}}</style>");
+    // layout-rs always closes the document; if it ever did not, skip the patch
+    // rather than mangle the SVG.
+    if let Some(i) = out.rfind("</svg>") {
+        out.insert_str(i, &rule);
+    }
+    out
+}
+
+/// Quote a font family for use in an inline CSS declaration. `JetBrains Mono`
+/// is a single family name that needs quotes; a bare name with no spaces works
+/// unquoted, but quoting always is simpler and always valid.
+#[cfg(windows)]
+fn css_font_family(font_family: &str) -> String {
+    let name = font_family.trim();
+    if name.is_empty() {
+        return "sans-serif".to_string();
+    }
+    format!("\"{}\", sans-serif", name.replace('"', ""))
 }
 
 /// Render `$$…$$` display math to SVG via `iced_math`. Glyphs are filled with
@@ -648,7 +931,7 @@ mod tests {
             let svg = render_blocking(DiagramKind::Math, src, &palette(), "")
                 .unwrap_or_else(|e| panic!("render failed for {src:?}: {e}"));
             assert!(svg.contains("<path"), "no glyph paths for {src:?}");
-            let (rgba, w, h) = rasterize_for_inline(svg.as_bytes())
+            let (rgba, w, h, _, _) = rasterize_for_inline(svg.as_bytes())
                 .unwrap_or_else(|e| panic!("raster failed for {src:?}: {e}"));
             assert!(
                 w > 0 && h > 0 && !rgba.is_empty(),
@@ -663,6 +946,128 @@ mod tests {
         let fg = Palette::ONE_LIGHT.fg;
         let hex = color_to_hex(fg);
         assert!(svg.contains(&hex), "expected fill {hex} in svg, got: {svg}");
+    }
+
+    /// Count pixels near `target` among the raster's opaque pixels.
+    fn count_near(rgba: &[u8], target: Color) -> usize {
+        let want = [
+            (target.r * 255.0).round() as i32,
+            (target.g * 255.0).round() as i32,
+            (target.b * 255.0).round() as i32,
+        ];
+        rgba.chunks_exact(4)
+            .filter(|p| p[3] > 200)
+            .filter(|p| (0..3).all(|i| (p[i] as i32 - want[i]).abs() <= 24))
+            .count()
+    }
+
+    /// Labels must actually paint. They used to vanish entirely because the
+    /// SVGs ask for "JetBrains Mono" / "Times, serif", neither of which the OS
+    /// has, and usvg's last-resort generic family was also unresolvable — so
+    /// every `<text>` element was dropped. Assert real text ink exists for
+    /// every diagram kind, at the palette foreground.
+    #[test]
+    fn every_diagram_kind_paints_text_in_the_palette_foreground() {
+        for pal in [Palette::ONE_DARK, Palette::ONE_LIGHT] {
+            for (kind, src) in [
+                (DiagramKind::Mermaid, "graph LR\n A --> B"),
+                (DiagramKind::Mermaid, "sequenceDiagram\n Alice->>Bob: Hi"),
+                (DiagramKind::Dot, "digraph G { a -> b }"),
+            ] {
+                let label = format!("{kind:?}");
+                let output = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .unwrap()
+                    .block_on(render_blocking_async(
+                        kind,
+                        src.to_string(),
+                        pal,
+                        "JetBrains Mono".to_string(),
+                    ))
+                    .unwrap_or_else(|e| panic!("{label} render failed: {e}"));
+                let ink = count_near(&output.rgba, pal.fg);
+                assert!(
+                    ink > 40,
+                    "{label} painted no foreground text ({ink} px) for {:?}",
+                    pal.bg
+                );
+            }
+        }
+    }
+
+    /// The DOT writer ignores `fontcolor`: its `<text>` elements carry no fill,
+    /// so labels paint black and vanish on a dark theme. Guard the fill rule on
+    /// every platform, and the family rewrite on the platform that needs it.
+    #[test]
+    fn dot_labels_are_themed() {
+        let pal = Palette::ONE_DARK;
+        let svg = render_blocking(
+            DiagramKind::Dot,
+            "digraph G { a -> b }",
+            &pal,
+            "JetBrains Mono",
+        )
+        .unwrap();
+        let fg = color_to_hex(color_over(pal.fg, color_over(pal.surface, pal.bg)));
+        assert!(
+            svg.contains(&format!("text,textPath{{fill:{fg};}}")),
+            "no themed label fill in: {svg}"
+        );
+    }
+
+    /// On Windows the hardcoded `font-family: Times, serif` has to become the
+    /// app's editor face, which the raster font database carries. On macOS
+    /// `Times` already resolves through the system, so it is deliberately left
+    /// alone — rewriting it there would swap a working family for a missing one.
+    #[cfg(windows)]
+    #[test]
+    fn dot_labels_use_the_requested_font_on_windows() {
+        let svg = render_blocking(
+            DiagramKind::Dot,
+            "digraph G { a -> b }",
+            &Palette::ONE_DARK,
+            "JetBrains Mono",
+        )
+        .unwrap();
+        assert!(
+            svg.contains("font-family: \"JetBrains Mono\", sans-serif;"),
+            "layout-rs font class not rewritten in: {svg}"
+        );
+        assert!(
+            !svg.contains("Times, serif"),
+            "layout-rs hardcoded serif survived in: {svg}"
+        );
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn dot_labels_keep_the_system_serif_off_windows() {
+        let svg = render_blocking(
+            DiagramKind::Dot,
+            "digraph G { a -> b }",
+            &Palette::ONE_DARK,
+            "JetBrains Mono",
+        )
+        .unwrap();
+        assert!(
+            svg.contains("font-family: Times, serif;"),
+            "layout-rs serif was rewritten off Windows: {svg}"
+        );
+    }
+
+    /// A themed hairline border must not be flattened into solid black/white,
+    /// or every DOT node gains a hard opaque ring.
+    #[test]
+    fn dot_node_borders_composite_their_alpha() {
+        let pal = Palette::ONE_LIGHT;
+        let preamble = dot_preamble(&pal, &crate::theme::DiagramTheme::NONE, "Inter");
+        let border = color_to_hex(color_over(pal.code_border, color_over(pal.surface, pal.bg)));
+        assert!(
+            preamble.contains(&format!("color=\"{border}\"")),
+            "{preamble}"
+        );
+        assert!(!preamble.contains("#000000"), "alpha discarded: {preamble}");
     }
 
     #[test]
@@ -683,6 +1088,87 @@ mod tests {
         assert_ne!(a, b);
     }
 
+    /// Editing `[diagram]` in a theme file must invalidate the cached render,
+    /// so the cache key has to cover the overrides, not just the palette.
+    #[test]
+    fn theme_id_changes_with_diagram_overrides() {
+        let base = theme_id_with(&Palette::ONE_DARK, &crate::theme::DiagramTheme::NONE);
+        let themed = crate::theme::DiagramTheme {
+            line: Some(Color::from_rgb(1.0, 0.0, 0.0)),
+            ..crate::theme::DiagramTheme::NONE
+        };
+        assert_ne!(base, theme_id_with(&Palette::ONE_DARK, &themed));
+    }
+
+    /// A `[diagram]` override must reach the rendered output for both formats.
+    #[test]
+    fn diagram_overrides_reach_mermaid_and_dot() {
+        let theme = crate::theme::DiagramTheme {
+            node_fill: Some(Color::from_rgb(1.0, 0.0, 1.0)),
+            line: Some(Color::from_rgb(0.0, 1.0, 0.0)),
+            text: Some(Color::from_rgb(1.0, 1.0, 0.0)),
+            ..crate::theme::DiagramTheme::NONE
+        };
+
+        let mermaid = render_blocking_with(
+            DiagramKind::Mermaid,
+            "graph LR\n A --> B",
+            &Palette::ONE_DARK,
+            &theme,
+            "JetBrains Mono",
+        )
+        .unwrap();
+        assert!(
+            mermaid.contains(&color_to_hex(theme.node_fill.unwrap())),
+            "node_fill override missing from mermaid: {mermaid}"
+        );
+        assert!(
+            mermaid.contains(&color_to_hex(theme.line.unwrap())),
+            "line override missing from mermaid: {mermaid}"
+        );
+
+        let dot = render_blocking_with(
+            DiagramKind::Dot,
+            "digraph G { a -> b }",
+            &Palette::ONE_DARK,
+            &theme,
+            "JetBrains Mono",
+        )
+        .unwrap();
+        assert!(
+            dot.contains(&color_to_hex(theme.node_fill.unwrap())),
+            "node_fill override missing from dot: {dot}"
+        );
+        assert!(
+            dot.contains(&format!("fill:{};", color_to_hex(theme.text.unwrap()))),
+            "text override missing from dot label rule: {dot}"
+        );
+    }
+
+    /// A user `%%{init}%%` block still wins over the injected theme; overrides
+    /// only feed the injection.
+    #[test]
+    fn diagram_overrides_do_not_touch_a_user_init_block() {
+        let theme = crate::theme::DiagramTheme {
+            node_fill: Some(Color::from_rgb(1.0, 0.0, 1.0)),
+            ..crate::theme::DiagramTheme::NONE
+        };
+        let source = "%%{init: {'theme':'dark'}}%%\ngraph LR\n A --> B";
+        assert!(has_user_init(source));
+        let svg = render_blocking_with(
+            DiagramKind::Mermaid,
+            source,
+            &Palette::ONE_DARK,
+            &theme,
+            "JetBrains Mono",
+        )
+        .unwrap();
+        assert!(
+            !svg.contains(&color_to_hex(theme.node_fill.unwrap())),
+            "override should not be injected alongside a user init block"
+        );
+    }
+
     #[test]
     fn cache_basic() {
         let mut cache = DiagramCache::new(2);
@@ -698,6 +1184,8 @@ mod tests {
             inline: image::Handle::from_rgba(px as u32, 1, vec![0u8; pixel_bytes]),
             source_bytes: Arc::new(Vec::new()),
             device_w: px as u32,
+            figure_w: px as f32 / RASTER_SCALE,
+            figure_h: 1.0 / RASTER_SCALE,
         }
     }
 
